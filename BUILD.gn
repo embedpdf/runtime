@@ -207,6 +207,8 @@ source_set("pdfium_public_headers_impl") {
     "public/epdf_form.h",
     # EmbedPDF: the catalog's /Names /Pages and /Templates name trees.
     "public/epdf_named_pages.h",
+    # EmbedPDF: digital signatures - revisions, the signature model, digests.
+    "public/epdf_signature.h",
     # EmbedPDF: generic namespace-scoped document/page /PieceInfo metadata.
     "public/epdf_pieceinfo.h",
     "public/epdf_redact.h",

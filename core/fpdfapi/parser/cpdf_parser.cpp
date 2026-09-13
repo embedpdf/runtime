@@ -435,6 +435,23 @@ bool CPDF_Parser::LoadAllCrossRefTablesAndStreams(FX_FILESIZE xref_offset) {
     return false;
   }
 
+  // EmbedPDF: remember the chain, oldest first. Consecutive entries are
+  // linked by /Prev because FindAllCrossReferenceTablesAndStream() prepends
+  // each older section as it follows the chain.
+  cross_ref_sections_.clear();
+  for (size_t i = 0; i < xref_list.size(); ++i) {
+    CrossRefSection section;
+    if (xref_list[i] > 0) {
+      section.offset = xref_list[i];
+      section.hybrid_stream_offset =
+          xref_stream_list[i] > 0 ? xref_stream_list[i] : 0;
+    } else {
+      section.offset = xref_stream_list[i];
+    }
+    section.prev_offset = i > 0 ? cross_ref_sections_[i - 1].offset : 0;
+    cross_ref_sections_.push_back(section);
+  }
+
   if (xref_list.front() > 0) {
     if (!LoadCrossRefTable(xref_list.front(), /*skip=*/false)) {
       return false;
@@ -753,6 +770,8 @@ bool CPDF_Parser::FindAllCrossReferenceTablesAndStream(
 }
 
 bool CPDF_Parser::RebuildCrossRef() {
+  // EmbedPDF: a scanned table has no chain.
+  cross_ref_sections_.clear();
   auto cross_ref_table = std::make_unique<CPDF_CrossRefTable>();
 
   const uint32_t kBufferSize = 4096;
@@ -1164,6 +1183,23 @@ RetainPtr<CPDF_Object> CPDF_Parser::ParseIndirectObjectAt(FX_FILESIZE pos,
 
 FX_FILESIZE CPDF_Parser::GetDocumentSize() const {
   return syntax_->GetDocumentSize();
+}
+
+const std::vector<unsigned int>& CPDF_Parser::GetCachedTrailerEnds() {
+  if (!cached_trailer_ends_.has_value()) {
+    cached_trailer_ends_ = GetTrailerEnds();
+  }
+  return cached_trailer_ends_.value();
+}
+
+FX_FILESIZE CPDF_Parser::GetFileHeaderOffset() const {
+  RetainPtr<IFX_SeekableReadStream> file = GetFileAccess();
+  if (!file || !syntax_) {
+    return 0;
+  }
+  const FX_FILESIZE file_size = file->GetSize();
+  const FX_FILESIZE document_size = syntax_->GetDocumentSize();
+  return file_size > document_size ? file_size - document_size : 0;
 }
 
 RetainPtr<IFX_SeekableReadStream> CPDF_Parser::GetFileAccess() const {

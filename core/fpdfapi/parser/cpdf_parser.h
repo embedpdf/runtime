@@ -13,6 +13,7 @@
 #include <limits>
 #include <map>
 #include <memory>
+#include <optional>
 #include <set>
 #include <vector>
 
@@ -120,6 +121,33 @@ class CPDF_Parser {
   std::vector<unsigned int> GetTrailerEnds();
   bool WriteToArchive(IFX_ArchiveStream* archive, FX_FILESIZE src_size);
 
+  // EmbedPDF: one cross-reference section of the chain reached from the final
+  // startxref through /Prev, recorded while parsing. Offsets are
+  // header-relative like every other parser offset (see GetFileHeaderOffset()).
+  struct CrossRefSection {
+    // Start of the section: a classic table or a cross-reference stream.
+    FX_FILESIZE offset = 0;
+    // /XRefStm of a hybrid table section; 0 when absent.
+    FX_FILESIZE hybrid_stream_offset = 0;
+    // /Prev of this section's trailer; 0 for the oldest section.
+    FX_FILESIZE prev_offset = 0;
+  };
+
+  // EmbedPDF: the chain, oldest section first. Empty when the table was
+  // rebuilt by scanning, when the document was loaded progressively
+  // (linearized path), or when nothing was parsed.
+  const std::vector<CrossRefSection>& GetCrossRefSections() const {
+    return cross_ref_sections_;
+  }
+
+  // EmbedPDF: GetTrailerEnds() walks the whole document; this caches it.
+  // Positions are header-relative, like GetTrailerEnds().
+  const std::vector<unsigned int>& GetCachedTrailerEnds();
+
+  // EmbedPDF: bytes preceding the %PDF header. Parser offsets are relative to
+  // it; file offsets (a signature's /ByteRange) are not.
+  FX_FILESIZE GetFileHeaderOffset() const;
+
   const CPDF_CrossRefTable* GetCrossRefTable() const {
     return cross_ref_table_.get();
   }
@@ -215,6 +243,10 @@ class CPDF_Parser {
   std::set<uint32_t> parsing_obj_nums_;
 
   RetainPtr<CPDF_SecurityHandler> security_handler_;
+
+  // EmbedPDF: see GetCrossRefSections() / GetCachedTrailerEnds().
+  std::vector<CrossRefSection> cross_ref_sections_;
+  std::optional<std::vector<unsigned int>> cached_trailer_ends_;
 };
 
 #endif  // CORE_FPDFAPI_PARSER_CPDF_PARSER_H_

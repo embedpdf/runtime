@@ -32,6 +32,10 @@ concept HasPtrSpanMethod = requires(const Container& t) {
 template <typename Container>
 class CFX_ReadOnlyContainerStream final : public CFX_ReadOnlySpanStream {
  public:
+  // The container is owned: the bytes live as long as this stream does.
+  bool IsSelfContained() const override { return true; }
+
+ public:
   CONSTRUCT_VIA_MAKE_RETAIN;
 
  private:

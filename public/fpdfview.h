@@ -641,6 +641,26 @@ EPDF_LoadMemBaseDocument64(const void* data_buf,
 FPDF_EXPORT void FPDF_CALLCONV
 EPDF_ReleaseBaseDocument(EPDF_BASE_DOCUMENT base);
 
+// Function: EPDF_SetBaseDocumentSha256
+//          Supply the SHA-256 of the exact bytes |base| was loaded from, so
+//          the runtime need not hash them again. Without it the runtime
+//          hashes the file on first use (a layer artifact carries the hash;
+//          a completed signature reports it as the version). Call it right
+//          after loading, before any layer is opened on |base|.
+//          |sha256| points at 32 bytes. This is an identity claim, not a
+//          check: a wrong value only makes the caller's own layer artifacts
+//          fail to open on the real bytes.
+FPDF_EXPORT void FPDF_CALLCONV
+EPDF_SetBaseDocumentSha256(EPDF_BASE_DOCUMENT base,
+                           const unsigned char* sha256);
+
+// Function: EPDFLayer_GetBaseSha256
+//          Copy the SHA-256 (32 bytes) of the base a layer document was
+//          opened on into |out_sha256|. Returns FALSE when |layer| is not a
+//          layer document or |out_sha256| is NULL.
+FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV
+EPDFLayer_GetBaseSha256(FPDF_DOCUMENT layer, unsigned char* out_sha256);
+
 // Runtime-side status for opening a layer on top of a base document.
 typedef enum {
   EPDFLayerOpenStatus_kSuccess = 0,
@@ -678,6 +698,18 @@ EPDFLayer_OpenLayerArtifact(EPDF_BASE_DOCUMENT base,
                             FPDF_FILEACCESS* pFileAccess,
                             FPDF_BYTESTRING password,
                             EPDFLayerOpenStatus* out_status);
+
+// Function: EPDFLayer_OpenLayerArtifactFromPath
+//          EPDFLayer_OpenLayerArtifact over a file the runtime opens itself
+//          and keeps open for the life of the layer: the delta is read in
+//          place, never copied, and every stream the delta carries stays a
+//          view into the file. The file must not change while the layer is
+//          open. |path| is a UTF-8 file system path.
+FPDF_EXPORT FPDF_DOCUMENT FPDF_CALLCONV
+EPDFLayer_OpenLayerArtifactFromPath(EPDF_BASE_DOCUMENT base,
+                                    FPDF_STRING path,
+                                    FPDF_BYTESTRING password,
+                                    EPDFLayerOpenStatus* out_status);
 
 // Function: EPDFLayer_IsObjectPromoted
 //          Return whether the object exists in the layer overlay.

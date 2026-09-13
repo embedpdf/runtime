@@ -107,6 +107,18 @@ class CPDF_Document : public Observable,
     extension_ = std::move(pExt);
   }
 
+  // EmbedPDF: an opaque cache an SDK layer attaches to this document for its
+  // lifetime. The bytes a document was loaded from never change, so nothing
+  // invalidates it; it is destroyed before the parser it may refer to.
+  class Attachment {
+   public:
+    virtual ~Attachment() = default;
+  };
+  Attachment* epdf_attachment() const { return epdf_attachment_.get(); }
+  void SetEpdfAttachment(std::unique_ptr<Attachment> attachment) {
+    epdf_attachment_ = std::move(attachment);
+  }
+
   virtual CPDF_Parser* GetParser() const;
   virtual const CPDF_Dictionary* GetRoot() const;
   virtual RetainPtr<CPDF_Dictionary> GetMutableRoot();
@@ -166,6 +178,23 @@ class CPDF_Document : public Observable,
   // document overlay. Always false for ordinary documents.
   virtual RetainPtr<CPDF_Object> FindPromotedObject(uint32_t objnum) const;
   bool IsObjectPromoted(uint32_t objnum) const;
+  // EmbedPDF: the object as the document was LOADED with it. For a layer,
+  // the ingested delta's version when the delta carried it, else the frozen
+  // base object; for an ordinary document, a fresh parse of the object from
+  // the loaded bytes. Null for an object the loaded bytes do not carry. A
+  // twin is read-only, never mutated, never in an overlay.
+  virtual RetainPtr<const CPDF_Object> GetLoadedTwin(uint32_t objnum) const;
+  // EmbedPDF: the twin a SAVE compares against when it decides what to
+  // write - the frozen base object for a layer, the loaded twin for an
+  // ordinary document (its base IS its loaded bytes). Null when the base
+  // does not carry the object. A removal that empties a container restores
+  // the shape THIS twin has, so the object can be elided again.
+  virtual RetainPtr<const CPDF_Object> GetBaseTwin(uint32_t objnum) const;
+  // EmbedPDF: whether |stream|'s file-backed bytes are owned by something
+  // this document retains for its whole life (its own parser's file, a
+  // layer's base or loaded delta). Only then may a clone made for this
+  // holder share the view instead of copying the bytes.
+  virtual bool SharesBackingStorageWith(const CPDF_Stream* stream) const;
   // Changes whenever the effective identity of an indirect object can change.
   // Ordinary documents have no overlay and always return 0.
   virtual uint64_t GetOverlayEpoch() const;
@@ -281,6 +310,10 @@ class CPDF_Document : public Observable,
   std::set<uint32_t> modified_apstream_ids_;
   std::optional<PendingSecurity> pending_security_;
   std::vector<uint32_t> page_list_;  // Page number to page's dict objnum.
+
+  // EmbedPDF: destroyed before everything declared above it (the parser
+  // included), after the extension and the stock font clearer.
+  std::unique_ptr<Attachment> epdf_attachment_;
 
   // Must be second to last.
   StockFontClearer stock_font_clearer_;

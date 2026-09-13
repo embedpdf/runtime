@@ -13,31 +13,16 @@
 #include "core/fpdfapi/parser/cpdf_dictionary.h"
 #include "core/fpdfapi/parser/cpdf_document_view_scope.h"
 #include "core/fpdfapi/parser/cpdf_object.h"
+#include "core/fpdfapi/parser/cpdf_parse_only_holder.h"
+#include "core/fpdfapi/parser/cpdf_object_equality.h"
 #include "core/fpdfapi/parser/cpdf_parser.h"
+#include "core/fpdfapi/parser/cpdf_stream.h"
 #include "core/fpdfapi/render/cpdf_docrenderdata.h"
 #include "core/fxcrt/check.h"
 #include "core/fxcrt/fx_stream.h"
 #include "core/fxcrt/notreached.h"
-#include "core/fxcrt/unowned_ptr.h"
 
 namespace {
-
-class DeltaParseObjectHolder final : public CPDF_Parser::ParsedObjectsHolder {
- public:
-  DeltaParseObjectHolder() = default;
-  ~DeltaParseObjectHolder() override = default;
-
-  void SetParser(CPDF_Parser* parser) { parser_ = parser; }
-  bool TryInit() override { return true; }
-
- protected:
-  RetainPtr<CPDF_Object> ParseIndirectObject(uint32_t objnum) override {
-    return parser_ ? parser_->ParseIndirectObject(objnum) : nullptr;
-  }
-
- private:
-  UnownedPtr<CPDF_Parser> parser_;
-};
 
 bool IsBaseObjectLive(const CPDF_Parser* base_parser, uint32_t objnum) {
   return objnum != 0 && base_parser->IsValidObjectNumber(objnum) &&
@@ -199,6 +184,61 @@ RetainPtr<CPDF_Object> CPDF_LayerDocument::FindPromotedObject(
   return FindLocalIndirectObject(objnum);
 }
 
+// The base's frozen object, only for an object the base's cross-reference
+// table owns. An object created in a layer has no base twin, and asking the
+// base to parse it would be a base read of a promoted number outside any
+// view - exactly what the ambient-view detector forbids.
+RetainPtr<const CPDF_Object> CPDF_LayerDocument::GetBaseTwin(
+    uint32_t objnum) const {
+  if (!IsBaseObjectLive(base_->GetParser(), objnum)) {
+    return nullptr;
+  }
+  return base_->GetFrozenObjectForLayer(objnum);
+}
+
+RetainPtr<const CPDF_Object> CPDF_LayerDocument::GetLoadedTwin(
+    uint32_t objnum) const {
+  auto it = loaded_twins_.find(objnum);
+  if (it != loaded_twins_.end()) {
+    return it->second;
+  }
+  return GetBaseTwin(objnum);
+}
+
+bool CPDF_LayerDocument::SharesBackingStorageWith(
+    const CPDF_Stream* stream) const {
+  RetainPtr<IFX_SeekableReadStream> view = stream ? stream->BackingView() : nullptr;
+  if (!view) {
+    return false;
+  }
+  IFX_SeekableReadStream* underlying = view->GetUnderlyingStream();
+  if (ingest_reader_ && underlying == ingest_reader_->GetUnderlyingStream()) {
+    return true;  // parsed from the delta this layer retains
+  }
+  if (loaded_delta_ && underlying == loaded_delta_->GetUnderlyingStream()) {
+    return true;
+  }
+  return CPDF_Document::SharesBackingStorageWith(stream);  // the base parser's file
+}
+
+bool CPDF_LayerDocument::DiffersFromBase(uint32_t objnum) const {
+  RetainPtr<const CPDF_Object> local = FindLocalIndirectObject(objnum);
+  if (!local) {
+    return false;  // not an overlay object: the base's copy is the object
+  }
+  RetainPtr<const CPDF_Object> twin = GetBaseTwin(objnum);
+  return !twin || !CPDF_SameEffectiveValue(local.Get(), twin.Get());
+}
+
+bool CPDF_LayerDocument::DiffersFromLoaded(uint32_t objnum) const {
+  RetainPtr<const CPDF_Object> local = FindLocalIndirectObject(objnum);
+  if (!local) {
+    return loaded_twins_.count(objnum) > 0;  // the delta carried it; gone
+  }
+  RetainPtr<const CPDF_Object> twin = GetLoadedTwin(objnum);
+  return !twin || !CPDF_SameEffectiveValue(local.Get(), twin.Get());
+}
+
 uint64_t CPDF_LayerDocument::GetOverlayEpoch() const {
   return overlay_epoch_;
 }
@@ -333,13 +373,13 @@ void CPDF_LayerDocument::IngestCurrentDelta() {
 
   const FX_FILESIZE layer_append_base_offset =
       base_->GetLayerAppendBaseOffset();
-  DeltaParseObjectHolder temp_holder;
+  CPDF_ParseOnlyHolder temp_holder;
   CPDF_Parser parser(&temp_holder);
   temp_holder.SetParser(&parser);
+  ingest_reader_ = pdfium::MakeRetain<CPDF_ConcatReadStream>(
+      std::move(base_file), file_access_);
   CPDF_Parser::Error parse_error =
-      parser.StartParse(pdfium::MakeRetain<CPDF_ConcatReadStream>(
-                            std::move(base_file), file_access_),
-                        base_parser->GetPassword());
+      parser.StartParse(ingest_reader_, base_parser->GetPassword());
   if (parse_error != CPDF_Parser::SUCCESS) {
     FailDeltaIngest(OpenStatus::kMalformedDelta);
     return;
@@ -377,11 +417,17 @@ void CPDF_LayerDocument::IngestCurrentDelta() {
     }
 
     RetainPtr<CPDF_Object> clone = parsed->CloneForHolder(this);
-    if (!clone) {
+    // The loaded twin: a second pristine clone, references re-homed the same
+    // way and never resolved, kept so a save can tell "changed since load"
+    // apart from "changed from the base".
+    RetainPtr<CPDF_Object> twin = parsed->CloneForHolder(this);
+    if (!clone || !twin) {
       FailDeltaIngest(OpenStatus::kMalformedDelta);
       return;
     }
     clone->SetGenNum(info.gennum);
+    twin->SetGenNum(info.gennum);
+    loaded_twins_[objnum] = std::move(twin);
     AddPromotedObject(objnum, std::move(clone));
     ++overlay_epoch_;
     ++selected_delta_object_count;
@@ -412,6 +458,9 @@ void CPDF_LayerDocument::IngestCurrentDelta() {
     FailDeltaIngest(OpenStatus::kMalformedDelta);
     return;
   }
+  // The delta is now part of this layer's loaded bytes: keep it, so revision
+  // analysis can read base + delta exactly as they were given.
+  loaded_delta_ = std::move(file_access_);
   file_access_.Reset();
 }
 

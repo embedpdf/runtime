@@ -51,6 +51,11 @@ const CPDF_Object* CPDF_IndirectObjectHolder::GetIndirectObjectInternal(
   return FilterInvalidObjNum(it->second.Get());
 }
 
+bool CPDF_IndirectObjectHolder::SharesBackingStorageWith(
+    const CPDF_Stream* stream) const {
+  return false;
+}
+
 RetainPtr<CPDF_Object> CPDF_IndirectObjectHolder::FindLocalIndirectObject(
     uint32_t objnum) const {
   auto it = indirect_objs_.find(objnum);
@@ -106,7 +111,6 @@ CPDF_Object* CPDF_IndirectObjectHolder::GetOrParseIndirectObjectInternal(
     return const_cast<CPDF_Object*>(
         FilterInvalidObjNum(insert_result.first->second.Get()));
   }
-  DCHECK(!frozen_);
   RetainPtr<CPDF_Object> pNewObj = ParseIndirectObject(objnum);
   if (!pNewObj) {
     indirect_objs_.erase(insert_result.first);
@@ -115,6 +119,12 @@ CPDF_Object* CPDF_IndirectObjectHolder::GetOrParseIndirectObjectInternal(
 
   pNewObj->SetObjNum(objnum);
   last_obj_num_ = std::max(last_obj_num_, objnum);
+  // "Frozen" means frozen against mutation, not closed to the parser: an
+  // object parsed from the holder's own immutable bytes is a pure function
+  // of those bytes, so it may still enter the cache - frozen on arrival.
+  if (frozen_) {
+    pNewObj->Freeze();
+  }
 
   CPDF_Object* result = pNewObj.Get();
   insert_result.first->second = std::move(pNewObj);

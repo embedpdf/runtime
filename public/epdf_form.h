@@ -580,7 +580,8 @@ EPDFForm_Repair(FPDF_DOCUMENT document,
 // Create a logical form field with no widgets ("unplaced").
 //
 //   family    - EPDF_FORMFIELD_FAMILY_TEXT / CHECKBOX / RADIO / COMBOBOX /
-//               LISTBOX. Push buttons, signatures, and unknown are not
+//               LISTBOX / SIGNATURE (created unsigned; /AcroForm /SigFlags
+//               gains SignaturesExist). Push buttons and unknown are not
 //               authorable.
 //   full_name - dotted fully qualified name ("billing.name"). Missing
 //               non-terminal ancestors are created; a sibling name

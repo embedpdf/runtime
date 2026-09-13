@@ -2227,7 +2227,10 @@ TEST_F(FPDFViewEmbedderTest, LayerDeltaReplayWithTrailingBytesInBase) {
   EPDF_ReleaseBaseDocument(base);
 }
 
-TEST_F(FPDFViewEmbedderTest, LayerArtifactSaveUsesCachedBaseIdentity) {
+// The base's identity (its SHA-256) is not computed at load: the first
+// artifact save hashes the base once, later saves reuse it, and a host that
+// supplies the hash never pays for the pass at all.
+TEST_F(FPDFViewEmbedderTest, LayerArtifactSaveHashesBaseOnceUnlessSupplied) {
   const std::string pdf_path = PathService::GetTestFilePath("rectangles.pdf");
   ASSERT_FALSE(pdf_path.empty());
   std::vector<uint8_t> file_bytes = GetFileContents(pdf_path.c_str());
@@ -2235,32 +2238,70 @@ TEST_F(FPDFViewEmbedderTest, LayerArtifactSaveUsesCachedBaseIdentity) {
   std::string base_bytes(reinterpret_cast<const char*>(file_bytes.data()),
                          file_bytes.size());
 
-  CountingStringFileAccess base_access(base_bytes);
-  EPDF_BASE_DOCUMENT base = EPDF_LoadBaseDocument(base_access.get(), nullptr);
-  ASSERT_TRUE(base);
+  auto save_artifact = [](FPDF_DOCUMENT layer) {
+    unsigned long artifact_size = 0;
+    EPDFLayerSaveStatus save_status = EPDFLayerSaveStatus_kSaveFailed;
+    void* artifact_buffer = EPDFLayer_SaveLayerArtifactToOwnedBuffer(
+        layer, &artifact_size, &save_status);
+    EXPECT_TRUE(artifact_buffer);
+    EXPECT_EQ(EPDFLayerSaveStatus_kSuccess, save_status);
+    EPDF_FreeBuffer(artifact_buffer);
+  };
 
-  EPDFLayerOpenStatus open_status = EPDFLayerOpenStatus_kOpenFailed;
-  ScopedFPDFDocument layer(
-      EPDFLayer_OpenLayer(base, nullptr, nullptr, &open_status));
-  ASSERT_TRUE(layer);
-  EXPECT_EQ(EPDFLayerOpenStatus_kSuccess, open_status);
+  {
+    CountingStringFileAccess base_access(base_bytes);
+    EPDF_BASE_DOCUMENT base = EPDF_LoadBaseDocument(base_access.get(), nullptr);
+    ASSERT_TRUE(base);
+    EPDFLayerOpenStatus open_status = EPDFLayerOpenStatus_kOpenFailed;
+    ScopedFPDFDocument layer(
+        EPDFLayer_OpenLayer(base, nullptr, nullptr, &open_status));
+    ASSERT_TRUE(layer);
+    EXPECT_EQ(EPDFLayerOpenStatus_kSuccess, open_status);
+    ScopedFPDFPage page(FPDF_LoadPage(layer.get(), 0));
+    ASSERT_TRUE(page);
+    ScopedFPDFAnnotation annot(
+        EPDFPage_CreateAnnot(page.get(), FPDF_ANNOT_TEXT));
+    ASSERT_TRUE(annot);
 
-  ScopedFPDFPage page(FPDF_LoadPage(layer.get(), 0));
-  ASSERT_TRUE(page);
-  ScopedFPDFAnnotation annot(EPDFPage_CreateAnnot(page.get(), FPDF_ANNOT_TEXT));
-  ASSERT_TRUE(annot);
+    // First save: one full pass over the base to hash it.
+    base_access.ResetCounts();
+    save_artifact(layer.get());
+    EXPECT_EQ(base_bytes.size(), base_access.read_bytes);
+    // Second save: the identity is cached.
+    base_access.ResetCounts();
+    save_artifact(layer.get());
+    EXPECT_EQ(0u, base_access.read_bytes);
+    layer.reset();
+    EPDF_ReleaseBaseDocument(base);
+  }
 
-  base_access.ResetCounts();
-  unsigned long artifact_size = 0;
-  EPDFLayerSaveStatus save_status = EPDFLayerSaveStatus_kSaveFailed;
-  void* artifact_buffer = EPDFLayer_SaveLayerArtifactToOwnedBuffer(
-      layer.get(), &artifact_size, &save_status);
-  ASSERT_TRUE(artifact_buffer);
-  EXPECT_EQ(EPDFLayerSaveStatus_kSuccess, save_status);
-  EXPECT_EQ(0u, base_access.read_bytes);
-  EPDF_FreeBuffer(artifact_buffer);
+  {
+    CountingStringFileAccess base_access(base_bytes);
+    EPDF_BASE_DOCUMENT base = EPDF_LoadBaseDocument(base_access.get(), nullptr);
+    ASSERT_TRUE(base);
+    unsigned char known[32];
+    for (int i = 0; i < 32; ++i) known[i] = static_cast<unsigned char>(0xa0 + i);
+    EPDF_SetBaseDocumentSha256(base, known);
+    EPDFLayerOpenStatus open_status = EPDFLayerOpenStatus_kOpenFailed;
+    ScopedFPDFDocument layer(
+        EPDFLayer_OpenLayer(base, nullptr, nullptr, &open_status));
+    ASSERT_TRUE(layer);
+    ScopedFPDFPage page(FPDF_LoadPage(layer.get(), 0));
+    ASSERT_TRUE(page);
+    ScopedFPDFAnnotation annot(
+        EPDFPage_CreateAnnot(page.get(), FPDF_ANNOT_TEXT));
+    ASSERT_TRUE(annot);
 
-  EPDF_ReleaseBaseDocument(base);
+    // Supplied: no pass over the base, and the artifact carries the claim.
+    base_access.ResetCounts();
+    save_artifact(layer.get());
+    EXPECT_EQ(0u, base_access.read_bytes);
+    unsigned char reported[32];
+    ASSERT_TRUE(EPDFLayer_GetBaseSha256(layer.get(), reported));
+    EXPECT_EQ(0, memcmp(reported, known, 32));
+    layer.reset();
+    EPDF_ReleaseBaseDocument(base);
+  }
 }
 
 TEST_F(FPDFViewEmbedderTest, LayerDiagnosticsRejectPlainDocuments) {

@@ -7,6 +7,7 @@
 #include <stdint.h>
 
 #include <array>
+#include <optional>
 #include <vector>
 
 #include "core/fpdfapi/parser/cpdf_document.h"
@@ -21,10 +22,18 @@ class CPDF_BaseDocument final : public CPDF_Document, public Retainable {
  public:
   CONSTRUCT_VIA_MAKE_RETAIN;
 
+  // Load and freeze. Only what loading itself touches is parsed; the rest
+  // of the file is parsed on first touch (see GetFrozenObjectForLayer).
   CPDF_Parser::Error LoadBaseDoc(RetainPtr<IFX_SeekableReadStream> file_access,
                                  const ByteString& password);
+  // Optional warm-up: parse every object reachable from the catalog now,
+  // so later reads never pay for a parse. Not part of loading.
   bool EagerlyParseAllReachable();
 
+  // The frozen, shared copy of |objnum| for layers to read (and clone from
+  // when they write). Parses the object from the base's bytes on a cache
+  // miss, freezes it, and keeps it for every layer; null only when the file
+  // has no such object.
   RetainPtr<const CPDF_Object> GetFrozenObjectForLayer(uint32_t objnum) const;
   FX_FILESIZE GetRawBaseSize() const { return raw_base_size_; }
   FX_FILESIZE GetLayerAppendBaseOffset() const override {
@@ -33,8 +42,17 @@ class CPDF_BaseDocument final : public CPDF_Document, public Retainable {
   const CPDF_BaseDocument* GetBaseDocumentForViewScope() const override {
     return this;
   }
-  const std::array<uint8_t, 32>& GetRawBaseSha256() const {
-    return raw_base_sha256_;
+  // SHA-256 of the raw base bytes: the identity layer artifacts bind to and
+  // the version a completed signature reports. Computed on first use — a
+  // full pass over the file — unless the embedder supplied it through
+  // SetKnownRawBaseSha256(). Reads all-zero when the file cannot be read.
+  const std::array<uint8_t, 32>& GetRawBaseSha256() const;
+  // A host that already hashed the exact bytes it handed us (a storage layer
+  // verifying a download) need not pay for a second pass. Only an identity
+  // claim: a wrong value makes this host's own artifacts fail to open on the
+  // real bytes and nothing else.
+  void SetKnownRawBaseSha256(const std::array<uint8_t, 32>& sha256) {
+    raw_base_sha256_ = sha256;
   }
 
 #if DCHECK_IS_ON()
@@ -65,7 +83,7 @@ class CPDF_BaseDocument final : public CPDF_Document, public Retainable {
   // header offset has been subtracted. Layer append-only xref offsets must use
   // the same coordinate system, not the raw stream byte size.
   FX_FILESIZE layer_append_base_offset_ = 0;
-  std::array<uint8_t, 32> raw_base_sha256_ = {};
+  mutable std::optional<std::array<uint8_t, 32>> raw_base_sha256_;
 };
 
 #endif  // CORE_FPDFAPI_PARSER_CPDF_BASE_DOCUMENT_H_

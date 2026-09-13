@@ -47,8 +47,16 @@
 #include "core/fxcrt/xml/cfx_xmltext.h"
 #include "fpdfsdk/cpdfsdk_helpers.h"
 #include "fpdfsdk/epdf_action_helpers.h"
+#include "fpdfsdk/epdf_form_helpers.h"
 
 namespace {
+
+using epdf::BuildReconciledForm;
+using epdf::CollectFieldDicts;
+using epdf::CountFormFields;
+using epdf::PageObjNumForWidget;
+using epdf::ResolveFieldDict;
+using epdf::SweepPageWidgets;
 
 struct WidgetRecord {
   uint32_t objnum = 0;
@@ -200,95 +208,6 @@ FieldValueRecord SnapshotFieldValue(RetainPtr<const CPDF_Object> object) {
   return record;
 }
 
-size_t CountFormFields(const CPDF_InteractiveForm& form) {
-  return form.CountFields(WideString());
-}
-
-// Collect the set of field dictionaries currently known to |form|. Used to
-// tell recovered fields (found only by the page sweep) apart from fields
-// reachable through /AcroForm /Fields.
-std::set<const CPDF_Dictionary*> CollectFieldDicts(
-    const CPDF_InteractiveForm& form) {
-  std::set<const CPDF_Dictionary*> dicts;
-  const size_t count = CountFormFields(form);
-  for (size_t i = 0; i < count; ++i) {
-    CPDF_FormField* field = form.GetField(i, WideString());
-    if (field) {
-      dicts.insert(field->GetFieldDict().Get());
-    }
-  }
-  return dicts;
-}
-
-// Walk every page dictionary (page-tree traversal only - no CPDF_Page, no
-// content parsing) and reconcile widget annotations that the /AcroForm
-// /Fields walk did not reach. Also records which page references each
-// widget, which the snapshot uses as the widget's placement.
-std::map<const CPDF_Dictionary*, uint32_t> SweepPageWidgets(
-    CPDF_Document* doc,
-    CPDF_InteractiveForm* form) {
-  std::map<const CPDF_Dictionary*, uint32_t> widget_pages;
-  const int page_count = doc->GetPageCount();
-  for (int i = 0; i < page_count; ++i) {
-    RetainPtr<const CPDF_Dictionary> page = doc->GetPageDictionary(i);
-    if (!page) {
-      continue;
-    }
-    RetainPtr<const CPDF_Array> annots = page->GetArrayFor("Annots");
-    if (!annots) {
-      continue;
-    }
-    for (size_t j = 0; j < annots->size(); ++j) {
-      // Resolve each annotation by object number through the document so
-      // layer promotions win over the frozen instances that references
-      // held by frozen base objects would yield.
-      RetainPtr<const CPDF_Object> element = annots->GetObjectAt(j);
-      if (!element) {
-        continue;
-      }
-      RetainPtr<const CPDF_Dictionary> annot;
-      if (const CPDF_Reference* ref = element->AsReference()) {
-        annot =
-            ToDictionary(doc->GetOrParseIndirectObject(ref->GetRefObjNum()));
-      } else {
-        annot = ToDictionary(std::move(element));
-      }
-      if (!annot || annot->GetNameFor("Subtype") != "Widget") {
-        continue;
-      }
-      widget_pages.try_emplace(annot.Get(), page->GetObjNum());
-      if (!form->GetControlByDict(annot.Get())) {
-        form->ReconcileWidget(annot);
-      }
-    }
-  }
-  return widget_pages;
-}
-
-// The reconciled view of the form: the /AcroForm tree merged by fully
-// qualified name and reconciled with the page sweep, so recovered fields
-// participate and promoted values win. This is the ONE lens both reads
-// (model snapshot, interchange export) and write transactions look through;
-// a write planned against the raw field dictionary alone would miss
-// same-FQN twin widgets that only the reconciliation knows about.
-std::unique_ptr<CPDF_InteractiveForm> BuildReconciledForm(CPDF_Document* doc) {
-  auto form = std::make_unique<CPDF_InteractiveForm>(doc);
-  SweepPageWidgets(doc, form.get());
-  return form;
-}
-
-uint32_t PageObjNumForWidget(
-    const std::map<const CPDF_Dictionary*, uint32_t>& widget_pages,
-    const CPDF_Dictionary* widget_dict) {
-  const auto it = widget_pages.find(widget_dict);
-  if (it != widget_pages.end()) {
-    return it->second;
-  }
-  // Fall back to the widget's /P entry for widgets that no swept page
-  // references (e.g. pages outside a layer's page list).
-  RetainPtr<const CPDF_Dictionary> page = widget_dict->GetDictFor("P");
-  return page ? page->GetObjNum() : 0;
-}
 
 FieldRecord SnapshotField(
     CPDF_Document* document,
@@ -391,16 +310,6 @@ struct TxnControl {
   ByteString current_as;
 };
 
-// GetOrParseIndirectObject parses on demand on plain documents (the const
-// GetIndirectObject is a map-only lookup) and is the promoted-first lookup
-// on layer documents, where it never promotes - safe for planning reads.
-RetainPtr<const CPDF_Dictionary> ResolveFieldDict(CPDF_Document* doc,
-                                                  uint32_t field_objnum) {
-  if (!doc || field_objnum == 0) {
-    return nullptr;
-  }
-  return ToDictionary(doc->GetOrParseIndirectObject(field_objnum));
-}
 
 RetainPtr<const CPDF_Dictionary> ResolveParentFieldDict(
     CPDF_Document* doc,
@@ -2720,6 +2629,9 @@ bool AuthorFamilyFromCode(int family, AuthorFamily* out) {
     case 6 /* LISTBOX */:
       *out = {pdfium::form_fields::kCh, 0, false};
       return true;
+    case 7 /* SIGNATURE */:
+      *out = {pdfium::form_fields::kSig, 0, false};
+      return true;
     default:
       return false;
   }
@@ -2987,6 +2899,11 @@ EPDFForm_CreateField(FPDF_DOCUMENT document,
     }
     parent_array->AppendNew<CPDF_Reference>(doc, node->GetObjNum());
     if (terminal) {
+      if (author.field_type == pdfium::form_fields::kSig) {
+        // ISO 32000-2 table 224: SignaturesExist once a signature field exists.
+        acro_form->SetNewFor<CPDF_Number>(
+            "SigFlags", acro_form->GetIntegerFor("SigFlags") | 1);
+      }
       return node->GetObjNum();
     }
     parent_field = node;
@@ -3015,8 +2932,8 @@ EPDFForm_AttachWidget(FPDF_DOCUMENT document,
     return false;  // must address the terminal field dictionary itself
   }
   const int family = FamilyOfFieldDict(field.Get());
-  if (family == 0 || family == 1 || family == 7) {
-    return false;  // unknown / pushbutton / signature are not authorable
+  if (family == 0 || family == 1) {
+    return false;  // unknown / pushbutton are not authorable
   }
   const bool toggle = family == 2 || family == 3;
   const ByteString state(on_state ? on_state : "");
@@ -3080,6 +2997,12 @@ EPDFForm_AttachWidget(FPDF_DOCUMENT document,
   }
   mutable_widget->SetNewFor<CPDF_Reference>(pdfium::form_fields::kParent, doc,
                                             field_objnum);
+  // A widget without /F has no Print flag: viewers show it and printers
+  // drop it. A freshly authored widget prints, as Acrobat's do (/F 4).
+  if (!mutable_widget->KeyExist("F")) {
+    mutable_widget->SetNewFor<CPDF_Number>(
+        "F", static_cast<int>(pdfium::annotation_flags::kPrint));
+  }
   RetainPtr<CPDF_Array> kids = GetMutableArrayMember(
       doc, mutable_field.Get(), pdfium::form_fields::kKids);
   if (!kids) {

@@ -3,14 +3,20 @@
 // found in the LICENSE file.
 
 #include "public/fpdf_annot.h"
+#include "public/epdf_signature.h"
 #include "public/epdf_form.h"
 #include "public/epdf_text.h"
 #include "public/fpdf_edit.h"
 
 #include <limits.h>
+#include <unistd.h>
 
 #include <algorithm>
 #include <array>
+#include <cctype>
+#include <fstream>
+#include <filesystem>
+#include <chrono>
 #include <cstdint>
 #include <initializer_list>
 #include <limits>
@@ -38,6 +44,7 @@
 #include "core/fxcrt/containers/contains.h"
 #include "core/fxcrt/fx_memcpy_wrappers.h"
 #include "core/fxcrt/fx_safe_types.h"
+#include "core/fxcrt/fx_stream.h"
 #include "core/fxcrt/fx_system.h"
 #include "core/fxcrt/span.h"
 #include "core/fxge/cfx_defaultrenderdevice.h"
@@ -6190,4 +6197,701 @@ TEST_F(FPDFAnnotEmbedderTest, GenerateFileAttachmentAppearancePerIcon) {
   // An absent /Name renders the PushPin glyph (the ISO 32000 default).
   const std::wstring default_icon = make_appearance(nullptr);
   EXPECT_EQ(pushpin, default_icon);
+}
+
+// ---------------------------------------------------------------------------
+// EmbedPDF: the delta is what changed, not what was touched.
+//
+// L1 - reads never promote: removing one annotation promotes exactly the page.
+// L2 - a save writes what changed from the base and reports whether anything
+//      reachable changed since the layer was loaded; an annotation added and
+//      removed again (its generated appearance stream left as an orphan)
+//      writes nothing.
+// ---------------------------------------------------------------------------
+
+namespace {
+
+// A base document plus a layer over it, fresh or reopened over a delta.
+struct LayerFixture {
+  std::vector<uint8_t> bytes;
+  EPDF_BASE_DOCUMENT base = nullptr;
+  FPDF_DOCUMENT layer = nullptr;
+  std::unique_ptr<MemoryFileAccess> delta_access;
+
+  ~LayerFixture() {
+    if (layer) {
+      FPDF_CloseDocument(layer);
+    }
+    if (base) {
+      EPDF_ReleaseBaseDocument(base);
+    }
+  }
+
+  bool OpenFresh(const char* file_name) {
+    std::string file_path = PathService::GetTestFilePath(file_name);
+    if (file_path.empty()) {
+      return false;
+    }
+    bytes = GetFileContents(file_path.c_str());
+    if (bytes.empty()) {
+      return false;
+    }
+    base = EPDF_LoadMemBaseDocument(bytes.data(), static_cast<int>(bytes.size()),
+                                    nullptr);
+    if (!base) {
+      return false;
+    }
+    EPDFLayerOpenStatus status;
+    layer = EPDFLayer_OpenLayer(base, nullptr, nullptr, &status);
+    return layer && status == EPDFLayerOpenStatus_kSuccess;
+  }
+
+  // Close the layer and open a new one over the same base with |delta| as
+  // the loaded delta: what a session reopening its saved layer does.
+  bool Reopen(std::vector<uint8_t> delta) {
+    if (layer) {
+      FPDF_CloseDocument(layer);
+      layer = nullptr;
+    }
+    delta_access = std::make_unique<MemoryFileAccess>(std::move(delta));
+    EPDFLayerOpenStatus status;
+    layer = EPDFLayer_OpenLayer(base, delta_access.get(), nullptr, &status);
+    return layer && status == EPDFLayerOpenStatus_kSuccess;
+  }
+};
+
+uint32_t AnnotObjNumAt(FPDF_PAGE page, int index) {
+  ScopedFPDFAnnotation annot(FPDFPage_GetAnnot(page, index));
+  return annot ? EPDFAnnot_GetObjectNumber(annot.get()) : 0;
+}
+
+struct DeltaProbe {
+  std::vector<uint8_t> bytes;
+  EPDFLayerSaveStatus status = EPDFLayerSaveStatus_kSaveFailed;
+  bool changed_since_load = true;
+};
+
+// EPDFLayer_SaveDeltaToOwnedBufferEx: the cumulative delta, or nothing when
+// nothing changed since load.
+DeltaProbe SaveDeltaEx(FPDF_DOCUMENT layer) {
+  DeltaProbe out;
+  unsigned long size = 0;
+  FPDF_BOOL changed = true;
+  void* buffer =
+      EPDFLayer_SaveDeltaToOwnedBufferEx(layer, &size, &out.status, &changed);
+  out.changed_since_load = !!changed;
+  if (buffer) {
+    const uint8_t* data = static_cast<const uint8_t*>(buffer);
+    out.bytes.assign(data, data + size);
+    EPDF_FreeBuffer(buffer);
+  }
+  return out;
+}
+
+// EPDFLayer_SaveDeltaToOwnedBuffer: the cumulative delta a persisted artifact
+// carries, always written.
+std::vector<uint8_t> SaveDeltaCumulative(FPDF_DOCUMENT layer) {
+  unsigned long size = 0;
+  EPDFLayerSaveStatus status = EPDFLayerSaveStatus_kSaveFailed;
+  void* buffer = EPDFLayer_SaveDeltaToOwnedBuffer(layer, &size, &status);
+  EXPECT_EQ(EPDFLayerSaveStatus_kSuccess, status);
+  std::vector<uint8_t> out;
+  if (buffer) {
+    const uint8_t* data = static_cast<const uint8_t*>(buffer);
+    out.assign(data, data + size);
+    EPDF_FreeBuffer(buffer);
+  }
+  return out;
+}
+
+struct StandaloneProbe {
+  std::vector<uint8_t> bytes;
+  EPDFSaveStatus status = EPDFSaveStatus_kFailed;
+};
+
+// EPDF_SaveDocumentToOwnedBufferEx with FPDF_INCREMENTAL: the base bytes
+// plus one revision, or nothing when nothing changed since load.
+StandaloneProbe SaveStandaloneEx(FPDF_DOCUMENT doc) {
+  StandaloneProbe out;
+  unsigned long size = 0;
+  void* buffer = EPDF_SaveDocumentToOwnedBufferEx(doc, FPDF_INCREMENTAL, 0,
+                                                  &size, &out.status);
+  if (buffer) {
+    const uint8_t* data = static_cast<const uint8_t*>(buffer);
+    out.bytes.assign(data, data + size);
+    EPDF_FreeBuffer(buffer);
+  }
+  return out;
+}
+
+// How many times |objnum| is written as an indirect object in |bytes|.
+int CountObjectWrites(const std::vector<uint8_t>& bytes, uint32_t objnum) {
+  const std::string text(bytes.begin(), bytes.end());
+  const std::string needle = std::to_string(objnum) + " 0 obj";
+  int count = 0;
+  size_t pos = 0;
+  while ((pos = text.find(needle, pos)) != std::string::npos) {
+    const bool digit_before = pos > 0 && isdigit(static_cast<unsigned char>(text[pos - 1]));
+    if (!digit_before) {
+      ++count;
+    }
+    pos += needle.size();
+  }
+  return count;
+}
+
+void SetAnnotString(FPDF_ANNOTATION annot, const char* key, const wchar_t* value) {
+  ScopedFPDFWideString text = GetFPDFWideString(value);
+  ASSERT_TRUE(FPDFAnnot_SetStringValue(annot, key, text.get()));
+}
+
+// What one mutation of a page's /Annots promotes: the page, plus the array
+// itself when the fixture stores it as an indirect object (this one does).
+unsigned long PromotedByAnnotsMutation(FPDF_PAGE page) {
+  RetainPtr<const CPDF_Object> annots =
+      CPDFPageFromFPDFPage(page)->GetDict()->GetObjectFor("Annots");
+  return annots && annots->IsReference() ? 2ul : 1ul;
+}
+
+constexpr char kTwoAnnots[] = "annotation_highlight_square_with_ap.pdf";
+constexpr char kProbeKey[] = "EPDFTwinProbe";
+
+}  // namespace
+
+TEST_F(FPDFAnnotEmbedderTest, LayerRemoveAnnotByObjectNumberPromotesOnlyThePage) {
+  LayerFixture doc;
+  ASSERT_TRUE(doc.OpenFresh(kTwoAnnots));
+  ScopedFPDFPage page(FPDF_LoadPage(doc.layer, 0));
+  ASSERT_TRUE(page);
+  const int initial = FPDFPage_GetAnnotCount(page.get());
+  ASSERT_GE(initial, 2);
+  const uint32_t page_num = EPDFPage_GetObjectNumber(page.get());
+  const uint32_t first = AnnotObjNumAt(page.get(), 0);
+  const uint32_t second = AnnotObjNumAt(page.get(), 1);
+  ASSERT_NE(0u, first);
+  ASSERT_NE(0u, second);
+  // Loading the page and listing its annotations are reads.
+  EXPECT_EQ(0ul, EPDFLayer_GetPromotedObjectCount(doc.layer));
+  const unsigned long expected = PromotedByAnnotsMutation(page.get());
+
+  ASSERT_TRUE(EPDFPage_RemoveAnnotByObjectNumber(page.get(), second));
+
+  EXPECT_EQ(initial - 1, FPDFPage_GetAnnotCount(page.get()));
+  EXPECT_EQ(first, AnnotObjNumAt(page.get(), 0));
+  // Exactly the page (and its /Annots array): it shrank. The siblings were
+  // read, not touched; the removed object was deleted, not edited.
+  EXPECT_EQ(expected, EPDFLayer_GetPromotedObjectCount(doc.layer));
+  EXPECT_TRUE(EPDFLayer_IsObjectPromoted(doc.layer, page_num));
+  EXPECT_FALSE(EPDFLayer_IsObjectPromoted(doc.layer, first));
+  EXPECT_FALSE(EPDFLayer_IsObjectPromoted(doc.layer, second));
+
+  // What really changed is written, and only that. When the fixture keeps
+  // /Annots as an indirect array, the array is what shrank: the page was
+  // touched (promoted) but still equals its base twin and is elided.
+  RetainPtr<const CPDF_Object> annots_entry =
+      CPDFPageFromFPDFPage(page.get())->GetDict()->GetObjectFor("Annots");
+  ASSERT_TRUE(annots_entry);
+  DeltaProbe delta = SaveDeltaEx(doc.layer);
+  EXPECT_EQ(EPDFLayerSaveStatus_kSuccess, delta.status);
+  EXPECT_TRUE(delta.changed_since_load);
+  if (annots_entry->IsReference()) {
+    EXPECT_EQ(1, CountObjectWrites(delta.bytes,
+                                   annots_entry->AsReference()->GetRefObjNum()));
+    EXPECT_EQ(0, CountObjectWrites(delta.bytes, page_num));
+  } else {
+    EXPECT_EQ(1, CountObjectWrites(delta.bytes, page_num));
+  }
+  EXPECT_EQ(0, CountObjectWrites(delta.bytes, first));
+  EXPECT_EQ(0, CountObjectWrites(delta.bytes, second));
+}
+
+TEST_F(FPDFAnnotEmbedderTest, LayerRemoveAnnotByNamePromotesOnlyThePage) {
+  LayerFixture doc;
+  ASSERT_TRUE(doc.OpenFresh(kTwoAnnots));
+  ScopedFPDFPage page(FPDF_LoadPage(doc.layer, 0));
+  ASSERT_TRUE(page);
+  const uint32_t page_num = EPDFPage_GetObjectNumber(page.get());
+
+  // The fixture carries one /NM; find it with reads.
+  int named_index = -1;
+  std::wstring name;
+  for (int i = 0; i < FPDFPage_GetAnnotCount(page.get()); ++i) {
+    ScopedFPDFAnnotation annot(FPDFPage_GetAnnot(page.get(), i));
+    ASSERT_TRUE(annot);
+    if (!FPDFAnnot_HasKey(annot.get(), "NM")) {
+      continue;
+    }
+    const unsigned long length =
+        FPDFAnnot_GetStringValue(annot.get(), "NM", nullptr, 0);
+    std::vector<FPDF_WCHAR> buffer(length / sizeof(FPDF_WCHAR));
+    FPDFAnnot_GetStringValue(annot.get(), "NM", buffer.data(), length);
+    name = GetPlatformWString(buffer.data());
+    named_index = i;
+    break;
+  }
+  ASSERT_GE(named_index, 0);
+  ASSERT_FALSE(name.empty());
+  const uint32_t named = AnnotObjNumAt(page.get(), named_index);
+  const uint32_t other = AnnotObjNumAt(page.get(), named_index == 0 ? 1 : 0);
+  const int initial = FPDFPage_GetAnnotCount(page.get());
+  EXPECT_EQ(0ul, EPDFLayer_GetPromotedObjectCount(doc.layer));
+  const unsigned long expected = PromotedByAnnotsMutation(page.get());
+
+  ScopedFPDFWideString nm = GetFPDFWideString(name.c_str());
+  ASSERT_TRUE(EPDFPage_RemoveAnnotByName(page.get(), nm.get()));
+
+  EXPECT_EQ(initial - 1, FPDFPage_GetAnnotCount(page.get()));
+  EXPECT_EQ(expected, EPDFLayer_GetPromotedObjectCount(doc.layer));
+  EXPECT_TRUE(EPDFLayer_IsObjectPromoted(doc.layer, page_num));
+  EXPECT_FALSE(EPDFLayer_IsObjectPromoted(doc.layer, named));
+  EXPECT_FALSE(EPDFLayer_IsObjectPromoted(doc.layer, other));
+}
+
+TEST_F(FPDFAnnotEmbedderTest, LayerRemoveAnnotByIndexPromotesOnlyThePage) {
+  LayerFixture doc;
+  ASSERT_TRUE(doc.OpenFresh(kTwoAnnots));
+  ScopedFPDFPage page(FPDF_LoadPage(doc.layer, 0));
+  ASSERT_TRUE(page);
+  const uint32_t page_num = EPDFPage_GetObjectNumber(page.get());
+  const uint32_t first = AnnotObjNumAt(page.get(), 0);
+  const uint32_t second = AnnotObjNumAt(page.get(), 1);
+  const int initial = FPDFPage_GetAnnotCount(page.get());
+  const unsigned long expected = PromotedByAnnotsMutation(page.get());
+
+  ASSERT_TRUE(EPDFPage_RemoveAnnot(page.get(), 1));
+
+  EXPECT_EQ(initial - 1, FPDFPage_GetAnnotCount(page.get()));
+  EXPECT_EQ(expected, EPDFLayer_GetPromotedObjectCount(doc.layer));
+  EXPECT_TRUE(EPDFLayer_IsObjectPromoted(doc.layer, page_num));
+  EXPECT_FALSE(EPDFLayer_IsObjectPromoted(doc.layer, first));
+  EXPECT_FALSE(EPDFLayer_IsObjectPromoted(doc.layer, second));
+}
+
+TEST_F(FPDFAnnotEmbedderTest, LayerRemoveAnnotRawPromotesOnlyThePage) {
+  LayerFixture doc;
+  ASSERT_TRUE(doc.OpenFresh(kTwoAnnots));
+  uint32_t page_num = 0;
+  uint32_t first = 0;
+  uint32_t second = 0;
+  int initial = 0;
+  unsigned long expected = 0;
+  {
+    ScopedFPDFPage page(FPDF_LoadPage(doc.layer, 0));
+    ASSERT_TRUE(page);
+    page_num = EPDFPage_GetObjectNumber(page.get());
+    first = AnnotObjNumAt(page.get(), 0);
+    second = AnnotObjNumAt(page.get(), 1);
+    initial = FPDFPage_GetAnnotCount(page.get());
+    expected = PromotedByAnnotsMutation(page.get());
+  }
+  EXPECT_EQ(0ul, EPDFLayer_GetPromotedObjectCount(doc.layer));
+
+  ASSERT_TRUE(EPDFPage_RemoveAnnotRaw(doc.layer, 0, 1));
+
+  EXPECT_EQ(initial - 1, EPDFPage_GetAnnotCountRaw(doc.layer, 0));
+  EXPECT_EQ(expected, EPDFLayer_GetPromotedObjectCount(doc.layer));
+  EXPECT_TRUE(EPDFLayer_IsObjectPromoted(doc.layer, page_num));
+  EXPECT_FALSE(EPDFLayer_IsObjectPromoted(doc.layer, first));
+  EXPECT_FALSE(EPDFLayer_IsObjectPromoted(doc.layer, second));
+}
+
+TEST_F(FPDFAnnotEmbedderTest, LayerMoveAnnotsPromotesOnlyThePageAndMoveBackIsUnchanged) {
+  LayerFixture doc;
+  ASSERT_TRUE(doc.OpenFresh(kTwoAnnots));
+  ScopedFPDFPage page(FPDF_LoadPage(doc.layer, 0));
+  ASSERT_TRUE(page);
+  const uint32_t page_num = EPDFPage_GetObjectNumber(page.get());
+  const uint32_t first = AnnotObjNumAt(page.get(), 0);
+  const uint32_t second = AnnotObjNumAt(page.get(), 1);
+
+  const unsigned long expected = PromotedByAnnotsMutation(page.get());
+
+  const int from[1] = {1};
+  ASSERT_TRUE(EPDFPage_MoveAnnots(page.get(), from, 1, 0));
+  EXPECT_EQ(second, AnnotObjNumAt(page.get(), 0));
+  EXPECT_EQ(expected, EPDFLayer_GetPromotedObjectCount(doc.layer));
+  EXPECT_TRUE(EPDFLayer_IsObjectPromoted(doc.layer, page_num));
+  EXPECT_FALSE(EPDFLayer_IsObjectPromoted(doc.layer, first));
+  EXPECT_FALSE(EPDFLayer_IsObjectPromoted(doc.layer, second));
+  EXPECT_TRUE(SaveDeltaEx(doc.layer).changed_since_load);
+
+  // Move it back: the page is still promoted (touched) but equals its twin.
+  ASSERT_TRUE(EPDFPage_MoveAnnots(page.get(), from, 1, 0));
+  EXPECT_EQ(first, AnnotObjNumAt(page.get(), 0));
+  EXPECT_EQ(expected, EPDFLayer_GetPromotedObjectCount(doc.layer));
+  DeltaProbe delta = SaveDeltaEx(doc.layer);
+  EXPECT_EQ(EPDFLayerSaveStatus_kSuccess, delta.status);
+  EXPECT_FALSE(delta.changed_since_load);
+  EXPECT_TRUE(delta.bytes.empty());
+}
+
+// The report's flow. The annotation is created the way the engine creates
+// it, with a generated appearance: an indirect /AP stream that removal leaves
+// behind as an orphan. Promoted counts it; the save pass reaches neither
+// difference and writes nothing.
+TEST_F(FPDFAnnotEmbedderTest, LayerAddThenRemoveIsUnchangedSinceLoad) {
+  LayerFixture doc;
+  ASSERT_TRUE(doc.OpenFresh(kTwoAnnots));
+  ScopedFPDFPage page(FPDF_LoadPage(doc.layer, 0));
+  ASSERT_TRUE(page);
+  const uint32_t page_num = EPDFPage_GetObjectNumber(page.get());
+  const int initial = FPDFPage_GetAnnotCount(page.get());
+
+  uint32_t added = 0;
+  {
+    ScopedFPDFAnnotation annot(EPDFPage_CreateAnnot(page.get(), FPDF_ANNOT_SQUARE));
+    ASSERT_TRUE(annot);
+    const FS_RECTF rect{50.0f, 50.0f, 150.0f, 150.0f};
+    ASSERT_TRUE(FPDFAnnot_SetRect(annot.get(), &rect));
+    ASSERT_TRUE(FPDFAnnot_SetColor(annot.get(), FPDFANNOT_COLORTYPE_Color, 255, 0, 0, 255));
+    ASSERT_TRUE(EPDFAnnot_GenerateAppearance(annot.get()));
+    ASSERT_TRUE(FPDFAnnot_HasKey(annot.get(), "AP"));
+    added = EPDFAnnot_GetObjectNumber(annot.get());
+  }
+  ASSERT_NE(0u, added);
+  EXPECT_EQ(initial + 1, FPDFPage_GetAnnotCount(page.get()));
+  // The page (and its /Annots array), the annotation, its appearance stream.
+  const unsigned long touched = PromotedByAnnotsMutation(page.get()) + 2;
+  EXPECT_EQ(touched, EPDFLayer_GetPromotedObjectCount(doc.layer));
+  EXPECT_TRUE(SaveDeltaEx(doc.layer).changed_since_load);
+
+  ASSERT_TRUE(EPDFPage_RemoveAnnotByObjectNumber(page.get(), added));
+
+  EXPECT_EQ(initial, FPDFPage_GetAnnotCount(page.get()));
+  // The page (touched) and the orphaned appearance stream remain promoted;
+  // the annotation dictionary is gone.
+  EXPECT_EQ(touched - 1, EPDFLayer_GetPromotedObjectCount(doc.layer));
+  EXPECT_TRUE(EPDFLayer_IsObjectPromoted(doc.layer, page_num));
+  EXPECT_FALSE(EPDFLayer_IsObjectPromoted(doc.layer, added));
+
+  DeltaProbe delta = SaveDeltaEx(doc.layer);
+  EXPECT_EQ(EPDFLayerSaveStatus_kSuccess, delta.status);
+  EXPECT_FALSE(delta.changed_since_load);
+  EXPECT_TRUE(delta.bytes.empty());
+
+  StandaloneProbe standalone = SaveStandaloneEx(doc.layer);
+  EXPECT_EQ(EPDFSaveStatus_kUnchangedSinceLoad, standalone.status);
+  EXPECT_TRUE(standalone.bytes.empty());
+
+  // The cumulative delta an artifact persists is the same nothing: the
+  // orphan is unreachable and the page equals its base twin.
+  EXPECT_TRUE(SaveDeltaCumulative(doc.layer).empty());
+}
+
+// A page that had no /Annots gets none back: the reverse of the add that
+// created the array is not an empty array.
+TEST_F(FPDFAnnotEmbedderTest, LayerAddThenRemoveOnPageWithoutAnnotsRestoresShape) {
+  LayerFixture doc;
+  ASSERT_TRUE(doc.OpenFresh("hello_world.pdf"));
+  ScopedFPDFPage page(FPDF_LoadPage(doc.layer, 0));
+  ASSERT_TRUE(page);
+  ASSERT_EQ(0, FPDFPage_GetAnnotCount(page.get()));
+  ASSERT_FALSE(CPDFPageFromFPDFPage(page.get())->GetDict()->KeyExist("Annots"));
+
+  uint32_t added = 0;
+  {
+    ScopedFPDFAnnotation annot(EPDFPage_CreateAnnot(page.get(), FPDF_ANNOT_SQUARE));
+    ASSERT_TRUE(annot);
+    const FS_RECTF rect{50.0f, 50.0f, 150.0f, 150.0f};
+    ASSERT_TRUE(FPDFAnnot_SetRect(annot.get(), &rect));
+    ASSERT_TRUE(EPDFAnnot_GenerateAppearance(annot.get()));
+    added = EPDFAnnot_GetObjectNumber(annot.get());
+  }
+  ASSERT_TRUE(EPDFPage_RemoveAnnotByObjectNumber(page.get(), added));
+
+  EXPECT_EQ(0, FPDFPage_GetAnnotCount(page.get()));
+  EXPECT_FALSE(CPDFPageFromFPDFPage(page.get())->GetDict()->KeyExist("Annots"));
+  DeltaProbe delta = SaveDeltaEx(doc.layer);
+  EXPECT_EQ(EPDFLayerSaveStatus_kSuccess, delta.status);
+  EXPECT_FALSE(delta.changed_since_load);
+  EXPECT_TRUE(delta.bytes.empty());
+}
+
+// A base annotation edited and restored: touched, not changed. A real edit
+// writes the object, and only it.
+TEST_F(FPDFAnnotEmbedderTest, LayerEditAndRestoreIsUnchangedSinceLoad) {
+  LayerFixture doc;
+  ASSERT_TRUE(doc.OpenFresh(kTwoAnnots));
+  ScopedFPDFPage page(FPDF_LoadPage(doc.layer, 0));
+  ASSERT_TRUE(page);
+  const uint32_t page_num = EPDFPage_GetObjectNumber(page.get());
+  const uint32_t first = AnnotObjNumAt(page.get(), 0);
+  ScopedFPDFAnnotation annot(FPDFPage_GetAnnot(page.get(), 0));
+  ASSERT_TRUE(annot);
+  ASSERT_FALSE(FPDFAnnot_HasKey(annot.get(), kProbeKey));
+
+  SetAnnotString(annot.get(), kProbeKey, L"changed");
+  EXPECT_EQ(1ul, EPDFLayer_GetPromotedObjectCount(doc.layer));
+  EXPECT_TRUE(EPDFLayer_IsObjectPromoted(doc.layer, first));
+  EXPECT_FALSE(EPDFLayer_IsObjectPromoted(doc.layer, page_num));
+  DeltaProbe edited = SaveDeltaEx(doc.layer);
+  EXPECT_TRUE(edited.changed_since_load);
+  EXPECT_EQ(1, CountObjectWrites(edited.bytes, first));
+  EXPECT_EQ(0, CountObjectWrites(edited.bytes, page_num));
+
+  ASSERT_TRUE(EPDFAnnot_RemoveKey(annot.get(), kProbeKey));
+  EXPECT_EQ(1ul, EPDFLayer_GetPromotedObjectCount(doc.layer));  // still touched
+  DeltaProbe restored = SaveDeltaEx(doc.layer);
+  EXPECT_EQ(EPDFLayerSaveStatus_kSuccess, restored.status);
+  EXPECT_FALSE(restored.changed_since_load);
+  EXPECT_TRUE(restored.bytes.empty());
+}
+
+// A reopened layer: its saved edits live in the overlay and differ from the
+// base, but not from the loaded document. The two twins disagree exactly
+// where a session must not confuse them.
+TEST_F(FPDFAnnotEmbedderTest, LayerReopenedTwinsDisagree) {
+  LayerFixture doc;
+  ASSERT_TRUE(doc.OpenFresh(kTwoAnnots));
+  uint32_t first = 0;
+  uint32_t second = 0;
+  std::vector<uint8_t> saved;
+  {
+    ScopedFPDFPage page(FPDF_LoadPage(doc.layer, 0));
+    ASSERT_TRUE(page);
+    first = AnnotObjNumAt(page.get(), 0);
+    second = AnnotObjNumAt(page.get(), 1);
+    ScopedFPDFAnnotation annot(FPDFPage_GetAnnot(page.get(), 0));
+    ASSERT_TRUE(annot);
+    SetAnnotString(annot.get(), kProbeKey, L"twenty");
+    saved = SaveDeltaCumulative(doc.layer);
+    ASSERT_EQ(1, CountObjectWrites(saved, first));
+  }
+
+  ASSERT_TRUE(doc.Reopen(saved));
+  EXPECT_EQ(1ul, EPDFLayer_GetPromotedObjectCount(doc.layer));  // ingested
+  EXPECT_TRUE(EPDFLayer_IsObjectPromoted(doc.layer, first));
+  {
+    // Untouched: nothing changed since load, even though the overlay object
+    // differs from the base.
+    DeltaProbe untouched = SaveDeltaEx(doc.layer);
+    EXPECT_EQ(EPDFLayerSaveStatus_kSuccess, untouched.status);
+    EXPECT_FALSE(untouched.changed_since_load);
+    EXPECT_TRUE(untouched.bytes.empty());
+    // The persisted, cumulative delta still carries the saved edit.
+    EXPECT_EQ(1, CountObjectWrites(SaveDeltaCumulative(doc.layer), first));
+    EXPECT_EQ(EPDFSaveStatus_kUnchangedSinceLoad, SaveStandaloneEx(doc.layer).status);
+  }
+
+  ScopedFPDFPage page(FPDF_LoadPage(doc.layer, 0));
+  ASSERT_TRUE(page);
+  ScopedFPDFAnnotation annot(FPDFPage_GetAnnot(page.get(), 0));
+  ASSERT_TRUE(annot);
+
+  // Set to the loaded value, and set away then back: unchanged since load.
+  SetAnnotString(annot.get(), kProbeKey, L"twenty");
+  EXPECT_FALSE(SaveDeltaEx(doc.layer).changed_since_load);
+  SetAnnotString(annot.get(), kProbeKey, L"thirty");
+  EXPECT_TRUE(SaveDeltaEx(doc.layer).changed_since_load);
+  SetAnnotString(annot.get(), kProbeKey, L"twenty");
+  EXPECT_FALSE(SaveDeltaEx(doc.layer).changed_since_load);
+
+  // Revert to the BASE value: changed since load (the loaded bytes say
+  // twenty), yet nothing to write (the layer equals its base).
+  ASSERT_TRUE(EPDFAnnot_RemoveKey(annot.get(), kProbeKey));
+  DeltaProbe reverted = SaveDeltaEx(doc.layer);
+  EXPECT_EQ(EPDFLayerSaveStatus_kSuccess, reverted.status);
+  EXPECT_TRUE(reverted.changed_since_load);
+  EXPECT_TRUE(reverted.bytes.empty());
+  EXPECT_TRUE(SaveDeltaCumulative(doc.layer).empty());
+  StandaloneProbe standalone = SaveStandaloneEx(doc.layer);
+  EXPECT_EQ(EPDFSaveStatus_kWritten, standalone.status);
+  EXPECT_EQ(doc.bytes, standalone.bytes);  // the base, and no revision after it
+
+  // An edit elsewhere still writes the ingested object: the cumulative delta
+  // is judged against the base, never against the loaded document.
+  SetAnnotString(annot.get(), kProbeKey, L"twenty");
+  ScopedFPDFAnnotation other(FPDFPage_GetAnnot(page.get(), 1));
+  ASSERT_TRUE(other);
+  SetAnnotString(other.get(), kProbeKey, L"also");
+  DeltaProbe both = SaveDeltaEx(doc.layer);
+  EXPECT_TRUE(both.changed_since_load);
+  EXPECT_EQ(1, CountObjectWrites(both.bytes, first));
+  EXPECT_EQ(1, CountObjectWrites(both.bytes, second));
+}
+
+// ---------------------------------------------------------------------------
+// EmbedPDF: a reopened layer, and the file-backed server paths.
+// ---------------------------------------------------------------------------
+
+namespace {
+
+std::string WriteTempFile(const std::string& stem, const std::vector<uint8_t>& bytes) {
+  const std::filesystem::path path =
+      std::filesystem::temp_directory_path() /
+      (stem + "-" + std::to_string(::getpid()) + "-" +
+       std::to_string(std::chrono::steady_clock::now().time_since_epoch().count()));
+  std::ofstream out(path, std::ios::binary);
+  out.write(reinterpret_cast<const char*>(bytes.data()),
+            static_cast<std::streamsize>(bytes.size()));
+  out.close();
+  return path.string();
+}
+
+}  // namespace
+
+// The reviewer's sequence: sign, add, persist, reopen (eviction, restart,
+// another replica), remove. The base page had no /Annots; the persisted page
+// had one. Removing it restores the BASE shape, so the page is elided and the
+// layer equals its base again - changed since load, nothing to write.
+TEST_F(FPDFAnnotEmbedderTest, LayerReopenedRemoveOfPersistedAnnotationRestoresBaseShape) {
+  LayerFixture doc;
+  ASSERT_TRUE(doc.OpenFresh("hello_world.pdf"));
+  std::vector<uint8_t> saved;
+  uint32_t added = 0;
+  {
+    ScopedFPDFPage page(FPDF_LoadPage(doc.layer, 0));
+    ASSERT_TRUE(page);
+    ASSERT_FALSE(CPDFPageFromFPDFPage(page.get())->GetDict()->KeyExist("Annots"));
+    ScopedFPDFAnnotation annot(EPDFPage_CreateAnnot(page.get(), FPDF_ANNOT_SQUARE));
+    ASSERT_TRUE(annot);
+    const FS_RECTF rect{50.0f, 50.0f, 150.0f, 150.0f};
+    ASSERT_TRUE(FPDFAnnot_SetRect(annot.get(), &rect));
+    ASSERT_TRUE(EPDFAnnot_GenerateAppearance(annot.get()));
+    added = EPDFAnnot_GetObjectNumber(annot.get());
+    saved = SaveDeltaCumulative(doc.layer);
+    ASSERT_FALSE(saved.empty());
+  }
+  ASSERT_TRUE(doc.Reopen(saved));
+  ScopedFPDFPage page(FPDF_LoadPage(doc.layer, 0));
+  ASSERT_TRUE(page);
+  ASSERT_EQ(1, FPDFPage_GetAnnotCount(page.get()));
+
+  ASSERT_TRUE(EPDFPage_RemoveAnnotByObjectNumber(page.get(), added));
+
+  EXPECT_EQ(0, FPDFPage_GetAnnotCount(page.get()));
+  EXPECT_FALSE(CPDFPageFromFPDFPage(page.get())->GetDict()->KeyExist("Annots"));
+  DeltaProbe delta = SaveDeltaEx(doc.layer);
+  EXPECT_EQ(EPDFLayerSaveStatus_kSuccess, delta.status);
+  EXPECT_TRUE(delta.changed_since_load);
+  EXPECT_TRUE(delta.bytes.empty());
+  StandaloneProbe standalone = SaveStandaloneEx(doc.layer);
+  EXPECT_EQ(EPDFSaveStatus_kWritten, standalone.status);
+  EXPECT_EQ(doc.bytes, standalone.bytes);
+}
+
+// The FPDF_FILEWRITE variants report the same decision as the buffer ones,
+// and write nothing when nothing changed since load.
+TEST_F(FPDFAnnotEmbedderTest, LayerFileWriteVariantsReportChange) {
+  LayerFixture doc;
+  ASSERT_TRUE(doc.OpenFresh(kTwoAnnots));
+  ScopedFPDFPage page(FPDF_LoadPage(doc.layer, 0));
+  ASSERT_TRUE(page);
+  ScopedFPDFAnnotation annot(FPDFPage_GetAnnot(page.get(), 0));
+  ASSERT_TRUE(annot);
+
+  SetAnnotString(annot.get(), kProbeKey, L"edited");
+  ASSERT_TRUE(EPDFAnnot_RemoveKey(annot.get(), kProbeKey));  // touched, not changed
+
+  EPDFLayerSaveStatus status = EPDFLayerSaveStatus_kSaveFailed;
+  FPDF_BOOL changed = true;
+  ClearString();
+  ASSERT_TRUE(EPDFLayer_SaveDeltaEx(doc.layer, this, &status, &changed));
+  EXPECT_EQ(EPDFLayerSaveStatus_kSuccess, status);
+  EXPECT_FALSE(changed);
+  EXPECT_TRUE(GetString().empty());
+  ClearString();
+  ASSERT_TRUE(EPDFLayer_SaveLayerArtifactEx(doc.layer, this, &status, &changed));
+  EXPECT_EQ(EPDFLayerSaveStatus_kSuccess, status);
+  EXPECT_FALSE(changed);
+  EXPECT_TRUE(GetString().empty());
+
+  SetAnnotString(annot.get(), kProbeKey, L"edited");  // a real change
+  ClearString();
+  ASSERT_TRUE(EPDFLayer_SaveLayerArtifactEx(doc.layer, this, &status, &changed));
+  EXPECT_EQ(EPDFLayerSaveStatus_kSuccess, status);
+  EXPECT_TRUE(changed);
+  EXPECT_FALSE(GetString().empty());
+  // The artifact written by the file variant has the shape the buffer
+  // variant writes: same size, same header up to the base identity (each
+  // save mints a fresh trailer /ID, so the delta hash and bytes differ).
+  const std::string from_file = GetString();
+  unsigned long size = 0;
+  EPDFLayerSaveStatus buffer_status = EPDFLayerSaveStatus_kSaveFailed;
+  void* buffer = EPDFLayer_SaveLayerArtifactToOwnedBuffer(doc.layer, &size, &buffer_status);
+  ASSERT_TRUE(buffer);
+  const std::string from_buffer(static_cast<const char*>(buffer), size);
+  EPDF_FreeBuffer(buffer);
+  EXPECT_EQ(from_buffer.size(), from_file.size());
+  constexpr size_t kUpToBaseSha = 8 + 4 + 4 + 8 + 8 + 8 + 32;
+  EXPECT_EQ(from_buffer.substr(0, kUpToBaseSha), from_file.substr(0, kUpToBaseSha));
+  EXPECT_NE(std::string::npos, from_file.find("EPDFTwinProbe(edited)"));
+}
+
+// An artifact opened from a path is read in place: the streams the delta
+// carries are views into the file, not copies, in the overlay and in the twin.
+TEST_F(FPDFAnnotEmbedderTest, LayerArtifactOpensFromPathWithoutCopyingStreams) {
+  LayerFixture doc;
+  ASSERT_TRUE(doc.OpenFresh("hello_world.pdf"));
+  uint32_t added = 0;
+  std::string artifact;
+  {
+    ScopedFPDFPage page(FPDF_LoadPage(doc.layer, 0));
+    ScopedFPDFAnnotation annot(EPDFPage_CreateAnnot(page.get(), FPDF_ANNOT_SQUARE));
+    const FS_RECTF rect{50.0f, 50.0f, 150.0f, 150.0f};
+    ASSERT_TRUE(FPDFAnnot_SetRect(annot.get(), &rect));
+    ASSERT_TRUE(EPDFAnnot_GenerateAppearance(annot.get()));
+    added = EPDFAnnot_GetObjectNumber(annot.get());
+    EPDFLayerSaveStatus status = EPDFLayerSaveStatus_kSaveFailed;
+    ClearString();
+    ASSERT_TRUE(EPDFLayer_SaveLayerArtifact(doc.layer, this, &status));
+    artifact = GetString();
+    ASSERT_FALSE(artifact.empty());
+  }
+  const std::string path =
+      WriteTempFile("epdf-artifact", std::vector<uint8_t>(artifact.begin(), artifact.end()));
+  FPDF_CloseDocument(doc.layer);
+  EPDFLayerOpenStatus status = EPDFLayerOpenStatus_kOpenFailed;
+  doc.layer = EPDFLayer_OpenLayerArtifactFromPath(doc.base, path.c_str(), nullptr, &status);
+  ASSERT_TRUE(doc.layer);
+  EXPECT_EQ(EPDFLayerOpenStatus_kSuccess, status);
+
+  ScopedFPDFPage page(FPDF_LoadPage(doc.layer, 0));
+  ASSERT_TRUE(page);
+  EXPECT_EQ(1, FPDFPage_GetAnnotCount(page.get()));
+  EXPECT_EQ(added, AnnotObjNumAt(page.get(), 0));
+  EXPECT_TRUE(EPDFLayer_IsObjectPromoted(doc.layer, added));
+
+  // The appearance stream the delta carried: a view into the artifact file.
+  CPDF_Document* layer_doc = CPDFDocumentFromFPDFDocument(doc.layer);
+  RetainPtr<const CPDF_Dictionary> annot_dict =
+      ToDictionary(layer_doc->GetIndirectObject(added));
+  ASSERT_TRUE(annot_dict);
+  RetainPtr<const CPDF_Stream> ap =
+      annot_dict->GetDictFor("AP")->GetStreamFor("N");
+  ASSERT_TRUE(ap);
+  EXPECT_TRUE(ap->IsFileBased());
+  EXPECT_TRUE(ap->BackingView());
+
+  // Nothing changed since load: the reporting saves write nothing.
+  DeltaProbe delta = SaveDeltaEx(doc.layer);
+  EXPECT_EQ(EPDFLayerSaveStatus_kSuccess, delta.status);
+  EXPECT_FALSE(delta.changed_since_load);
+  EXPECT_TRUE(delta.bytes.empty());
+  std::filesystem::remove(path);
+}
+
+// base ⊕ delta composed from a file on disk: what a working-copy analysis
+// opens on the server without buffering the delta.
+TEST_F(FPDFAnnotEmbedderTest, BaseOverlayOpensFromPath) {
+  LayerFixture doc;
+  ASSERT_TRUE(doc.OpenFresh("hello_world.pdf"));
+  {
+    ScopedFPDFPage page(FPDF_LoadPage(doc.layer, 0));
+    ScopedFPDFAnnotation annot(EPDFPage_CreateAnnot(page.get(), FPDF_ANNOT_SQUARE));
+    const FS_RECTF rect{50.0f, 50.0f, 150.0f, 150.0f};
+    ASSERT_TRUE(FPDFAnnot_SetRect(annot.get(), &rect));
+  }
+  const std::vector<uint8_t> delta = SaveDeltaCumulative(doc.layer);
+  ASSERT_FALSE(delta.empty());
+  const std::string path = WriteTempFile("epdf-delta", delta);
+  FPDF_DOCUMENT overlay = EPDFDoc_OpenBaseOverlayFromPath(doc.layer, path.c_str());
+  ASSERT_TRUE(overlay);
+  EXPECT_EQ(1, FPDF_GetPageCount(overlay));
+  ScopedFPDFPage page(FPDF_LoadPage(overlay, 0));
+  ASSERT_TRUE(page);
+  EXPECT_EQ(1, FPDFPage_GetAnnotCount(page.get()));
+  FPDF_CloseDocument(overlay);
+  EXPECT_FALSE(EPDFDoc_OpenBaseOverlayFromPath(doc.layer, "/nonexistent/epdf-delta"));
+  std::filesystem::remove(path);
 }

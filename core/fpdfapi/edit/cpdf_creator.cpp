@@ -21,6 +21,8 @@
 #include "core/fpdfapi/parser/cpdf_document.h"
 #include "core/fpdfapi/parser/cpdf_encryptor.h"
 #include "core/fpdfapi/parser/cpdf_flateencoder.h"
+#include "core/fpdfapi/parser/cpdf_layer_document.h"
+#include "core/fpdfapi/parser/cpdf_object_equality.h"
 #include "core/fpdfapi/parser/cpdf_number.h"
 #include "core/fpdfapi/parser/cpdf_parser.h"
 #include "core/fpdfapi/parser/cpdf_security_handler.h"
@@ -47,7 +49,8 @@ constexpr Mask<CPDF_Creator::CreateFlags> kAllValidFlags{
     CPDF_Creator::CreateFlags::kNoOriginal,
     CPDF_Creator::CreateFlags::kRemoveSecurity,
     CPDF_Creator::CreateFlags::kSubsetNewFonts,
-    CPDF_Creator::CreateFlags::kIncrementalAppendOnly};
+    CPDF_Creator::CreateFlags::kIncrementalAppendOnly,
+    CPDF_Creator::CreateFlags::kSkipIfUnchangedSinceLoad};
 constexpr Mask<CPDF_Creator::CreateFlags> kConflictingFlags{
     CPDF_Creator::CreateFlags::kIncremental,
     CPDF_Creator::CreateFlags::kNoOriginal};
@@ -293,6 +296,10 @@ void CPDF_Creator::InitNewObjNumOffsets() {
         !parser_->IsObjectFree(objnum)) {
       continue;
     }
+    // EmbedPDF L2: touched, not changed - the base's copy stands.
+    if (pdfium::Contains(elided_, objnum)) {
+      continue;
+    }
     new_obj_num_array_.insert(
         std::ranges::lower_bound(new_obj_num_array_, objnum), objnum);
   }
@@ -407,6 +414,15 @@ CPDF_Creator::Stage CPDF_Creator::WriteDoc_Stage3() {
 
   uint32_t dwLastObjNum = last_obj_num_;
   if (stage_ == Stage::kInitWriteXRefs80) {
+    if (is_incremental_ && skip_empty_revision_ &&
+        new_obj_num_array_.empty()) {
+      // EmbedPDF: an incremental save of a layer with nothing to write
+      // appends no revision at all - not even an empty cross-reference
+      // section. Standalone output is the base bytes copied through; an
+      // append-only delta is empty (the layer equals its base).
+      stage_ = Stage::kComplete100;
+      return stage_;
+    }
     xref_start_ = archive_->CurrentOffset();
     if (!is_incremental_ || is_incremental_append_only_ ||
         !parser_->IsXRefStream()) {
@@ -615,7 +631,10 @@ CPDF_Creator::Stage CPDF_Creator::WriteDoc_Stage4() {
       return Stage::kInvalid;
     }
   } else {
-    if (!archive_->WriteString("/W[0 4 1]/Index[")) {
+    // EmbedPDF: a cross-reference stream is a stream object with a /Type,
+    // closed by endobj like any other (ISO 32000-2 7.5.8); readers that
+    // walk objects (the trailer-end scanner, pyHanko) stop at a missing one.
+    if (!archive_->WriteString("/Type/XRef/W[0 4 1]/Index[")) {
       return Stage::kInvalid;
     }
     if (is_incremental_ && parser_ && parser_->GetLastXRefOffset() == 0) {
@@ -669,7 +688,7 @@ CPDF_Creator::Stage CPDF_Creator::WriteDoc_Stage4() {
         }
       }
     }
-    if (!archive_->WriteString("\r\nendstream")) {
+    if (!archive_->WriteString("\r\nendstream\r\nendobj")) {
       return Stage::kInvalid;
     }
   }
@@ -720,10 +739,71 @@ bool CPDF_Creator::Create(Mask<CreateFlags> flags, int32_t file_version) {
   object_offsets_.clear();
   new_obj_num_array_.clear();
   objects_with_refs_.clear();
+  elided_.clear();
+  changed_since_load_ = false;
+  decided_unchanged_ = false;
+  skip_empty_revision_ = false;
 
   InitID();
   objects_with_refs_ =
       CollectSaveReachableObjects(document_, encrypt_dict_.Get());
+
+  // EmbedPDF L2: an incremental save writes what changed. One pass over the
+  // objects in memory, restricted to what the save can reach (an orphan is
+  // never a change). An object that still equals its base twin is elided -
+  // touched, not changed - and the pass notes whether any reachable object
+  // differs from the document it was LOADED with.
+  //
+  //   Layer document: the base twin is the frozen base object, the loaded
+  //   twin the delta's version when the delta carried it (they disagree on
+  //   a reopened layer); both are in memory, so the pass is O(overlay).
+  //   Plain document: the in-memory objects are the loaded ones edited in
+  //   place, so the twin for both questions is a fresh parse of the object
+  //   from the loaded bytes; every parsed object is a candidate (upstream
+  //   would have rewritten each of them), so the pass is O(parsed).
+  //
+  // An elided object is reached, in a layer reopened over this delta,
+  // through whatever refers to it - possibly a frozen base object whose
+  // references resolve through the base. That is fine by the fork's law:
+  // readers resolve through the effective view (CPDF_DocumentViewScope),
+  // and the ambient-view DCHECK in CPDF_BaseDocument flags any that does
+  // not. WriteDoc_Stage1 turns a security change into a full rewrite, so
+  // the pass runs only for a save that stays incremental.
+  if (is_incremental_ && parser_ && !(security_changed_ && is_original_)) {
+    const CPDF_LayerDocument* layer =
+        CPDF_LayerDocument::FromDocument(document_.get());
+    skip_empty_revision_ = true;
+    for (const auto& pair : *document_) {
+      const uint32_t objnum = pair.first;
+      if (pair.second->GetObjNum() == CPDF_Object::kInvalidObjNum ||
+          !pdfium::Contains(objects_with_refs_, objnum)) {
+        continue;
+      }
+      bool differs_from_base = true;
+      bool differs_from_loaded = true;
+      if (layer) {
+        differs_from_base = layer->DiffersFromBase(objnum);
+        differs_from_loaded = layer->DiffersFromLoaded(objnum);
+      } else {
+        RetainPtr<const CPDF_Object> twin = document_->GetLoadedTwin(objnum);
+        differs_from_base = differs_from_loaded =
+            !twin || !CPDF_SameEffectiveValue(pair.second.Get(), twin.Get());
+      }
+      if (!differs_from_base) {
+        elided_.insert(objnum);
+      }
+      if (differs_from_loaded) {
+        changed_since_load_ = true;
+      }
+    }
+    if (!changed_since_load_ &&
+        !!(flags & CreateFlags::kSkipIfUnchangedSinceLoad)) {
+      // The loaded bytes ARE the document: write nothing, say so.
+      decided_unchanged_ = true;
+      stage_ = Stage::kInvalid;
+      return true;
+    }
+  }
   const bool result = Continue();
   if (!result && failure_reason_ == FailureReason::kNone) {
     failure_reason_ = FailureReason::kOther;

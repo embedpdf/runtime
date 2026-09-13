@@ -23,6 +23,17 @@ source_set("fpdfsdk") {
     "epdf_outline.cpp",
     # EmbedPDF: the catalog's /Names /Pages and /Templates name trees.
     "epdf_named_pages.cpp",
+    # EmbedPDF: digital signatures - revisions, the signature model, digests.
+    "epdf_signature.cpp",
+    # EmbedPDF: digital signatures - the cross-revision object diff.
+    "epdf_revision_diff.cpp",
+    # EmbedPDF: digital signatures - the immutable loaded-bytes view that
+    # revision analysis reads (a layer's base + ingested delta).
+    "epdf_revision_view.cpp",
+    "epdf_revision_view.h",
+    # EmbedPDF: the reconciled-form lens shared by the form and signature models.
+    "epdf_form_helpers.cpp",
+    "epdf_form_helpers.h",
     # EmbedPDF: generic namespace-scoped document/page /PieceInfo metadata.
     "epdf_pieceinfo.cpp",
     "epdf_page_content_helpers.cpp",
@@ -158,6 +169,8 @@ pdfium_embeddertest_source_set("embeddertests") {
     "epdf_form_embeddertest.cpp",
     # EmbedPDF: covers the /Names /Pages and /Templates name-tree APIs.
     "epdf_named_pages_embeddertest.cpp",
+    # EmbedPDF: covers the digital-signature APIs.
+    "epdf_signature_embeddertest.cpp",
     # EmbedPDF: covers generic document/page /PieceInfo metadata APIs.
     "epdf_pieceinfo_embeddertest.cpp",
     "fpdf_annot_embeddertest.cpp",

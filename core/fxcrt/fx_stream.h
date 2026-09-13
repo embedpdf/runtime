@@ -55,6 +55,21 @@ class IFX_SeekableReadStream : virtual public Retainable,
   virtual FX_FILESIZE GetPosition();
   [[nodiscard]] virtual bool ReadBlockAtOffset(pdfium::span<uint8_t> buffer,
                                                FX_FILESIZE offset) = 0;
+
+  // EmbedPDF: the stream whose bytes this one presents, for identity
+  // comparisons. A view that narrows another stream without changing any
+  // byte at any offset (a length clamp) returns the stream it wraps; every
+  // other stream, composites included, returns itself. Two streams with
+  // the same underlying stream hold the same immutable bytes at the same
+  // offsets over their common length.
+  virtual IFX_SeekableReadStream* GetUnderlyingStream() { return this; }
+  // EmbedPDF: whether this stream's bytes stay readable for as long as the
+  // stream object itself is retained - it owns them (a container, a memory
+  // stream, a file it opened itself), or every stream it wraps does. A
+  // stream over a caller's callbacks or memory is not: its bytes are only
+  // promised while the caller keeps them. A CPDF_Stream shares a
+  // self-contained view between clones instead of copying the bytes.
+  virtual bool IsSelfContained() const { return false; }
 };
 
 class IFX_SeekableStream : public IFX_SeekableReadStream,

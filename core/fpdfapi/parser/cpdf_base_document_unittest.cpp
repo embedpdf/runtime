@@ -17,7 +17,7 @@
 #include "core/fpdfapi/parser/cpdf_number.h"
 #include "core/fpdfapi/parser/cpdf_stream.h"
 #include "core/fpdfapi/parser/cpdf_string.h"
-#include "core/fxcrt/cfx_read_only_span_stream.h"
+#include "core/fxcrt/cfx_read_only_container_stream.h"
 #include "core/fxcrt/check.h"
 #include "core/fxcrt/data_vector.h"
 #include "core/fxcrt/retain_ptr.h"
@@ -36,9 +36,10 @@ RetainPtr<CPDF_BaseDocument> LoadBaseDocumentFromString(
     const std::string& data) {
   RetainPtr<CPDF_BaseDocument> document =
       pdfium::MakeRetain<CPDF_BaseDocument>();
-  auto stream = pdfium::MakeRetain<CFX_ReadOnlySpanStream>(
-      pdfium::span(reinterpret_cast<const uint8_t*>(data.data()),
-                   data.size()));
+  // Own the bytes: a base parses on first touch, so the stream must outlive
+  // the call (a span of a temporary would dangle).
+  auto stream = pdfium::MakeRetain<CFX_ReadOnlyByteStringStream>(
+      ByteString(data.data(), data.size()));
   if (document->LoadBaseDoc(std::move(stream), "") != CPDF_Parser::SUCCESS) {
     return nullptr;
   }
@@ -81,19 +82,47 @@ std::string BuildPdfWithOrphanObject() {
 
 }  // namespace
 
-TEST_F(CPDFBaseDocumentTest, LoadFreezesReachableGraph) {
+TEST_F(CPDFBaseDocumentTest, LoadFreezesAndParsesOnFirstTouch) {
   const std::string pdf = BuildPdfWithOrphanObject();
   RetainPtr<CPDF_BaseDocument> document = LoadBaseDocumentFromString(pdf);
   ASSERT_TRUE(document);
-
-  const size_t initial_object_count = CountIndirectObjects(*document);
   EXPECT_TRUE(document->IsHolderFrozen());
-  EXPECT_GT(initial_object_count, 0u);
+  // Loading touched the catalog and the page tree; the orphan was not
+  // walked, and neither was anything loading did not need.
+  const size_t after_load = CountIndirectObjects(*document);
+  EXPECT_FALSE(document->GetIndirectObject(4));
 
-  ASSERT_TRUE(document->GetPageDictionary(0));
-  EXPECT_EQ(initial_object_count, CountIndirectObjects(*document));
-  ASSERT_TRUE(document->GetPageDictionary(0));
-  EXPECT_EQ(initial_object_count, CountIndirectObjects(*document));
+  // First touch parses from the bytes, frozen on arrival, into the cache.
+  RetainPtr<const CPDF_Object> orphan = document->GetFrozenObjectForLayer(4);
+  ASSERT_TRUE(orphan);
+  EXPECT_TRUE(orphan->IsFrozen());
+  EXPECT_TRUE(orphan->AsDictionary()->GetBooleanFor("Orphan", false));
+  EXPECT_EQ(after_load + 1, CountIndirectObjects(*document));
+  // Second touch is the cache.
+  EXPECT_EQ(orphan.Get(), document->GetFrozenObjectForLayer(4).Get());
+  EXPECT_EQ(after_load + 1, CountIndirectObjects(*document));
+  // Everything loading cached is frozen too.
+  for (const auto& item : *document) {
+    if (item.second) {
+      EXPECT_TRUE(item.second->IsFrozen()) << "object " << item.first;
+    }
+  }
+  // An object the file does not have stays absent.
+  EXPECT_FALSE(document->GetFrozenObjectForLayer(99));
+  EXPECT_EQ(after_load + 1, CountIndirectObjects(*document));
+}
+
+TEST_F(CPDFBaseDocumentTest, WarmUpParsesTheReachableGraph) {
+  const std::string pdf = BuildPdfWithOrphanObject();
+  RetainPtr<CPDF_BaseDocument> document = LoadBaseDocumentFromString(pdf);
+  ASSERT_TRUE(document);
+  ASSERT_TRUE(document->EagerlyParseAllReachable());
+  // Catalog, pages, page: reachable. The orphan is not reachable.
+  EXPECT_TRUE(document->GetIndirectObject(1));
+  EXPECT_TRUE(document->GetIndirectObject(2));
+  EXPECT_TRUE(document->GetIndirectObject(3));
+  EXPECT_FALSE(document->GetIndirectObject(4));
+  EXPECT_TRUE(document->IsHolderFrozen());
 }
 
 TEST_F(CPDFBaseDocumentTest, IsFrozenVisibleThroughConstObject) {
@@ -173,13 +202,16 @@ TEST_F(CPDFBaseDocumentTest, ObjectMutatorsDcheckAfterFreeze) {
   EXPECT_DEATH_IF_SUPPORTED(string->SetString("changed"), "");
 }
 
-TEST_F(CPDFBaseDocumentTest, ReadMissAfterFreezeDchecks) {
+TEST_F(CPDFBaseDocumentTest, ReadMissAfterFreezeParsesInsteadOfDying) {
   const std::string pdf = BuildPdfWithOrphanObject();
   RetainPtr<CPDF_BaseDocument> document = LoadBaseDocumentFromString(pdf);
   ASSERT_TRUE(document);
   EXPECT_TRUE(document->IsHolderFrozen());
-  EXPECT_FALSE(document->GetFrozenObjectForLayer(4));
-
-  EXPECT_DEATH_IF_SUPPORTED(document->GetOrParseIndirectObject(4), "");
+  // A miss on a frozen base is a parse, not a fault: the parser's own
+  // resolution path (indirect /Length, reference resolution) uses it.
+  RetainPtr<CPDF_Object> orphan = document->GetOrParseIndirectObject(4);
+  ASSERT_TRUE(orphan);
+  EXPECT_TRUE(orphan->IsFrozen());
+  EXPECT_EQ(orphan.Get(), document->GetFrozenObjectForLayer(4).Get());
 }
 #endif  // DCHECK_IS_ON()

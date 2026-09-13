@@ -12,6 +12,8 @@ script replaces {{name}}-style variables in the input with calculated results
   {{xref}} - expands to a generated xref table, noting the offset.
   {{trailer}} - expands to a standard trailer with "1 0 R" as the /Root.
   {{trailersize}} - expands to `/Size n`, to be used in non-standard trailers.
+  {{prev}} - expands to `/Prev n`, the offset of the previous {{xref}}, to
+      be used in the trailer of an incremental update.
   {{startxref} - expands to a startxref directive followed by correct offset.
   {{startxrefobj x y} - expands to a startxref directive followed by correct
                         offset pointing to the start of `x y obj`.
@@ -60,6 +62,8 @@ class TemplateProcessor:
   TRAILER_REPLACEMENT = b'trailer <<\n  /Root 1 0 R\n  /Size %d\n>>'
 
   TRAILERSIZE_TOKEN = b'{{trailersize}}'
+  PREV_TOKEN = b'{{prev}}'
+  PREV_REPLACEMENT = b'/Prev %d'
   TRAILERSIZE_REPLACEMENT = b'/Size %d'
 
   STARTXREF_TOKEN = b'{{startxref}}'
@@ -78,6 +82,7 @@ class TemplateProcessor:
     self.streamlens = []
     self.offset = 0
     self.xref_offset = 0
+    self.prev_xref_offset = None
     self.max_object_number = 0
     self.objects = {}
 
@@ -122,6 +127,7 @@ class TemplateProcessor:
       sub = self.STREAMLEN_REPLACEMENT % self.streamlens.pop(0)
       line = re.sub(self.STREAMLEN_TOKEN, sub, line)
     if self.XREF_TOKEN in line:
+      self.prev_xref_offset = self.xref_offset
       self.xref_offset = self.offset
       line = self.generate_xref_table()
     if self.TRAILER_TOKEN in line:
@@ -130,6 +136,10 @@ class TemplateProcessor:
     if self.TRAILERSIZE_TOKEN in line:
       replacement = self.TRAILERSIZE_REPLACEMENT % (self.max_object_number + 1)
       line = line.replace(self.TRAILERSIZE_TOKEN, replacement)
+    if self.PREV_TOKEN in line:
+      assert self.prev_xref_offset is not None, '{{prev}} needs an earlier {{xref}}'
+      replacement = self.PREV_REPLACEMENT % self.prev_xref_offset
+      line = line.replace(self.PREV_TOKEN, replacement)
     if self.STARTXREF_TOKEN in line:
       replacement = self.STARTXREF_REPLACEMENT % self.xref_offset
       line = line.replace(self.STARTXREF_TOKEN, replacement)

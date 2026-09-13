@@ -80,8 +80,15 @@ CPDF_Parser::Error CPDF_BaseDocument::LoadBaseDoc(
   if (!CacheBaseIdentity()) {
     return CPDF_Parser::FORMAT_ERROR;
   }
-  return EagerlyParseAllReachable() ? CPDF_Parser::SUCCESS
-                                    : CPDF_Parser::FORMAT_ERROR;
+  if (!GetRoot()) {
+    return CPDF_Parser::FORMAT_ERROR;
+  }
+  // Freeze now: whatever loading touched is immutable, and every object
+  // parsed from here on (see GetFrozenObjectForLayer) is frozen on arrival.
+  // Nothing is walked eagerly; a layer that touches an object nobody has
+  // loaded yet triggers its parse, once, into this shared cache.
+  Freeze();
+  return CPDF_Parser::SUCCESS;
 }
 
 bool CPDF_BaseDocument::CacheBaseIdentity() {
@@ -97,7 +104,25 @@ bool CPDF_BaseDocument::CacheBaseIdentity() {
     return false;
   }
   layer_append_base_offset_ = parser->GetDocumentSize();
-  return ComputeStreamSha256(stream.Get(), raw_base_size_, &raw_base_sha256_);
+  // The hash is deliberately NOT computed here: it is a full pass over the
+  // file that most opens never need (see GetRawBaseSha256).
+  return true;
+}
+
+const std::array<uint8_t, 32>& CPDF_BaseDocument::GetRawBaseSha256() const {
+  static const std::array<uint8_t, 32> kUnknown = {};
+  if (raw_base_sha256_.has_value()) {
+    return *raw_base_sha256_;
+  }
+  CPDF_Parser* parser = GetParser();
+  RetainPtr<IFX_SeekableReadStream> stream =
+      parser ? parser->GetFileAccess() : nullptr;
+  std::array<uint8_t, 32> digest = {};
+  if (!stream || !ComputeStreamSha256(stream.Get(), raw_base_size_, &digest)) {
+    return kUnknown;
+  }
+  raw_base_sha256_ = digest;
+  return *raw_base_sha256_;
 }
 
 bool CPDF_BaseDocument::EagerlyParseAllReachable() {
@@ -151,7 +176,21 @@ bool CPDF_BaseDocument::EagerlyParseAllReachable() {
 
 RetainPtr<const CPDF_Object> CPDF_BaseDocument::GetFrozenObjectForLayer(
     uint32_t objnum) const {
-  return GetIndirectObject(objnum);
+  if (RetainPtr<const CPDF_Object> cached = GetIndirectObject(objnum)) {
+    return cached;
+  }
+  // Cache miss: parse the object from the base's own bytes, once, for
+  // every layer. The cache is logically immutable state derived from the
+  // file, hence the cast. The frozen view scope makes sure nothing resolved
+  // while parsing (a stream's indirect /Length, say) routes through a
+  // layer's overlay - a promoted clone must never enter the shared cache -
+  // and the qualified call bypasses this document's own view-aware
+  // override for the same reason.
+  CPDF_BaseDocument* self = const_cast<CPDF_BaseDocument*>(this);
+  CPDF_DocumentViewScope frozen_view(self);
+  return pdfium::WrapRetain(
+      self->CPDF_IndirectObjectHolder::GetOrParseIndirectObjectInternal(
+          objnum));
 }
 
 #if DCHECK_IS_ON()

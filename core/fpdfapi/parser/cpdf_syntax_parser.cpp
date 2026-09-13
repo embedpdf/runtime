@@ -67,6 +67,13 @@ class ReadableSubStream final : public IFX_SeekableReadStream {
 
   FX_FILESIZE GetSize() override { return part_size_; }
 
+  // EmbedPDF: a sub-stream is one range of its reader; the reader is what a
+  // holder recognises as storage it owns (CPDF_Stream sharing).
+  IFX_SeekableReadStream* GetUnderlyingStream() override {
+    return file_read_->GetUnderlyingStream();
+  }
+  bool IsSelfContained() const override { return file_read_->IsSelfContained(); }
+
  private:
   RetainPtr<IFX_SeekableReadStream> file_read_;
   FX_FILESIZE part_offset_;
