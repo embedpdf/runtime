@@ -116,6 +116,39 @@ EPDF_SaveDocumentToOwnedBufferWithVersion(FPDF_DOCUMENT document,
                                           unsigned long* out_size,
                                           int file_version);
 
+// EmbedPDF: what a save found. kUnchangedSinceLoad means nothing was written
+// because no reachable object differs from the document the session was
+// opened with: the loaded bytes ARE the document (EPDFDoc_ReadLoadedBytes).
+typedef enum {
+  EPDFSaveStatus_kFailed = 0,
+  EPDFSaveStatus_kWritten = 1,
+  EPDFSaveStatus_kUnchangedSinceLoad = 2,
+} EPDFSaveStatus;
+
+// Function: EPDF_SaveDocumentToOwnedBufferEx
+//          EPDF_SaveDocumentToOwnedBufferWithVersion, reporting whether the
+//          save wrote anything. For a layer document saved incrementally,
+//          overlay objects equal to their base twin are never written, and
+//          when no reachable object differs from the document the layer was
+//          opened with the result is NULL, |out_size| is 0 and |out_status|
+//          is EPDFSaveStatus_kUnchangedSinceLoad: read the loaded bytes
+//          instead. |file_version| 0 keeps the document's version.
+FPDF_EXPORT void* FPDF_CALLCONV
+EPDF_SaveDocumentToOwnedBufferEx(FPDF_DOCUMENT document,
+                                 FPDF_DWORD flags,
+                                 int file_version,
+                                 unsigned long* out_size,
+                                 EPDFSaveStatus* out_status);
+
+// Function: EPDF_SaveAsCopyEx
+//          FPDF_SaveAsCopy, reporting the same. On kUnchangedSinceLoad no
+//          byte reaches |file_write|.
+FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV
+EPDF_SaveAsCopyEx(FPDF_DOCUMENT document,
+                  FPDF_FILEWRITE* file_write,
+                  FPDF_DWORD flags,
+                  EPDFSaveStatus* out_status);
+
 // Runtime-side status for saving a layer delta.
 typedef enum {
   EPDFLayerSaveStatus_kSuccess = 0,
@@ -171,6 +204,50 @@ FPDF_EXPORT void* FPDF_CALLCONV
 EPDFLayer_SaveLayerArtifactToOwnedBuffer(FPDF_DOCUMENT layer,
                                          unsigned long* out_size,
                                          EPDFLayerSaveStatus* out_status);
+
+// Function: EPDFLayer_SaveDeltaEx
+//          EPDFLayer_SaveDelta, reporting whether anything reachable changed
+//          since the layer was opened. When nothing did, nothing reaches
+//          |file_write| and |out_changed_since_load| is false.
+FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV
+EPDFLayer_SaveDeltaEx(FPDF_DOCUMENT layer,
+                      FPDF_FILEWRITE* file_write,
+                      EPDFLayerSaveStatus* out_status,
+                      FPDF_BOOL* out_changed_since_load);
+
+// Function: EPDFLayer_SaveLayerArtifactEx
+//          EPDFLayer_SaveLayerArtifact with the same report; nothing reaches
+//          |file_write| when nothing changed since load. The delta inside
+//          the artifact is streamed through a temporary file, never held
+//          whole in memory.
+FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV
+EPDFLayer_SaveLayerArtifactEx(FPDF_DOCUMENT layer,
+                              FPDF_FILEWRITE* file_write,
+                              EPDFLayerSaveStatus* out_status,
+                              FPDF_BOOL* out_changed_since_load);
+
+// Function: EPDFLayer_SaveDeltaToOwnedBufferEx
+//          EPDFLayer_SaveDeltaToOwnedBuffer, reporting whether anything
+//          reachable changed since the layer was opened. When nothing did,
+//          nothing is written (NULL, size 0, kSuccess) and
+//          |out_changed_since_load| is false: the caller keeps the delta the
+//          layer was opened with. The delta written otherwise is cumulative
+//          against the base; it is empty (NULL, size 0, kSuccess, changed
+//          true) when the layer came to equal its base.
+FPDF_EXPORT void* FPDF_CALLCONV
+EPDFLayer_SaveDeltaToOwnedBufferEx(FPDF_DOCUMENT layer,
+                                   unsigned long* out_size,
+                                   EPDFLayerSaveStatus* out_status,
+                                   FPDF_BOOL* out_changed_since_load);
+
+// Function: EPDFLayer_SaveLayerArtifactToOwnedBufferEx
+//          EPDFLayer_SaveLayerArtifactToOwnedBuffer with the same report;
+//          NULL and size 0 when nothing changed since load.
+FPDF_EXPORT void* FPDF_CALLCONV
+EPDFLayer_SaveLayerArtifactToOwnedBufferEx(FPDF_DOCUMENT layer,
+                                           unsigned long* out_size,
+                                           EPDFLayerSaveStatus* out_status,
+                                           FPDF_BOOL* out_changed_since_load);
 
 #ifdef __cplusplus
 }

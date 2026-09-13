@@ -10,6 +10,7 @@
 #include <cmath>
 #include <cstdint>
 #include <memory>
+#include <optional>
 #include <sstream>
 #include <utility>
 #include <vector>
@@ -3755,6 +3756,88 @@ EPDFPage_GetAnnotByName(FPDF_PAGE page, FPDF_WIDESTRING nm) {
   return nullptr;
 }
 
+namespace {
+
+// EmbedPDF: annotation removal reads before it writes. Scanning /Annots for a
+// match must not promote a single sibling into a layer's overlay (reads never
+// promote); only the match takes mutable handles, and only for what changes:
+// the page's /Annots. The removed object is deleted when it is local and left
+// alone when it belongs to the base - it is never edited, so never promoted.
+
+// The object number an /Annots entry names, without resolving it: a reference
+// carries its number; an inline dictionary has none (0). Pure.
+uint32_t AnnotEntryObjNum(const CPDF_Object* entry) {
+  return entry && entry->IsReference() ? entry->AsReference()->GetRefObjNum()
+                                       : 0;
+}
+
+// Index of the /Annots entry that is |obj_num|, or nullopt. A const scan.
+std::optional<size_t> FindAnnotIndexByObjNum(const CPDF_Array* annots,
+                                             uint32_t obj_num) {
+  if (!annots || obj_num == 0) {
+    return std::nullopt;
+  }
+  for (size_t i = 0; i < annots->size(); ++i) {
+    if (AnnotEntryObjNum(annots->GetObjectAt(i).Get()) == obj_num) {
+      return i;
+    }
+  }
+  return std::nullopt;
+}
+
+// Same for /NM. Resolving an entry to read a name is a const resolve
+// (GetDirectObjectAt -> GetIndirectObject -> the frozen base object).
+std::optional<size_t> FindAnnotIndexByName(const CPDF_Array* annots,
+                                           const WideString& name) {
+  if (!annots) {
+    return std::nullopt;
+  }
+  for (size_t i = 0; i < annots->size(); ++i) {
+    RetainPtr<const CPDF_Dictionary> dict =
+        ToDictionary(annots->GetDirectObjectAt(i));
+    if (dict && dict->GetUnicodeTextFor("NM") == name) {
+      return i;
+    }
+  }
+  return std::nullopt;
+}
+
+// The one mutation: |page_dict|'s /Annots shrinks (this promotes the page,
+// which is right - it changed). A local object is deleted; a base object is
+// simply no longer referenced (DeleteIndirectObject is a no-op for it).
+// Afterwards the page keeps the shape its BASE has: an add created /Annots
+// when the base page had none, and the reverse of that add is not an empty
+// array - but a page whose base carries `/Annots []` keeps it.
+bool RemoveAnnotEntryAt(CPDF_Document* doc,
+                        CPDF_Dictionary* page_dict,
+                        size_t index) {
+  if (!doc || !page_dict) {
+    return false;
+  }
+  RetainPtr<CPDF_Array> annots = page_dict->GetMutableArrayFor("Annots");
+  if (!annots || index >= annots->size()) {
+    return false;
+  }
+  const uint32_t objnum = AnnotEntryObjNum(annots->GetObjectAt(index).Get());
+  annots->RemoveAt(index);
+  if (objnum) {
+    doc->DeleteIndirectObject(objnum);
+  }
+  // The BASE twin decides: it is what a save compares against when it
+  // elides the page. The loaded twin would be wrong after a reopen - the
+  // delta's page carried the annotation just removed.
+  if (annots->IsEmpty()) {
+    RetainPtr<const CPDF_Dictionary> twin =
+        ToDictionary(doc->GetBaseTwin(page_dict->GetObjNum()));
+    if (!twin || !twin->KeyExist("Annots")) {
+      page_dict->RemoveFor("Annots");
+    }
+  }
+  return true;
+}
+
+}  // namespace
+
 FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV
 EPDFPage_RemoveAnnotByName(FPDF_PAGE page, FPDF_WIDESTRING nm) {
   if (!page || !nm || !*nm) {
@@ -3766,45 +3849,14 @@ EPDFPage_RemoveAnnotByName(FPDF_PAGE page, FPDF_WIDESTRING nm) {
     return false;
   }
 
-  RetainPtr<CPDF_Array> annots = pPage->GetMutableAnnotsArray();
-  if (!annots) {
+  WideString target = UNSAFE_BUFFERS(WideStringFromFPDFWideString(nm));
+  RetainPtr<const CPDF_Array> annots = pPage->GetAnnotsArray();
+  std::optional<size_t> index = FindAnnotIndexByName(annots.Get(), target);
+  if (!index.has_value()) {
     return false;
   }
-
-  WideString target = UNSAFE_BUFFERS(WideStringFromFPDFWideString(nm));
-
-  for (size_t i = 0; i < annots->size(); ++i) {
-    // Keep the raw entry so we can see if it was a reference.
-    RetainPtr<CPDF_Object> entry = annots->GetMutableObjectAt(i);
-
-    // Resolve to a dictionary to compare /NM.
-    RetainPtr<CPDF_Dictionary> dict =
-        ToDictionary(entry ? entry->GetMutableDirect() : nullptr);
-    if (!dict || dict->GetUnicodeTextFor("NM") != target) {
-      continue;
-    }
-
-    // Determine indirect object number, if any.
-    uint32_t objnum = 0;
-    if (entry && entry->IsReference()) {
-      objnum = entry->AsReference()->GetRefObjNum();
-    } else if (dict) {
-      // Handles the case where the dict was promoted indirect but the Annots
-      // array still holds it directly.
-      objnum = dict->GetObjNum();
-    }
-
-    // Remove from /Annots.
-    annots->RemoveAt(i);
-
-    // If it was indirect, delete the object to avoid leaving an orphan.
-    if (objnum) {
-      pPage->GetDocument()->DeleteIndirectObject(objnum);
-    }
-
-    return true;
-  }
-  return false;
+  return RemoveAnnotEntryAt(pPage->GetDocument(), pPage->GetMutableDict().Get(),
+                            *index);
 }
 
 FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV
@@ -3927,40 +3979,18 @@ FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV EPDFPage_RemoveAnnotRaw(FPDF_DOCUMENT doc,
     return false;
   }
 
-  RetainPtr<CPDF_Dictionary> page_dict =
-      pdf->GetMutablePageDictionary(page_index);
-  if (!page_dict) {
-    return false;
-  }
-
-  RetainPtr<CPDF_Array> annots = page_dict->GetMutableArrayFor("Annots");
+  // Bounds are checked on the const view; only a real removal takes the
+  // mutable page dictionary.
+  RetainPtr<const CPDF_Dictionary> page_view = pdf->GetPageDictionary(page_index);
+  RetainPtr<const CPDF_Array> annots =
+      page_view ? page_view->GetArrayFor("Annots") : nullptr;
   if (!annots || static_cast<size_t>(index) >= annots->size()) {
     return false;
   }
 
-  // Keep original entry so we can determine if it was indirect.
-  RetainPtr<CPDF_Object> entry = annots->GetMutableObjectAt(index);
-
-  // Resolve to dictionary for fallback objnum detection.
-  RetainPtr<CPDF_Dictionary> dict =
-      ToDictionary(entry ? entry->GetMutableDirect() : nullptr);
-
-  uint32_t objnum = 0;
-  if (entry && entry->IsReference()) {
-    objnum = entry->AsReference()->GetRefObjNum();
-  } else if (dict) {
-    objnum = dict->GetObjNum();
-  }
-
-  // Remove from /Annots.
-  annots->RemoveAt(index);
-
-  // If it was indirect, delete the annot object to avoid leaving orphans.
-  if (objnum) {
-    pdf->DeleteIndirectObject(objnum);
-  }
-
-  return true;
+  RetainPtr<CPDF_Dictionary> page_dict =
+      pdf->GetMutablePageDictionary(page_index);
+  return RemoveAnnotEntryAt(pdf, page_dict.Get(), static_cast<size_t>(index));
 }
 
 FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV EPDFAnnot_SetName(FPDF_ANNOTATION annot,
@@ -4912,29 +4942,12 @@ FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV EPDFPage_RemoveAnnot(FPDF_PAGE page,
     return false;
   }
 
-  RetainPtr<CPDF_Array> annots = pPage->GetMutableAnnotsArray();
+  RetainPtr<const CPDF_Array> annots = pPage->GetAnnotsArray();
   if (!annots || static_cast<size_t>(index) >= annots->size()) {
     return false;
   }
-
-  RetainPtr<CPDF_Object> entry = annots->GetMutableObjectAt(index);
-  RetainPtr<CPDF_Dictionary> dict =
-      ToDictionary(entry ? entry->GetMutableDirect() : nullptr);
-
-  uint32_t objnum = 0;
-  if (entry && entry->IsReference()) {
-    objnum = entry->AsReference()->GetRefObjNum();
-  } else if (dict) {
-    objnum = dict->GetObjNum();
-  }
-
-  annots->RemoveAt(index);
-
-  if (objnum) {
-    pPage->GetDocument()->DeleteIndirectObject(objnum);
-  }
-
-  return true;
+  return RemoveAnnotEntryAt(pPage->GetDocument(), pPage->GetMutableDict().Get(),
+                            static_cast<size_t>(index));
 }
 
 FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV
@@ -4948,54 +4961,15 @@ EPDFPage_RemoveAnnotByObjectNumber(FPDF_PAGE page, unsigned int obj_num) {
     return false;
   }
 
-  RetainPtr<CPDF_Array> annots = pPage->GetMutableAnnotsArray();
-  if (!annots) {
+  RetainPtr<const CPDF_Array> annots = pPage->GetAnnotsArray();
+  std::optional<size_t> index = FindAnnotIndexByObjNum(annots.Get(), obj_num);
+  if (!index.has_value()) {
     return false;
   }
-
-  for (size_t i = 0; i < annots->size(); ++i) {
-    RetainPtr<CPDF_Object> entry = annots->GetMutableObjectAt(i);
-    RetainPtr<CPDF_Dictionary> dict =
-        ToDictionary(entry ? entry->GetMutableDirect() : nullptr);
-    if (!dict) {
-      continue;
-    }
-
-    uint32_t entry_objnum = 0;
-    if (entry && entry->IsReference()) {
-      entry_objnum = entry->AsReference()->GetRefObjNum();
-    } else {
-      entry_objnum = dict->GetObjNum();
-    }
-    if (entry_objnum != obj_num) {
-      continue;
-    }
-
-    annots->RemoveAt(i);
-
-    if (entry_objnum) {
-      pPage->GetDocument()->DeleteIndirectObject(entry_objnum);
-    }
-
-    return true;
-  }
-  return false;
+  return RemoveAnnotEntryAt(pPage->GetDocument(), pPage->GetMutableDict().Get(),
+                            *index);
 }
 
-// EmbedPDF Extension API.
-// Move a contiguous block of annotations within a page's /Annots array.
-// Mirrors FPDF_MovePages semantics for the per-page annotation list:
-// the entries at from_indices[0..len) are detached, then re-inserted as
-// a contiguous block starting at to_index in the post-removal index
-// space, preserving caller-supplied order.
-//
-// All validation happens BEFORE any mutation:
-//   - every from_index must be in [0, count)
-//   - from_indices must contain no duplicates
-//   - to_index must be in [0, count - len]
-// Any failure returns false without touching the array. The indirect
-// objects backing each annotation are never destroyed, so durable
-// identity (objectNumber, /NM) is preserved across the move.
 FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV EPDFPage_MoveAnnots(FPDF_PAGE page,
                                                         const int* from_indices,
                                                         int from_indices_len,

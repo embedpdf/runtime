@@ -19,6 +19,7 @@
 #include "core/fpdfapi/parser/cpdf_base_document.h"
 #include "core/fpdfapi/parser/cpdf_layer_document.h"
 #include "core/fpdfapi/parser/cpdf_parser.h"
+#include "core/fxcrt/cfx_fileaccess_stream.h"
 #include "core/fxcrt/data_vector.h"
 #include "core/fxcrt/numerics/safe_conversions.h"
 #include "core/fxcrt/retain_ptr.h"
@@ -40,6 +41,44 @@ constexpr size_t kLayerArtifactHeaderSize =
     8 + sizeof(uint32_t) + sizeof(uint32_t) + sizeof(uint64_t) * 3 +
     kSha256DigestSize * 2;
 
+// One byte range of a reader the runtime keeps open: the delta inside an
+// artifact file, read in place. Its underlying stream is the file, which is
+// what a layer recognises as storage it owns.
+class FileRangeReadStream final : public IFX_SeekableReadStream {
+ public:
+  CONSTRUCT_VIA_MAKE_RETAIN;
+
+  FX_FILESIZE GetSize() override { return size_; }
+
+  bool ReadBlockAtOffset(pdfium::span<uint8_t> buffer,
+                         FX_FILESIZE offset) override {
+    if (offset < 0 || offset > size_ ||
+        static_cast<FX_FILESIZE>(buffer.size()) > size_ - offset) {
+      return false;
+    }
+    if (buffer.empty()) {
+      return true;
+    }
+    return inner_->ReadBlockAtOffset(buffer, start_ + offset);
+  }
+
+  IFX_SeekableReadStream* GetUnderlyingStream() override {
+    return inner_->GetUnderlyingStream();
+  }
+  bool IsSelfContained() const override { return inner_->IsSelfContained(); }
+
+ private:
+  FileRangeReadStream(RetainPtr<IFX_SeekableReadStream> inner,
+                      FX_FILESIZE start,
+                      FX_FILESIZE size)
+      : inner_(std::move(inner)), start_(start), size_(size) {}
+  ~FileRangeReadStream() override = default;
+
+  RetainPtr<IFX_SeekableReadStream> inner_;
+  const FX_FILESIZE start_;
+  const FX_FILESIZE size_;
+};
+
 class OwnedReadOnlyMemoryStream final : public IFX_SeekableReadStream {
  public:
   CONSTRUCT_VIA_MAKE_RETAIN;
@@ -47,6 +86,7 @@ class OwnedReadOnlyMemoryStream final : public IFX_SeekableReadStream {
   FX_FILESIZE GetSize() override {
     return static_cast<FX_FILESIZE>(data_.size());
   }
+  bool IsSelfContained() const override { return true; }  // owns |data_|
 
   bool ReadBlockAtOffset(pdfium::span<uint8_t> buffer,
                          FX_FILESIZE offset) override {
@@ -464,6 +504,94 @@ EPDFLayer_OpenLayerArtifact(EPDF_BASE_DOCUMENT base,
       out_status);
 }
 
+FPDF_EXPORT FPDF_DOCUMENT FPDF_CALLCONV
+EPDFLayer_OpenLayerArtifactFromPath(EPDF_BASE_DOCUMENT base,
+                                    FPDF_STRING path,
+                                    FPDF_BYTESTRING password,
+                                    EPDFLayerOpenStatus* out_status) {
+  (void)password;
+  SetOpenStatus(out_status, EPDFLayerOpenStatus_kOpenFailed);
+  if (!base || !path || !*path) {
+    return nullptr;
+  }
+  CPDF_BaseDocument* base_doc = CPDFBaseDocumentFromEPDFBaseDocument(base);
+  if (!base_doc) {
+    return nullptr;
+  }
+  // The runtime opens the file itself and the layer keeps it open: the
+  // delta is read in place, and every stream it carries stays a view.
+  RetainPtr<IFX_SeekableReadStream> file =
+      CFX_FileAccessStream::CreateFromFilename(path);
+  if (!file) {
+    return nullptr;
+  }
+  const FX_FILESIZE file_size = file->GetSize();
+  if (file_size < static_cast<FX_FILESIZE>(kLayerArtifactHeaderSize)) {
+    SetOpenStatus(out_status, EPDFLayerOpenStatus_kMalformedDelta);
+    return nullptr;
+  }
+
+  std::array<uint8_t, kLayerArtifactHeaderSize> header;
+  if (!file->ReadBlockAtOffset(pdfium::span(header), 0)) {
+    return nullptr;
+  }
+  const uint8_t* data = header.data();
+  if (memcmp(data, kLayerArtifactMagic, 8) != 0) {
+    SetOpenStatus(out_status, EPDFLayerOpenStatus_kMalformedDelta);
+    return nullptr;
+  }
+  size_t cursor = 8;
+  const uint32_t version = ReadUint32LE(data + cursor);
+  cursor += sizeof(uint32_t);
+  const uint32_t header_size = ReadUint32LE(data + cursor);
+  cursor += sizeof(uint32_t);
+  const uint64_t raw_base_size = ReadUint64LE(data + cursor);
+  cursor += sizeof(uint64_t);
+  const uint64_t layer_append_base_offset = ReadUint64LE(data + cursor);
+  cursor += sizeof(uint64_t);
+  const uint64_t delta_size = ReadUint64LE(data + cursor);
+  cursor += sizeof(uint64_t);
+  const uint8_t* base_sha = data + cursor;
+  cursor += kSha256DigestSize;
+  const uint8_t* delta_sha = data + cursor;
+  cursor += kSha256DigestSize;
+
+  if (version != kLayerArtifactVersion ||
+      header_size != kLayerArtifactHeaderSize ||
+      raw_base_size != static_cast<uint64_t>(base_doc->GetRawBaseSize()) ||
+      layer_append_base_offset !=
+          static_cast<uint64_t>(base_doc->GetLayerAppendBaseOffset()) ||
+      delta_size > static_cast<uint64_t>(file_size) - header_size) {
+    SetOpenStatus(out_status, EPDFLayerOpenStatus_kBaseLayerMismatch);
+    return nullptr;
+  }
+  if (header_size + delta_size != static_cast<uint64_t>(file_size)) {
+    SetOpenStatus(out_status, EPDFLayerOpenStatus_kMalformedDelta);
+    return nullptr;
+  }
+  if (memcmp(base_doc->GetRawBaseSha256().data(), base_sha,
+             kSha256DigestSize) != 0) {
+    SetOpenStatus(out_status, EPDFLayerOpenStatus_kBaseLayerMismatch);
+    return nullptr;
+  }
+
+  RetainPtr<IFX_SeekableReadStream> delta_stream;
+  if (delta_size > 0) {
+    delta_stream = pdfium::MakeRetain<FileRangeReadStream>(
+        file, static_cast<FX_FILESIZE>(header_size),
+        static_cast<FX_FILESIZE>(delta_size));
+    std::optional<std::array<uint8_t, kSha256DigestSize>> actual_delta_sha =
+        ComputeDeltaSha256(delta_stream.Get(),
+                           static_cast<FX_FILESIZE>(delta_size));
+    if (!actual_delta_sha ||
+        memcmp(actual_delta_sha->data(), delta_sha, kSha256DigestSize) != 0) {
+      SetOpenStatus(out_status, EPDFLayerOpenStatus_kMalformedDelta);
+      return nullptr;
+    }
+  }
+  return OpenLayerWithDeltaStream(base, std::move(delta_stream), out_status);
+}
+
 FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV
 EPDFLayer_IsObjectPromoted(FPDF_DOCUMENT layer, unsigned long obj_num) {
   if (obj_num > std::numeric_limits<uint32_t>::max()) {
@@ -520,11 +648,25 @@ EPDFLayer_GetBaseSha256(FPDF_DOCUMENT layer, unsigned char* out_sha256) {
   return true;
 }
 
-FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV
-EPDFLayer_SaveDelta(FPDF_DOCUMENT layer,
-                    FPDF_FILEWRITE* file_write,
-                    EPDFLayerSaveStatus* out_status) {
+namespace {
+
+void SetChanged(FPDF_BOOL* out_changed, bool changed) {
+  if (out_changed) {
+    *out_changed = changed;
+  }
+}
+
+// The cumulative delta against the base (overlay objects equal to their base
+// twin are never written). With |skip_if_unchanged| nothing is written when
+// no reachable object differs from the document the layer was opened with;
+// |out_changed_since_load| reports that either way.
+bool SaveDeltaImpl(FPDF_DOCUMENT layer,
+                   FPDF_FILEWRITE* file_write,
+                   EPDFLayerSaveStatus* out_status,
+                   bool skip_if_unchanged,
+                   FPDF_BOOL* out_changed_since_load) {
   SetSaveStatus(out_status, EPDFLayerSaveStatus_kSaveFailed);
+  SetChanged(out_changed_since_load, false);
   CPDF_Document* document = CPDFDocumentFromFPDFDocument(layer);
   CPDF_LayerDocument* layer_doc = CPDF_LayerDocument::FromDocument(document);
   if (!layer_doc || !file_write) {
@@ -546,12 +688,15 @@ EPDFLayer_SaveDelta(FPDF_DOCUMENT layer,
 
   CPDF_Creator creator(
       layer_doc, pdfium::MakeRetain<CPDFSDK_FileWriteAdapter>(file_write));
-  const bool ok =
-      creator.Create(Mask<CPDF_Creator::CreateFlags>(
-                         CPDF_Creator::CreateFlags::kIncremental,
-                         CPDF_Creator::CreateFlags::kIncrementalAppendOnly),
-                     /*file_version=*/0);
+  Mask<CPDF_Creator::CreateFlags> flags(
+      CPDF_Creator::CreateFlags::kIncremental,
+      CPDF_Creator::CreateFlags::kIncrementalAppendOnly);
+  if (skip_if_unchanged) {
+    flags |= CPDF_Creator::CreateFlags::kSkipIfUnchangedSinceLoad;
+  }
+  const bool ok = creator.Create(flags, /*file_version=*/0);
   if (ok) {
+    SetChanged(out_changed_since_load, creator.changed_since_load());
     SetSaveStatus(out_status, EPDFLayerSaveStatus_kSuccess);
     return true;
   }
@@ -561,6 +706,26 @@ EPDFLayer_SaveDelta(FPDF_DOCUMENT layer,
     SetSaveStatus(out_status, EPDFLayerSaveStatus_kAppendOnlyOffsetTooLarge);
   }
   return false;
+}
+
+}  // namespace
+
+FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV
+EPDFLayer_SaveDelta(FPDF_DOCUMENT layer,
+                    FPDF_FILEWRITE* file_write,
+                    EPDFLayerSaveStatus* out_status) {
+  return SaveDeltaImpl(layer, file_write, out_status,
+                       /*skip_if_unchanged=*/false,
+                       /*out_changed_since_load=*/nullptr);
+}
+
+FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV
+EPDFLayer_SaveDeltaEx(FPDF_DOCUMENT layer,
+                      FPDF_FILEWRITE* file_write,
+                      EPDFLayerSaveStatus* out_status,
+                      FPDF_BOOL* out_changed_since_load) {
+  return SaveDeltaImpl(layer, file_write, out_status,
+                       /*skip_if_unchanged=*/true, out_changed_since_load);
 }
 
 FPDF_EXPORT void* FPDF_CALLCONV
@@ -577,11 +742,32 @@ EPDFLayer_SaveDeltaToOwnedBuffer(FPDF_DOCUMENT layer,
   return CopyToOwnedBuffer(pdfium::as_byte_span(writer.data), out_size);
 }
 
-FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV
-EPDFLayer_SaveLayerArtifact(FPDF_DOCUMENT layer,
-                            FPDF_FILEWRITE* file_write,
-                            EPDFLayerSaveStatus* out_status) {
+FPDF_EXPORT void* FPDF_CALLCONV
+EPDFLayer_SaveDeltaToOwnedBufferEx(FPDF_DOCUMENT layer,
+                                   unsigned long* out_size,
+                                   EPDFLayerSaveStatus* out_status,
+                                   FPDF_BOOL* out_changed_since_load) {
+  if (out_size) {
+    *out_size = 0;
+  }
+  MemoryFileWriter writer;
+  if (!SaveDeltaImpl(layer, &writer, out_status, /*skip_if_unchanged=*/true,
+                     out_changed_since_load) ||
+      writer.data.empty()) {
+    return nullptr;
+  }
+  return CopyToOwnedBuffer(pdfium::as_byte_span(writer.data), out_size);
+}
+
+namespace {
+
+bool SaveLayerArtifactImpl(FPDF_DOCUMENT layer,
+                           FPDF_FILEWRITE* file_write,
+                           EPDFLayerSaveStatus* out_status,
+                           bool skip_if_unchanged,
+                           FPDF_BOOL* out_changed_since_load) {
   SetSaveStatus(out_status, EPDFLayerSaveStatus_kSaveFailed);
+  SetChanged(out_changed_since_load, false);
   if (!file_write) {
     return false;
   }
@@ -600,9 +786,18 @@ EPDFLayer_SaveLayerArtifact(FPDF_DOCUMENT layer,
   }
 
   EPDFLayerSaveStatus save_status = EPDFLayerSaveStatus_kSaveFailed;
-  if (!EPDFLayer_SaveDelta(layer, &delta_writer, &save_status)) {
+  FPDF_BOOL changed = false;
+  if (!SaveDeltaImpl(layer, &delta_writer, &save_status, skip_if_unchanged,
+                     &changed)) {
     SetSaveStatus(out_status, save_status);
     return false;
+  }
+  SetChanged(out_changed_since_load, !!changed);
+  if (skip_if_unchanged && !changed) {
+    // Nothing changed since load: the artifact the layer was opened with
+    // stands. Nothing written, by design.
+    SetSaveStatus(out_status, EPDFLayerSaveStatus_kSuccess);
+    return true;
   }
 
   std::optional<std::array<uint8_t, kSha256DigestSize>> delta_sha =
@@ -622,14 +817,39 @@ EPDFLayer_SaveLayerArtifact(FPDF_DOCUMENT layer,
   return true;
 }
 
-FPDF_EXPORT void* FPDF_CALLCONV
-EPDFLayer_SaveLayerArtifactToOwnedBuffer(FPDF_DOCUMENT layer,
+}  // namespace
+
+FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV
+EPDFLayer_SaveLayerArtifact(FPDF_DOCUMENT layer,
+                            FPDF_FILEWRITE* file_write,
+                            EPDFLayerSaveStatus* out_status) {
+  return SaveLayerArtifactImpl(layer, file_write, out_status,
+                               /*skip_if_unchanged=*/false,
+                               /*out_changed_since_load=*/nullptr);
+}
+
+FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV
+EPDFLayer_SaveLayerArtifactEx(FPDF_DOCUMENT layer,
+                              FPDF_FILEWRITE* file_write,
+                              EPDFLayerSaveStatus* out_status,
+                              FPDF_BOOL* out_changed_since_load) {
+  return SaveLayerArtifactImpl(layer, file_write, out_status,
+                               /*skip_if_unchanged=*/true,
+                               out_changed_since_load);
+}
+
+namespace {
+
+void* SaveLayerArtifactToOwnedBufferImpl(FPDF_DOCUMENT layer,
                                          unsigned long* out_size,
-                                         EPDFLayerSaveStatus* out_status) {
+                                         EPDFLayerSaveStatus* out_status,
+                                         bool skip_if_unchanged,
+                                         FPDF_BOOL* out_changed_since_load) {
   if (out_size) {
     *out_size = 0;
   }
   SetSaveStatus(out_status, EPDFLayerSaveStatus_kSaveFailed);
+  SetChanged(out_changed_since_load, false);
 
   CPDF_Document* document = CPDFDocumentFromFPDFDocument(layer);
   CPDF_LayerDocument* layer_doc = CPDF_LayerDocument::FromDocument(document);
@@ -641,8 +861,17 @@ EPDFLayer_SaveLayerArtifactToOwnedBuffer(FPDF_DOCUMENT layer,
 
   MemoryFileWriter delta_writer;
   EPDFLayerSaveStatus save_status = EPDFLayerSaveStatus_kSaveFailed;
-  if (!EPDFLayer_SaveDelta(layer, &delta_writer, &save_status)) {
+  FPDF_BOOL changed = false;
+  if (!SaveDeltaImpl(layer, &delta_writer, &save_status, skip_if_unchanged,
+                     &changed)) {
     SetSaveStatus(out_status, save_status);
+    return nullptr;
+  }
+  SetChanged(out_changed_since_load, !!changed);
+  if (skip_if_unchanged && !changed) {
+    // Nothing changed since load: the artifact the layer was opened with
+    // stands. Nothing written, by design.
+    SetSaveStatus(out_status, EPDFLayerSaveStatus_kSuccess);
     return nullptr;
   }
 
@@ -664,4 +893,25 @@ EPDFLayer_SaveLayerArtifactToOwnedBuffer(FPDF_DOCUMENT layer,
 
   SetSaveStatus(out_status, EPDFLayerSaveStatus_kSuccess);
   return CopyToOwnedBuffer(pdfium::span(artifact), out_size);
+}
+
+}  // namespace
+
+FPDF_EXPORT void* FPDF_CALLCONV
+EPDFLayer_SaveLayerArtifactToOwnedBuffer(FPDF_DOCUMENT layer,
+                                         unsigned long* out_size,
+                                         EPDFLayerSaveStatus* out_status) {
+  return SaveLayerArtifactToOwnedBufferImpl(layer, out_size, out_status,
+                                            /*skip_if_unchanged=*/false,
+                                            /*out_changed_since_load=*/nullptr);
+}
+
+FPDF_EXPORT void* FPDF_CALLCONV
+EPDFLayer_SaveLayerArtifactToOwnedBufferEx(FPDF_DOCUMENT layer,
+                                           unsigned long* out_size,
+                                           EPDFLayerSaveStatus* out_status,
+                                           FPDF_BOOL* out_changed_since_load) {
+  return SaveLayerArtifactToOwnedBufferImpl(layer, out_size, out_status,
+                                            /*skip_if_unchanged=*/true,
+                                            out_changed_since_load);
 }

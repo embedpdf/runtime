@@ -77,6 +77,19 @@ EPDFDoc_OpenRevision(FPDF_DOCUMENT document, unsigned long long end);
 // for a plain document (its bytes are not a frozen base), for an empty
 // delta, or when the composition does not parse. Close with
 // FPDF_CloseDocument(), independently of the layer, but not after it.
+// Function: EPDFDoc_OpenBaseOverlayFromPath
+//          Open, read-only, the document a layer's cumulative delta describes:
+//          the immutable base followed by the delta read from |delta_path| (a
+//          UTF-8 file system path the runtime opens itself and keeps open for
+//          the life of the returned document). No copy of the base, no copy
+//          of the delta. Close with FPDF_CloseDocument.
+FPDF_EXPORT FPDF_DOCUMENT FPDF_CALLCONV
+EPDFDoc_OpenBaseOverlayFromPath(FPDF_DOCUMENT layer, FPDF_STRING delta_path);
+
+// Function: EPDFDoc_OpenBaseOverlay
+//          See EPDFDoc_OpenBaseOverlayFromPath; this variant takes the delta
+//          bytes from memory (copied). The path variant reads the delta in
+//          place from a file the runtime opens itself.
 FPDF_EXPORT FPDF_DOCUMENT FPDF_CALLCONV
 EPDFDoc_OpenBaseOverlay(FPDF_DOCUMENT layer,
                         const void* delta,

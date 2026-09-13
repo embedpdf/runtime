@@ -699,6 +699,18 @@ EPDFLayer_OpenLayerArtifact(EPDF_BASE_DOCUMENT base,
                             FPDF_BYTESTRING password,
                             EPDFLayerOpenStatus* out_status);
 
+// Function: EPDFLayer_OpenLayerArtifactFromPath
+//          EPDFLayer_OpenLayerArtifact over a file the runtime opens itself
+//          and keeps open for the life of the layer: the delta is read in
+//          place, never copied, and every stream the delta carries stays a
+//          view into the file. The file must not change while the layer is
+//          open. |path| is a UTF-8 file system path.
+FPDF_EXPORT FPDF_DOCUMENT FPDF_CALLCONV
+EPDFLayer_OpenLayerArtifactFromPath(EPDF_BASE_DOCUMENT base,
+                                    FPDF_STRING path,
+                                    FPDF_BYTESTRING password,
+                                    EPDFLayerOpenStatus* out_status);
+
 // Function: EPDFLayer_IsObjectPromoted
 //          Return whether the object exists in the layer overlay.
 FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV

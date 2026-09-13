@@ -9,6 +9,7 @@
 
 #include "core/fpdfapi/parser/cpdf_dictionary.h"
 #include "core/fpdfapi/parser/cpdf_document.h"
+#include "core/fpdfapi/parser/cpdf_document_view_scope.h"
 #include "core/fpdfapi/parser/cpdf_object.h"
 #include "core/fpdfapi/parser/cpdf_reference.h"
 #include "core/fpdfdoc/cpdf_nametree.h"
@@ -98,6 +99,9 @@ int RemoveAllByKey(CPDF_NameTree* tree, const WideString& key) {
 FPDF_EXPORT int FPDF_CALLCONV EPDFDoc_GetNamedPageCount(FPDF_DOCUMENT document,
                                                         int tree) {
   CPDF_Document* doc = CPDFDocumentFromFPDFDocument(document);
+  // Resolve through the effective view: a name tree reached from a frozen
+  // base node must still see the layer's promoted nodes.
+  CPDF_DocumentViewScope document_view(doc);
   std::optional<ByteStringView> category = CategoryOf(tree);
   if (!doc || !category.has_value()) {
     return -1;
@@ -115,6 +119,9 @@ EPDFDoc_GetNamedPageAt(FPDF_DOCUMENT document,
                        unsigned int* obj_num,
                        int* kind) {
   CPDF_Document* doc = CPDFDocumentFromFPDFDocument(document);
+  // Resolve through the effective view: a name tree reached from a frozen
+  // base node must still see the layer's promoted nodes.
+  CPDF_DocumentViewScope document_view(doc);
   std::optional<ByteStringView> category = CategoryOf(tree);
   if (!doc || !category.has_value() || index < 0) {
     return 0;
@@ -140,6 +147,9 @@ EPDFDoc_SetNamedPage(FPDF_DOCUMENT document,
                      FPDF_WIDESTRING key,
                      unsigned int page_obj_num) {
   CPDF_Document* doc = CPDFDocumentFromFPDFDocument(document);
+  // Resolve through the effective view: a name tree reached from a frozen
+  // base node must still see the layer's promoted nodes.
+  CPDF_DocumentViewScope document_view(doc);
   if (!doc || !key || page_obj_num == 0) {
     return false;
   }
@@ -168,6 +178,9 @@ EPDFDoc_SetNamedPage(FPDF_DOCUMENT document,
 FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV
 EPDFDoc_RemoveNamedPage(FPDF_DOCUMENT document, FPDF_WIDESTRING key) {
   CPDF_Document* doc = CPDFDocumentFromFPDFDocument(document);
+  // Resolve through the effective view: a name tree reached from a frozen
+  // base node must still see the layer's promoted nodes.
+  CPDF_DocumentViewScope document_view(doc);
   if (!doc || !key) {
     return false;
   }
@@ -188,6 +201,9 @@ FPDF_EXPORT int FPDF_CALLCONV
 EPDFDoc_RemoveNamedPagesForPage(FPDF_DOCUMENT document,
                                 unsigned int page_obj_num) {
   CPDF_Document* doc = CPDFDocumentFromFPDFDocument(document);
+  // Resolve through the effective view: a name tree reached from a frozen
+  // base node must still see the layer's promoted nodes.
+  CPDF_DocumentViewScope document_view(doc);
   if (!doc || page_obj_num == 0) {
     return -1;
   }

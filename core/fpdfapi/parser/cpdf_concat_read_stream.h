@@ -13,6 +13,9 @@ class CPDF_ConcatReadStream final : public IFX_SeekableReadStream {
 
   // IFX_SeekableReadStream:
   FX_FILESIZE GetSize() override;
+  bool IsSelfContained() const override {
+    return first_->IsSelfContained() && second_->IsSelfContained();
+  }
   bool ReadBlockAtOffset(pdfium::span<uint8_t> buffer,
                          FX_FILESIZE offset) override;
 

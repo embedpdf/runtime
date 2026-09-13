@@ -20,6 +20,7 @@ class CFX_FileAccessStream final : public IFX_SeekableStream {
 
   // IFX_SeekableStream:
   FX_FILESIZE GetSize() override;
+  bool IsSelfContained() const override { return true; }  // opened the file itself
   bool IsEOF() override;
   FX_FILESIZE GetPosition() override;
   bool ReadBlockAtOffset(pdfium::span<uint8_t> buffer,

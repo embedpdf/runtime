@@ -27,6 +27,7 @@
 #include "core/fpdfapi/parser/cpdf_array.h"
 #include "core/fpdfapi/parser/cpdf_dictionary.h"
 #include "core/fpdfapi/parser/cpdf_document.h"
+#include "core/fpdfapi/parser/cpdf_document_view_scope.h"
 #include "core/fpdfapi/parser/cpdf_name.h"
 #include "core/fpdfapi/parser/cpdf_number.h"
 #include "core/fpdfapi/parser/cpdf_string.h"
@@ -221,6 +222,7 @@ FPDF_EXPORT void FPDF_CALLCONV FPDFPage_Delete(FPDF_DOCUMENT document,
   if (!doc) {
     return;
   }
+  CPDF_DocumentViewScope document_view(doc);
 
   CPDF_Document::Extension* pExtension = doc->GetExtension();
   const uint32_t page_obj_num = pExtension ? pExtension->DeletePage(page_index)
@@ -237,6 +239,9 @@ FPDF_MovePages(FPDF_DOCUMENT document,
   if (!doc) {
     return false;
   }
+  // Resolve through the effective view: on a layer whose catalog is the
+  // frozen base's, the page tree must still be read through the overlay.
+  CPDF_DocumentViewScope document_view(doc);
 
   // SAFETY: caller ensures `page_indices` points to at least
   // `page_indices_len` ints.

@@ -49,6 +49,13 @@ class CPDF_ReadValidator : public IFX_SeekableReadStream {
   bool ReadBlockAtOffset(pdfium::span<uint8_t> buffer,
                          FX_FILESIZE offset) override;
   FX_FILESIZE GetSize() override;
+  // EmbedPDF: a validator changes no byte at any offset; the stream it
+  // wraps is what a holder recognises as storage it owns (see
+  // CPDF_IndirectObjectHolder::SharesBackingStorageWith).
+  IFX_SeekableReadStream* GetUnderlyingStream() override {
+    return file_read_->GetUnderlyingStream();
+  }
+  bool IsSelfContained() const override { return file_read_->IsSelfContained(); }
 
  protected:
   CPDF_ReadValidator(RetainPtr<IFX_SeekableReadStream> file_read,

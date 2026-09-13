@@ -530,6 +530,32 @@ bool CPDF_Document::IsObjectPromoted(uint32_t objnum) const {
   return !!FindPromotedObject(objnum);
 }
 
+RetainPtr<const CPDF_Object> CPDF_Document::GetBaseTwin(
+    uint32_t objnum) const {
+  return GetLoadedTwin(objnum);
+}
+
+bool CPDF_Document::SharesBackingStorageWith(const CPDF_Stream* stream) const {
+  CPDF_Parser* parser = GetParser();
+  RetainPtr<IFX_SeekableReadStream> file = parser ? parser->GetFileAccess() : nullptr;
+  RetainPtr<IFX_SeekableReadStream> view = stream ? stream->BackingView() : nullptr;
+  return file && view && view->GetUnderlyingStream() == file->GetUnderlyingStream();
+}
+
+RetainPtr<const CPDF_Object> CPDF_Document::GetLoadedTwin(
+    uint32_t objnum) const {
+  // The object as it is in the loaded bytes, parsed afresh: the parser
+  // hands out a new copy each time and caches nothing, so an in-place edit
+  // of the live object never reaches it. Null for an object the file does
+  // not carry (created in memory).
+  CPDF_Parser* parser = GetParser();
+  if (!parser || objnum == 0 || !parser->IsValidObjectNumber(objnum) ||
+      parser->IsObjectFree(objnum)) {
+    return nullptr;
+  }
+  return parser->ParseIndirectObject(objnum);
+}
+
 uint64_t CPDF_Document::GetOverlayEpoch() const {
   return 0;
 }
