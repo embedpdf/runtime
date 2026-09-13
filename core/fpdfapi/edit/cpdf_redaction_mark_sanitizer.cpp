@@ -8,11 +8,13 @@
 #include "core/fpdfapi/page/cpdf_contentmarks.h"
 #include "core/fpdfapi/page/cpdf_form.h"
 #include "core/fpdfapi/page/cpdf_formobject.h"
+#include "core/fpdfapi/page/cpdf_page.h"
 #include "core/fpdfapi/page/cpdf_pageobject.h"
 #include "core/fpdfapi/page/cpdf_pageobjectholder.h"
 #include "core/fpdfapi/parser/cpdf_array.h"
 #include "core/fpdfapi/parser/cpdf_dictionary.h"
 #include "core/fpdfapi/parser/cpdf_document.h"
+#include "core/fpdfapi/parser/cpdf_document_view_scope.h"
 
 namespace {
 
@@ -126,6 +128,7 @@ void CPDF_RedactionMarkSanitizer::Record(CPDF_PageObject* object) {
 }
 
 void CPDF_RedactionMarkSanitizer::Apply() {
+  CPDF_DocumentViewScope document_view(holder_->GetDocument());
   std::map<ByteString, RetainPtr<const CPDF_Dictionary>> properties;
   std::set<int> mcids;
   std::set<const CPDF_ContentMarkItem*> changed_marks;
@@ -164,6 +167,7 @@ void CPDF_RedactionMarkSanitizer::Apply() {
     }
   }
   RemoveUnusedProperties(std::move(properties));
+  RemoveUnusedPageTreeProperties();
   SanitizeStructure(mcids);
 }
 
@@ -188,7 +192,7 @@ void CPDF_RedactionMarkSanitizer::RemoveUnusedProperties(
   }
   std::set<ByteString> unused;
   for (const auto& [name, property] : candidates) {
-    if (!PropertyIsUsed(holder_.Get(), property.Get())) {
+    if (!PropertyIsUsed(holder_.get(), property.Get())) {
       unused.insert(name);
     }
   }
@@ -206,6 +210,98 @@ void CPDF_RedactionMarkSanitizer::RemoveUnusedProperties(
   private_resources->SetFor("Properties", std::move(private_properties));
   holder_->SetResources(private_resources);
   holder_->GetMutableDict()->SetFor("Resources", std::move(private_resources));
+}
+
+void CPDF_RedactionMarkSanitizer::RemoveUnusedPageTreeProperties() {
+  if (!holder_->IsPage() || sanitized_properties_->empty()) {
+    return;
+  }
+
+  // Installing local page resources does not detach inherited resources from
+  // the file: /Parent keeps every /Pages ancestor reachable. Include shadowed
+  // ancestors too, but only consider properties sanitized by this operation.
+  std::vector<RetainPtr<const CPDF_Dictionary>> ancestor_resources;
+  std::map<const CPDF_Dictionary*, RetainPtr<const CPDF_Dictionary>> unused;
+  std::set<const CPDF_Dictionary*> visited;
+  auto ancestor = holder_->GetDict()->GetDictFor("Parent");
+  while (ancestor && visited.insert(ancestor.Get()).second) {
+    auto resources = ancestor->GetDictFor("Resources");
+    ancestor_resources.push_back(resources);
+    auto properties = resources ? resources->GetDictFor("Properties") : nullptr;
+    if (properties) {
+      for (const auto& name : properties->GetKeys()) {
+        auto property = properties->GetDictFor(name.AsStringView());
+        for (const auto& sanitized : *sanitized_properties_) {
+          if (SameDictionary(property.Get(), sanitized.Get())) {
+            unused.emplace(property.Get(), property);
+            break;
+          }
+        }
+      }
+    }
+    ancestor = ancestor->GetDictFor("Parent");
+  }
+
+  auto preserve_used = [&unused](const CPDF_PageObjectHolder* page) {
+    std::erase_if(unused, [page](const auto& entry) {
+      return PropertyIsUsed(page, entry.second.Get());
+    });
+  };
+  // Use the live, edited page, not a new parse of its old content stream.
+  preserve_used(holder_.get());
+  if (unused.empty()) {
+    return;
+  }
+
+  CPDF_Document* doc = holder_->GetDocument();
+  for (int i = 0; i < doc->GetPageCount(); ++i) {
+    auto page_dict = doc->GetPageDictionary(i);
+    if (!page_dict) {
+      // Do not remove a shared definition if a sibling cannot be inspected.
+      return;
+    }
+    if (SameDictionary(page_dict.Get(), holder_->GetDict().Get())) {
+      continue;
+    }
+    // Parsing is read-only. In a layer the view scope resolves references
+    // through that layer while the shared base remains frozen.
+    auto page = pdfium::MakeRetain<CPDF_Page>(
+        doc, pdfium::WrapRetain(const_cast<CPDF_Dictionary*>(page_dict.Get())));
+    page->ParseContent();
+    preserve_used(page.Get());
+    if (unused.empty()) {
+      return;
+    }
+  }
+
+  // Promote the parent chain through mutable accessors for layer isolation.
+  // Clone resource dictionaries instead of mutating aliases held elsewhere.
+  auto parent = holder_->GetMutableDict()->GetMutableDictFor("Parent");
+  for (const auto& resources : ancestor_resources) {
+    if (!parent) {
+      break;
+    }
+    auto properties = resources ? resources->GetDictFor("Properties") : nullptr;
+    std::set<ByteString> names;
+    if (properties) {
+      for (const auto& name : properties->GetKeys()) {
+        if (unused.contains(
+                properties->GetDictFor(name.AsStringView()).Get())) {
+          names.insert(name);
+        }
+      }
+    }
+    if (!names.empty()) {
+      auto private_resources = ToDictionary(resources->CloneForHolder(doc));
+      auto private_properties = ToDictionary(properties->CloneForHolder(doc));
+      for (const auto& name : names) {
+        private_properties->RemoveFor(name.AsStringView());
+      }
+      private_resources->SetFor("Properties", std::move(private_properties));
+      parent->SetFor("Resources", std::move(private_resources));
+    }
+    parent = parent->GetMutableDictFor("Parent");
+  }
 }
 
 void CPDF_RedactionMarkSanitizer::SanitizeStructure(

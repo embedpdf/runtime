@@ -5,11 +5,16 @@
 
 #include <set>
 #include <string>
+#include <tuple>
 #include <vector>
 
 #include "core/fpdfapi/parser/cpdf_array.h"
 #include "core/fpdfapi/parser/cpdf_dictionary.h"
 #include "core/fpdfapi/parser/cpdf_document.h"
+#include "core/fpdfapi/parser/cpdf_document_view_scope.h"
+#include "core/fpdfapi/parser/cpdf_name.h"
+#include "core/fpdfapi/parser/cpdf_number.h"
+#include "core/fpdfapi/parser/cpdf_reference.h"
 #include "core/fpdfapi/parser/cpdf_stream.h"
 #include "core/fpdfapi/parser/cpdf_stream_acc.h"
 #include "fpdfsdk/cpdfsdk_helpers.h"
@@ -274,3 +279,164 @@ TEST_F(EPDFRedactEmbedderTest, InheritedPropertiesLeaveNoUnusedOriginalOnPage) {
   ExpectNoSentinel(CPDFDocumentFromFPDFDocument(saved_document()), "SECRET");
   CloseSavedPage(saved);
 }
+
+// Exercise page-tree inheritance separately from Form resource inheritance.
+// Parameters: layer session, direct (rather than indirect) property dictionary.
+class EPDFRedactPageTreeTest
+    : public EPDFRedactEmbedderTest,
+      public testing::WithParamInterface<std::tuple<bool, bool>> {
+ protected:
+  void OpenInput(bool sibling_uses_property) {
+    ASSERT_TRUE(OpenDocument("redact_actual_text.pdf"));
+    auto* doc = CPDFDocumentFromFPDFDocument(document());
+    auto first = doc->GetMutablePageDictionary(0);
+    auto resources = first->GetMutableDictFor("Resources");
+    if (std::get<1>(GetParam())) {
+      auto properties = resources->GetMutableDictFor("Properties");
+      properties->SetFor(
+          "Sensitive",
+          properties->GetDictFor("Sensitive")->CloneForHolder(doc));
+    }
+
+    auto sibling = doc->CreateNewPage(1);
+    ASSERT_TRUE(sibling);
+    sibling->SetFor("MediaBox", first->GetObjectFor("MediaBox")->Clone());
+    if (sibling_uses_property) {
+      sibling->SetFor("Contents", first->GetObjectFor("Contents")->Clone());
+    } else {
+      const ByteString contents("BT /F1 20 Tf 50 300 Td (PUBLIC) Tj ET");
+      auto stream = doc->NewIndirect<CPDF_Stream>(contents.unsigned_span());
+      sibling->SetNewFor<CPDF_Reference>("Contents", doc, stream->GetObjNum());
+    }
+
+    auto root_pages = doc->GetMutableRoot()->GetMutableDictFor("Pages");
+    auto branch = doc->NewIndirect<CPDF_Dictionary>();
+    branch->SetNewFor<CPDF_Name>("Type", "Pages");
+    branch->SetNewFor<CPDF_Number>("Count", 2);
+    branch->SetFor("Kids", root_pages->GetArrayFor("Kids")->Clone());
+    branch->SetNewFor<CPDF_Reference>("Parent", doc, root_pages->GetObjNum());
+    auto kids = doc->New<CPDF_Array>();
+    kids->AppendNew<CPDF_Reference>(doc, branch->GetObjNum());
+    root_pages->SetFor("Kids", std::move(kids));
+    first->SetNewFor<CPDF_Reference>("Parent", doc, branch->GetObjNum());
+    sibling->SetNewFor<CPDF_Reference>("Parent", doc, branch->GetObjNum());
+
+    // Both ancestors reference the same resource dictionary. The higher,
+    // shadowed copy must not keep an unused secret reachable after rewrite.
+    const uint32_t resources_number = doc->AddIndirectObject(resources);
+    root_pages->SetNewFor<CPDF_Reference>("Resources", doc, resources_number);
+    branch->SetNewFor<CPDF_Reference>("Resources", doc, resources_number);
+    first->RemoveFor("Resources");
+    sibling->RemoveFor("Resources");
+
+    ASSERT_TRUE(FPDF_SaveAsCopy(document(), this, FPDF_NO_INCREMENTAL));
+    input_ = GetString();
+    ClearString();
+    if (std::get<0>(GetParam())) {
+      base_.reset(
+          EPDF_LoadMemBaseDocument64(input_.data(), input_.size(), nullptr));
+      ASSERT_TRUE(base_);
+      EPDFLayerOpenStatus status = EPDFLayerOpenStatus_kOpenFailed;
+      working_.reset(
+          EPDFLayer_OpenLayer(base_.get(), nullptr, nullptr, &status));
+      EXPECT_EQ(EPDFLayerOpenStatus_kSuccess, status);
+    } else {
+      working_.reset(
+          FPDF_LoadMemDocument64(input_.data(), input_.size(), nullptr));
+    }
+    ASSERT_TRUE(working_);
+  }
+
+  void SaveWorking() {
+    ASSERT_TRUE(FPDF_SaveAsCopy(working_.get(), this, FPDF_NO_INCREMENTAL));
+    ASSERT_TRUE(OpenSavedDocument());
+  }
+
+  void ExpectOtherLayerUnchanged() {
+    if (!base_) {
+      return;
+    }
+    ScopedFPDFDocument other(
+        EPDFLayer_OpenLayer(base_.get(), nullptr, nullptr, nullptr));
+    ASSERT_TRUE(other);
+    ScopedFPDFPage page(FPDF_LoadPage(other.get(), 0));
+    ASSERT_TRUE(page);
+    EXPECT_NE(std::wstring::npos, ReadText(page.get()).find(L"SECRET"));
+    auto* doc = CPDFDocumentFromFPDFDocument(other.get());
+    CPDF_DocumentViewScope document_view(doc);
+    auto resources =
+        doc->GetRoot()->GetDictFor("Pages")->GetDictFor("Resources");
+    EXPECT_TRUE(resources->GetDictFor("Properties")->KeyExist("Sensitive"));
+  }
+
+  std::string input_;
+  std::unique_ptr<std::remove_pointer_t<EPDF_BASE_DOCUMENT>,
+                  decltype(&EPDF_ReleaseBaseDocument)>
+      base_{nullptr, EPDF_ReleaseBaseDocument};
+  ScopedFPDFDocument working_;
+};
+
+TEST_P(EPDFRedactPageTreeTest, RemovesUnusedPropertiesFromEveryAncestor) {
+  OpenInput(/*sibling_uses_property=*/false);
+  ASSERT_TRUE(working_);
+  ScopedFPDFPage page(FPDF_LoadPage(working_.get(), 0));
+  ASSERT_TRUE(page);
+  ASSERT_TRUE(EPDFPage_ApplyRedactions(page.get(), nullptr));
+  ASSERT_TRUE(FPDFPage_GenerateContent(page.get()));
+  SaveWorking();
+  ASSERT_TRUE(saved_document());
+  ExpectNoSentinel(CPDFDocumentFromFPDFDocument(saved_document()), "SECRET");
+  FPDF_PAGE saved = LoadSavedPage(0);
+  ASSERT_TRUE(saved);
+  EXPECT_EQ(L"keep\r\nsibling\r\nPUBLIC", ReadText(saved));
+  CloseSavedPage(saved);
+  FPDF_PAGE sibling = LoadSavedPage(1);
+  ASSERT_TRUE(sibling);
+  EXPECT_EQ(L"PUBLIC", ReadText(sibling));
+  CloseSavedPage(sibling);
+  ExpectOtherLayerUnchanged();
+}
+
+TEST_P(EPDFRedactPageTreeTest, PreservesAnUnmarkedSiblingUsingTheProperty) {
+  OpenInput(/*sibling_uses_property=*/true);
+  ASSERT_TRUE(working_);
+  ScopedFPDFPage page(FPDF_LoadPage(working_.get(), 0));
+  ASSERT_TRUE(page);
+  ASSERT_TRUE(EPDFPage_ApplyRedactions(page.get(), nullptr));
+  ASSERT_TRUE(FPDFPage_GenerateContent(page.get()));
+  SaveWorking();
+  ASSERT_TRUE(saved_document());
+  FPDF_PAGE sibling = LoadSavedPage(1);
+  ASSERT_TRUE(sibling);
+  EXPECT_EQ(L"SECRET keep sibling\r\nPUBLIC", ReadText(sibling));
+  CloseSavedPage(sibling);
+  ExpectOtherLayerUnchanged();
+}
+
+TEST_P(EPDFRedactPageTreeTest,
+       RemovesAncestorPropertyAfterBothPagesAreRedacted) {
+  OpenInput(/*sibling_uses_property=*/true);
+  ASSERT_TRUE(working_);
+  ScopedFPDFPage first(FPDF_LoadPage(working_.get(), 0));
+  ScopedFPDFPage second(FPDF_LoadPage(working_.get(), 1));
+  ASSERT_TRUE(first);
+  ASSERT_TRUE(second);
+  {
+    ScopedFPDFAnnotation mark(
+        FPDFPage_CreateAnnot(second.get(), FPDF_ANNOT_REDACT));
+    const FS_RECTF rect = {49, 121, 133, 95};
+    ASSERT_TRUE(FPDFAnnot_SetRect(mark.get(), &rect));
+  }
+  ASSERT_TRUE(EPDFPage_ApplyRedactions(first.get(), nullptr));
+  ASSERT_TRUE(EPDFPage_ApplyRedactions(second.get(), nullptr));
+  ASSERT_TRUE(FPDFPage_GenerateContent(first.get()));
+  ASSERT_TRUE(FPDFPage_GenerateContent(second.get()));
+  SaveWorking();
+  ASSERT_TRUE(saved_document());
+  ExpectNoSentinel(CPDFDocumentFromFPDFDocument(saved_document()), "SECRET");
+  ExpectOtherLayerUnchanged();
+}
+
+INSTANTIATE_TEST_SUITE_P(All,
+                         EPDFRedactPageTreeTest,
+                         testing::Combine(testing::Bool(), testing::Bool()));

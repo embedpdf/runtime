@@ -39,6 +39,7 @@ class CPDF_RedactionMarkSanitizer {
  private:
   void RemoveUnusedProperties(
       std::map<ByteString, RetainPtr<const CPDF_Dictionary>> candidates);
+  void RemoveUnusedPageTreeProperties();
   void SanitizeStructure(const std::set<int>& mcids);
 
   UnownedPtr<CPDF_PageObjectHolder> const holder_;
