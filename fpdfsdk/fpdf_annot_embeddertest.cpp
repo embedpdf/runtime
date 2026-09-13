@@ -4997,6 +4997,438 @@ TEST_F(FPDFAnnotEmbedderTest, RedactInQuadsRejectsNonFiniteInput) {
   EXPECT_EQ(before, ExtractPageText(page.get()));
 }
 
+namespace {
+
+// Union of the text-page character boxes for `count` characters starting at
+// `start`, as an axis-aligned FS_QUADPOINTSF in PDF slot order
+// (upper-start, upper-end, lower-start, lower-end). This is how search hits
+// and selections hand regions to the redactor.
+FS_QUADPOINTSF QuadForCharRange(FPDF_TEXTPAGE text_page, int start, int count) {
+  double left = 0;
+  double right = 0;
+  double bottom = 0;
+  double top = 0;
+  for (int i = start; i < start + count; ++i) {
+    double l = 0;
+    double r = 0;
+    double b = 0;
+    double t = 0;
+    EXPECT_TRUE(FPDFText_GetCharBox(text_page, i, &l, &r, &b, &t));
+    if (i == start) {
+      left = l;
+      right = r;
+      bottom = b;
+      top = t;
+      continue;
+    }
+    left = std::min(left, l);
+    right = std::max(right, r);
+    bottom = std::min(bottom, b);
+    top = std::max(top, t);
+  }
+  FS_QUADPOINTSF quad;
+  quad.x1 = static_cast<float>(left);
+  quad.y1 = static_cast<float>(top);
+  quad.x2 = static_cast<float>(right);
+  quad.y2 = static_cast<float>(top);
+  quad.x3 = static_cast<float>(left);
+  quad.y3 = static_cast<float>(bottom);
+  quad.x4 = static_cast<float>(right);
+  quad.y4 = static_cast<float>(bottom);
+  return quad;
+}
+
+FS_RECTF RectForQuad(const FS_QUADPOINTSF& quad) {
+  return {std::min({quad.x1, quad.x2, quad.x3, quad.x4}),
+          std::max({quad.y1, quad.y2, quad.y3, quad.y4}),
+          std::max({quad.x1, quad.x2, quad.x3, quad.x4}),
+          std::min({quad.y1, quad.y2, quad.y3, quad.y4})};
+}
+
+}  // namespace
+
+// Two regions on ONE text object where the first region removes the object's
+// leading glyphs. The leading-gap shift must not displace the hit tests of
+// the glyphs that follow, otherwise the second region removes the wrong
+// glyphs: redacted text survives and neighbouring text is destroyed.
+TEST_F(FPDFAnnotEmbedderTest, RedactInQuadsMultipleRegionsOnOneTextObject) {
+  ASSERT_TRUE(OpenDocument("redact_multi_region_line.pdf"));
+  ScopedPage page = LoadScopedPage(0);
+  ASSERT_TRUE(page);
+
+  const std::wstring before = ExtractPageText(page.get());
+  const size_t first = before.find(L"SECRET1");
+  const size_t second = before.find(L"SECRET2");
+  ASSERT_EQ(0u, first);
+  ASSERT_NE(std::wstring::npos, second);
+
+  FS_QUADPOINTSF quads[2];
+  {
+    ScopedFPDFTextPage text_page(FPDFText_LoadPage(page.get()));
+    ASSERT_TRUE(text_page);
+    quads[0] = QuadForCharRange(text_page.get(), static_cast<int>(first), 7);
+    quads[1] = QuadForCharRange(text_page.get(), static_cast<int>(second), 7);
+  }
+
+  ASSERT_TRUE(EPDFText_RedactInQuads(page.get(), quads, 2,
+                                     /*recurse_forms=*/true,
+                                     /*draw_black_boxes=*/false));
+  ASSERT_TRUE(FPDFPage_GenerateContent(page.get()));
+  ASSERT_TRUE(FPDF_SaveAsCopy(document(), this, 0));
+
+  ASSERT_TRUE(OpenSavedDocument());
+  FPDF_PAGE saved_page = LoadSavedPage(0);
+  ASSERT_TRUE(saved_page);
+  const std::wstring after = ExtractPageText(saved_page);
+  CloseSavedPage(saved_page);
+
+  EXPECT_EQ(std::wstring::npos, after.find(L"SECRET")) << after;
+  EXPECT_EQ(std::wstring::npos, after.find(L"ECRET")) << after;
+  EXPECT_NE(std::wstring::npos, after.find(L"keep this")) << after;
+  EXPECT_NE(std::wstring::npos, after.find(L"tail")) << after;
+}
+
+// Same scenario through the annotation-driven apply path, which batches every
+// REDACT annotation on the page into one sanitizer call.
+TEST_F(FPDFAnnotEmbedderTest, ApplyPageRedactionsTwoMarksOnOneTextObject) {
+  ASSERT_TRUE(OpenDocument("redact_multi_region_line.pdf"));
+  ScopedPage page = LoadScopedPage(0);
+  ASSERT_TRUE(page);
+
+  const std::wstring before = ExtractPageText(page.get());
+  const size_t first = before.find(L"SECRET1");
+  const size_t second = before.find(L"SECRET2");
+  ASSERT_EQ(0u, first);
+  ASSERT_NE(std::wstring::npos, second);
+
+  FS_QUADPOINTSF quads[2];
+  {
+    ScopedFPDFTextPage text_page(FPDFText_LoadPage(page.get()));
+    ASSERT_TRUE(text_page);
+    quads[0] = QuadForCharRange(text_page.get(), static_cast<int>(first), 7);
+    quads[1] = QuadForCharRange(text_page.get(), static_cast<int>(second), 7);
+  }
+  for (const FS_QUADPOINTSF& quad : quads) {
+    ScopedFPDFAnnotation annot(
+        FPDFPage_CreateAnnot(page.get(), FPDF_ANNOT_REDACT));
+    ASSERT_TRUE(annot);
+    ASSERT_TRUE(FPDFAnnot_AppendAttachmentPoints(annot.get(), &quad));
+    const FS_RECTF rect = RectForQuad(quad);
+    ASSERT_TRUE(FPDFAnnot_SetRect(annot.get(), &rect));
+  }
+  ASSERT_EQ(2, FPDFPage_GetAnnotCount(page.get()));
+
+  uint32_t removed = 0;
+  ASSERT_TRUE(EPDFPage_ApplyRedactions(page.get(), &removed));
+  EXPECT_EQ(0u, removed);
+  ASSERT_EQ(0, FPDFPage_GetAnnotCount(page.get()));
+  ASSERT_TRUE(FPDFPage_GenerateContent(page.get()));
+  ASSERT_TRUE(FPDF_SaveAsCopy(document(), this, 0));
+
+  ASSERT_TRUE(OpenSavedDocument());
+  FPDF_PAGE saved_page = LoadSavedPage(0);
+  ASSERT_TRUE(saved_page);
+  const std::wstring after = ExtractPageText(saved_page);
+  CloseSavedPage(saved_page);
+
+  EXPECT_EQ(std::wstring::npos, after.find(L"SECRET")) << after;
+  EXPECT_EQ(std::wstring::npos, after.find(L"ECRET")) << after;
+  EXPECT_NE(std::wstring::npos, after.find(L"keep this")) << after;
+  EXPECT_NE(std::wstring::npos, after.find(L"tail")) << after;
+}
+
+// A region that touches nothing must leave every text object exactly where it
+// was, including vertical CJK text, even though callers regenerate the page
+// content afterwards.
+TEST_F(FPDFAnnotEmbedderTest, RedactFarFromVerticalTextLeavesItInPlace) {
+  ASSERT_TRUE(OpenDocument("vertical_text.pdf"));
+  ScopedPage page = LoadScopedPage(0);
+  ASSERT_TRUE(page);
+
+  const std::wstring before = ExtractPageText(page.get());
+  ASSERT_NE(std::wstring::npos, before.find(L"Hello"));
+  double left_before = 0;
+  double right_before = 0;
+  double bottom_before = 0;
+  double top_before = 0;
+  {
+    ScopedFPDFTextPage text_page(FPDFText_LoadPage(page.get()));
+    ASSERT_TRUE(text_page);
+    ASSERT_TRUE(FPDFText_GetCharBox(text_page.get(), 0, &left_before,
+                                    &right_before, &bottom_before,
+                                    &top_before));
+  }
+
+  // Bottom-right corner of the 200x200 page; the text hangs from the top-left.
+  const FS_RECTF far_away = {150.0f, 40.0f, 190.0f, 10.0f};
+  EXPECT_FALSE(EPDFText_RedactInRect(page.get(), &far_away,
+                                     /*recurse_forms=*/true,
+                                     /*draw_black_boxes=*/false));
+  ASSERT_TRUE(FPDFPage_GenerateContent(page.get()));
+  ASSERT_TRUE(FPDF_SaveAsCopy(document(), this, 0));
+
+  ASSERT_TRUE(OpenSavedDocument());
+  FPDF_PAGE saved_page = LoadSavedPage(0);
+  ASSERT_TRUE(saved_page);
+  EXPECT_EQ(before, ExtractPageText(saved_page));
+  double left_after = 0;
+  double right_after = 0;
+  double bottom_after = 0;
+  double top_after = 0;
+  {
+    ScopedFPDFTextPage text_page(FPDFText_LoadPage(saved_page));
+    ASSERT_TRUE(text_page);
+    ASSERT_TRUE(FPDFText_GetCharBox(text_page.get(), 0, &left_after,
+                                    &right_after, &bottom_after, &top_after));
+  }
+  CloseSavedPage(saved_page);
+  EXPECT_NEAR(left_before, left_after, 0.01);
+  EXPECT_NEAR(right_before, right_after, 0.01);
+  EXPECT_NEAR(bottom_before, bottom_after, 0.01);
+  EXPECT_NEAR(top_before, top_after, 0.01);
+}
+
+// Text that lives inside a Form XObject is sanitized through the form
+// recursion, and the original (unsanitized) form stream must not survive in
+// the saved file.
+TEST_F(FPDFAnnotEmbedderTest, RedactInQuadsRemovesTextInsideFormXObject) {
+  ASSERT_TRUE(OpenDocument("form_object_with_text.pdf"));
+  ScopedPage page = LoadScopedPage(0);
+  ASSERT_TRUE(page);
+
+  const std::wstring before = ExtractPageText(page.get());
+  ASSERT_NE(std::wstring::npos, before.find(L"Hello, world!")) << before;
+  ASSERT_NE(std::wstring::npos, before.find(L"Goodbye, world!")) << before;
+  const size_t hello_world = before.find(L"world");
+  ASSERT_NE(std::wstring::npos, hello_world);
+
+  FS_QUADPOINTSF quad;
+  {
+    ScopedFPDFTextPage text_page(FPDFText_LoadPage(page.get()));
+    ASSERT_TRUE(text_page);
+    quad = QuadForCharRange(text_page.get(), static_cast<int>(hello_world), 5);
+  }
+  ASSERT_TRUE(EPDFText_RedactInQuads(page.get(), &quad, 1,
+                                     /*recurse_forms=*/true,
+                                     /*draw_black_boxes=*/false));
+  ASSERT_TRUE(FPDFPage_GenerateContent(page.get()));
+  ASSERT_TRUE(FPDF_SaveAsCopy(document(), this, 0));
+
+  ASSERT_TRUE(OpenSavedDocument());
+  FPDF_PAGE saved_page = LoadSavedPage(0);
+  ASSERT_TRUE(saved_page);
+  const std::wstring after = ExtractPageText(saved_page);
+  CloseSavedPage(saved_page);
+
+  EXPECT_NE(std::wstring::npos, after.find(L"Hello,")) << after;
+  EXPECT_NE(std::wstring::npos, after.find(L"Goodbye, world!")) << after;
+  const size_t surviving_world = after.find(L"world");
+  ASSERT_NE(std::wstring::npos, surviving_world) << after;
+  EXPECT_EQ(std::wstring::npos, after.find(L"world", surviving_world + 1))
+      << after;
+  // The fixture's original form stream is uncompressed and literal; none of
+  // it may be reachable in the saved bytes.
+  EXPECT_EQ(std::string::npos, GetString().find("(Hello, world!)"));
+}
+
+// A real OCR layer (Tesseract: GlyphLessFont, invisible text, Tz horizontal
+// scaling, one text object per word). Whole-word and partial-word regions
+// must remove exactly the covered glyphs and leave the rest in place.
+TEST_F(FPDFAnnotEmbedderTest, RedactRemovesInvisibleOcrLayerText) {
+  ASSERT_TRUE(OpenDocument("redact_ocr_glyphless.pdf"));
+  ScopedPage page = LoadScopedPage(0);
+  ASSERT_TRUE(page);
+
+  const std::wstring before = ExtractPageText(page.get());
+  const size_t secret = before.find(L"SECRET");
+  const size_t data = before.find(L"DATA");
+  ASSERT_NE(std::wstring::npos, secret) << before;
+  ASSERT_NE(std::wstring::npos, data) << before;
+  ASSERT_NE(std::wstring::npos, before.find(L"keep")) << before;
+
+  // "SECRET" is a whole text object; "DAT" removes the leading glyphs of the
+  // "DATA " object so its surviving "A " must be re-anchored (with Tz).
+  FS_QUADPOINTSF quads[2];
+  double a_left_before = 0;
+  {
+    ScopedFPDFTextPage text_page(FPDFText_LoadPage(page.get()));
+    ASSERT_TRUE(text_page);
+    quads[0] = QuadForCharRange(text_page.get(), static_cast<int>(secret), 6);
+    quads[1] = QuadForCharRange(text_page.get(), static_cast<int>(data), 3);
+    double r = 0;
+    double b = 0;
+    double t = 0;
+    ASSERT_TRUE(FPDFText_GetCharBox(text_page.get(),
+                                    static_cast<int>(data) + 3, &a_left_before,
+                                    &r, &b, &t));
+  }
+  ASSERT_TRUE(EPDFText_RedactInQuads(page.get(), quads, 2,
+                                     /*recurse_forms=*/true,
+                                     /*draw_black_boxes=*/false));
+  ASSERT_TRUE(FPDFPage_GenerateContent(page.get()));
+  ASSERT_TRUE(FPDF_SaveAsCopy(document(), this, 0));
+
+  ASSERT_TRUE(OpenSavedDocument());
+  FPDF_PAGE saved_page = LoadSavedPage(0);
+  ASSERT_TRUE(saved_page);
+  const std::wstring after = ExtractPageText(saved_page);
+  EXPECT_EQ(std::wstring::npos, after.find(L"SECRET")) << after;
+  EXPECT_EQ(std::wstring::npos, after.find(L"ECRET")) << after;
+  EXPECT_EQ(std::wstring::npos, after.find(L"DAT")) << after;
+  EXPECT_NE(std::wstring::npos, after.find(L"keep")) << after;
+  const size_t surviving_a = after.find(L"A");
+  ASSERT_NE(std::wstring::npos, surviving_a) << after;
+  {
+    ScopedFPDFTextPage text_page(FPDFText_LoadPage(saved_page));
+    ASSERT_TRUE(text_page);
+    double l = 0;
+    double r = 0;
+    double b = 0;
+    double t = 0;
+    ASSERT_TRUE(FPDFText_GetCharBox(
+        text_page.get(), static_cast<int>(surviving_a), &l, &r, &b, &t));
+    EXPECT_NEAR(a_left_before, l, 0.05);
+  }
+  CloseSavedPage(saved_page);
+}
+
+// Vertical writing: removing the leading glyph must re-anchor the run along
+// the vertical axis (the writing axis), and removing glyphs in the middle
+// must keep the glyphs after the gap exactly in place.
+TEST_F(FPDFAnnotEmbedderTest, RedactVerticalTextLeadingGlyphKeepsRestInPlace) {
+  ASSERT_TRUE(OpenDocument("vertical_text.pdf"));
+  ScopedPage page = LoadScopedPage(0);
+  ASSERT_TRUE(page);
+
+  const std::wstring before = ExtractPageText(page.get());
+  ASSERT_EQ(0u, before.find(L"Hello"));
+  FS_QUADPOINTSF quad;
+  double e_left = 0;
+  double e_right = 0;
+  double e_bottom = 0;
+  double e_top = 0;
+  {
+    ScopedFPDFTextPage text_page(FPDFText_LoadPage(page.get()));
+    ASSERT_TRUE(text_page);
+    quad = QuadForCharRange(text_page.get(), 0, 1);  // "H"
+    ASSERT_TRUE(FPDFText_GetCharBox(text_page.get(), 1, &e_left, &e_right,
+                                    &e_bottom, &e_top));
+  }
+  ASSERT_TRUE(EPDFText_RedactInQuads(page.get(), &quad, 1,
+                                     /*recurse_forms=*/true,
+                                     /*draw_black_boxes=*/false));
+  ASSERT_TRUE(FPDFPage_GenerateContent(page.get()));
+  ASSERT_TRUE(FPDF_SaveAsCopy(document(), this, 0));
+
+  ASSERT_TRUE(OpenSavedDocument());
+  FPDF_PAGE saved_page = LoadSavedPage(0);
+  ASSERT_TRUE(saved_page);
+  const std::wstring after = ExtractPageText(saved_page);
+  EXPECT_EQ(std::wstring::npos, after.find(L"H")) << after;
+  ASSERT_EQ(0u, after.find(L"ello")) << after;
+  {
+    ScopedFPDFTextPage text_page(FPDFText_LoadPage(saved_page));
+    ASSERT_TRUE(text_page);
+    double l = 0;
+    double r = 0;
+    double b = 0;
+    double t = 0;
+    ASSERT_TRUE(FPDFText_GetCharBox(text_page.get(), 0, &l, &r, &b, &t));
+    EXPECT_NEAR(e_left, l, 0.05);
+    EXPECT_NEAR(e_right, r, 0.05);
+    EXPECT_NEAR(e_bottom, b, 0.05);
+    EXPECT_NEAR(e_top, t, 0.05);
+  }
+  CloseSavedPage(saved_page);
+}
+
+TEST_F(FPDFAnnotEmbedderTest, RedactVerticalTextMiddleGlyphsKeepsTailInPlace) {
+  ASSERT_TRUE(OpenDocument("vertical_text.pdf"));
+  ScopedPage page = LoadScopedPage(0);
+  ASSERT_TRUE(page);
+
+  const std::wstring before = ExtractPageText(page.get());
+  ASSERT_EQ(0u, before.find(L"Hello"));
+  FS_QUADPOINTSF quad;
+  double o_left = 0;
+  double o_right = 0;
+  double o_bottom = 0;
+  double o_top = 0;
+  {
+    ScopedFPDFTextPage text_page(FPDFText_LoadPage(page.get()));
+    ASSERT_TRUE(text_page);
+    quad = QuadForCharRange(text_page.get(), 2, 2);  // "ll"
+    ASSERT_TRUE(FPDFText_GetCharBox(text_page.get(), 4, &o_left, &o_right,
+                                    &o_bottom, &o_top));
+  }
+  ASSERT_TRUE(EPDFText_RedactInQuads(page.get(), &quad, 1,
+                                     /*recurse_forms=*/true,
+                                     /*draw_black_boxes=*/false));
+  ASSERT_TRUE(FPDFPage_GenerateContent(page.get()));
+  ASSERT_TRUE(FPDF_SaveAsCopy(document(), this, 0));
+
+  ASSERT_TRUE(OpenSavedDocument());
+  FPDF_PAGE saved_page = LoadSavedPage(0);
+  ASSERT_TRUE(saved_page);
+  const std::wstring after = ExtractPageText(saved_page);
+  EXPECT_EQ(std::wstring::npos, after.find(L"ll")) << after;
+  ASSERT_EQ(0u, after.find(L"He")) << after;
+  const size_t o_index = after.find(L"o");
+  ASSERT_NE(std::wstring::npos, o_index) << after;
+  EXPECT_LT(o_index, after.find(L"World")) << after;
+  {
+    ScopedFPDFTextPage text_page(FPDFText_LoadPage(saved_page));
+    ASSERT_TRUE(text_page);
+    double l = 0;
+    double r = 0;
+    double b = 0;
+    double t = 0;
+    ASSERT_TRUE(FPDFText_GetCharBox(text_page.get(), static_cast<int>(o_index),
+                                    &l, &r, &b, &t));
+    EXPECT_NEAR(o_left, l, 0.05);
+    EXPECT_NEAR(o_right, r, 0.05);
+    EXPECT_NEAR(o_bottom, b, 0.05);
+    EXPECT_NEAR(o_top, t, 0.05);
+  }
+  CloseSavedPage(saved_page);
+}
+
+// Text in a font whose glyphs have NO outlines at all (empty glyph boxes,
+// non-zero advances): the text page ignores such objects, so this cannot be
+// targeted through search, but a region drawn over the area must still
+// remove the text object instead of silently keeping it under the overlay.
+TEST_F(FPDFAnnotEmbedderTest, RedactRemovesTextWithEmptyGlyphBoxes) {
+  ASSERT_TRUE(OpenDocument("redact_type3_invisible.pdf"));
+  ScopedPage page = LoadScopedPage(0);
+  ASSERT_TRUE(page);
+  ASSERT_EQ(1, FPDFPage_CountObjects(page.get()));
+  ASSERT_EQ(FPDF_PAGEOBJ_TEXT,
+            FPDFPageObj_GetType(FPDFPage_GetObject(page.get(), 0)));
+
+  // Generously cover the whole line.
+  const FS_RECTF line = {10.0f, 80.0f, 190.0f, 20.0f};
+  EXPECT_TRUE(EPDFText_RedactInRect(page.get(), &line,
+                                    /*recurse_forms=*/true,
+                                    /*draw_black_boxes=*/false));
+  ASSERT_TRUE(FPDFPage_GenerateContent(page.get()));
+  ASSERT_TRUE(FPDF_SaveAsCopy(document(), this, 0));
+
+  ASSERT_TRUE(OpenSavedDocument());
+  FPDF_PAGE saved_page = LoadSavedPage(0);
+  ASSERT_TRUE(saved_page);
+  int text_objects = 0;
+  const int count = FPDFPage_CountObjects(saved_page);
+  for (int i = 0; i < count; ++i) {
+    if (FPDFPageObj_GetType(FPDFPage_GetObject(saved_page, i)) ==
+        FPDF_PAGEOBJ_TEXT) {
+      ++text_objects;
+    }
+  }
+  CloseSavedPage(saved_page);
+  EXPECT_EQ(0, text_objects);
+  EXPECT_EQ(std::string::npos, GetString().find("(SECRET)"));
+}
+
 TEST_F(FPDFAnnotEmbedderTest, ApplyRedactionCountsIntersectingAnnotation) {
   ASSERT_TRUE(OpenDocument("redact_remove_annots.pdf"));
   ScopedPage page = LoadScopedPage(0);

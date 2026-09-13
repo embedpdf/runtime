@@ -21,6 +21,8 @@ source_set("edit") {
     "cpdf_pageorganizer.h",
     "cpdf_path_redactor.cpp",
     "cpdf_path_redactor.h",
+    "cpdf_redaction_mark_sanitizer.cpp",
+    "cpdf_redaction_mark_sanitizer.h",
     "cpdf_stringarchivestream.cpp",
     "cpdf_stringarchivestream.h",
     "cpdf_text_redactor.cpp",

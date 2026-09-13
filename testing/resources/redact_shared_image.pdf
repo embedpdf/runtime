@@ -1,0 +1,52 @@
+%PDF-1.7
+% ò¤ô
+1 0 obj << /Type /Catalog /Pages 2 0 R >>
+endobj
+2 0 obj << /Type /Pages /Count 2 /Kids [3 0 R 7 0 R] >>
+endobj
+3 0 obj << /Type /Page /Parent 2 0 R /MediaBox [0 0 600 600] /Resources << /XObject << /Im 6 0 R >> >> /Contents 4 0 R /Annots [5 0 R] >>
+endobj
+4 0 obj <<  /Length 64 >>
+stream
+q 100 0 0 100 50 50 cm /Im Do Q
+q 100 0 0 100 250 50 cm /Im Do Q
+endstream
+endobj
+5 0 obj << /Type /Annot /Subtype /Redact /Rect [50 50 100 150] >>
+endobj
+6 0 obj << /Type /XObject /Subtype /Image /Width 10 /Height 10 /ColorSpace /DeviceRGB /BitsPerComponent 8 /Filter /ASCIIHexDecode /SMask 9 0 R /Length 601 >>
+stream
+ff0000ff0000ff0000ff0000ff0000ff0000ff0000ff0000ff0000ff0000ff0000ff0000ff0000ff0000ff0000ff0000ff0000ff0000ff0000ff0000ff0000ff0000ff0000ff0000ff0000ff0000ff0000ff0000ff0000ff0000ff0000ff0000ff0000ff0000ff0000ff0000ff0000ff0000ff0000ff0000ff0000ff0000ff0000ff0000ff0000ff0000ff0000ff0000ff0000ff0000ff0000ff0000ff0000ff0000ff0000ff0000ff0000ff0000ff0000ff0000ff0000ff0000ff0000ff0000ff0000ff0000ff0000ff0000ff0000ff0000ff0000ff0000ff0000ff0000ff0000ff0000ff0000ff0000ff0000ff0000ff0000ff0000ff0000ff0000ff0000ff0000ff0000ff0000ff0000ff0000ff0000ff0000ff0000ff0000ff0000ff0000ff0000ff0000ff0000ff0000>
+endstream
+endobj
+7 0 obj << /Type /Page /Parent 2 0 R /MediaBox [0 0 600 600] /Resources << /XObject << /Im 6 0 R >> >> /Contents 8 0 R >>
+endobj
+8 0 obj <<  /Length 31 >>
+stream
+q 100 0 0 100 50 50 cm /Im Do Q
+endstream
+endobj
+9 0 obj << /Type /XObject /Subtype /Image /Width 10 /Height 10 /ColorSpace /DeviceGray /BitsPerComponent 8 /Filter /ASCIIHexDecode /Length 201 >>
+stream
+80808080808080808080808080808080808080808080808080808080808080808080808080808080808080808080808080808080808080808080808080808080808080808080808080808080808080808080808080808080808080808080808080808080>
+endstream
+endobj
+xref
+0 10
+0000000000 65535 f 
+0000000015 00000 n 
+0000000064 00000 n 
+0000000127 00000 n 
+0000000272 00000 n 
+0000000387 00000 n 
+0000000460 00000 n 
+0000001244 00000 n 
+0000001373 00000 n 
+0000001455 00000 n 
+trailer <<
+  /Root 1 0 R
+  /Size 10
+>>
+startxref
+1827
+%%EOF
