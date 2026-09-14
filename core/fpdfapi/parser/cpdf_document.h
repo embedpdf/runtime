@@ -9,6 +9,7 @@
 
 #include <stdint.h>
 
+#include <map>
 #include <memory>
 #include <optional>
 #include <set>
@@ -119,6 +120,23 @@ class CPDF_Document : public Observable,
     epdf_attachment_ = std::move(attachment);
   }
 
+  // EmbedPDF: session-scoped provenance for a resource name this document
+  // instance handed out for a registered runtime font (a /DA font alias
+  // reserved before its /DR entry exists). Never written to the file; a
+  // reopened document starts empty, so an alias that merely looks reserved
+  // resolves to nothing.
+  void ReserveSessionFontAlias(const ByteString& alias, uint32_t font_id) {
+    session_font_aliases_[alias] = font_id;
+  }
+  std::optional<uint32_t> LookupSessionFontAlias(
+      const ByteString& alias) const {
+    auto it = session_font_aliases_.find(alias);
+    if (it == session_font_aliases_.end()) {
+      return std::nullopt;
+    }
+    return it->second;
+  }
+
   virtual CPDF_Parser* GetParser() const;
   virtual const CPDF_Dictionary* GetRoot() const;
   virtual RetainPtr<CPDF_Dictionary> GetMutableRoot();
@@ -194,7 +212,7 @@ class CPDF_Document : public Observable,
   // this document retains for its whole life (its own parser's file, a
   // layer's base or loaded delta). Only then may a clone made for this
   // holder share the view instead of copying the bytes.
-  virtual bool SharesBackingStorageWith(const CPDF_Stream* stream) const;
+  bool SharesBackingStorageWith(const CPDF_Stream* stream) const override;
   // Changes whenever the effective identity of an indirect object can change.
   // Ordinary documents have no overlay and always return 0.
   virtual uint64_t GetOverlayEpoch() const;
@@ -310,6 +328,7 @@ class CPDF_Document : public Observable,
   std::set<uint32_t> modified_apstream_ids_;
   std::optional<PendingSecurity> pending_security_;
   std::vector<uint32_t> page_list_;  // Page number to page's dict objnum.
+  std::map<ByteString, uint32_t> session_font_aliases_;  // EmbedPDF, see above.
 
   // EmbedPDF: destroyed before everything declared above it (the parser
   // included), after the extension and the stock font clearer.

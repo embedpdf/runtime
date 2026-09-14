@@ -28,6 +28,7 @@ namespace {
 struct RegisteredFont {
   CFX_FontRegistry::FontId id = CFX_FontRegistry::kInvalidFontId;
   ByteString base_font_name;
+  ByteString family_name;  // as registered, spaces kept
   int weight = pdfium::kFontWeightNormal;
   bool italic = false;
   std::vector<uint32_t> supported_unicodes;
@@ -66,6 +67,15 @@ RegisteredFont* GetRegisteredFont(CFX_FontRegistry::FontId font_id) {
 ByteString NormalizeBaseFontName(ByteString name) {
   name.Remove(' ');
   return name.IsEmpty() ? ByteString(CFX_Font::kUntitledFontName) : name;
+}
+
+// EmbedPDF: family comparison key. "Noto Sans", "NotoSans" and "noto sans"
+// all name the same family; the PDF BaseFont has no spaces and Acrobat's
+// /FontFamily keeps them.
+ByteString NormalizeFamilyKey(ByteString name) {
+  name.Remove(' ');
+  name.MakeLower();
+  return name;
 }
 
 int NormalizeWeight(int weight, const CFX_Font& font) {
@@ -161,6 +171,9 @@ CFX_FontRegistry::FontId RegisterLoadedFontSource(
   registered_font->id = registry->next_font_id++;
   registered_font->base_font_name = NormalizeBaseFontName(
       family_name.IsEmpty() ? font->GetBaseFontName() : family_name);
+  registered_font->family_name =
+      family_name.IsEmpty() ? font->GetBaseFontName() : family_name;
+  registered_font->family_name.Trim(' ');
   registered_font->weight = NormalizeWeight(weight, *font);
   registered_font->italic = NormalizeItalic(italic, *font);
   registered_font->supported_unicodes = std::move(supported_unicodes);
@@ -256,6 +269,56 @@ bool CFX_FontRegistry::IsValidFont(FontId font_id) {
 ByteString CFX_FontRegistry::GetBaseFontName(FontId font_id) {
   RegisteredFont* font = GetRegisteredFont(font_id);
   return font ? font->base_font_name : ByteString();
+}
+
+// static
+ByteString CFX_FontRegistry::GetFamilyName(FontId font_id) {
+  RegisteredFont* font = GetRegisteredFont(font_id);
+  return font ? font->family_name : ByteString();
+}
+
+// static
+std::optional<CFX_FontRegistry::FontId> CFX_FontRegistry::FindFont(
+    const ByteString& family_name,
+    int weight,
+    bool italic) {
+  if (!g_registry || family_name.IsEmpty()) {
+    return std::nullopt;
+  }
+
+  ByteString exact = family_name;
+  exact.Trim(' ');
+  const ByteString wanted = NormalizeFamilyKey(family_name);
+  if (wanted.IsEmpty()) {
+    return std::nullopt;
+  }
+
+  // Exact family names outrank normalised ones: "Noto Sans" and "NotoSans"
+  // may be two different registrations, and the one spelled as requested
+  // wins before style score and registration order get a say.
+  auto best_matching = [&](auto matches) -> std::optional<FontId> {
+    std::optional<FontId> best_font_id;
+    int best_score = std::numeric_limits<int>::max();
+    for (const auto& font : g_registry->fonts) {
+      if (!font || !matches(*font)) {
+        continue;
+      }
+      const int score = StyleScore(*font, weight, italic);
+      if (!best_font_id.has_value() || score < best_score) {
+        best_font_id = font->id;
+        best_score = score;
+      }
+    }
+    return best_font_id;
+  };
+  if (std::optional<FontId> id = best_matching(
+          [&](const RegisteredFont& f) { return f.family_name == exact; })) {
+    return id;
+  }
+  return best_matching([&](const RegisteredFont& f) {
+    return NormalizeFamilyKey(f.family_name) == wanted ||
+           NormalizeFamilyKey(f.base_font_name) == wanted;
+  });
 }
 
 // static

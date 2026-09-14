@@ -1080,19 +1080,66 @@ RetainPtr<CPDF_Dictionary> GetFontFromDrFontDictOrGenerateFallback(
   return new_font_dict;
 }
 
-RetainPtr<CPDF_Dictionary> GetFontFromDrFontDictOrDirectFallback(
+// EmbedPDF (A1): how a /DA font name resolves against /DR.
+//  - present in /DR: that dictionary, plus the registered font it stands for
+//    when it is one of ours (family first, session hint second);
+//  - absent but spelled like a reserved registered-font alias: the registered
+//    font alone. The real /DR entry is installed by CPDF_AnnotFontMap once
+//    the appearance is generated and the glyph set is known;
+//  - otherwise the Helvetica fallback, as before.
+struct DaFontResolution {
+  RetainPtr<CPDF_Dictionary> font_dict;
+  CFX_FontRegistry::FontId registered_font_id =
+      CFX_FontRegistry::kInvalidFontId;
+};
+
+DaFontResolution ResolveDaFontForPersistentTarget(CPDF_Document* doc,
+                                                  CPDF_Dictionary* dr_font_dict,
+                                                  const ByteString& font_name) {
+  DaFontResolution result;
+  result.font_dict = dr_font_dict->GetMutableDictFor(font_name.AsStringView());
+  if (result.font_dict) {
+    result.registered_font_id =
+        CPDF_AnnotFontSubset::ResolveRegisteredFont(result.font_dict.Get())
+            .value_or(CFX_FontRegistry::kInvalidFontId);
+    return result;
+  }
+  if (std::optional<CFX_FontRegistry::FontId> font_id =
+          CPDF_AnnotFontMap::RegisteredFontIdFromAlias(doc, font_name)) {
+    result.registered_font_id = *font_id;
+    return result;
+  }
+  result.font_dict =
+      GetFontFromDrFontDictOrGenerateFallback(doc, dr_font_dict, font_name);
+  return result;
+}
+
+DaFontResolution ResolveDaFontForEphemeralTarget(
+    const CPDF_Document* doc,
     const CPDF_Dictionary* dr_font_dict,
     const ByteString& font_name) {
+  DaFontResolution result;
   RetainPtr<const CPDF_Dictionary> font_dict =
-      dr_font_dict->GetDictFor(font_name.AsStringView());
+      dr_font_dict ? dr_font_dict->GetDictFor(font_name.AsStringView())
+                   : nullptr;
   if (font_dict) {
     // The font loader still takes a mutable dictionary handle. Ephemeral AP
-    // generation treats this as a read-only boundary and never writes through
-    // it.
-    return pdfium::WrapRetain(const_cast<CPDF_Dictionary*>(font_dict.Get()));
+    // generation treats this as a read-only boundary and never writes
+    // through it.
+    result.font_dict =
+        pdfium::WrapRetain(const_cast<CPDF_Dictionary*>(font_dict.Get()));
+    result.registered_font_id =
+        CPDF_AnnotFontSubset::ResolveRegisteredFont(font_dict.Get())
+            .value_or(CFX_FontRegistry::kInvalidFontId);
+    return result;
   }
-
-  return GenerateDirectFallbackFontDict();
+  if (std::optional<CFX_FontRegistry::FontId> font_id =
+          CPDF_AnnotFontMap::RegisteredFontIdFromAlias(doc, font_name)) {
+    result.registered_font_id = *font_id;
+    return result;
+  }
+  result.font_dict = GenerateDirectFallbackFontDict();
+  return result;
 }
 
 RetainPtr<CPDF_Dictionary> GenerateResourceFontDict(
@@ -1991,19 +2038,17 @@ bool GenerateFreeTextAP(APGenerationTarget* target,
   }
 
   const ByteString& font_name = default_appearance_info.value().font_name;
-  RetainPtr<CPDF_Dictionary> font_dict;
-  if (target->IsPersistent()) {
-    font_dict = GetFontFromDrFontDictOrGenerateFallback(
-        doc,
-        pdfium::WrapRetain(const_cast<CPDF_Dictionary*>(dr_font_dict.Get())),
-        font_name);
-  } else {
-    font_dict =
-        GetFontFromDrFontDictOrDirectFallback(dr_font_dict.Get(), font_name);
-  }
+  const DaFontResolution da_font =
+      target->IsPersistent()
+          ? ResolveDaFontForPersistentTarget(
+                doc, const_cast<CPDF_Dictionary*>(dr_font_dict.Get()),
+                font_name)
+          : ResolveDaFontForEphemeralTarget(doc, dr_font_dict.Get(), font_name);
   auto* doc_page_data = CPDF_DocPageData::FromDocument(doc);
-  RetainPtr<CPDF_Font> default_font = doc_page_data->GetFont(font_dict);
-  if (!default_font) {
+  RetainPtr<CPDF_Font> default_font =
+      da_font.font_dict ? doc_page_data->GetFont(da_font.font_dict) : nullptr;
+  if (!default_font &&
+      da_font.registered_font_id == CFX_FontRegistry::kInvalidFontId) {
     return false;
   }
 
@@ -2172,7 +2217,11 @@ bool GenerateFreeTextAP(APGenerationTarget* target,
     // FreeText AP generation can fall back to registered fonts and produce
     // persistent, per-annotation subsets when saving.
     CPDF_AnnotFontMap map(doc, std::move(default_font), font_name,
-                          target->IsPersistent());
+                          target->IsPersistent(), da_font.registered_font_id,
+                          /*install_dr_entry=*/target->IsPersistent());
+    if (!map.HasDefaultFont()) {
+      return false;
+    }
     CPVT_VariableText::Provider provider(&map);
     CPVT_VariableText vt(&provider);
 
@@ -2221,6 +2270,9 @@ bool GenerateFreeTextAP(APGenerationTarget* target,
     // EmbedPDF: collect both the original DA font and any registered fallback
     // fonts actually used by this annotation into the AP resource dictionary.
     auto resource_font_dict = map.CreateFontResourceDict();
+    if (!resource_font_dict) {
+      return false;  // registered /DA font without a resource: no appearance
+    }
     auto resource_dict = GenerateResourcesDict(
         doc, std::move(graphics_state_dict), std::move(resource_font_dict));
     GenerateAndSetAPDict(target, annot_dict, &appearance_stream,
@@ -2255,7 +2307,11 @@ bool GenerateFreeTextAP(APGenerationTarget* target,
 
     // EmbedPDF: same registered-font/subset path as the callout branch above.
     CPDF_AnnotFontMap map(doc, std::move(default_font), font_name,
-                          target->IsPersistent());
+                          target->IsPersistent(), da_font.registered_font_id,
+                          /*install_dr_entry=*/target->IsPersistent());
+    if (!map.HasDefaultFont()) {
+      return false;
+    }
     CPVT_VariableText::Provider provider(&map);
     CPVT_VariableText vt(&provider);
 
@@ -2303,6 +2359,9 @@ bool GenerateFreeTextAP(APGenerationTarget* target,
     // EmbedPDF: include registered fallback subset fonts used by this FreeText
     // appearance, scoped to this annotation/layer.
     auto resource_font_dict = map.CreateFontResourceDict();
+    if (!resource_font_dict) {
+      return false;  // registered /DA font without a resource: no appearance
+    }
     auto resource_dict = GenerateResourcesDict(
         doc, std::move(graphics_state_dict), std::move(resource_font_dict));
     if (rot_info.is_rotated) {
@@ -3218,29 +3277,37 @@ bool AppendRedactOverlayOps(CPDF_Document* doc,
                       : CFX_Color(CFX_Color::Type::kRGB, 0, 0, 0);
   }
 
-  RetainPtr<CPDF_Dictionary> font_dict;
+  DaFontResolution da_font;
   if (form_dict) {
     RetainPtr<CPDF_Dictionary> dr_font_dict =
         form_dict->GetOrCreateDictFor("DR")->GetOrCreateDictFor("Font");
-    font_dict = GetFontFromDrFontDictOrGenerateFallback(doc, dr_font_dict.Get(),
-                                                        font_name);
+    da_font =
+        ResolveDaFontForPersistentTarget(doc, dr_font_dict.Get(), font_name);
   } else {
-    font_dict = GenerateFallbackFontDict(doc);
+    da_font.font_dict = GenerateFallbackFontDict(doc);
   }
   RetainPtr<CPDF_Font> default_font =
-      CPDF_DocPageData::FromDocument(doc)->GetFont(font_dict);
-  if (!default_font) {
+      da_font.font_dict
+          ? CPDF_DocPageData::FromDocument(doc)->GetFont(da_font.font_dict)
+          : nullptr;
+  if (!default_font &&
+      da_font.registered_font_id == CFX_FontRegistry::kInvalidFontId) {
     return has_fill;
   }
 
   CPDF_AnnotFontMap map(doc, std::move(default_font), font_name,
-                        /*allow_registered_fallbacks=*/true);
+                        /*allow_registered_fallbacks=*/true,
+                        da_font.registered_font_id,
+                        /*install_dr_entry=*/true);
+  if (!map.HasDefaultFont()) {
+    return has_fill;
+  }
   for (const RedactOverlayRegion& region : regions) {
     AppendRedactLabelForRegion(map, annot_dict, overlay_text, da_font_size,
                                label_color, region.bbox, stream);
   }
   *out_font_resources = map.CreateFontResourceDict();
-  return true;
+  return !!*out_font_resources;
 }
 
 bool GenerateRedactAP(CPDF_Document* doc,
@@ -3586,6 +3653,7 @@ bool GenerateFormAPToTarget(APGenerationTarget* target,
 
   const ByteString& font_name = default_appearance_info.value().font_name;
   RetainPtr<CPDF_Dictionary> font_dict;
+  DaFontResolution da_font;
   if (target->IsPersistent()) {
     RetainPtr<CPDF_Dictionary> mutable_dr_font_dict;
     if (dr_font_dict) {
@@ -3603,24 +3671,28 @@ bool GenerateFormAPToTarget(APGenerationTarget* target,
               "Font");
       dr_dict = mutable_form_dict->GetDictFor("DR");
     }
-    font_dict = GetFontFromDrFontDictOrGenerateFallback(
-        doc, mutable_dr_font_dict.Get(), font_name);
+    da_font = ResolveDaFontForPersistentTarget(doc, mutable_dr_font_dict.Get(),
+                                               font_name);
   } else {
-    font_dict = dr_font_dict ? GetFontFromDrFontDictOrDirectFallback(
-                                   dr_font_dict.Get(), font_name)
-                             : GenerateDirectFallbackFontDict();
+    da_font =
+        ResolveDaFontForEphemeralTarget(doc, dr_font_dict.Get(), font_name);
   }
-  auto* doc_page_data = CPDF_DocPageData::FromDocument(doc);
-  RetainPtr<CPDF_Font> default_font = doc_page_data->GetFont(font_dict);
-  if (!default_font) {
-    return false;
-  }
+  font_dict = da_font.font_dict;
   const bool use_registered_font_map =
       target->IsPersistent() &&
       (CFX_FontRegistry::HasFallbackFonts() ||
-       CPDF_AnnotFontSubset::GetRegisteredFontIdFromMarkerFontDict(
-           font_dict.Get())
-           .has_value());
+       da_font.registered_font_id != CFX_FontRegistry::kInvalidFontId);
+  if (!font_dict && !use_registered_font_map) {
+    // Ephemeral render of a widget whose /DA names a registered font that has
+    // no /DR entry yet: draw with the fallback rather than nothing.
+    font_dict = GenerateDirectFallbackFontDict();
+  }
+  auto* doc_page_data = CPDF_DocPageData::FromDocument(doc);
+  RetainPtr<CPDF_Font> default_font =
+      font_dict ? doc_page_data->GetFont(font_dict) : nullptr;
+  if (!default_font && !use_registered_font_map) {
+    return false;
+  }
 
   const AnnotationDimensionsAndColor dims =
       GetAnnotationDimensionsAndColor(annot_dict);
@@ -3681,7 +3753,12 @@ bool GenerateFormAPToTarget(APGenerationTarget* target,
     // Keep the old CPVT_FontMap path unless a registered font is actually
     // involved so existing form AP output remains stable by default.
     CPDF_AnnotFontMap map(doc, std::move(default_font), font_name,
-                          /*allow_registered_fallbacks=*/true);
+                          /*allow_registered_fallbacks=*/true,
+                          da_font.registered_font_id,
+                          /*install_dr_entry=*/true);
+    if (!map.HasDefaultFont()) {
+      return false;
+    }
     CPVT_VariableText::Provider provider(&map);
 
     fxcrt::ostringstream app_stream;
@@ -3693,7 +3770,12 @@ bool GenerateFormAPToTarget(APGenerationTarget* target,
     stream_dict->SetRectFor("BBox", dims.bbox);
     RetainPtr<CPDF_Dictionary> stream_resources =
         stream_dict->GetOrCreateDictFor("Resources");
-    stream_resources->SetFor("Font", map.CreateFontResourceDict());
+    RetainPtr<CPDF_Dictionary> resource_font_dict =
+        map.CreateFontResourceDict();
+    if (!resource_font_dict) {
+      return false;  // registered /DA font without a resource: no appearance
+    }
+    stream_resources->SetFor("Font", std::move(resource_font_dict));
     return true;
   }
 
@@ -4315,15 +4397,17 @@ bool CPDF_GenerateAP::UpdateDefaultAppearanceRegisteredFont(
     float font_size,
     const CFX_Color& color) {
   // EmbedPDF: allow FreeText DA to reference a registered runtime font. The DA
-  // stores a lightweight marker resource; actual subset embedding happens when
-  // AP generation knows the characters used by this annotation/layer.
+  // names a reserved alias; the real /DR font (the embedded subset) is
+  // installed when AP generation knows the characters used by this
+  // annotation/layer. No placeholder is written: Acrobat refuses to edit a
+  // FreeText whose /DR font is a descriptor-less stub.
   if (!doc || !annot_dict || !CFX_FontRegistry::IsValidFont(font_id)) {
     return false;
   }
 
   ByteString resource_key;
-  if (!CPDF_AnnotFontMap::EnsureRegisteredFontMarkerInDocument(doc, font_id,
-                                                               &resource_key) ||
+  if (!CPDF_AnnotFontMap::ReserveRegisteredFontAlias(doc, font_id,
+                                                     &resource_key) ||
       resource_key.IsEmpty()) {
     return false;
   }

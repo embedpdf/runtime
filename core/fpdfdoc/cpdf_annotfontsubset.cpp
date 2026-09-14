@@ -13,7 +13,6 @@
 #include <sstream>
 #include <utility>
 
-#include "constants/font_encodings.h"
 #include "core/fpdfapi/font/cpdf_font.h"
 #include "core/fpdfapi/parser/cpdf_array.h"
 #include "core/fpdfapi/parser/cpdf_dictionary.h"
@@ -177,11 +176,20 @@ RetainPtr<CPDF_Dictionary> LoadFontDesc(
     const ByteString& font_name,
     CFX_Font* font,
     pdfium::span<const uint8_t> font_data,
+    const CPDF_AnnotFontSubset::FaceIdentity& identity,
     ObjectStorage storage,
     std::vector<uint32_t>* temporary_object_numbers) {
   auto font_descriptor_dict = NewDictionary(doc, storage);
   font_descriptor_dict->SetNewFor<CPDF_Name>("Type", "FontDescriptor");
   font_descriptor_dict->SetNewFor<CPDF_Name>("FontName", font_name);
+  // EmbedPDF: persistent face identity (A1). Acrobat writes the same keys
+  // for its own annotation fonts and re-resolves by them on edit.
+  if (!identity.family.IsEmpty()) {
+    font_descriptor_dict->SetNewFor<CPDF_String>(
+        "FontFamily",
+        WideString::FromUTF8(identity.family.AsStringView()).AsStringView());
+  }
+  font_descriptor_dict->SetNewFor<CPDF_Number>("FontWeight", identity.weight);
 
   int flags = pdfium::kFontStyleNonSymbolic;
   if (font->IsFixedWidth()) {
@@ -200,8 +208,8 @@ RetainPtr<CPDF_Dictionary> LoadFontDesc(
 
   FX_RECT bbox = font->GetBBox().value_or(FX_RECT());
   font_descriptor_dict->SetRectFor("FontBBox", CFX_FloatRect(bbox));
-  font_descriptor_dict->SetNewFor<CPDF_Number>("ItalicAngle",
-                                               font->IsItalic() ? -12 : 0);
+  font_descriptor_dict->SetNewFor<CPDF_Number>(
+      "ItalicAngle", (identity.italic || font->IsItalic()) ? -12 : 0);
   font_descriptor_dict->SetNewFor<CPDF_Number>("Ascent", font->GetAscent());
   font_descriptor_dict->SetNewFor<CPDF_Number>("Descent", font->GetDescent());
   font_descriptor_dict->SetNewFor<CPDF_Number>("CapHeight", font->GetAscent());
@@ -457,7 +465,9 @@ void CreateDescendantFontsArray(CPDF_Document* doc,
 DataVector<uint8_t> SubsetFontDataRetainGids(
     pdfium::span<const uint8_t> font_data,
     const CPDF_AnnotFontSubset::GlyphUnicodeMap& glyph_to_unicode) {
-  if (font_data.empty() || glyph_to_unicode.empty()) {
+  // An empty map is a valid request: glyph 0 is always kept, and that
+  // glyph-0-only program is the minimal /DA resource of an empty annotation.
+  if (font_data.empty()) {
     return DataVector<uint8_t>();
   }
 
@@ -522,11 +532,12 @@ RetainPtr<CPDF_Dictionary> BuildCompositeFont(
     CFX_Font* font,
     const ByteString& base_font_name,
     pdfium::span<const uint8_t> font_data,
+    const CPDF_AnnotFontSubset::FaceIdentity& identity,
     const std::map<uint32_t, uint32_t>& widths,
     const std::multimap<uint32_t, uint32_t>& to_unicode,
     ObjectStorage storage,
     std::vector<uint32_t>* temporary_object_numbers) {
-  if (!doc || !font || widths.empty() || to_unicode.empty()) {
+  if (!doc || !font || widths.empty()) {
     return nullptr;
   }
 
@@ -535,8 +546,9 @@ RetainPtr<CPDF_Dictionary> BuildCompositeFont(
   RetainPtr<CPDF_Dictionary> cid_font_dict =
       CreateCidFontDict(doc, base_font_name, storage);
 
-  RetainPtr<CPDF_Dictionary> font_descriptor_dict = LoadFontDesc(
-      doc, base_font_name, font, font_data, storage, temporary_object_numbers);
+  RetainPtr<CPDF_Dictionary> font_descriptor_dict =
+      LoadFontDesc(doc, base_font_name, font, font_data, identity, storage,
+                   temporary_object_numbers);
   SetReferenceOrDirect(cid_font_dict.Get(), "FontDescriptor", doc,
                        std::move(font_descriptor_dict));
 
@@ -545,10 +557,12 @@ RetainPtr<CPDF_Dictionary> BuildCompositeFont(
 
   CreateDescendantFontsArray(doc, font_dict.Get(), std::move(cid_font_dict));
 
-  RetainPtr<CPDF_Stream> to_unicode_stream =
-      LoadUnicode(doc, to_unicode, storage, temporary_object_numbers);
-  SetReferenceOrDirect(font_dict.Get(), "ToUnicode", doc,
-                       std::move(to_unicode_stream));
+  if (!to_unicode.empty()) {  // /ToUnicode is optional; empty is meaningless
+    RetainPtr<CPDF_Stream> to_unicode_stream =
+        LoadUnicode(doc, to_unicode, storage, temporary_object_numbers);
+    SetReferenceOrDirect(font_dict.Get(), "ToUnicode", doc,
+                         std::move(to_unicode_stream));
+  }
   return font_dict;
 }
 
@@ -602,19 +616,20 @@ CPDF_AnnotFontSubset::LayoutFont CPDF_AnnotFontSubset::CreateLayoutFont(
   const ByteString base_font_name =
       BaseFontNameForRegisteredFont(font_id, font.get());
   RetainPtr<CPDF_Dictionary> font_dict = BuildCompositeFont(
-      doc, font.get(), base_font_name, font->GetFontSpan(), widths, to_unicode,
+      doc, font.get(), base_font_name, font->GetFontSpan(),
+      IdentityForRegisteredFont(font_id), widths, to_unicode,
       ObjectStorage::kDirect, &result.temporary_object_numbers);
   result.font = CPDF_Font::Create(doc, std::move(font_dict), nullptr);
   return result;
 }
 
 // static
-RetainPtr<CPDF_Dictionary> CPDF_AnnotFontSubset::CreateSubsetFontDict(
+RetainPtr<CPDF_Dictionary> CPDF_AnnotFontSubset::BuildRegisteredFontResource(
     CPDF_Document* doc,
     CFX_FontRegistry::FontId font_id,
-    const GlyphUnicodeMap& glyph_to_unicode) {
-  if (!doc || glyph_to_unicode.empty() ||
-      !CFX_FontRegistry::IsValidFont(font_id)) {
+    const GlyphUnicodeMap& glyph_to_unicode,
+    bool required_by_default_appearance) {
+  if (!doc || !CFX_FontRegistry::IsValidFont(font_id)) {
     return nullptr;
   }
 
@@ -635,7 +650,12 @@ RetainPtr<CPDF_Dictionary> CPDF_AnnotFontSubset::CreateSubsetFontDict(
     to_unicode.emplace(glyph_id, unicode);
   }
   if (filtered_glyph_to_unicode.empty()) {
-    return nullptr;
+    if (!required_by_default_appearance) {
+      return nullptr;  // an unused fallback font: nothing to embed
+    }
+    // Minimal resource: the subsetter always keeps glyph 0, so an empty
+    // glyph set yields a valid program whose only glyph is .notdef.
+    widths[0] = font->GetGlyphWidth(0);
   }
 
   DataVector<uint8_t> subset_font_data =
@@ -648,60 +668,128 @@ RetainPtr<CPDF_Dictionary> CPDF_AnnotFontSubset::CreateSubsetFontDict(
       BaseFontNameForRegisteredFont(font_id, font.get());
   const ByteString subset_font_name =
       MakeSubsetBaseFontName(base_font_name, filtered_glyph_to_unicode);
-  return BuildCompositeFont(doc, font.get(), subset_font_name, font_data,
-                            widths, to_unicode, ObjectStorage::kIndirect,
-                            /*temporary_object_numbers=*/nullptr);
-}
-
-// static
-RetainPtr<CPDF_Dictionary> CPDF_AnnotFontSubset::CreateMarkerFontDict(
-    CPDF_Document* doc,
-    CFX_FontRegistry::FontId font_id) {
-  if (!doc || !CFX_FontRegistry::IsValidFont(font_id)) {
-    return nullptr;
+  RetainPtr<CPDF_Dictionary> font_dict = BuildCompositeFont(
+      doc, font.get(), subset_font_name, font_data,
+      IdentityForRegisteredFont(font_id), widths, to_unicode,
+      ObjectStorage::kIndirect, /*temporary_object_numbers=*/nullptr);
+  if (font_dict) {
+    // EmbedPDF: this dictionary is also what /DR names for the DA font, so it
+    // carries the session hint. The descriptor's /FontFamily is the identity
+    // that survives a new session; the hint is only a tie-breaker.
+    font_dict->SetNewFor<CPDF_String>(kRegisteredFontIdKey,
+                                      ByteString::Format("%u", font_id));
   }
-
-  auto font_dict = doc->NewIndirect<CPDF_Dictionary>();
-  font_dict->SetNewFor<CPDF_Name>("Type", "Font");
-  font_dict->SetNewFor<CPDF_Name>("Subtype", "Type1");
-  font_dict->SetNewFor<CPDF_Name>(
-      "BaseFont", BaseFontNameForRegisteredFont(font_id, nullptr));
-  font_dict->SetNewFor<CPDF_Name>("Encoding",
-                                  pdfium::font_encodings::kWinAnsiEncoding);
-  font_dict->SetNewFor<CPDF_String>(kRegisteredFontIdKey,
-                                    ByteString::Format("%u", font_id));
   return font_dict;
 }
 
 // static
-std::optional<CFX_FontRegistry::FontId>
-CPDF_AnnotFontSubset::GetRegisteredFontIdFromMarkerFontDict(
+CPDF_AnnotFontSubset::FaceIdentity
+CPDF_AnnotFontSubset::IdentityForRegisteredFont(
+    CFX_FontRegistry::FontId font_id) {
+  FaceIdentity identity;
+  identity.family = CFX_FontRegistry::GetFamilyName(font_id);
+  identity.weight = CFX_FontRegistry::GetStyleWeight(font_id);
+  identity.italic = CFX_FontRegistry::IsStyleItalic(font_id);
+  return identity;
+}
+
+// static
+bool CPDF_AnnotFontSubset::IsEmbedPDFRegisteredFontDict(
     const CPDF_Dictionary* font_dict) {
-  if (!font_dict) {
+  return font_dict && font_dict->KeyExist(kRegisteredFontIdKey);
+}
+
+// static
+bool CPDF_AnnotFontSubset::IsLegacyMarkerFontDict(
+    const CPDF_Dictionary* font_dict) {
+  // Older files: a /Type1 stub with the hint and no descriptor. Acrobat
+  // refuses to open the editor on it ("Bad parameter"), which is why A1
+  // replaced it with the real subset.
+  return IsEmbedPDFRegisteredFontDict(font_dict) &&
+         font_dict->GetNameFor("Subtype") != "Type0" &&
+         !font_dict->KeyExist("FontDescriptor");
+}
+
+namespace {
+
+std::optional<uint32_t> ParseUnsignedDecimal(const ByteString& text) {
+  if (text.IsEmpty()) {
     return std::nullopt;
   }
-
-  ByteString id_string = font_dict->GetByteStringFor(kRegisteredFontIdKey);
-  if (id_string.IsEmpty()) {
-    return std::nullopt;
-  }
-
-  uint32_t font_id = 0;
-  for (char ch : id_string.AsStringView()) {
+  uint32_t value = 0;
+  for (char ch : text.AsStringView()) {
     if (ch < '0' || ch > '9') {
       return std::nullopt;
     }
-    FX_SAFE_UINT32 safe_font_id = font_id;
-    safe_font_id *= 10;
-    safe_font_id += ch - '0';
-    if (!safe_font_id.IsValid()) {
+    FX_SAFE_UINT32 safe_value = value;
+    safe_value *= 10;
+    safe_value += ch - '0';
+    if (!safe_value.IsValid()) {
       return std::nullopt;
     }
-    font_id = safe_font_id.ValueOrDie();
+    value = safe_value.ValueOrDie();
   }
+  return value;
+}
 
-  if (!CFX_FontRegistry::IsValidFont(font_id)) {
+// The descriptor of a Type0 font lives on its descendant; simple fonts (the
+// legacy marker has none) carry it directly.
+RetainPtr<const CPDF_Dictionary> FontDescriptorOf(
+    const CPDF_Dictionary* font_dict) {
+  if (!font_dict) {
+    return nullptr;
+  }
+  if (font_dict->GetNameFor("Subtype") == "Type0") {
+    RetainPtr<const CPDF_Array> descendants =
+        font_dict->GetArrayFor("DescendantFonts");
+    RetainPtr<const CPDF_Dictionary> cid_font =
+        descendants ? descendants->GetDictAt(0) : nullptr;
+    return cid_font ? cid_font->GetDictFor("FontDescriptor") : nullptr;
+  }
+  return font_dict->GetDictFor("FontDescriptor");
+}
+
+}  // namespace
+
+// static
+std::optional<CFX_FontRegistry::FontId>
+CPDF_AnnotFontSubset::ResolveRegisteredFont(const CPDF_Dictionary* font_dict) {
+  if (!IsEmbedPDFRegisteredFontDict(font_dict)) {
     return std::nullopt;
   }
-  return font_id;
+
+  std::optional<uint32_t> hint =
+      ParseUnsignedDecimal(font_dict->GetByteStringFor(kRegisteredFontIdKey));
+  const bool hint_valid =
+      hint.has_value() && CFX_FontRegistry::IsValidFont(*hint);
+
+  RetainPtr<const CPDF_Dictionary> descriptor = FontDescriptorOf(font_dict);
+  ByteString family;
+  if (descriptor) {
+    family = descriptor->GetUnicodeTextFor("FontFamily").ToUTF8();
+  }
+  if (!family.IsEmpty()) {
+    // The stored family is authoritative. If no registered font matches it,
+    // the dictionary stays unresolved: the caller keeps the embedded program
+    // and ordinary fallback. A numeric hint pointing at some other family
+    // must never win (ids are session-local and get reused).
+    const int weight = descriptor->GetIntegerFor("FontWeight", 400);
+    const bool italic = descriptor->GetIntegerFor("ItalicAngle", 0) != 0;
+    return CFX_FontRegistry::FindFont(family, weight, italic);
+  }
+
+  // Legacy marker (pre-A1, no descriptor): /BaseFont is the stored identity;
+  // the hint is accepted only when it names the same base font.
+  const ByteString base_font = font_dict->GetNameFor("BaseFont");
+  if (base_font.IsEmpty()) {
+    return std::nullopt;
+  }
+  if (std::optional<CFX_FontRegistry::FontId> by_name =
+          CFX_FontRegistry::FindFont(base_font, 400, false)) {
+    return by_name;
+  }
+  if (hint_valid && CFX_FontRegistry::GetBaseFontName(*hint) == base_font) {
+    return hint;
+  }
+  return std::nullopt;
 }

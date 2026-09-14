@@ -41,8 +41,19 @@ class CFX_FontRegistry {
 
   static bool IsValidFont(FontId font_id);
   static ByteString GetBaseFontName(FontId font_id);
+  // EmbedPDF: the family exactly as registered (spaces kept). Written to the
+  // font descriptor's /FontFamily so a saved document can be re-resolved by
+  // family in a later session, and so Acrobat can re-resolve it on edit.
+  static ByteString GetFamilyName(FontId font_id);
   static int GetStyleWeight(FontId font_id);
   static bool IsStyleItalic(FontId font_id);
+  // EmbedPDF: resolve a face request by family (space- and case-insensitive
+  // against the registered family and base font name), then by the closest
+  // weight/italic. This is the persistent identity of a registered font;
+  // numeric ids are session-local.
+  static std::optional<FontId> FindFont(const ByteString& family_name,
+                                        int weight,
+                                        bool italic);
   static bool SupportsUnicode(FontId font_id, uint32_t unicode);
   static std::optional<FontId> FindFallbackFont(uint32_t unicode,
                                                 int weight,
