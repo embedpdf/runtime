@@ -938,6 +938,10 @@ int CFX_Face::GetNumFaces() const {
 }
 #endif
 
+uint16_t CFX_Face::GetFsTypeFlags() const {
+  return FT_Get_FSType_Flags(const_cast<FXFT_FaceRec*>(GetRec()));
+}
+
 #if BUILDFLAG(IS_WIN)
 bool CFX_Face::CanEmbed() {
   FT_UShort fstype = FT_Get_FSType_Flags(GetRec());

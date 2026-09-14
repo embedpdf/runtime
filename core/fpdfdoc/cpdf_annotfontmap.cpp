@@ -279,7 +279,8 @@ int32_t CPDF_AnnotFontMap::GetWordFontIndex(uint16_t word,
       fonts_.front().font->GetFontWeight().value_or(pdfium::kFontWeightNormal);
   const bool italic = fonts_.front().font->GetItalicAngle() != 0;
   std::optional<CFX_FontRegistry::FontId> font_id =
-      CFX_FontRegistry::FindFallbackFont(word, weight, italic);
+      CFX_FontRegistry::FindFallbackFont(word, weight, italic,
+                                         /*for_authoring=*/true);
   if (!font_id.has_value()) {
     return -1;
   }

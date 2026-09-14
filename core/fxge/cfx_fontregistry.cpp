@@ -12,6 +12,7 @@
 #include <utility>
 #include <vector>
 
+#include "core/fdrm/fx_crypt_sha.h"
 #include "core/fxcrt/containers/contains.h"
 #include "core/fxcrt/data_vector.h"
 #include "core/fxcrt/epdf_tls.h"
@@ -22,6 +23,9 @@
 #include "core/fxcrt/utf16.h"
 #include "core/fxge/cfx_face.h"
 #include "core/fxge/cfx_font.h"
+#include "hb-ot.h"      // nogncheck
+#include "hb-subset.h"  // nogncheck
+#include "hb.h"         // nogncheck
 
 namespace {
 
@@ -34,7 +38,92 @@ struct RegisteredFont {
   std::vector<uint32_t> supported_unicodes;
   DataVector<uint8_t> memory_data;
   RetainPtr<IFX_SeekableReadStream> stream;
+  CFX_FontRegistry::EmbeddingPermission permission =
+      CFX_FontRegistry::EmbeddingPermission::kInstallable;
+  bool editing_authorized = true;
+  bool no_subsetting = false;
+  bool instanced = false;
+  DataVector<uint8_t> source_hash;
 };
+
+// OS/2 fsType bits (OpenType spec, OS/2 table).
+constexpr uint16_t kFsTypeRestricted = 0x0002;
+constexpr uint16_t kFsTypePreviewAndPrint = 0x0004;
+constexpr uint16_t kFsTypeEditable = 0x0008;
+constexpr uint16_t kFsTypeNoSubsetting = 0x0100;
+constexpr uint16_t kFsTypeBitmapOnly = 0x0200;
+
+// Bits 1-3 are exclusive levels; when a font sets more than one, the least
+// restrictive applies (OpenType spec).
+CFX_FontRegistry::EmbeddingPermission ClassifyFsType(uint16_t fs_type) {
+  if (fs_type & kFsTypeBitmapOnly) {
+    return CFX_FontRegistry::EmbeddingPermission::kBitmapOnly;
+  }
+  if (fs_type & kFsTypeEditable) {
+    return CFX_FontRegistry::EmbeddingPermission::kEditable;
+  }
+  if (fs_type & kFsTypePreviewAndPrint) {
+    return CFX_FontRegistry::EmbeddingPermission::kPreviewAndPrint;
+  }
+  if (fs_type & kFsTypeRestricted) {
+    return CFX_FontRegistry::EmbeddingPermission::kRestricted;
+  }
+  return CFX_FontRegistry::EmbeddingPermission::kInstallable;
+}
+
+// EmbedPDF: a variable font is turned into a static instance once, at
+// registration, so layout, subsetting and embedding all see the same static
+// program. Axes are pinned to their defaults, except `wght`, which follows an
+// explicitly registered weight when the axis covers it. Returns empty when the
+// font is not variable or the instancer cannot handle it (the original bytes
+// are then used as they are: readers render a VF at its default instance).
+DataVector<uint8_t> InstanceVariableFont(pdfium::span<const uint8_t> data,
+                                         int requested_weight) {
+  hb_blob_t* blob =
+      hb_blob_create(reinterpret_cast<const char*>(data.data()),
+                     pdfium::checked_cast<unsigned int>(data.size()),
+                     HB_MEMORY_MODE_READONLY, nullptr, nullptr);
+  if (!blob) {
+    return {};
+  }
+  hb_face_t* face = hb_face_create(blob, 0);
+  hb_blob_destroy(blob);
+  if (!face) {
+    return {};
+  }
+  DataVector<uint8_t> result;
+  if (hb_ot_var_has_data(face)) {
+    hb_subset_input_t* input = hb_subset_input_create_or_fail();
+    if (input) {
+      hb_subset_input_keep_everything(input);
+      hb_subset_input_pin_all_axes_to_default(input, face);
+      if (requested_weight >= 100 && requested_weight <= 900) {
+        hb_ot_var_axis_info_t axis;
+        if (hb_ot_var_find_axis_info(face, HB_TAG('w', 'g', 'h', 't'), &axis) &&
+            axis.min_value <= requested_weight &&
+            requested_weight <= axis.max_value) {
+          hb_subset_input_pin_axis_location(
+              input, face, HB_TAG('w', 'g', 'h', 't'),
+              static_cast<float>(requested_weight));
+        }
+      }
+      hb_face_t* instance = hb_subset_or_fail(face, input);
+      if (instance) {
+        hb_blob_t* out = hb_face_reference_blob(instance);
+        unsigned int length = 0;
+        const char* bytes = hb_blob_get_data(out, &length);
+        if (bytes && length > 0) {
+          result.assign(bytes, bytes + length);
+        }
+        hb_blob_destroy(out);
+        hb_face_destroy(instance);
+      }
+      hb_subset_input_destroy(input);
+    }
+  }
+  hb_face_destroy(face);
+  return result;
+}
 
 struct RegistryState {
   CFX_FontRegistry::FontId next_font_id = 1;
@@ -161,6 +250,30 @@ CFX_FontRegistry::FontId RegisterLoadedFontSource(
     return CFX_FontRegistry::kInvalidFontId;
   }
 
+  // Licence first: a font whose fsType forbids embedding is never registered,
+  // so nothing downstream has to remember to check.
+  const uint16_t fs_type = font->GetFace()->GetFsTypeFlags();
+  const CFX_FontRegistry::EmbeddingPermission permission =
+      ClassifyFsType(fs_type);
+  if (permission == CFX_FontRegistry::EmbeddingPermission::kRestricted ||
+      permission == CFX_FontRegistry::EmbeddingPermission::kBitmapOnly) {
+    return CFX_FontRegistry::kInvalidFontId;
+  }
+
+  // Variable fonts become a static instance now (see InstanceVariableFont).
+  bool instanced = false;
+  DataVector<uint8_t> instanced_data = InstanceVariableFont(data, weight);
+  if (!instanced_data.empty()) {
+    std::unique_ptr<CFX_Font> instanced_font = LoadFont(instanced_data);
+    if (instanced_font && instanced_font->HasAnyGlyphs()) {
+      font = std::move(instanced_font);
+      memory_data = std::move(instanced_data);
+      data = memory_data;
+      stream.Reset();
+      instanced = true;
+    }
+  }
+
   std::vector<uint32_t> supported_unicodes =
       CollectSupportedUnicodes(font.get());
   if (supported_unicodes.empty()) {
@@ -169,6 +282,12 @@ CFX_FontRegistry::FontId RegisterLoadedFontSource(
 
   auto registered_font = std::make_unique<RegisteredFont>();
   registered_font->id = registry->next_font_id++;
+  registered_font->permission = permission;
+  registered_font->editing_authorized =
+      permission != CFX_FontRegistry::EmbeddingPermission::kPreviewAndPrint;
+  registered_font->no_subsetting = (fs_type & kFsTypeNoSubsetting) != 0;
+  registered_font->instanced = instanced;
+  registered_font->source_hash = CRYPT_SHA256Generate(data);
   registered_font->base_font_name = NormalizeBaseFontName(
       family_name.IsEmpty() ? font->GetBaseFontName() : family_name);
   registered_font->family_name =
@@ -266,6 +385,51 @@ bool CFX_FontRegistry::IsValidFont(FontId font_id) {
 }
 
 // static
+std::optional<CFX_FontRegistry::EmbeddingPermission>
+CFX_FontRegistry::GetEmbeddingPermission(FontId font_id) {
+  RegisteredFont* font = GetRegisteredFont(font_id);
+  if (!font) {
+    return std::nullopt;
+  }
+  return font->permission;
+}
+
+// static
+bool CFX_FontRegistry::IsEditingAuthorized(FontId font_id) {
+  RegisteredFont* font = GetRegisteredFont(font_id);
+  return font && font->editing_authorized;
+}
+
+// static
+bool CFX_FontRegistry::AuthorizeEditing(FontId font_id) {
+  RegisteredFont* font = GetRegisteredFont(font_id);
+  if (!font) {
+    return false;
+  }
+  font->editing_authorized = true;
+  return true;
+}
+
+// static
+bool CFX_FontRegistry::AllowsSubsetting(FontId font_id) {
+  RegisteredFont* font = GetRegisteredFont(font_id);
+  return font && !font->no_subsetting;
+}
+
+// static
+pdfium::span<const uint8_t> CFX_FontRegistry::GetSourceHash(FontId font_id) {
+  RegisteredFont* font = GetRegisteredFont(font_id);
+  return font ? pdfium::span<const uint8_t>(font->source_hash)
+              : pdfium::span<const uint8_t>();
+}
+
+// static
+bool CFX_FontRegistry::IsInstanced(FontId font_id) {
+  RegisteredFont* font = GetRegisteredFont(font_id);
+  return font && font->instanced;
+}
+
+// static
 ByteString CFX_FontRegistry::GetBaseFontName(FontId font_id) {
   RegisteredFont* font = GetRegisteredFont(font_id);
   return font ? font->base_font_name : ByteString();
@@ -343,8 +507,11 @@ bool CFX_FontRegistry::SupportsUnicode(FontId font_id, uint32_t unicode) {
 }
 
 // static
-std::optional<CFX_FontRegistry::FontId>
-CFX_FontRegistry::FindFallbackFont(uint32_t unicode, int weight, bool italic) {
+std::optional<CFX_FontRegistry::FontId> CFX_FontRegistry::FindFallbackFont(
+    uint32_t unicode,
+    int weight,
+    bool italic,
+    bool for_authoring) {
   if (!g_registry) {
     return std::nullopt;
   }
@@ -355,6 +522,9 @@ CFX_FontRegistry::FindFallbackFont(uint32_t unicode, int weight, bool italic) {
     RegisteredFont* font = GetRegisteredFont(font_id);
     if (!font || !SupportsUnicode(font_id, unicode)) {
       continue;
+    }
+    if (for_authoring && !font->editing_authorized) {
+      continue;  // preview-and-print: may render, may not write new text
     }
 
     const int score = StyleScore(*font, weight, italic);

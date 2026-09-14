@@ -4404,6 +4404,11 @@ bool CPDF_GenerateAP::UpdateDefaultAppearanceRegisteredFont(
   if (!doc || !annot_dict || !CFX_FontRegistry::IsValidFont(font_id)) {
     return false;
   }
+  // A preview-and-print font renders existing text but may not author new
+  // text until the app asserts a licence (EPDFFont_AuthorizeEditing).
+  if (!CFX_FontRegistry::IsEditingAuthorized(font_id)) {
+    return false;
+  }
 
   ByteString resource_key;
   if (!CPDF_AnnotFontMap::ReserveRegisteredFontAlias(doc, font_id,

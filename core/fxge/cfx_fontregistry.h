@@ -25,6 +25,19 @@ class CFX_FontRegistry {
 
   static constexpr FontId kInvalidFontId = 0;
 
+  // EmbedPDF: the OS/2 fsType embedding permission of a registered font
+  // (OpenType spec, OS/2 table). Registration refuses kRestricted and
+  // kBitmapOnly outright. kPreviewAndPrint fonts render existing text but
+  // may not author new text until the app asserts a licence with
+  // AuthorizeEditing(); kEditable and kInstallable author freely.
+  enum class EmbeddingPermission : uint8_t {
+    kInstallable = 0,
+    kEditable = 1,
+    kPreviewAndPrint = 2,
+    kRestricted = 3,
+    kBitmapOnly = 4,
+  };
+
   static FontId RegisterMemoryFont(const ByteString& family_name,
                                    int weight,
                                    int italic,
@@ -38,6 +51,20 @@ class CFX_FontRegistry {
   static bool AddFallbackFont(FontId font_id);
   static void ClearFallbackFonts();
   static bool HasFallbackFonts();
+
+  // EmbedPDF: permissions (§3.4 of the rich text plan).
+  static std::optional<EmbeddingPermission> GetEmbeddingPermission(
+      FontId font_id);
+  static bool IsEditingAuthorized(FontId font_id);
+  static bool AuthorizeEditing(FontId font_id);
+  // False when fsType forbids subsetting (bit 0x0100): embed the whole program.
+  static bool AllowsSubsetting(FontId font_id);
+  // SHA-256 of the registered (instanced) bytes: the source identity a font
+  // pool shares programs by. Empty for an unknown id.
+  static pdfium::span<const uint8_t> GetSourceHash(FontId font_id);
+  // True when the registered bytes are a static instance made from a
+  // variable font at registration.
+  static bool IsInstanced(FontId font_id);
 
   static bool IsValidFont(FontId font_id);
   static ByteString GetBaseFontName(FontId font_id);
@@ -55,9 +82,13 @@ class CFX_FontRegistry {
                                         int weight,
                                         bool italic);
   static bool SupportsUnicode(FontId font_id, uint32_t unicode);
+  // |for_authoring|: the glyph will be written into new text (annotation
+  // appearance), so fonts not authorized for editing are skipped. Rendering
+  // existing page text passes false.
   static std::optional<FontId> FindFallbackFont(uint32_t unicode,
                                                 int weight,
-                                                bool italic);
+                                                bool italic,
+                                                bool for_authoring = false);
   static std::unique_ptr<CFX_Font> CreateFont(FontId font_id);
 
   static void DestroyGlobals();

@@ -6,6 +6,8 @@
 #include <stddef.h>
 #include <stdint.h>
 
+#include <optional>
+
 #include "core/fxcrt/bytestring.h"
 #include "core/fxcrt/retain_ptr.h"
 #include "core/fxcrt/span.h"
@@ -60,6 +62,42 @@ EPDFFont_RegisterMemFont64(FPDF_BYTESTRING family_name,
 
 FPDF_EXPORT void FPDF_CALLCONV EPDFFont_ClearRegisteredFonts(void) {
   CFX_FontRegistry::ClearRegisteredFonts();
+}
+
+FPDF_EXPORT int FPDF_CALLCONV
+EPDFFont_GetEmbeddingPermission(EPDF_FONT_ID font_id) {
+  std::optional<CFX_FontRegistry::EmbeddingPermission> permission =
+      CFX_FontRegistry::GetEmbeddingPermission(font_id);
+  if (!permission.has_value()) {
+    return -1;
+  }
+  switch (*permission) {
+    case CFX_FontRegistry::EmbeddingPermission::kInstallable:
+      return EPDF_FONT_EMBEDDING_INSTALLABLE;
+    case CFX_FontRegistry::EmbeddingPermission::kEditable:
+      return EPDF_FONT_EMBEDDING_EDITABLE;
+    case CFX_FontRegistry::EmbeddingPermission::kPreviewAndPrint:
+      return EPDF_FONT_EMBEDDING_PREVIEW_AND_PRINT;
+    case CFX_FontRegistry::EmbeddingPermission::kRestricted:
+      return EPDF_FONT_EMBEDDING_RESTRICTED;
+    case CFX_FontRegistry::EmbeddingPermission::kBitmapOnly:
+      return EPDF_FONT_EMBEDDING_BITMAP_ONLY;
+  }
+  return -1;
+}
+
+FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV
+EPDFFont_IsEditingAuthorized(EPDF_FONT_ID font_id) {
+  return CFX_FontRegistry::IsEditingAuthorized(font_id);
+}
+
+FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV
+EPDFFont_AuthorizeEditing(EPDF_FONT_ID font_id) {
+  return CFX_FontRegistry::AuthorizeEditing(font_id);
+}
+
+FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV EPDFFont_IsInstanced(EPDF_FONT_ID font_id) {
+  return CFX_FontRegistry::IsInstanced(font_id);
 }
 
 FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV

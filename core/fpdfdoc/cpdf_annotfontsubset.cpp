@@ -658,8 +658,13 @@ RetainPtr<CPDF_Dictionary> CPDF_AnnotFontSubset::BuildRegisteredFontResource(
     widths[0] = font->GetGlyphWidth(0);
   }
 
+  // fsType "no subsetting" (0x0100): the licence allows embedding only the
+  // whole program, so the resource carries it untagged.
+  const bool may_subset = CFX_FontRegistry::AllowsSubsetting(font_id);
   DataVector<uint8_t> subset_font_data =
-      SubsetFontDataRetainGids(font->GetFontSpan(), filtered_glyph_to_unicode);
+      may_subset ? SubsetFontDataRetainGids(font->GetFontSpan(),
+                                            filtered_glyph_to_unicode)
+                 : DataVector<uint8_t>();
   pdfium::span<const uint8_t> font_data = subset_font_data.empty()
                                               ? font->GetFontSpan()
                                               : pdfium::span(subset_font_data);
@@ -667,7 +672,9 @@ RetainPtr<CPDF_Dictionary> CPDF_AnnotFontSubset::BuildRegisteredFontResource(
   const ByteString base_font_name =
       BaseFontNameForRegisteredFont(font_id, font.get());
   const ByteString subset_font_name =
-      MakeSubsetBaseFontName(base_font_name, filtered_glyph_to_unicode);
+      subset_font_data.empty()
+          ? base_font_name
+          : MakeSubsetBaseFontName(base_font_name, filtered_glyph_to_unicode);
   RetainPtr<CPDF_Dictionary> font_dict = BuildCompositeFont(
       doc, font.get(), subset_font_name, font_data,
       IdentityForRegisteredFont(font_id), widths, to_unicode,

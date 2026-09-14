@@ -68,6 +68,9 @@ class CFX_Face final : public Retainable, public Observable {
   bool IsFixedWidth() const;
   bool IsItalic() const;
   bool IsBold() const;
+  // EmbedPDF: the OS/2 fsType embedding-permission bits (0 when the font has
+  // no OS/2 table, i.e. installable).
+  uint16_t GetFsTypeFlags() const;
 
   ByteString GetFamilyName() const;
   ByteString GetStyleName() const;

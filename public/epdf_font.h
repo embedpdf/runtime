@@ -78,6 +78,36 @@ EPDFFont_RegisterMemFont64(FPDF_BYTESTRING family_name,
 // again.
 FPDF_EXPORT void FPDF_CALLCONV EPDFFont_ClearRegisteredFonts(void);
 
+// EmbedPDF: the OS/2 fsType embedding permission of a registered font.
+// Registration refuses RESTRICTED and BITMAP_ONLY fonts (EPDFFont_Register*
+// returns 0 for them). PREVIEW_AND_PRINT fonts render existing text and may
+// be embedded, but may not author new text (EPDFAnnot_SetDefaultAppearance-
+// RegisteredFont fails, fallback lookups for new text skip them) until the
+// app asserts a licence with EPDFFont_AuthorizeEditing().
+#define EPDF_FONT_EMBEDDING_INSTALLABLE 0
+#define EPDF_FONT_EMBEDDING_EDITABLE 1
+#define EPDF_FONT_EMBEDDING_PREVIEW_AND_PRINT 2
+#define EPDF_FONT_EMBEDDING_RESTRICTED 3
+#define EPDF_FONT_EMBEDDING_BITMAP_ONLY 4
+
+// Returns one of EPDF_FONT_EMBEDDING_*, or -1 for an unknown id.
+FPDF_EXPORT int FPDF_CALLCONV
+EPDFFont_GetEmbeddingPermission(EPDF_FONT_ID font_id);
+
+// Whether new text may be authored with the font (see above).
+FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV
+EPDFFont_IsEditingAuthorized(EPDF_FONT_ID font_id);
+
+// The application asserts it holds a licence that permits editing with this
+// font. Returns false for an unknown id.
+FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV
+EPDFFont_AuthorizeEditing(EPDF_FONT_ID font_id);
+
+// True when the registered program is a static instance made from a variable
+// font at registration (axes pinned to defaults, `wght` to the registered
+// weight when the axis covers it).
+FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV EPDFFont_IsInstanced(EPDF_FONT_ID font_id);
+
 // Experimental EmbedPDF Extension API.
 // Add a registered font to the ordered fallback list used when the selected
 // font does not contain a glyph or a PDF page needs a substitute font.

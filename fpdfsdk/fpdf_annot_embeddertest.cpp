@@ -49,6 +49,8 @@
 #include "core/fxcrt/fx_system.h"
 #include "core/fxcrt/span.h"
 #include "core/fxge/cfx_defaultrenderdevice.h"
+#include "core/fxge/cfx_font.h"
+#include "core/fxge/cfx_fontregistry.h"
 #include "fpdfsdk/cpdfsdk_helpers.h"
 #include "public/cpp/fpdf_scopers.h"
 #include "public/fpdf_attachment.h"
@@ -107,6 +109,16 @@ std::vector<uint8_t> LoadAmiriFontData() {
       "harfbuzz-ng/src/perf/fonts/Amiri-Regular.ttf");
   if (font_path.empty()) {
     ADD_FAILURE() << "Failed to find Amiri test font";
+    return {};
+  }
+  return GetFileContents(font_path.c_str());
+}
+
+std::vector<uint8_t> LoadRobotoVariableAbcFontData() {
+  std::string font_path = PathService::GetThirdPartyFilePath(
+      "harfbuzz-ng/src/test/subset/data/fonts/Roboto-Variable.ABC.ttf");
+  if (font_path.empty()) {
+    ADD_FAILURE() << "Failed to find Roboto-Variable.ABC test font";
     return {};
   }
   return GetFileContents(font_path.c_str());
@@ -1296,6 +1308,62 @@ RetainPtr<CPDF_Dictionary> MakeLegacyMarkerForTest(CPDF_Document* doc,
   return marker;
 }
 
+// sfnt table directory helpers for the A2 tests: locate a table, and rewrite
+// the OS/2 fsType field of an in-memory TrueType font.
+struct SfntTable {
+  uint32_t offset = 0;
+  uint32_t length = 0;
+};
+
+std::optional<SfntTable> FindSfntTable(pdfium::span<const uint8_t> font,
+                                       const char* tag) {
+  if (font.size() < 12) {
+    return std::nullopt;
+  }
+  const size_t num_tables = (font[4] << 8) | font[5];
+  for (size_t i = 0; i < num_tables; ++i) {
+    const size_t record = 12 + i * 16;
+    if (record + 16 > font.size()) {
+      return std::nullopt;
+    }
+    if (memcmp(font.data() + record, tag, 4) != 0) {
+      continue;
+    }
+    SfntTable table;
+    table.offset = (font[record + 8] << 24) | (font[record + 9] << 16) |
+                   (font[record + 10] << 8) | font[record + 11];
+    table.length = (font[record + 12] << 24) | (font[record + 13] << 16) |
+                   (font[record + 14] << 8) | font[record + 15];
+    return table;
+  }
+  return std::nullopt;
+}
+
+std::vector<uint8_t> WithFsType(std::vector<uint8_t> font, uint16_t fs_type) {
+  std::optional<SfntTable> os2 = FindSfntTable(font, "OS/2");
+  if (!os2.has_value() || os2->offset + 10 > font.size()) {
+    ADD_FAILURE() << "no OS/2 table";
+    return {};
+  }
+  font[os2->offset + 8] = static_cast<uint8_t>(fs_type >> 8);
+  font[os2->offset + 9] = static_cast<uint8_t>(fs_type & 0xff);
+  return font;
+}
+
+std::vector<uint8_t> EmbeddedFontProgram(const CPDF_Dictionary* font_dict) {
+  RetainPtr<const CPDF_Dictionary> descriptor =
+      GetType0FontDescriptor(font_dict);
+  RetainPtr<const CPDF_Stream> program =
+      descriptor ? descriptor->GetStreamFor("FontFile2") : nullptr;
+  if (!program) {
+    return {};
+  }
+  auto acc = pdfium::MakeRetain<CPDF_StreamAcc>(std::move(program));
+  acc->LoadAllDataFiltered();
+  pdfium::span<const uint8_t> span = acc->GetSpan();
+  return std::vector<uint8_t>(span.begin(), span.end());
+}
+
 RetainPtr<CPDF_Dictionary> GetMutableDrFontResources(FPDF_DOCUMENT doc) {
   CPDF_Document* cpdf_doc = CPDFDocumentFromFPDFDocument(doc);
   return cpdf_doc->GetMutableRoot()
@@ -1984,6 +2052,232 @@ TEST_F(FPDFAnnotEmbedderTest, WriteA1AcrobatFixtureFromEnv) {
   out.write(static_cast<const char*>(saved_buffer), saved_size);
   EPDF_FreeBuffer(saved_buffer);
   ASSERT_TRUE(out.good());
+}
+
+// A2: fsType is read at registration. Restricted and bitmap-only licences
+// are refused; preview-and-print registers but may not author until the app
+// asserts a licence; editable and installable author freely.
+TEST_F(FPDFAnnotEmbedderTest, RegistryHonoursFsTypeEmbeddingPermissions) {
+  ScopedRegisteredFonts scoped_fonts;
+  std::vector<uint8_t> roboto = LoadRobotoFontData();
+  ASSERT_FALSE(roboto.empty());
+  ASSERT_TRUE(FindSfntTable(roboto, "OS/2").has_value());
+
+  auto register_with = [&](uint16_t fs_type) {
+    std::vector<uint8_t> font = WithFsType(roboto, fs_type);
+    return EPDFFont_RegisterMemFont64("Roboto", /*weight=*/400, /*italic=*/0,
+                                      font.data(), font.size());
+  };
+
+  EXPECT_EQ(0u, register_with(0x0002));  // restricted
+  EXPECT_EQ(0u, register_with(0x0200));  // bitmap only
+  EXPECT_EQ(0u, register_with(0x0202));  // bitmap only wins over any level
+
+  EPDF_FONT_ID installable = register_with(0x0000);
+  ASSERT_NE(0u, installable);
+  EXPECT_EQ(EPDF_FONT_EMBEDDING_INSTALLABLE,
+            EPDFFont_GetEmbeddingPermission(installable));
+  EXPECT_TRUE(EPDFFont_IsEditingAuthorized(installable));
+
+  EPDF_FONT_ID editable = register_with(0x0008);
+  ASSERT_NE(0u, editable);
+  EXPECT_EQ(EPDF_FONT_EMBEDDING_EDITABLE,
+            EPDFFont_GetEmbeddingPermission(editable));
+  EXPECT_TRUE(EPDFFont_IsEditingAuthorized(editable));
+
+  // Several level bits set: the least restrictive applies.
+  EPDF_FONT_ID mixed = register_with(0x000E);
+  ASSERT_NE(0u, mixed);
+  EXPECT_EQ(EPDF_FONT_EMBEDDING_EDITABLE,
+            EPDFFont_GetEmbeddingPermission(mixed));
+
+  EPDF_FONT_ID preview = register_with(0x0004);
+  ASSERT_NE(0u, preview);
+  EXPECT_EQ(EPDF_FONT_EMBEDDING_PREVIEW_AND_PRINT,
+            EPDFFont_GetEmbeddingPermission(preview));
+  EXPECT_FALSE(EPDFFont_IsEditingAuthorized(preview));
+  EXPECT_EQ(-1, EPDFFont_GetEmbeddingPermission(preview + 1000));
+  EXPECT_FALSE(EPDFFont_AuthorizeEditing(preview + 1000));
+
+  ScopedFPDFDocument doc(FPDF_CreateNewDocument());
+  ScopedFPDFPage page(FPDFPage_New(doc.get(), 0, 400, 400));
+  ScopedFPDFAnnotation annot(
+      FPDFPage_CreateAnnot(page.get(), FPDF_ANNOT_FREETEXT));
+  ASSERT_TRUE(annot);
+  const FS_RECTF rect{50.0f, 320.0f, 350.0f, 250.0f};
+  ASSERT_TRUE(FPDFAnnot_SetRect(annot.get(), &rect));
+  ScopedFPDFWideString contents = GetFPDFWideString(L"ABC");
+  ASSERT_TRUE(
+      FPDFAnnot_SetStringValue(annot.get(), "Contents", contents.get()));
+
+  // Preview-and-print may not author…
+  EXPECT_FALSE(EPDFAnnot_SetDefaultAppearanceRegisteredFont(
+      annot.get(), preview, 18.0f, 0, 0, 0));
+  // …until the app asserts a licence.
+  EXPECT_TRUE(EPDFFont_AuthorizeEditing(preview));
+  EXPECT_TRUE(EPDFFont_IsEditingAuthorized(preview));
+  EXPECT_TRUE(EPDFAnnot_SetDefaultAppearanceRegisteredFont(annot.get(), preview,
+                                                           18.0f, 0, 0, 0));
+  EXPECT_TRUE(EPDFAnnot_GenerateAppearance(annot.get()));
+  EXPECT_TRUE(AppearanceFontHasEmbeddedSubset(
+      GetAppearanceFontDict(annot.get(), RegisteredFontAlias(preview)).Get()));
+}
+
+// A preview-and-print fallback font renders existing page text but is not
+// used to write new text until authorized.
+TEST_F(FPDFAnnotEmbedderTest,
+       PreviewAndPrintFallbackDoesNotAuthorUntilAuthorized) {
+  ScopedRegisteredFonts scoped_fonts;
+  std::vector<uint8_t> roboto = LoadRobotoFontData();
+  std::vector<uint8_t> droid = LoadDroidSansFallbackFullFontData();
+  ASSERT_FALSE(roboto.empty());
+  ASSERT_FALSE(droid.empty());
+  EPDF_FONT_ID roboto_id = EPDFFont_RegisterMemFont64(
+      "Roboto", /*weight=*/400, /*italic=*/0, roboto.data(), roboto.size());
+  ASSERT_NE(0u, roboto_id);
+  std::vector<uint8_t> droid_preview = WithFsType(droid, 0x0004);
+  EPDF_FONT_ID droid_id = EPDFFont_RegisterMemFont64(
+      "DroidSansFallbackFull", /*weight=*/400, /*italic=*/0,
+      droid_preview.data(), droid_preview.size());
+  ASSERT_NE(0u, droid_id);
+  ASSERT_TRUE(EPDFFont_AddFallbackFont(droid_id));
+
+  ScopedFPDFDocument doc(FPDF_CreateNewDocument());
+  ScopedFPDFPage page(FPDFPage_New(doc.get(), 0, 400, 400));
+  ScopedFPDFAnnotation annot(
+      FPDFPage_CreateAnnot(page.get(), FPDF_ANNOT_FREETEXT));
+  ASSERT_TRUE(annot);
+  const FS_RECTF rect{50.0f, 320.0f, 350.0f, 250.0f};
+  ASSERT_TRUE(FPDFAnnot_SetRect(annot.get(), &rect));
+  ScopedFPDFWideString korean = GetFPDFWideString(L"AB\xD55C\xAE00");
+  ASSERT_TRUE(FPDFAnnot_SetStringValue(annot.get(), "Contents", korean.get()));
+  ASSERT_TRUE(EPDFAnnot_SetDefaultAppearanceRegisteredFont(
+      annot.get(), roboto_id, 18.0f, 0, 0, 0));
+
+  ASSERT_TRUE(EPDFAnnot_GenerateAppearance(annot.get()));
+  EXPECT_TRUE(
+      GetAppearanceFontDict(annot.get(), RegisteredFontAlias(roboto_id)));
+  EXPECT_FALSE(
+      GetAppearanceFontDict(annot.get(), RegisteredFontAlias(droid_id)));
+
+  ASSERT_TRUE(EPDFFont_AuthorizeEditing(droid_id));
+  ASSERT_TRUE(EPDFAnnot_GenerateAppearance(annot.get()));
+  ExpectRegisteredAppearanceMapsUnicode(annot.get(), droid_id,
+                                        {L'\xD55C', L'\xAE00'});
+}
+
+// fsType "no subsetting": the whole program is embedded, untagged.
+TEST_F(FPDFAnnotEmbedderTest, NoSubsettingFontEmbedsWholeProgram) {
+  ScopedRegisteredFonts scoped_fonts;
+  std::vector<uint8_t> roboto = LoadRobotoFontData();
+  ASSERT_FALSE(roboto.empty());
+  std::vector<uint8_t> no_subsetting = WithFsType(roboto, 0x0100);
+  EPDF_FONT_ID font_id =
+      EPDFFont_RegisterMemFont64("Roboto", /*weight=*/400, /*italic=*/0,
+                                 no_subsetting.data(), no_subsetting.size());
+  ASSERT_NE(0u, font_id);
+  EXPECT_EQ(EPDF_FONT_EMBEDDING_INSTALLABLE,
+            EPDFFont_GetEmbeddingPermission(font_id));
+
+  ScopedFPDFDocument doc(FPDF_CreateNewDocument());
+  ScopedFPDFPage page(FPDFPage_New(doc.get(), 0, 400, 400));
+  ScopedFPDFAnnotation annot(
+      FPDFPage_CreateAnnot(page.get(), FPDF_ANNOT_FREETEXT));
+  ASSERT_TRUE(annot);
+  const FS_RECTF rect{50.0f, 320.0f, 350.0f, 250.0f};
+  ASSERT_TRUE(FPDFAnnot_SetRect(annot.get(), &rect));
+  ScopedFPDFWideString contents = GetFPDFWideString(L"ABC");
+  ASSERT_TRUE(
+      FPDFAnnot_SetStringValue(annot.get(), "Contents", contents.get()));
+  ASSERT_TRUE(EPDFAnnot_SetDefaultAppearanceRegisteredFont(annot.get(), font_id,
+                                                           18.0f, 0, 0, 0));
+  ASSERT_TRUE(EPDFAnnot_GenerateAppearance(annot.get()));
+
+  RetainPtr<const CPDF_Dictionary> font_dict =
+      GetAppearanceFontDict(annot.get(), RegisteredFontAlias(font_id));
+  ASSERT_TRUE(font_dict);
+  EXPECT_EQ("Roboto", font_dict->GetNameFor("BaseFont"));  // no subset tag
+  std::vector<uint8_t> program = EmbeddedFontProgram(font_dict.Get());
+  EXPECT_EQ(no_subsetting.size(), program.size());
+  EXPECT_TRUE(AppearanceFontMapsUnicode(font_dict.Get(), 'A'));
+}
+
+// A2: a variable font is instanced once at registration. The registered
+// weight pins `wght`; everything downstream (layout, subset, embedding) sees a
+// static program.
+TEST_F(FPDFAnnotEmbedderTest, VariableFontIsInstancedAtRegistration) {
+  ScopedRegisteredFonts scoped_fonts;
+  std::vector<uint8_t> vf = LoadRobotoVariableAbcFontData();
+  ASSERT_FALSE(vf.empty());
+  ASSERT_TRUE(FindSfntTable(vf, "fvar").has_value());
+  std::vector<uint8_t> roboto = LoadRobotoFontData();
+  ASSERT_FALSE(roboto.empty());
+
+  EPDF_FONT_ID regular = EPDFFont_RegisterMemFont64(
+      "Roboto VF", /*weight=*/400, /*italic=*/0, vf.data(), vf.size());
+  EPDF_FONT_ID bold = EPDFFont_RegisterMemFont64(
+      "Roboto VF", /*weight=*/700, /*italic=*/0, vf.data(), vf.size());
+  EPDF_FONT_ID static_font = EPDFFont_RegisterMemFont64(
+      "Roboto", /*weight=*/400, /*italic=*/0, roboto.data(), roboto.size());
+  ASSERT_NE(0u, regular);
+  ASSERT_NE(0u, bold);
+  ASSERT_NE(0u, static_font);
+  EXPECT_TRUE(EPDFFont_IsInstanced(regular));
+  EXPECT_TRUE(EPDFFont_IsInstanced(bold));
+  EXPECT_FALSE(EPDFFont_IsInstanced(static_font));
+  EXPECT_EQ(32u, CFX_FontRegistry::GetSourceHash(regular).size());
+  EXPECT_NE(
+      std::vector<uint8_t>(CFX_FontRegistry::GetSourceHash(regular).begin(),
+                           CFX_FontRegistry::GetSourceHash(regular).end()),
+      std::vector<uint8_t>(CFX_FontRegistry::GetSourceHash(bold).begin(),
+                           CFX_FontRegistry::GetSourceHash(bold).end()));
+
+  // The two instances are different static programs: 'A' is wider at 700.
+  auto glyph_width_of_a = [](EPDF_FONT_ID id) -> int {
+    std::unique_ptr<CFX_Font> font = CFX_FontRegistry::CreateFont(id);
+    if (!font) {
+      return -1;
+    }
+    for (const auto& item : font->GetCharCodesAndIndices(0x7f)) {
+      if (item.char_code == 'A') {
+        return font->GetGlyphWidth(item.glyph_index);
+      }
+    }
+    return -1;
+  };
+  const int regular_a = glyph_width_of_a(regular);
+  const int bold_a = glyph_width_of_a(bold);
+  ASSERT_GT(regular_a, 0);
+  ASSERT_GT(bold_a, 0);
+  EXPECT_GT(bold_a, regular_a);
+
+  // What gets embedded is static too.
+  ScopedFPDFDocument doc(FPDF_CreateNewDocument());
+  ScopedFPDFPage page(FPDFPage_New(doc.get(), 0, 400, 400));
+  ScopedFPDFAnnotation annot(
+      FPDFPage_CreateAnnot(page.get(), FPDF_ANNOT_FREETEXT));
+  ASSERT_TRUE(annot);
+  const FS_RECTF rect{50.0f, 320.0f, 350.0f, 250.0f};
+  ASSERT_TRUE(FPDFAnnot_SetRect(annot.get(), &rect));
+  ScopedFPDFWideString contents = GetFPDFWideString(L"ABC");
+  ASSERT_TRUE(
+      FPDFAnnot_SetStringValue(annot.get(), "Contents", contents.get()));
+  ASSERT_TRUE(EPDFAnnot_SetDefaultAppearanceRegisteredFont(annot.get(), bold,
+                                                           18.0f, 0, 0, 0));
+  ASSERT_TRUE(EPDFAnnot_GenerateAppearance(annot.get()));
+  RetainPtr<const CPDF_Dictionary> font_dict =
+      GetAppearanceFontDict(annot.get(), RegisteredFontAlias(bold));
+  ASSERT_TRUE(font_dict);
+  std::vector<uint8_t> program = EmbeddedFontProgram(font_dict.Get());
+  ASSERT_FALSE(program.empty());
+  EXPECT_FALSE(FindSfntTable(program, "fvar").has_value());
+  EXPECT_FALSE(FindSfntTable(program, "gvar").has_value());
+  EXPECT_TRUE(FindSfntTable(program, "glyf").has_value());
+  EXPECT_TRUE(AppearanceFontMapsUnicode(font_dict.Get(), 'A'));
+  RetainPtr<const CPDF_Dictionary> descriptor =
+      GetType0FontDescriptor(font_dict.Get());
+  ASSERT_TRUE(descriptor);
+  EXPECT_EQ(700, descriptor->GetIntegerFor("FontWeight"));
 }
 
 TEST_F(FPDFAnnotEmbedderTest, FreeTextRegisteredFontMarkerSurvivesAliasSuffix) {
