@@ -20,6 +20,7 @@
 #include <string.h>
 
 #include <algorithm>
+#include <array>
 #include <map>
 #include <memory>
 #include <optional>
@@ -37,7 +38,6 @@
 #include "core/fpdfapi/parser/cpdf_parser.h"
 #include "core/fpdfapi/parser/cpdf_reference.h"
 #include "core/fpdfapi/parser/cpdf_stream.h"
-#include "core/fpdfapi/parser/cpdf_stream_acc.h"
 #include "core/fpdfapi/parser/fpdf_parser_decode.h"
 #include "core/fpdfapi/parser/fpdf_parser_utility.h"
 #include "core/fxcrt/bytestring.h"
@@ -57,6 +57,11 @@ namespace {
 
 constexpr size_t kValueCap = 1u << 20;  // bytes of serialisation per value
 constexpr size_t kSerializeDepthCap = 32;
+// The reachability walk records one edge per inbound reference of every
+// reachable object; past these the index is reported incomplete rather than
+// letting one document own the process.
+constexpr size_t kWalkObjectCap = 1u << 20;
+constexpr size_t kWalkEdgeCap = 1u << 22;
 
 // ---------------------------------------------------------------------------
 // Result storage.
@@ -67,6 +72,7 @@ struct RevisionSide {
   bool value_truncated = false;
   bool present = false;
   int gen = -1;
+  int read = EPDF_DIFF_READ_ABSENT;
 };
 
 struct Edge {
@@ -84,9 +90,16 @@ struct DiffEntry {
   RevisionSide side[2];  // EPDF_DIFF_OLD, EPDF_DIFF_NEW
 };
 
+struct RevisionHealth {
+  bool sparse_xref = false;
+  unsigned int bare_references = 0;
+  bool referrers_complete = true;
+};
+
 struct ObjectDiff {
   std::vector<DiffEntry> entries;
   ReferrerIndex referrers[2];  // EPDF_DIFF_OLD, EPDF_DIFF_NEW
+  RevisionHealth health[2];
 };
 
 ObjectDiff* DiffFromHandle(EPDF_OBJECT_DIFF diff) {
@@ -229,18 +242,40 @@ ByteString HexOf(pdfium::span<const uint8_t> bytes) {
   return out;
 }
 
-ByteString StreamSignature(const CPDF_Stream* stream) {
-  auto acc = pdfium::MakeRetain<CPDF_StreamAcc>(pdfium::WrapRetain(stream));
-  acc->LoadAllDataRaw();
-  pdfium::span<const uint8_t> raw = acc->GetSpan();
-  DataVector<uint8_t> digest = CRYPT_SHA256Generate(raw);
-  return ByteString::Format("stream(%u,", static_cast<unsigned>(raw.size())) +
+// The raw stream data's length and SHA-256, hashed through the stream's own
+// block reader 64 KiB at a time: the data is never copied whole, whether it
+// lives in the file or in memory. Nullopt when a block cannot be read - that
+// is missing evidence, not an empty stream.
+std::optional<ByteString> StreamSignature(const CPDF_Stream* stream) {
+  static constexpr size_t kChunk = 64 * 1024;
+  const size_t size = stream->GetRawSize();
+  CRYPT_sha2_context context;
+  CRYPT_SHA256Start(&context);
+  if (size > 0) {
+    DataVector<uint8_t> buffer(std::min(kChunk, size));
+    for (size_t offset = 0; offset < size;) {
+      const size_t count = std::min(kChunk, size - offset);
+      pdfium::span<uint8_t> chunk = pdfium::span(buffer).first(count);
+      if (!stream->ReadRawBlock(chunk, static_cast<FX_FILESIZE>(offset))) {
+        return std::nullopt;
+      }
+      CRYPT_SHA256Update(&context, chunk);
+      offset += count;
+    }
+  }
+  std::array<uint8_t, 32> digest;
+  CRYPT_SHA256Finish(&context, digest);
+  return ByteString::Format("stream(%u,", static_cast<unsigned>(size)) +
          HexOf(digest) + ")";
 }
 
 class Serializer {
  public:
-  Serializer() = default;
+  // |stream_signature| is the entry's own stream data signature, computed
+  // once by the caller and shared with the stream_data_changed decision; a
+  // stream is always an indirect object, so it is only ever the root here.
+  explicit Serializer(const std::optional<ByteString>* stream_signature)
+      : stream_signature_(stream_signature) {}
 
   void Write(const CPDF_Object* obj, size_t depth) {
     if (truncated_ || !obj) {
@@ -252,11 +287,19 @@ class Serializer {
       return;
     }
     if (const CPDF_Reference* ref = obj->AsReference()) {
+      // PDFium keeps no generation on a reference (the object's own
+      // generation is reported per side); every reference reads "n 0 R".
       Append(ByteString::Format("%u %u R", ref->GetRefObjNum(), 0u));
       return;
     }
     if (const CPDF_Stream* stream = obj->AsStream()) {
-      Append(StreamSignature(stream));
+      if (!stream_signature_ || !stream_signature_->has_value()) {
+        // Unreadable data: the value carries no evidence at all.
+        unreadable_ = true;
+        Append("null");
+        return;
+      }
+      Append(stream_signature_->value());
       WriteDictionary(stream->GetDict().Get(), depth);
       return;
     }
@@ -303,6 +346,7 @@ class Serializer {
 
   ByteString Take() { return std::move(out_); }
   bool truncated() const { return truncated_; }
+  bool unreadable() const { return unreadable_; }
 
  private:
   void WriteDictionary(const CPDF_Dictionary* dict, size_t depth) {
@@ -339,13 +383,227 @@ class Serializer {
 
   ByteString out_;
   bool truncated_ = false;
+  bool unreadable_ = false;
+  UnownedPtr<const std::optional<ByteString>> const stream_signature_;
 };
 
-void FillValue(const CPDF_Object* obj, RevisionSide* side) {
-  Serializer serializer;
+// Fills a present side. A live mapping whose bytes do not parse (|obj| null)
+// or whose stream data cannot be read is READ_FAILED: its value is "null"
+// on the wire, but the read status says that this null is not evidence.
+void FillValue(const CPDF_Object* obj,
+               const std::optional<ByteString>* stream_signature,
+               RevisionSide* side) {
+  side->present = true;
+  Serializer serializer(stream_signature);
   serializer.Write(obj, 0);
   side->value_truncated = serializer.truncated();
   side->value = side->value_truncated ? ByteString() : serializer.Take();
+  side->read = (!obj || serializer.unreadable()) ? EPDF_DIFF_READ_FAILED
+                                                  : EPDF_DIFF_READ_OK;
+}
+
+// ---------------------------------------------------------------------------
+// Revision health: the cross-reference table's coverage.
+// ---------------------------------------------------------------------------
+
+// The object-number ranges a revision's cross-reference sections cover,
+// read from the sections themselves (the parser's merged table drops free
+// entries with generation 0, so it cannot tell "listed as free" from "not
+// listed at all" - and that difference is exactly what matters here).
+struct NumberRange {
+  uint32_t start = 0;
+  uint32_t count = 0;
+};
+
+bool ReadAt(IFX_SeekableReadStream* file,
+            FX_FILESIZE pos,
+            pdfium::span<uint8_t> out,
+            size_t* out_read) {
+  const FX_FILESIZE size = file->GetSize();
+  if (pos < 0 || pos >= size) {
+    return false;
+  }
+  const size_t count = static_cast<size_t>(
+      std::min<FX_FILESIZE>(static_cast<FX_FILESIZE>(out.size()), size - pos));
+  if (!file->ReadBlockAtOffset(out.first(count), pos)) {
+    return false;
+  }
+  *out_read = count;
+  return true;
+}
+
+bool IsPdfSpace(uint8_t c) {
+  return c == ' ' || c == '\r' || c == '\n' || c == '\t' || c == '\f' || c == 0;
+}
+
+// Parses "start count" subsection headers of a classic table at |pos|
+// (just past the "xref" keyword), skipping each subsection's entries.
+bool CoverageOfClassicTable(IFX_SeekableReadStream* file,
+                            FX_FILESIZE pos,
+                            std::vector<NumberRange>* ranges) {
+  std::array<uint8_t, 64> buf;
+  for (int guard = 0; guard < 100000; ++guard) {
+    size_t got = 0;
+    if (!ReadAt(file, pos, pdfium::span(buf), &got)) {
+      return false;
+    }
+    size_t i = 0;
+    while (i < got && IsPdfSpace(buf[i])) {
+      ++i;
+    }
+    if (i >= got) {
+      return false;
+    }
+    if (buf[i] == 't') {
+      return true;  // "trailer": the table is complete
+    }
+    if (!isdigit(buf[i])) {
+      return false;
+    }
+    uint64_t start = 0;
+    while (i < got && isdigit(buf[i])) {
+      start = start * 10 + (buf[i] - '0');
+      if (start > CPDF_Parser::kMaxObjectNumber) {
+        return false;
+      }
+      ++i;
+    }
+    while (i < got && (buf[i] == ' ' || buf[i] == '\t')) {
+      ++i;
+    }
+    if (i >= got || !isdigit(buf[i])) {
+      return false;
+    }
+    uint64_t count = 0;
+    while (i < got && isdigit(buf[i])) {
+      count = count * 10 + (buf[i] - '0');
+      if (count > CPDF_Parser::kMaxObjectNumber) {
+        return false;
+      }
+      ++i;
+    }
+    // The header's line ending, then |count| entries of exactly 20 bytes.
+    while (i < got && IsPdfSpace(buf[i])) {
+      ++i;
+    }
+    if (i >= got) {
+      return false;
+    }
+    ranges->push_back({static_cast<uint32_t>(start), static_cast<uint32_t>(count)});
+    pos += static_cast<FX_FILESIZE>(i) + static_cast<FX_FILESIZE>(count) * 20;
+  }
+  return false;
+}
+
+// The /Index of a cross-reference stream (default [0 /Size]).
+bool CoverageOfXrefStream(const epdf::RevisionView* view,
+                          IFX_SeekableReadStream* file,
+                          FX_FILESIZE pos,
+                          std::vector<NumberRange>* ranges) {
+  std::array<uint8_t, 32> buf;
+  size_t got = 0;
+  if (!ReadAt(file, pos, pdfium::span(buf), &got)) {
+    return false;
+  }
+  size_t i = 0;
+  uint64_t objnum = 0;
+  while (i < got && isdigit(buf[i])) {
+    objnum = objnum * 10 + (buf[i] - '0');
+    if (objnum > CPDF_Parser::kMaxObjectNumber) {
+      return false;
+    }
+    ++i;
+  }
+  if (i == 0) {
+    return false;
+  }
+  RetainPtr<const CPDF_Object> obj = view->ParseObject(static_cast<uint32_t>(objnum));
+  RetainPtr<const CPDF_Stream> stream = obj ? ToStream(obj) : nullptr;
+  if (!stream || stream->GetDict()->GetNameFor("Type") != "XRef") {
+    return false;
+  }
+  RetainPtr<const CPDF_Array> index = stream->GetDict()->GetArrayFor("Index");
+  if (!index) {
+    const int size = stream->GetDict()->GetIntegerFor("Size");
+    if (size > 0) {
+      ranges->push_back({0, static_cast<uint32_t>(size)});
+    }
+    return true;
+  }
+  for (size_t k = 0; k + 1 < index->size(); k += 2) {
+    const int start = index->GetIntegerAt(k);
+    const int count = index->GetIntegerAt(k + 1);
+    if (start < 0 || count < 0) {
+      return false;
+    }
+    ranges->push_back({static_cast<uint32_t>(start), static_cast<uint32_t>(count)});
+  }
+  return true;
+}
+
+// The document's ORIGINAL cross-reference section (the oldest in the chain)
+// leaves some object number below the highest number it lists without an
+// entry of any kind - not "n", not "f". Later update sections are sparse
+// by nature and tolerated (pyHanko's updates skip numbers; corpus v3/85 is
+// valid), as is an overstated /Size (v3/55). A first section with holes is
+// legal to a lenient reader, but Acrobat's update analysis treats the
+// document as corrupted once any revision follows the signed one (the
+// 2026-09-13 ebook, rounds 3-5). Unknown (a section that cannot be read)
+// counts as not sparse: this is a reason to withhold a verdict, and it must
+// be established, not guessed.
+bool HasSparseXref(const CPDF_Parser* parser, const epdf::RevisionView* view) {
+  if (!parser || !view) {
+    return false;
+  }
+  RetainPtr<IFX_SeekableReadStream> file = parser->GetFileAccess();
+  if (!file) {
+    return false;
+  }
+  const FX_FILESIZE header = parser->GetFileHeaderOffset();
+  const std::vector<CPDF_Parser::CrossRefSection>& sections =
+      parser->GetCrossRefSections();
+  if (sections.empty()) {
+    return false;
+  }
+  std::vector<NumberRange> ranges;
+  {
+    const CPDF_Parser::CrossRefSection& section = sections.front();
+    std::array<uint8_t, 8> head;
+    size_t got = 0;
+    if (!ReadAt(file.Get(), section.offset + header, pdfium::span(head), &got) ||
+        got < 4) {
+      return false;
+    }
+    const bool classic = memcmp(head.data(), "xref", 4) == 0;
+    const bool ok =
+        classic ? CoverageOfClassicTable(file.Get(), section.offset + header + 4,
+                                         &ranges)
+                : CoverageOfXrefStream(view, file.Get(), section.offset + header,
+                                       &ranges);
+    if (!ok) {
+      return false;
+    }
+    if (section.hybrid_stream_offset != 0 &&
+        !CoverageOfXrefStream(view, file.Get(),
+                              section.hybrid_stream_offset + header, &ranges)) {
+      return false;
+    }
+  }
+  if (ranges.empty()) {
+    return false;
+  }
+  std::sort(ranges.begin(), ranges.end(),
+            [](const NumberRange& a, const NumberRange& b) {
+              return a.start < b.start;
+            });
+  uint64_t next = 0;  // the first number not yet covered
+  for (const NumberRange& r : ranges) {
+    if (r.start > next) {
+      return true;  // a hole below a later listed number
+    }
+    next = std::max<uint64_t>(next, static_cast<uint64_t>(r.start) + r.count);
+  }
+  return false;
 }
 
 int KindOf(const CPDF_Object* obj) {
@@ -379,19 +637,32 @@ int KindOf(const CPDF_Object* obj) {
 // reference of every reachable object.
 class ReferrerIndexBuilder {
  public:
-  ReferrerIndexBuilder(const epdf::RevisionView* view, ReferrerIndex* out)
-      : view_(view), out_(out) {}
+  ReferrerIndexBuilder(const epdf::RevisionView* view,
+                       ReferrerIndex* out,
+                       RevisionHealth* health)
+      : view_(view), out_(out), health_(health) {}
 
   void Build(const CPDF_Dictionary* trailer) {
     std::vector<uint32_t> queue;
     std::set<uint32_t> seen;
     VisitDirect(trailer, 0, ByteString(), &queue, &seen);
     while (!queue.empty()) {
+      if (objects_ >= kWalkObjectCap || edges_ >= kWalkEdgeCap) {
+        health_->referrers_complete = false;
+        return;
+      }
       const uint32_t obj_num = queue.back();
       queue.pop_back();
+      ++objects_;
       RetainPtr<const CPDF_Object> obj = view_->ParseObject(obj_num);
       if (!obj) {
         continue;
+      }
+      if (obj->IsReference()) {
+        // An indirect object whose whole body is a reference: reachable,
+        // so it counts against the revision (Acrobat: corrupted once any
+        // revision follows). Its target is still walked.
+        ++health_->bare_references;
       }
       if (const CPDF_Stream* stream = obj->AsStream()) {
         VisitDirect(stream->GetDict().Get(), obj_num, ByteString(), &queue,
@@ -416,6 +687,7 @@ class ReferrerIndexBuilder {
       if (target == 0) {
         return;
       }
+      ++edges_;
       (*out_)[target].push_back({owner, prefix});
       if (seen->insert(target).second) {
         queue->push_back(target);
@@ -455,6 +727,9 @@ class ReferrerIndexBuilder {
 
   UnownedPtr<const epdf::RevisionView> const view_;
   UnownedPtr<ReferrerIndex> const out_;
+  UnownedPtr<RevisionHealth> const health_;
+  size_t objects_ = 0;
+  size_t edges_ = 0;
 };
 
 }  // namespace
@@ -550,10 +825,16 @@ EPDFDoc_CompareRevisions(FPDF_DOCUMENT older_document,
   // identical-rewrite rule with evidence.
   RetainPtr<CPDF_Dictionary> older_trailer = older_parser->GetCombinedTrailer();
   RetainPtr<CPDF_Dictionary> newer_trailer = newer_parser->GetCombinedTrailer();
-  ReferrerIndexBuilder(older_view, &result->referrers[EPDF_DIFF_OLD])
+  ReferrerIndexBuilder(older_view, &result->referrers[EPDF_DIFF_OLD],
+                       &result->health[EPDF_DIFF_OLD])
       .Build(older_trailer.Get());
-  ReferrerIndexBuilder(newer_view, &result->referrers[EPDF_DIFF_NEW])
+  ReferrerIndexBuilder(newer_view, &result->referrers[EPDF_DIFF_NEW],
+                       &result->health[EPDF_DIFF_NEW])
       .Build(newer_trailer.Get());
+  result->health[EPDF_DIFF_OLD].sparse_xref =
+      HasSparseXref(older_parser, older_view);
+  result->health[EPDF_DIFF_NEW].sparse_xref =
+      HasSparseXref(newer_parser, newer_view);
 
   for (const auto& [num, change] : touched) {
     DiffEntry entry;
@@ -567,25 +848,37 @@ EPDFDoc_CompareRevisions(FPDF_DOCUMENT older_document,
     if (change != EPDF_DIFF_FREED) {
       new_obj = newer_view->ParseObject(num);
     }
-    // Absent objects (a live mapping that does not parse) count as null.
+    // A live mapping that does not parse serialises as null but reads as
+    // FAILED: the side is present, its value is not evidence.
     entry.kind = KindOf(new_obj ? new_obj.Get() : old_obj.Get());
+    // Each side's stream data is hashed once; the value and the
+    // stream_data_changed flag share the result.
+    std::optional<ByteString> old_signature;
+    std::optional<ByteString> new_signature;
+    if (old_obj && old_obj->IsStream()) {
+      old_signature = StreamSignature(old_obj->AsStream());
+    }
+    if (new_obj && new_obj->IsStream()) {
+      new_signature = StreamSignature(new_obj->AsStream());
+    }
     if (change != EPDF_DIFF_ADDED) {
       RevisionSide& side = entry.side[EPDF_DIFF_OLD];
-      side.present = true;
       const auto it = older_info.find(num);
       side.gen = it != older_info.end() ? it->second.gennum : -1;
-      FillValue(old_obj.Get(), &side);
+      FillValue(old_obj.Get(), &old_signature, &side);
     }
     if (change != EPDF_DIFF_FREED) {
       RevisionSide& side = entry.side[EPDF_DIFF_NEW];
-      side.present = true;
       const auto it = newer_info.find(num);
       side.gen = it != newer_info.end() ? it->second.gennum : -1;
-      FillValue(new_obj.Get(), &side);
+      FillValue(new_obj.Get(), &new_signature, &side);
     }
     if (old_obj && new_obj && old_obj->IsStream() && new_obj->IsStream()) {
-      entry.stream_data_changed = StreamSignature(old_obj->AsStream()) !=
-                                  StreamSignature(new_obj->AsStream());
+      // Unreadable data on either side is reported through the read
+      // status, never as "unchanged".
+      entry.stream_data_changed = !old_signature.has_value() ||
+                                  !new_signature.has_value() ||
+                                  old_signature.value() != new_signature.value();
     }
     result->entries.push_back(std::move(entry));
   }
@@ -596,10 +889,8 @@ EPDFDoc_CompareRevisions(FPDF_DOCUMENT older_document,
     entry.obj_num = 0;
     entry.change = EPDF_DIFF_MODIFIED;
     entry.kind = EPDF_DIFF_OBJ_TRAILER;
-    FillValue(older_trailer.Get(), &entry.side[EPDF_DIFF_OLD]);
-    FillValue(newer_trailer.Get(), &entry.side[EPDF_DIFF_NEW]);
-    entry.side[EPDF_DIFF_OLD].present = true;
-    entry.side[EPDF_DIFF_NEW].present = true;
+    FillValue(older_trailer.Get(), nullptr, &entry.side[EPDF_DIFF_OLD]);
+    FillValue(newer_trailer.Get(), nullptr, &entry.side[EPDF_DIFF_NEW]);
     if (entry.side[EPDF_DIFF_OLD].value != entry.side[EPDF_DIFF_NEW].value ||
         entry.side[EPDF_DIFF_OLD].value_truncated ||
         entry.side[EPDF_DIFF_NEW].value_truncated) {
@@ -675,6 +966,36 @@ EPDFObjectDiff_GetValue(EPDF_OBJECT_DIFF diff,
   // SAFETY: required from caller.
   return NulTerminateMaybeCopyAndReturnLength(
       side->value, UNSAFE_BUFFERS(SpanFromFPDFApiArgs(buffer, buflen)));
+}
+
+FPDF_EXPORT int FPDF_CALLCONV EPDFObjectDiff_GetReadStatus(EPDF_OBJECT_DIFF diff,
+                                                           int index,
+                                                           int which) {
+  const RevisionSide* side = GetSide(diff, index, which);
+  return side ? side->read : -1;
+}
+
+FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV
+EPDFObjectDiff_GetRevisionHealth(EPDF_OBJECT_DIFF diff,
+                                 int which,
+                                 FPDF_BOOL* out_sparse_xref,
+                                 unsigned int* out_bare_reference_count,
+                                 FPDF_BOOL* out_referrers_complete) {
+  const ObjectDiff* d = DiffFromHandle(diff);
+  if (!d || (which != EPDF_DIFF_OLD && which != EPDF_DIFF_NEW)) {
+    return false;
+  }
+  const RevisionHealth& health = d->health[which];
+  if (out_sparse_xref) {
+    *out_sparse_xref = health.sparse_xref;
+  }
+  if (out_bare_reference_count) {
+    *out_bare_reference_count = health.bare_references;
+  }
+  if (out_referrers_complete) {
+    *out_referrers_complete = health.referrers_complete;
+  }
+  return true;
 }
 
 FPDF_EXPORT int FPDF_CALLCONV

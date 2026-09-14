@@ -1124,7 +1124,262 @@ int LocalFieldFlags(FPDF_DOCUMENT doc, uint32_t objnum) {
   return dict ? dict->GetIntegerFor("Ff") : -1;
 }
 
+// A classic-xref document whose table lists only the object numbers that
+// exist (no free entries for the gaps), the way some producers write it:
+// object numbers are |numbers[i]| for bodies |objects[i]|, /Size is
+// |size|. Every number must be at least 1 and ascending.
+RawPdf MakeSparseRawPdf(const std::vector<unsigned>& numbers,
+                        const std::vector<std::string>& objects,
+                        unsigned size) {
+  RawPdf p;
+  p.bytes = "%PDF-1.7\n";
+  std::vector<size_t> offsets;
+  for (size_t i = 0; i < objects.size(); ++i) {
+    offsets.push_back(p.bytes.size());
+    p.bytes += std::to_string(numbers[i]) + " 0 obj\n" + objects[i] + "\nendobj\n";
+  }
+  p.xref = p.bytes.size();
+  p.bytes += "xref\n0 1\n0000000000 65535 f \n";
+  char row[40];
+  for (size_t i = 0; i < objects.size(); ++i) {
+    snprintf(row, sizeof(row), "%010zu 00000 n \n", offsets[i]);
+    p.bytes += std::to_string(numbers[i]) + " 1\n" + row;
+  }
+  p.bytes += "trailer\n<</Root 1 0 R /Size " + std::to_string(size) +
+             ">>\nstartxref\n" + std::to_string(p.xref) + "\n%%EOF\n";
+  return p;
+}
+
+int ReadStatus(EPDF_OBJECT_DIFF diff, unsigned obj_num, int which) {
+  const std::vector<DiffRow> rows = ReadDiffRows(diff);
+  const int row = FindRow(rows, obj_num);
+  return row < 0 ? -2 : EPDFObjectDiff_GetReadStatus(diff, row, which);
+}
+
+struct Health {
+  bool sparse = false;
+  unsigned bare = 0;
+  bool complete = false;
+};
+
+Health ReadHealth(EPDF_OBJECT_DIFF diff, int which) {
+  Health h;
+  FPDF_BOOL sparse = false;
+  FPDF_BOOL complete = false;
+  EXPECT_TRUE(EPDFObjectDiff_GetRevisionHealth(diff, which, &sparse, &h.bare, &complete));
+  h.sparse = !!sparse;
+  h.complete = !!complete;
+  return h;
+}
+
 }  // namespace
+
+TEST_F(EPDFSignatureEmbedderTest, DiffReadStatusSeparatesFailureFromNull) {
+  // Object 4 is redefined by an update whose cross-reference entry points
+  // two bytes into the object (a corrupt update that does not make the
+  // loader rebuild the table): the new side is present (its mapping is
+  // live) but reads FAILED, so the two "null" serialisations must never
+  // pass for an identical rewrite.
+  std::vector<std::string> b = BasicObjects("/Extra 4 0 R");
+  b.push_back("<</A 1>>");
+  RawPdf old = MakeRawPdf(b);
+  RawPdf broken = AppendRawUpdate(old, 4, "<</A 1 /B 2>>", 5);
+  {
+    const size_t row = broken.bytes.find("xref\n4 1\n", broken.xref) + 9;
+    ASSERT_NE(std::string::npos, row);
+    const size_t offset = std::stoul(broken.bytes.substr(row, 10));
+    char fixed[16];
+    snprintf(fixed, sizeof(fixed), "%010zu", offset + 2);
+    broken.bytes.replace(row, 10, fixed);
+  }
+  ScopedFPDFDocument dnew = OpenRaw(broken);
+  ASSERT_TRUE(dnew);
+  ScopedFPDFDocument dold(EPDFDoc_OpenRevision(dnew.get(), old.bytes.size()));
+  ASSERT_TRUE(dold);
+  EPDF_OBJECT_DIFF diff = EPDFDoc_CompareRevisions(dold.get(), dnew.get());
+  ASSERT_TRUE(diff);
+  EXPECT_EQ(EPDF_DIFF_READ_OK, ReadStatus(diff, 4u, EPDF_DIFF_OLD));
+  EXPECT_EQ(EPDF_DIFF_READ_FAILED, ReadStatus(diff, 4u, EPDF_DIFF_NEW));
+  EXPECT_EQ(-1, EPDFObjectDiff_GetReadStatus(diff, 999, EPDF_DIFF_NEW));
+  EXPECT_EQ(-1, EPDFObjectDiff_GetReadStatus(nullptr, 0, EPDF_DIFF_NEW));
+  EPDFObjectDiff_Close(diff);
+
+  // An added object: absent on the old side, readable on the new.
+  RawPdf added = AppendRawUpdate(old, 5, "<</New true>>", 6);
+  ScopedFPDFDocument dadded = OpenRaw(added);
+  ASSERT_TRUE(dadded);
+  ScopedFPDFDocument dbase(EPDFDoc_OpenRevision(dadded.get(), old.bytes.size()));
+  ASSERT_TRUE(dbase);
+  diff = EPDFDoc_CompareRevisions(dbase.get(), dadded.get());
+  ASSERT_TRUE(diff);
+  EXPECT_EQ(EPDF_DIFF_READ_ABSENT, ReadStatus(diff, 5u, EPDF_DIFF_OLD));
+  EXPECT_EQ(EPDF_DIFF_READ_OK, ReadStatus(diff, 5u, EPDF_DIFF_NEW));
+  EPDFObjectDiff_Close(diff);
+}
+
+TEST_F(EPDFSignatureEmbedderTest, DiffStreamSignatureIsChunkedAndShared) {
+  // A stream larger than one hashing chunk, rewritten with one byte changed
+  // in its last chunk: the value carries a different digest and the flag
+  // agrees with it. Rewritten identically: same digest, flag clear.
+  std::string data(200 * 1024, 'a');
+  auto stream_body = [&](const std::string& payload) {
+    return "<</Length " + std::to_string(payload.size()) + ">>\nstream\n" + payload +
+           "\nendstream";
+  };
+  std::vector<std::string> b = BasicObjects("/Blob 4 0 R");
+  b.push_back(stream_body(data));
+  RawPdf old = MakeRawPdf(b);
+  std::string changed = data;
+  changed.back() = 'b';
+  RawPdf touched = AppendRawUpdate(old, 4, stream_body(changed), 5);
+  ScopedFPDFDocument dnew = OpenRaw(touched);
+  ASSERT_TRUE(dnew);
+  ScopedFPDFDocument dold(EPDFDoc_OpenRevision(dnew.get(), old.bytes.size()));
+  ASSERT_TRUE(dold);
+  EPDF_OBJECT_DIFF diff = EPDFDoc_CompareRevisions(dold.get(), dnew.get());
+  ASSERT_TRUE(diff);
+  std::vector<DiffRow> rows = ReadDiffRows(diff);
+  int row = FindRow(rows, 4u);
+  ASSERT_NE(-1, row);
+  EXPECT_TRUE(rows[row].stream_data_changed);
+  const std::string old_value = ReadDiffValue(diff, row, EPDF_DIFF_OLD);
+  const std::string new_value = ReadDiffValue(diff, row, EPDF_DIFF_NEW);
+  EXPECT_EQ(0u, old_value.find("stream(204800,"));
+  EXPECT_NE(old_value, new_value);
+  EXPECT_EQ(EPDF_DIFF_READ_OK, ReadStatus(diff, 4u, EPDF_DIFF_NEW));
+  EPDFObjectDiff_Close(diff);
+
+  RawPdf same = AppendRawUpdate(old, 4, stream_body(data), 5);
+  ScopedFPDFDocument dsame = OpenRaw(same);
+  ASSERT_TRUE(dsame);
+  ScopedFPDFDocument dbase(EPDFDoc_OpenRevision(dsame.get(), old.bytes.size()));
+  ASSERT_TRUE(dbase);
+  diff = EPDFDoc_CompareRevisions(dbase.get(), dsame.get());
+  ASSERT_TRUE(diff);
+  rows = ReadDiffRows(diff);
+  row = FindRow(rows, 4u);
+  ASSERT_NE(-1, row);
+  EXPECT_FALSE(rows[row].stream_data_changed);
+  EXPECT_EQ(ReadDiffValue(diff, row, EPDF_DIFF_OLD), ReadDiffValue(diff, row, EPDF_DIFF_NEW));
+  EPDFObjectDiff_Close(diff);
+}
+
+TEST_F(EPDFSignatureEmbedderTest, DiffRevisionHealthSparseTableAndBareReference) {
+  // A healthy document: dense table, no bare references.
+  {
+    RawPdf old = MakeRawPdf(BasicObjects());
+    RawPdf newer = AppendRawUpdate(old, 4, "<</Orphan true>>", 5);
+    ScopedFPDFDocument dnew = OpenRaw(newer);
+    ASSERT_TRUE(dnew);
+    ScopedFPDFDocument dold(EPDFDoc_OpenRevision(dnew.get(), old.bytes.size()));
+    ASSERT_TRUE(dold);
+    EPDF_OBJECT_DIFF diff = EPDFDoc_CompareRevisions(dold.get(), dnew.get());
+    ASSERT_TRUE(diff);
+    for (int which : {EPDF_DIFF_OLD, EPDF_DIFF_NEW}) {
+      const Health h = ReadHealth(diff, which);
+      EXPECT_FALSE(h.sparse);
+      EXPECT_EQ(0u, h.bare);
+      EXPECT_TRUE(h.complete);
+    }
+    EXPECT_FALSE(EPDFObjectDiff_GetRevisionHealth(diff, 7, nullptr, nullptr, nullptr));
+    EXPECT_FALSE(EPDFObjectDiff_GetRevisionHealth(nullptr, EPDF_DIFF_OLD, nullptr, nullptr, nullptr));
+    EPDFObjectDiff_Close(diff);
+  }
+  // A hole in an UPDATE section is not the original table's problem:
+  // pyHanko's updates skip numbers and Acrobat accepts them (corpus v3/85).
+  {
+    RawPdf old = MakeRawPdf(BasicObjects());
+    RawPdf newer = AppendRawUpdate(old, 6, "<</Orphan true>>", 7);
+    ScopedFPDFDocument dnew = OpenRaw(newer);
+    ASSERT_TRUE(dnew);
+    ScopedFPDFDocument dold(EPDFDoc_OpenRevision(dnew.get(), old.bytes.size()));
+    ASSERT_TRUE(dold);
+    EPDF_OBJECT_DIFF diff = EPDFDoc_CompareRevisions(dold.get(), dnew.get());
+    ASSERT_TRUE(diff);
+    EXPECT_FALSE(ReadHealth(diff, EPDF_DIFF_NEW).sparse);  // 4 and 5 have no entry
+    EPDFObjectDiff_Close(diff);
+  }
+  // An overstated /Size (numbers past the last listed one) is not a hole:
+  // Acrobat accepts it (corpus v3/55).
+  {
+    RawPdf old = MakeRawPdf(BasicObjects());
+    RawPdf newer = AppendRawUpdate(old, 4, "<</Orphan true>>", 9);
+    ScopedFPDFDocument dnew = OpenRaw(newer);
+    ASSERT_TRUE(dnew);
+    ScopedFPDFDocument dold(EPDFDoc_OpenRevision(dnew.get(), old.bytes.size()));
+    ASSERT_TRUE(dold);
+    EPDF_OBJECT_DIFF diff = EPDFDoc_CompareRevisions(dold.get(), dnew.get());
+    ASSERT_TRUE(diff);
+    EXPECT_FALSE(ReadHealth(diff, EPDF_DIFF_NEW).sparse);
+    EPDFObjectDiff_Close(diff);
+  }
+  // The 2026-09-13 ebook shape: numbers 4 and 6 have no entry at all
+  // (/Size 8), and object 5 is an indirect object whose body is "7 0 R",
+  // reached from a non-standard catalog key. Both are reported for the
+  // revision that has them; an unreachable bare reference is not.
+  {
+    const std::vector<unsigned> numbers = {1, 2, 3, 5, 7};
+    std::vector<std::string> objects = BasicObjects("/Info 5 0 R");
+    objects.push_back("7 0 R");
+    objects.push_back("<</Producer(x)>>");
+    RawPdf old = MakeSparseRawPdf(numbers, objects, 8);
+    RawPdf newer = AppendRawUpdate(old, 8, "<</Orphan true>>", 9);
+    ScopedFPDFDocument dnew = OpenRaw(newer);
+    ASSERT_TRUE(dnew);
+    ScopedFPDFDocument dold(EPDFDoc_OpenRevision(dnew.get(), old.bytes.size()));
+    ASSERT_TRUE(dold);
+    EPDF_OBJECT_DIFF diff = EPDFDoc_CompareRevisions(dold.get(), dnew.get());
+    ASSERT_TRUE(diff);
+    const Health h = ReadHealth(diff, EPDF_DIFF_OLD);
+    EXPECT_TRUE(h.sparse);
+    EXPECT_EQ(1u, h.bare);
+    EXPECT_TRUE(h.complete);
+    EXPECT_TRUE(ReadHealth(diff, EPDF_DIFF_NEW).sparse);
+    EPDFObjectDiff_Close(diff);
+  }
+  {
+    // The same bare reference, unreachable: the catalog does not name it.
+    const std::vector<unsigned> numbers = {1, 2, 3, 4, 5};
+    std::vector<std::string> objects = BasicObjects();
+    objects.push_back("5 0 R");
+    objects.push_back("<</Producer(x)>>");
+    RawPdf old = MakeSparseRawPdf(numbers, objects, 6);
+    RawPdf newer = AppendRawUpdate(old, 6, "<</Orphan true>>", 7);
+    ScopedFPDFDocument dnew = OpenRaw(newer);
+    ASSERT_TRUE(dnew);
+    ScopedFPDFDocument dold(EPDFDoc_OpenRevision(dnew.get(), old.bytes.size()));
+    ASSERT_TRUE(dold);
+    EPDF_OBJECT_DIFF diff = EPDFDoc_CompareRevisions(dold.get(), dnew.get());
+    ASSERT_TRUE(diff);
+    const Health h = ReadHealth(diff, EPDF_DIFF_OLD);
+    EXPECT_FALSE(h.sparse);
+    EXPECT_EQ(0u, h.bare);
+    EPDFObjectDiff_Close(diff);
+  }
+}
+
+TEST_F(EPDFSignatureEmbedderTest, BareEofAtEndOfFileClosesTheRevision) {
+  // The last line of many files is "%%EOF" with no line ending after it.
+  RawPdf one = MakeRawPdf(BasicObjects());
+  RawPdf two = AppendRawUpdate(one, 3, "<</Type/Page /Parent 2 0 R /MediaBox[0 0 200 200]>>", 4);
+  for (RawPdf* p : {&one, &two}) {
+    ASSERT_EQ('\n', p->bytes.back());
+    p->bytes.pop_back();
+    ASSERT_EQ("%%EOF", p->bytes.substr(p->bytes.size() - 5));
+  }
+  ScopedFPDFDocument d1 = OpenRaw(one);
+  ASSERT_TRUE(d1);
+  EXPECT_EQ(1, EPDFDoc_GetRevisionCount(d1.get()));
+  ScopedFPDFDocument d2 = OpenRaw(two);
+  ASSERT_TRUE(d2);
+  EXPECT_EQ(2, EPDFDoc_GetRevisionCount(d2.get()));
+  unsigned long long end = 0;
+  unsigned long long xref = 0;
+  ASSERT_TRUE(EPDFDoc_GetRevision(d2.get(), 1, &end, &xref));
+  EXPECT_EQ(two.bytes.size(), end);
+  ASSERT_TRUE(EPDFDoc_GetRevision(d2.get(), 0, &end, &xref));
+  EXPECT_EQ(one.bytes.size() + 1, end);  // the first revision kept its line ending
+}
 
 TEST_F(EPDFSignatureEmbedderTest, ProbeUnrelatedFilesDoNotShareHistory) {
   // Same layout, same offsets, different bytes: not a revision pair.
