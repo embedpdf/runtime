@@ -137,6 +137,20 @@ class CPDF_Document : public Observable,
     return it->second;
   }
 
+  // EmbedPDF: how much of a registered font's program the resources built
+  // for this document instance carry (§2 of the rich text Phase C note).
+  // kDefault subsets annotation text and embeds form field text whole;
+  // kSubset and kFull apply to both. Session state, never written to the
+  // file; applies to resources built after the call. A font whose fsType
+  // forbids subsetting is embedded whole under every policy.
+  enum class FontEmbeddingPolicy : uint8_t { kDefault, kSubset, kFull };
+  FontEmbeddingPolicy GetFontEmbeddingPolicy() const {
+    return font_embedding_policy_;
+  }
+  void SetFontEmbeddingPolicy(FontEmbeddingPolicy policy) {
+    font_embedding_policy_ = policy;
+  }
+
   virtual CPDF_Parser* GetParser() const;
   virtual const CPDF_Dictionary* GetRoot() const;
   virtual RetainPtr<CPDF_Dictionary> GetMutableRoot();
@@ -329,6 +343,8 @@ class CPDF_Document : public Observable,
   std::optional<PendingSecurity> pending_security_;
   std::vector<uint32_t> page_list_;  // Page number to page's dict objnum.
   std::map<ByteString, uint32_t> session_font_aliases_;  // EmbedPDF, see above.
+  FontEmbeddingPolicy font_embedding_policy_ =
+      FontEmbeddingPolicy::kDefault;  // EmbedPDF, see above.
 
   // EmbedPDF: destroyed before everything declared above it (the parser
   // included), after the extension and the stock font clearer.

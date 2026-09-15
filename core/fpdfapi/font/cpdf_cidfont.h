@@ -10,7 +10,9 @@
 #include <stdint.h>
 
 #include <array>
+#include <map>
 #include <memory>
+#include <optional>
 #include <vector>
 
 #include "core/fpdfapi/font/cpdf_font.h"
@@ -93,6 +95,11 @@ class CPDF_CIDFont final : public CPDF_Font {
   std::unique_ptr<CFX_CTTGSUBTable> ttg_subtable_;
   CIDFontType font_type_ = CIDFontType::kTrueType;
   bool cid_is_gid_ = false;
+  // EmbedPDF: CID → GID for an sfnt-wrapped CID-keyed CFF program, built on
+  // first use from the charset. Empty optional = not built yet; an empty map
+  // = the face is not such a program.
+  std::optional<std::map<uint16_t, uint32_t>> cff_cid_to_gid_;
+  int GlyphIndexFromCffCid(uint16_t cid);
   bool ansi_widths_fixed_ = false;
   bool adobe_courier_std_ = false;
   CIDSet charset_ = CIDSET_UNKNOWN;

@@ -105,8 +105,29 @@ EPDFFont_AuthorizeEditing(EPDF_FONT_ID font_id);
 
 // True when the registered program is a static instance made from a variable
 // font at registration (axes pinned to defaults, `wght` to the registered
-// weight when the axis covers it).
+// weight when the axis covers it). A variable font that cannot be instanced
+// is refused by registration, as are programs that are not TrueType or
+// OpenType/CFF sfnts (Type1, bare CFF, collections, WOFF).
 FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV EPDFFont_IsInstanced(EPDF_FONT_ID font_id);
+
+// EmbedPDF: how much of a registered font's program the appearances authored
+// in a document carry. DEFAULT subsets annotation text (FreeText, redaction
+// labels) and embeds form field text whole; SUBSET and FULL apply to both.
+// Session state on the document handle, never written to the file; applies
+// to appearances generated after the call. A font whose fsType forbids
+// subsetting is embedded whole under every policy. Programs already in the
+// document are never re-embedded or subset by this setting.
+#define EPDF_FONT_EMBEDDING_POLICY_DEFAULT 0
+#define EPDF_FONT_EMBEDDING_POLICY_SUBSET 1
+#define EPDF_FONT_EMBEDDING_POLICY_FULL 2
+
+// Returns false for an invalid document or policy value.
+FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV
+EPDFDoc_SetFontEmbeddingPolicy(FPDF_DOCUMENT document, int policy);
+
+// Returns one of EPDF_FONT_EMBEDDING_POLICY_*, or -1 for an invalid document.
+FPDF_EXPORT int FPDF_CALLCONV
+EPDFDoc_GetFontEmbeddingPolicy(FPDF_DOCUMENT document);
 
 // Experimental EmbedPDF Extension API.
 // Add a registered font to the ordered fallback list used when the selected

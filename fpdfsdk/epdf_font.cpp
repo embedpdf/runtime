@@ -8,11 +8,13 @@
 
 #include <optional>
 
+#include "core/fpdfapi/parser/cpdf_document.h"
 #include "core/fxcrt/bytestring.h"
 #include "core/fxcrt/retain_ptr.h"
 #include "core/fxcrt/span.h"
 #include "core/fxge/cfx_fontregistry.h"
 #include "fpdfsdk/cpdfsdk_customaccess.h"
+#include "fpdfsdk/cpdfsdk_helpers.h"
 
 FPDF_EXPORT EPDF_FONT_ID FPDF_CALLCONV
 EPDFFont_RegisterFont(FPDF_BYTESTRING family_name,
@@ -98,6 +100,43 @@ EPDFFont_AuthorizeEditing(EPDF_FONT_ID font_id) {
 
 FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV EPDFFont_IsInstanced(EPDF_FONT_ID font_id) {
   return CFX_FontRegistry::IsInstanced(font_id);
+}
+
+FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV
+EPDFDoc_SetFontEmbeddingPolicy(FPDF_DOCUMENT document, int policy) {
+  CPDF_Document* doc = CPDFDocumentFromFPDFDocument(document);
+  if (!doc) {
+    return false;
+  }
+  switch (policy) {
+    case EPDF_FONT_EMBEDDING_POLICY_DEFAULT:
+      doc->SetFontEmbeddingPolicy(CPDF_Document::FontEmbeddingPolicy::kDefault);
+      return true;
+    case EPDF_FONT_EMBEDDING_POLICY_SUBSET:
+      doc->SetFontEmbeddingPolicy(CPDF_Document::FontEmbeddingPolicy::kSubset);
+      return true;
+    case EPDF_FONT_EMBEDDING_POLICY_FULL:
+      doc->SetFontEmbeddingPolicy(CPDF_Document::FontEmbeddingPolicy::kFull);
+      return true;
+    default:
+      return false;
+  }
+}
+
+FPDF_EXPORT int FPDF_CALLCONV
+EPDFDoc_GetFontEmbeddingPolicy(FPDF_DOCUMENT document) {
+  const CPDF_Document* doc = CPDFDocumentFromFPDFDocument(document);
+  if (!doc) {
+    return -1;
+  }
+  switch (doc->GetFontEmbeddingPolicy()) {
+    case CPDF_Document::FontEmbeddingPolicy::kDefault:
+      return EPDF_FONT_EMBEDDING_POLICY_DEFAULT;
+    case CPDF_Document::FontEmbeddingPolicy::kSubset:
+      return EPDF_FONT_EMBEDDING_POLICY_SUBSET;
+    case CPDF_Document::FontEmbeddingPolicy::kFull:
+      return EPDF_FONT_EMBEDDING_POLICY_FULL;
+  }
 }
 
 FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV

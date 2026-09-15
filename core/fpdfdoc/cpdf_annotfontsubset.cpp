@@ -10,6 +10,7 @@
 #include <algorithm>
 #include <memory>
 #include <optional>
+#include <set>
 #include <sstream>
 #include <utility>
 
@@ -17,8 +18,10 @@
 #include "core/fpdfapi/parser/cpdf_array.h"
 #include "core/fpdfapi/parser/cpdf_dictionary.h"
 #include "core/fpdfapi/parser/cpdf_document.h"
+#include "core/fpdfapi/parser/cpdf_indirect_object_holder.h"
 #include "core/fpdfapi/parser/cpdf_name.h"
 #include "core/fpdfapi/parser/cpdf_number.h"
+#include "core/fpdfapi/parser/cpdf_parser.h"
 #include "core/fpdfapi/parser/cpdf_reference.h"
 #include "core/fpdfapi/parser/cpdf_stream.h"
 #include "core/fpdfapi/parser/cpdf_string.h"
@@ -32,6 +35,7 @@
 #include "core/fxcrt/numerics/safe_conversions.h"
 #include "core/fxcrt/span.h"
 #include "core/fxcrt/utf16.h"
+#include "core/fxge/cfx_face.h"
 #include "core/fxge/cfx_font.h"
 #include "hb-subset.h"  // nogncheck
 
@@ -40,11 +44,6 @@ namespace {
 constexpr char kRegisteredFontIdKey[] = "EmbedPDFRegisteredFontId";
 constexpr uint32_t kMaxBfCharBfRangeEntries = 100;
 constexpr uint32_t kMaxPdfCid = 0xffff;
-
-enum class ObjectStorage {
-  kDirect,
-  kIndirect,
-};
 
 ByteString NormalizeBaseFontName(ByteString name) {
   name.Remove(' ');
@@ -60,30 +59,13 @@ ByteString BaseFontNameForRegisteredFont(CFX_FontRegistry::FontId font_id,
   return NormalizeBaseFontName(std::move(name));
 }
 
-RetainPtr<CPDF_Dictionary> NewDictionary(CPDF_Document* doc,
-                                         ObjectStorage storage) {
-  return storage == ObjectStorage::kIndirect
-             ? doc->NewIndirect<CPDF_Dictionary>()
-             : pdfium::MakeRetain<CPDF_Dictionary>();
-}
-
-RetainPtr<CPDF_Array> NewArray(CPDF_Document* doc, ObjectStorage storage) {
-  return storage == ObjectStorage::kIndirect ? doc->NewIndirect<CPDF_Array>()
-                                             : pdfium::MakeRetain<CPDF_Array>();
-}
-
-RetainPtr<CPDF_Stream> NewStream(CPDF_Document* doc,
-                                 pdfium::span<const uint8_t> data,
-                                 ObjectStorage storage) {
-  return storage == ObjectStorage::kIndirect
-             ? doc->NewIndirect<CPDF_Stream>(data)
-             : pdfium::MakeRetain<CPDF_Stream>(data);
-}
-
+// Links one part of a composite font into its parent: a part that already
+// has an object number (published, or a stream in the layout scratch holder)
+// is referenced through |holder|; one without is nested directly.
 template <typename T>
 void SetReferenceOrDirect(CPDF_Dictionary* dict,
                           const ByteString& key,
-                          CPDF_Document* doc,
+                          CPDF_IndirectObjectHolder* holder,
                           RetainPtr<T> object) {
   if (!object) {
     return;
@@ -91,7 +73,7 @@ void SetReferenceOrDirect(CPDF_Dictionary* dict,
 
   const uint32_t obj_num = object->GetObjNum();
   if (obj_num != 0) {
-    dict->SetNewFor<CPDF_Reference>(key, doc, obj_num);
+    dict->SetNewFor<CPDF_Reference>(key, holder, obj_num);
     return;
   }
 
@@ -100,7 +82,7 @@ void SetReferenceOrDirect(CPDF_Dictionary* dict,
 
 template <typename T>
 void AppendReferenceOrDirect(CPDF_Array* array,
-                             CPDF_Document* doc,
+                             CPDF_IndirectObjectHolder* holder,
                              RetainPtr<T> object) {
   if (!object) {
     return;
@@ -108,11 +90,29 @@ void AppendReferenceOrDirect(CPDF_Array* array,
 
   const uint32_t obj_num = object->GetObjNum();
   if (obj_num != 0) {
-    array->AppendNew<CPDF_Reference>(doc, obj_num);
+    array->AppendNew<CPDF_Reference>(holder, obj_num);
     return;
   }
 
   array->Append(RetainPtr<CPDF_Object>(std::move(object)));
+}
+
+// A FontFile3 /OpenType program needs PDF 1.6. Raise the catalog's /Version
+// when the loaded file is older; new documents are written as 1.7 already.
+void EnsureMinimumPdfVersion16(CPDF_Document* doc) {
+  const CPDF_Parser* parser = doc->GetParser();
+  if (!parser || parser->GetFileVersion() >= 16) {
+    return;
+  }
+  RetainPtr<CPDF_Dictionary> root = doc->GetMutableRoot();
+  if (!root) {
+    return;
+  }
+  const ByteString current = root->GetNameFor("Version");
+  if (!current.IsEmpty() && current.Compare("1.6") >= 0) {
+    return;
+  }
+  root->SetNewFor<CPDF_Name>("Version", "1.6");
 }
 
 ByteString MakeSubsetBaseFontName(
@@ -143,10 +143,8 @@ ByteString MakeSubsetBaseFontName(
   return ByteString(prefix) + "+" + base_font_name;
 }
 
-RetainPtr<CPDF_Dictionary> CreateCompositeFontDict(CPDF_Document* doc,
-                                                   const ByteString& name,
-                                                   ObjectStorage storage) {
-  auto font_dict = NewDictionary(doc, storage);
+RetainPtr<CPDF_Dictionary> CreateCompositeFontDict(const ByteString& name) {
+  auto font_dict = pdfium::MakeRetain<CPDF_Dictionary>();
   font_dict->SetNewFor<CPDF_Name>("Type", "Font");
   font_dict->SetNewFor<CPDF_Name>("Subtype", "Type0");
   font_dict->SetNewFor<CPDF_Name>("Encoding", "Identity-H");
@@ -154,14 +152,21 @@ RetainPtr<CPDF_Dictionary> CreateCompositeFontDict(CPDF_Document* doc,
   return font_dict;
 }
 
-RetainPtr<CPDF_Dictionary> CreateCidFontDict(CPDF_Document* doc,
-                                             const ByteString& name,
-                                             ObjectStorage storage) {
-  auto cid_font_dict = NewDictionary(doc, storage);
+RetainPtr<CPDF_Dictionary> CreateCidFontDict(
+    const ByteString& name,
+    CPDF_AnnotFontSubset::ProgramFormat format) {
+  auto cid_font_dict = pdfium::MakeRetain<CPDF_Dictionary>();
   cid_font_dict->SetNewFor<CPDF_Name>("Type", "Font");
-  cid_font_dict->SetNewFor<CPDF_Name>("Subtype", "CIDFontType2");
   cid_font_dict->SetNewFor<CPDF_Name>("BaseFont", name);
-  cid_font_dict->SetNewFor<CPDF_Name>("CIDToGIDMap", "Identity");
+  if (format == CPDF_AnnotFontSubset::ProgramFormat::kOpenTypeCFF) {
+    // ISO 32000-2 9.7.4.2: a CFF program is a Type 0 CIDFont; CIDs select
+    // glyphs directly, or through the charset when the CFF is CID-keyed. No
+    // CIDToGIDMap exists for this type.
+    cid_font_dict->SetNewFor<CPDF_Name>("Subtype", "CIDFontType0");
+  } else {
+    cid_font_dict->SetNewFor<CPDF_Name>("Subtype", "CIDFontType2");
+    cid_font_dict->SetNewFor<CPDF_Name>("CIDToGIDMap", "Identity");
+  }
 
   auto cid_system_info_dict = pdfium::MakeRetain<CPDF_Dictionary>();
   cid_system_info_dict->SetNewFor<CPDF_String>("Registry", "Adobe");
@@ -171,15 +176,13 @@ RetainPtr<CPDF_Dictionary> CreateCidFontDict(CPDF_Document* doc,
   return cid_font_dict;
 }
 
+// The descriptor without its FontFile entry; LinkCompositeFont adds that
+// once the program stream has an object number.
 RetainPtr<CPDF_Dictionary> LoadFontDesc(
-    CPDF_Document* doc,
     const ByteString& font_name,
     CFX_Font* font,
-    pdfium::span<const uint8_t> font_data,
-    const CPDF_AnnotFontSubset::FaceIdentity& identity,
-    ObjectStorage storage,
-    std::vector<uint32_t>* temporary_object_numbers) {
-  auto font_descriptor_dict = NewDictionary(doc, storage);
+    const CPDF_AnnotFontSubset::FaceIdentity& identity) {
+  auto font_descriptor_dict = pdfium::MakeRetain<CPDF_Dictionary>();
   font_descriptor_dict->SetNewFor<CPDF_Name>("Type", "FontDescriptor");
   font_descriptor_dict->SetNewFor<CPDF_Name>("FontName", font_name);
   // EmbedPDF: persistent face identity (A1). Acrobat writes the same keys
@@ -215,26 +218,27 @@ RetainPtr<CPDF_Dictionary> LoadFontDesc(
   font_descriptor_dict->SetNewFor<CPDF_Number>("CapHeight", font->GetAscent());
   font_descriptor_dict->SetNewFor<CPDF_Number>("StemV",
                                                font->IsBold() ? 120 : 70);
-
-  RetainPtr<CPDF_Stream> stream =
-      storage == ObjectStorage::kDirect
-          ? doc->NewIndirect<CPDF_Stream>(font_data)
-          : NewStream(doc, font_data, ObjectStorage::kIndirect);
-  stream->GetMutableDict()->SetNewFor<CPDF_Number>(
-      "Length1", pdfium::checked_cast<int>(font_data.size()));
-  if (temporary_object_numbers && storage == ObjectStorage::kDirect) {
-    temporary_object_numbers->push_back(stream->GetObjNum());
-  }
-  font_descriptor_dict->SetNewFor<CPDF_Reference>("FontFile2", doc,
-                                                  stream->GetObjNum());
   return font_descriptor_dict;
 }
 
+// The embedded program as an unowned stream (a copy of |font_data|).
+RetainPtr<CPDF_Stream> CreateProgramStream(
+    pdfium::span<const uint8_t> font_data,
+    CPDF_AnnotFontSubset::ProgramFormat format) {
+  auto stream = pdfium::MakeRetain<CPDF_Stream>(font_data);
+  if (format == CPDF_AnnotFontSubset::ProgramFormat::kOpenTypeCFF) {
+    // The whole OpenType program (PDF 1.6, Table 124): FontFile3 /OpenType.
+    stream->GetMutableDict()->SetNewFor<CPDF_Name>("Subtype", "OpenType");
+  } else {
+    stream->GetMutableDict()->SetNewFor<CPDF_Number>(
+        "Length1", pdfium::checked_cast<int>(font_data.size()));
+  }
+  return stream;
+}
+
 RetainPtr<CPDF_Array> CreateWidthsArray(
-    CPDF_Document* doc,
-    const std::map<uint32_t, uint32_t>& widths,
-    ObjectStorage storage) {
-  auto widths_array = NewArray(doc, storage);
+    const std::map<uint32_t, uint32_t>& widths) {
+  auto widths_array = pdfium::MakeRetain<CPDF_Array>();
   for (auto it = widths.begin(); it != widths.end(); ++it) {
     auto next_it = std::next(it);
 
@@ -313,11 +317,9 @@ void AddUnicode(fxcrt::ostringstream& buffer, uint32_t unicode) {
   buffer << ">";
 }
 
+// The ToUnicode CMap as an unowned stream.
 RetainPtr<CPDF_Stream> LoadUnicode(
-    CPDF_Document* doc,
-    const std::multimap<uint32_t, uint32_t>& to_unicode,
-    ObjectStorage storage,
-    std::vector<uint32_t>* temporary_object_numbers) {
+    const std::multimap<uint32_t, uint32_t>& to_unicode) {
   std::map<uint32_t, uint32_t> char_to_unicode_map;
   std::map<std::pair<uint32_t, uint32_t>, std::vector<uint32_t>>
       char_range_to_unicodes_map;
@@ -446,25 +448,12 @@ RetainPtr<CPDF_Stream> LoadUnicode(
   }
 
   buffer << kToUnicodeEnd;
-  RetainPtr<CPDF_Stream> stream = doc->NewIndirect<CPDF_Stream>(&buffer);
-  if (temporary_object_numbers && storage == ObjectStorage::kDirect) {
-    temporary_object_numbers->push_back(stream->GetObjNum());
-  }
-  return stream;
-}
-
-void CreateDescendantFontsArray(CPDF_Document* doc,
-                                CPDF_Dictionary* font_dict,
-                                RetainPtr<CPDF_Dictionary> cid_font_dict) {
-  auto descendant_fonts_array =
-      font_dict->SetNewFor<CPDF_Array>("DescendantFonts");
-  AppendReferenceOrDirect(descendant_fonts_array.Get(), doc,
-                          std::move(cid_font_dict));
+  return pdfium::MakeRetain<CPDF_Stream>(&buffer);
 }
 
 DataVector<uint8_t> SubsetFontDataRetainGids(
     pdfium::span<const uint8_t> font_data,
-    const CPDF_AnnotFontSubset::GlyphUnicodeMap& glyph_to_unicode) {
+    const std::set<uint32_t>& glyph_ids) {
   // An empty map is a valid request: glyph 0 is always kept, and that
   // glyph-0-only program is the minimal /DA resource of an empty annotation.
   if (font_data.empty()) {
@@ -493,10 +482,8 @@ DataVector<uint8_t> SubsetFontDataRetainGids(
 
   hb_set_t* glyph_set = hb_subset_input_glyph_set(input);
   hb_set_add(glyph_set, 0);
-  for (const auto& [glyph_id, unicode] : glyph_to_unicode) {
-    if (glyph_id <= kMaxPdfCid) {
-      hb_set_add(glyph_set, glyph_id);
-    }
+  for (uint32_t glyph_id : glyph_ids) {
+    hb_set_add(glyph_set, glyph_id);
   }
 
   hb_subset_input_set_flags(
@@ -527,43 +514,61 @@ DataVector<uint8_t> SubsetFontDataRetainGids(
   return result;
 }
 
-RetainPtr<CPDF_Dictionary> BuildCompositeFont(
-    CPDF_Document* doc,
+// The parts of a composite font, built but not linked: no part references
+// another and none has an object number. LinkCompositeFont joins them once
+// the streams have numbers (in a layout scratch holder, or in the document
+// at publish time). Returns false for a program the writer cannot emit.
+bool BuildCompositeFontParts(
     CFX_Font* font,
     const ByteString& base_font_name,
     pdfium::span<const uint8_t> font_data,
     const CPDF_AnnotFontSubset::FaceIdentity& identity,
     const std::map<uint32_t, uint32_t>& widths,
     const std::multimap<uint32_t, uint32_t>& to_unicode,
-    ObjectStorage storage,
-    std::vector<uint32_t>* temporary_object_numbers) {
-  if (!doc || !font || widths.empty()) {
-    return nullptr;
+    CPDF_AnnotFontSubset::StagedFontResource* parts) {
+  if (!font || widths.empty()) {
+    return false;
+  }
+  const CPDF_AnnotFontSubset::ProgramFormat format =
+      CPDF_AnnotFontSubset::DetectProgramFormat(font_data);
+  if (format == CPDF_AnnotFontSubset::ProgramFormat::kUnsupported) {
+    return false;
   }
 
-  RetainPtr<CPDF_Dictionary> font_dict =
-      CreateCompositeFontDict(doc, base_font_name, storage);
-  RetainPtr<CPDF_Dictionary> cid_font_dict =
-      CreateCidFontDict(doc, base_font_name, storage);
+  parts->format = format;
+  parts->font_dict = CreateCompositeFontDict(base_font_name);
+  parts->cid_font_dict = CreateCidFontDict(base_font_name, format);
+  parts->descriptor = LoadFontDesc(base_font_name, font, identity);
+  parts->widths = CreateWidthsArray(widths);
+  parts->program = CreateProgramStream(font_data, format);
+  // /ToUnicode is optional; an empty map is meaningless.
+  parts->to_unicode = to_unicode.empty() ? nullptr : LoadUnicode(to_unicode);
+  return true;
+}
 
-  RetainPtr<CPDF_Dictionary> font_descriptor_dict =
-      LoadFontDesc(doc, base_font_name, font, font_data, identity, storage,
-                   temporary_object_numbers);
-  SetReferenceOrDirect(cid_font_dict.Get(), "FontDescriptor", doc,
-                       std::move(font_descriptor_dict));
-
-  RetainPtr<CPDF_Array> widths_array = CreateWidthsArray(doc, widths, storage);
-  SetReferenceOrDirect(cid_font_dict.Get(), "W", doc, std::move(widths_array));
-
-  CreateDescendantFontsArray(doc, font_dict.Get(), std::move(cid_font_dict));
-
-  if (!to_unicode.empty()) {  // /ToUnicode is optional; empty is meaningless
-    RetainPtr<CPDF_Stream> to_unicode_stream =
-        LoadUnicode(doc, to_unicode, storage, temporary_object_numbers);
-    SetReferenceOrDirect(font_dict.Get(), "ToUnicode", doc,
-                         std::move(to_unicode_stream));
+// Joins the parts. Streams must have object numbers in |holder| by now (a
+// stream cannot be nested directly); dictionaries and the widths array are
+// referenced when they have one and nested when they do not.
+void LinkCompositeFont(CPDF_AnnotFontSubset::StagedFontResource* parts,
+                       CPDF_IndirectObjectHolder* holder) {
+  CHECK(parts->program->GetObjNum() != 0);
+  parts->descriptor->SetNewFor<CPDF_Reference>(
+      parts->format == CPDF_AnnotFontSubset::ProgramFormat::kOpenTypeCFF
+          ? "FontFile3"
+          : "FontFile2",
+      holder, parts->program->GetObjNum());
+  SetReferenceOrDirect(parts->cid_font_dict.Get(), "FontDescriptor", holder,
+                       parts->descriptor);
+  SetReferenceOrDirect(parts->cid_font_dict.Get(), "W", holder, parts->widths);
+  auto descendant_fonts_array =
+      parts->font_dict->SetNewFor<CPDF_Array>("DescendantFonts");
+  AppendReferenceOrDirect(descendant_fonts_array.Get(), holder,
+                          parts->cid_font_dict);
+  if (parts->to_unicode) {
+    CHECK(parts->to_unicode->GetObjNum() != 0);
+    parts->font_dict->SetNewFor<CPDF_Reference>("ToUnicode", holder,
+                                                parts->to_unicode->GetObjNum());
   }
-  return font_dict;
 }
 
 }  // namespace
@@ -577,6 +582,17 @@ CPDF_AnnotFontSubset::LayoutFont& CPDF_AnnotFontSubset::LayoutFont::operator=(
     LayoutFont&& that) noexcept = default;
 
 CPDF_AnnotFontSubset::LayoutFont::~LayoutFont() = default;
+
+CPDF_AnnotFontSubset::StagedFontResource::StagedFontResource() = default;
+
+CPDF_AnnotFontSubset::StagedFontResource::StagedFontResource(
+    StagedFontResource&& that) noexcept = default;
+
+CPDF_AnnotFontSubset::StagedFontResource&
+CPDF_AnnotFontSubset::StagedFontResource::operator=(
+    StagedFontResource&& that) noexcept = default;
+
+CPDF_AnnotFontSubset::StagedFontResource::~StagedFontResource() = default;
 
 // static
 CPDF_AnnotFontSubset::LayoutFont CPDF_AnnotFontSubset::CreateLayoutFont(
@@ -598,16 +614,21 @@ CPDF_AnnotFontSubset::LayoutFont CPDF_AnnotFontSubset::CreateLayoutFont(
     return result;
   }
 
+  // The layout font has the same shape as the resource that will be written,
+  // so the charcodes it hands out (CIDs under Identity-H) are the ones the
+  // appearance bytes carry. For a CID-keyed CFF that is the charset's CID.
+  const GlyphIdentity identity(font.get());
   std::multimap<uint32_t, uint32_t> to_unicode;
   std::map<uint32_t, uint32_t> widths;
   for (const auto& item : char_codes_and_indices) {
-    if (item.glyph_index > kMaxPdfCid) {
+    std::optional<uint16_t> cid = identity.CidOf(item.glyph_index);
+    if (!cid.has_value()) {
       continue;
     }
-    if (!pdfium::Contains(widths, item.glyph_index)) {
-      widths[item.glyph_index] = font->GetGlyphWidth(item.glyph_index);
+    if (!pdfium::Contains(widths, *cid)) {
+      widths[*cid] = font->GetGlyphWidth(item.glyph_index);
     }
-    to_unicode.emplace(item.glyph_index, item.char_code);
+    to_unicode.emplace(*cid, item.char_code);
   }
   if (widths.empty() || to_unicode.empty()) {
     return result;
@@ -615,43 +636,66 @@ CPDF_AnnotFontSubset::LayoutFont CPDF_AnnotFontSubset::CreateLayoutFont(
 
   const ByteString base_font_name =
       BaseFontNameForRegisteredFont(font_id, font.get());
-  RetainPtr<CPDF_Dictionary> font_dict = BuildCompositeFont(
-      doc, font.get(), base_font_name, font->GetFontSpan(),
-      IdentityForRegisteredFont(font_id), widths, to_unicode,
-      ObjectStorage::kDirect, &result.temporary_object_numbers);
-  result.font = CPDF_Font::Create(doc, std::move(font_dict), nullptr);
+  StagedFontResource parts;
+  if (!BuildCompositeFontParts(font.get(), base_font_name, font->GetFontSpan(),
+                               IdentityForRegisteredFont(font_id), widths,
+                               to_unicode, &parts)) {
+    return result;
+  }
+  // The streams go into a scratch holder of their own: CPDF_Font resolves
+  // the descriptor's FontFile reference through the holder the reference
+  // names, so the document's object space is never touched for layout.
+  result.scratch = std::make_unique<CPDF_IndirectObjectHolder>();
+  result.scratch->AddIndirectObject(parts.program);
+  if (parts.to_unicode) {
+    result.scratch->AddIndirectObject(parts.to_unicode);
+  }
+  LinkCompositeFont(&parts, result.scratch.get());
+  result.font = CPDF_Font::Create(doc, std::move(parts.font_dict), nullptr);
   return result;
 }
 
 // static
-RetainPtr<CPDF_Dictionary> CPDF_AnnotFontSubset::BuildRegisteredFontResource(
-    CPDF_Document* doc,
+CPDF_AnnotFontSubset::StageStatus
+CPDF_AnnotFontSubset::StageRegisteredFontResource(
     CFX_FontRegistry::FontId font_id,
     const GlyphUnicodeMap& glyph_to_unicode,
-    bool required_by_default_appearance) {
-  if (!doc || !CFX_FontRegistry::IsValidFont(font_id)) {
-    return nullptr;
+    bool required_by_default_appearance,
+    Embedding embedding,
+    StagedFontResource* out) {
+  if (!out || !CFX_FontRegistry::IsValidFont(font_id)) {
+    return StageStatus::kFailed;
   }
 
   std::unique_ptr<CFX_Font> font = CFX_FontRegistry::CreateFont(font_id);
   if (!font || !font->HasAnyGlyphs()) {
-    return nullptr;
+    return StageStatus::kFailed;
   }
 
-  GlyphUnicodeMap filtered_glyph_to_unicode;
-  std::map<uint32_t, uint32_t> widths;
-  std::multimap<uint32_t, uint32_t> to_unicode;
-  for (const auto& [glyph_id, unicode] : glyph_to_unicode) {
-    if (glyph_id == 0 || glyph_id > kMaxPdfCid) {
+  // The map is keyed by charcode (== CID). Resolve every glyph's three
+  // identities: subset membership by GID, /W by CID, ToUnicode by charcode.
+  const GlyphIdentity identity(font.get());
+  GlyphUnicodeMap filtered_glyph_to_unicode;  // charcode → unicode, for the tag
+  std::set<uint32_t> subset_glyphs;
+  std::map<uint32_t, uint32_t> widths;           // CID → width
+  std::multimap<uint32_t, uint32_t> to_unicode;  // charcode → unicode
+  for (const auto& [charcode, unicode] : glyph_to_unicode) {
+    if (charcode == 0 || charcode > kMaxPdfCid) {
       continue;
     }
-    filtered_glyph_to_unicode.emplace(glyph_id, unicode);
-    widths[glyph_id] = font->GetGlyphWidth(glyph_id);
-    to_unicode.emplace(glyph_id, unicode);
+    std::optional<uint32_t> gid =
+        identity.GidOf(static_cast<uint16_t>(charcode));
+    if (!gid.has_value() || *gid == 0) {
+      continue;
+    }
+    filtered_glyph_to_unicode.emplace(charcode, unicode);
+    subset_glyphs.insert(*gid);
+    widths[charcode] = font->GetGlyphWidth(*gid);
+    to_unicode.emplace(charcode, unicode);
   }
   if (filtered_glyph_to_unicode.empty()) {
     if (!required_by_default_appearance) {
-      return nullptr;  // an unused fallback font: nothing to embed
+      return StageStatus::kUnused;  // an unused fallback: nothing to embed
     }
     // Minimal resource: the subsetter always keeps glyph 0, so an empty
     // glyph set yields a valid program whose only glyph is .notdef.
@@ -659,11 +703,12 @@ RetainPtr<CPDF_Dictionary> CPDF_AnnotFontSubset::BuildRegisteredFontResource(
   }
 
   // fsType "no subsetting" (0x0100): the licence allows embedding only the
-  // whole program, so the resource carries it untagged.
-  const bool may_subset = CFX_FontRegistry::AllowsSubsetting(font_id);
+  // whole program, whatever the policy says. Otherwise the caller's choice
+  // (§2 of the Phase C note) decides; the whole program is untagged.
+  const bool may_subset = embedding == Embedding::kSubset &&
+                          CFX_FontRegistry::AllowsSubsetting(font_id);
   DataVector<uint8_t> subset_font_data =
-      may_subset ? SubsetFontDataRetainGids(font->GetFontSpan(),
-                                            filtered_glyph_to_unicode)
+      may_subset ? SubsetFontDataRetainGids(font->GetFontSpan(), subset_glyphs)
                  : DataVector<uint8_t>();
   pdfium::span<const uint8_t> font_data = subset_font_data.empty()
                                               ? font->GetFontSpan()
@@ -675,18 +720,103 @@ RetainPtr<CPDF_Dictionary> CPDF_AnnotFontSubset::BuildRegisteredFontResource(
       subset_font_data.empty()
           ? base_font_name
           : MakeSubsetBaseFontName(base_font_name, filtered_glyph_to_unicode);
-  RetainPtr<CPDF_Dictionary> font_dict = BuildCompositeFont(
-      doc, font.get(), subset_font_name, font_data,
-      IdentityForRegisteredFont(font_id), widths, to_unicode,
-      ObjectStorage::kIndirect, /*temporary_object_numbers=*/nullptr);
-  if (font_dict) {
-    // EmbedPDF: this dictionary is also what /DR names for the DA font, so it
-    // carries the session hint. The descriptor's /FontFamily is the identity
-    // that survives a new session; the hint is only a tie-breaker.
-    font_dict->SetNewFor<CPDF_String>(kRegisteredFontIdKey,
-                                      ByteString::Format("%u", font_id));
+  StagedFontResource staged;
+  if (!BuildCompositeFontParts(font.get(), subset_font_name, font_data,
+                               IdentityForRegisteredFont(font_id), widths,
+                               to_unicode, &staged)) {
+    return StageStatus::kFailed;
   }
-  return font_dict;
+  staged.font_id = font_id;
+  // EmbedPDF: this dictionary is also what /DR names for the DA font, so it
+  // carries the session hint. The descriptor's /FontFamily is the identity
+  // that survives a new session; the hint is only a tie-breaker.
+  staged.font_dict->SetNewFor<CPDF_String>(kRegisteredFontIdKey,
+                                           ByteString::Format("%u", font_id));
+  *out = std::move(staged);
+  return StageStatus::kStaged;
+}
+
+// static
+RetainPtr<CPDF_Dictionary> CPDF_AnnotFontSubset::PublishStagedFontResource(
+    CPDF_Document* doc,
+    StagedFontResource staged) {
+  if (!doc || !staged.font_dict || !staged.cid_font_dict ||
+      !staged.descriptor || !staged.widths || !staged.program) {
+    return nullptr;
+  }
+  // Leaves first, so every reference written by LinkCompositeFont names an
+  // object that is already in the document.
+  doc->AddIndirectObject(staged.program);
+  if (staged.to_unicode) {
+    doc->AddIndirectObject(staged.to_unicode);
+  }
+  doc->AddIndirectObject(staged.widths);
+  doc->AddIndirectObject(staged.descriptor);
+  doc->AddIndirectObject(staged.cid_font_dict);
+  doc->AddIndirectObject(staged.font_dict);
+  LinkCompositeFont(&staged, doc);
+  if (staged.format == ProgramFormat::kOpenTypeCFF) {
+    EnsureMinimumPdfVersion16(doc);  // FontFile3 /OpenType is PDF 1.6
+  }
+  return staged.font_dict;
+}
+
+// static
+RetainPtr<CPDF_Dictionary> CPDF_AnnotFontSubset::BuildRegisteredFontResource(
+    CPDF_Document* doc,
+    CFX_FontRegistry::FontId font_id,
+    const GlyphUnicodeMap& glyph_to_unicode,
+    bool required_by_default_appearance,
+    Embedding embedding) {
+  if (!doc) {
+    return nullptr;
+  }
+  StagedFontResource staged;
+  if (StageRegisteredFontResource(font_id, glyph_to_unicode,
+                                  required_by_default_appearance, embedding,
+                                  &staged) != StageStatus::kStaged) {
+    return nullptr;
+  }
+  return PublishStagedFontResource(doc, std::move(staged));
+}
+
+CPDF_AnnotFontSubset::GlyphIdentity::GlyphIdentity(const CFX_Font* font) {
+  RetainPtr<CFX_Face> face = font ? font->GetFace() : nullptr;
+  if (!face || !face->IsTtOt() || !face->IsCidKeyed()) {
+    return;  // identity: CID == GID
+  }
+  identity_ = false;
+  const int glyph_count = face->GetGlyphCount();
+  for (uint32_t gid = 0; static_cast<int>(gid) < glyph_count; ++gid) {
+    std::optional<uint32_t> cid = face->GetCidFromGlyphIndex(gid);
+    if (!cid.has_value() || *cid > kMaxPdfCid) {
+      continue;
+    }
+    gid_to_cid_.emplace(gid, static_cast<uint16_t>(*cid));
+    cid_to_gid_.emplace(static_cast<uint16_t>(*cid), gid);
+  }
+}
+
+std::optional<uint16_t> CPDF_AnnotFontSubset::GlyphIdentity::CidOf(
+    uint32_t gid) const {
+  if (identity_) {
+    return gid <= kMaxPdfCid
+               ? std::optional<uint16_t>(static_cast<uint16_t>(gid))
+               : std::nullopt;
+  }
+  auto it = gid_to_cid_.find(gid);
+  return it != gid_to_cid_.end() ? std::optional<uint16_t>(it->second)
+                                 : std::nullopt;
+}
+
+std::optional<uint32_t> CPDF_AnnotFontSubset::GlyphIdentity::GidOf(
+    uint16_t cid) const {
+  if (identity_) {
+    return cid;
+  }
+  auto it = cid_to_gid_.find(cid);
+  return it != cid_to_gid_.end() ? std::optional<uint32_t>(it->second)
+                                 : std::nullopt;
 }
 
 // static

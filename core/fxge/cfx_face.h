@@ -71,6 +71,12 @@ class CFX_Face final : public Retainable, public Observable {
   // EmbedPDF: the OS/2 fsType embedding-permission bits (0 when the font has
   // no OS/2 table, i.e. installable).
   uint16_t GetFsTypeFlags() const;
+  // EmbedPDF: glyph identities of CFF programs (ISO 32000-2 9.7.4.2). A CFF
+  // whose Top DICT uses CIDFont operators selects glyphs by CID through its
+  // charset; FreeType exposes GIDs for sfnt-wrapped ("OTTO") faces, so the
+  // mapping is needed to write and read such fonts.
+  bool IsCidKeyed() const;
+  std::optional<uint32_t> GetCidFromGlyphIndex(uint32_t glyph_index) const;
 
   ByteString GetFamilyName() const;
   ByteString GetStyleName() const;

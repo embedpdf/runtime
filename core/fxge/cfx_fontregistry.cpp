@@ -74,25 +74,30 @@ CFX_FontRegistry::EmbeddingPermission ClassifyFsType(uint16_t fs_type) {
 // EmbedPDF: a variable font is turned into a static instance once, at
 // registration, so layout, subsetting and embedding all see the same static
 // program. Axes are pinned to their defaults, except `wght`, which follows an
-// explicitly registered weight when the axis covers it. Returns empty when the
-// font is not variable or the instancer cannot handle it (the original bytes
-// are then used as they are: readers render a VF at its default instance).
-DataVector<uint8_t> InstanceVariableFont(pdfium::span<const uint8_t> data,
-                                         int requested_weight) {
+// explicitly registered weight when the axis covers it. kFailed means the
+// font is variable but the instancer could not handle it; such a font is
+// refused at registration (Phase C note §1.3), so every registered program
+// the annotation writer subsets is static.
+enum class Instancing { kNotVariable, kInstanced, kFailed };
+
+Instancing InstanceVariableFont(pdfium::span<const uint8_t> data,
+                                int requested_weight,
+                                DataVector<uint8_t>* result) {
   hb_blob_t* blob =
       hb_blob_create(reinterpret_cast<const char*>(data.data()),
                      pdfium::checked_cast<unsigned int>(data.size()),
                      HB_MEMORY_MODE_READONLY, nullptr, nullptr);
   if (!blob) {
-    return {};
+    return Instancing::kFailed;
   }
   hb_face_t* face = hb_face_create(blob, 0);
   hb_blob_destroy(blob);
   if (!face) {
-    return {};
+    return Instancing::kFailed;
   }
-  DataVector<uint8_t> result;
+  Instancing outcome = Instancing::kNotVariable;
   if (hb_ot_var_has_data(face)) {
+    outcome = Instancing::kFailed;
     hb_subset_input_t* input = hb_subset_input_create_or_fail();
     if (input) {
       hb_subset_input_keep_everything(input);
@@ -113,7 +118,8 @@ DataVector<uint8_t> InstanceVariableFont(pdfium::span<const uint8_t> data,
         unsigned int length = 0;
         const char* bytes = hb_blob_get_data(out, &length);
         if (bytes && length > 0) {
-          result.assign(bytes, bytes + length);
+          result->assign(bytes, bytes + length);
+          outcome = Instancing::kInstanced;
         }
         hb_blob_destroy(out);
         hb_face_destroy(instance);
@@ -122,7 +128,7 @@ DataVector<uint8_t> InstanceVariableFont(pdfium::span<const uint8_t> data,
     }
   }
   hb_face_destroy(face);
-  return result;
+  return outcome;
 }
 
 struct RegistryState {
@@ -245,12 +251,19 @@ CFX_FontRegistry::FontId RegisterLoadedFontSource(
     return CFX_FontRegistry::kInvalidFontId;
   }
 
+  // Format first: only a program the annotation writer can subset and emit
+  // is registered (TrueType or OpenType/CFF sfnt; see DetectProgramFormat).
+  if (CFX_FontRegistry::DetectProgramFormat(data) ==
+      CFX_FontRegistry::ProgramFormat::kUnsupported) {
+    return CFX_FontRegistry::kInvalidFontId;
+  }
+
   std::unique_ptr<CFX_Font> font = LoadFont(data);
   if (!font || !font->HasAnyGlyphs()) {
     return CFX_FontRegistry::kInvalidFontId;
   }
 
-  // Licence first: a font whose fsType forbids embedding is never registered,
+  // Licence next: a font whose fsType forbids embedding is never registered,
   // so nothing downstream has to remember to check.
   const uint16_t fs_type = font->GetFace()->GetFsTypeFlags();
   const CFX_FontRegistry::EmbeddingPermission permission =
@@ -260,17 +273,26 @@ CFX_FontRegistry::FontId RegisterLoadedFontSource(
     return CFX_FontRegistry::kInvalidFontId;
   }
 
-  // Variable fonts become a static instance now (see InstanceVariableFont).
+  // Variable fonts become a static instance now (see InstanceVariableFont);
+  // one that cannot be instanced is refused rather than kept variable.
   bool instanced = false;
-  DataVector<uint8_t> instanced_data = InstanceVariableFont(data, weight);
-  if (!instanced_data.empty()) {
-    std::unique_ptr<CFX_Font> instanced_font = LoadFont(instanced_data);
-    if (instanced_font && instanced_font->HasAnyGlyphs()) {
+  DataVector<uint8_t> instanced_data;
+  switch (InstanceVariableFont(data, weight, &instanced_data)) {
+    case Instancing::kNotVariable:
+      break;
+    case Instancing::kFailed:
+      return CFX_FontRegistry::kInvalidFontId;
+    case Instancing::kInstanced: {
+      std::unique_ptr<CFX_Font> instanced_font = LoadFont(instanced_data);
+      if (!instanced_font || !instanced_font->HasAnyGlyphs()) {
+        return CFX_FontRegistry::kInvalidFontId;
+      }
       font = std::move(instanced_font);
       memory_data = std::move(instanced_data);
       data = memory_data;
       stream.Reset();
       instanced = true;
+      break;
     }
   }
 
@@ -311,6 +333,26 @@ int StyleScore(const RegisteredFont& font, int weight, bool italic) {
 }
 
 }  // namespace
+
+// static
+CFX_FontRegistry::ProgramFormat CFX_FontRegistry::DetectProgramFormat(
+    pdfium::span<const uint8_t> data) {
+  if (data.size() < 4) {
+    return ProgramFormat::kUnsupported;
+  }
+  const uint32_t tag = (static_cast<uint32_t>(data[0]) << 24) |
+                       (static_cast<uint32_t>(data[1]) << 16) |
+                       (static_cast<uint32_t>(data[2]) << 8) |
+                       static_cast<uint32_t>(data[3]);
+  if (tag == 0x4F54544F) {  // 'OTTO': CFF outlines in an sfnt wrapper
+    return ProgramFormat::kOpenTypeCFF;
+  }
+  if (tag == 0x00010000 || tag == 0x74727565) {  // 1.0 or 'true'
+    return ProgramFormat::kTrueType;
+  }
+  // 'ttcf' collections, Type1 ('%!PS'), bare CFF (1 0 4 x), WOFF ('wOFF').
+  return ProgramFormat::kUnsupported;
+}
 
 // static
 CFX_FontRegistry::FontId CFX_FontRegistry::RegisterMemoryFont(

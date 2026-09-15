@@ -38,6 +38,13 @@ class CFX_FontRegistry {
     kBitmapOnly = 4,
   };
 
+  // What a program is, decided from its first bytes. Registration accepts
+  // kTrueType and kOpenTypeCFF only, so every registered program is one the
+  // annotation writer can subset and emit (Phase C note §3): Type1, bare CFF,
+  // collections and WOFF are refused at the door.
+  enum class ProgramFormat : uint8_t { kTrueType, kOpenTypeCFF, kUnsupported };
+  static ProgramFormat DetectProgramFormat(pdfium::span<const uint8_t> data);
+
   static FontId RegisterMemoryFont(const ByteString& family_name,
                                    int weight,
                                    int italic,
@@ -63,7 +70,8 @@ class CFX_FontRegistry {
   // pool shares programs by. Empty for an unknown id.
   static pdfium::span<const uint8_t> GetSourceHash(FontId font_id);
   // True when the registered bytes are a static instance made from a
-  // variable font at registration.
+  // variable font at registration. A variable font that cannot be instanced
+  // is refused, so every registered program is static.
   static bool IsInstanced(FontId font_id);
 
   static bool IsValidFont(FontId font_id);

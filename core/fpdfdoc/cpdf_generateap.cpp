@@ -3752,10 +3752,10 @@ bool GenerateFormAPToTarget(APGenerationTarget* target,
     // FreeText when their value/options contain glyphs outside the DA font.
     // Keep the old CPVT_FontMap path unless a registered font is actually
     // involved so existing form AP output remains stable by default.
-    CPDF_AnnotFontMap map(doc, std::move(default_font), font_name,
-                          /*allow_registered_fallbacks=*/true,
-                          da_font.registered_font_id,
-                          /*install_dr_entry=*/true);
+    CPDF_AnnotFontMap map(
+        doc, std::move(default_font), font_name,
+        /*allow_registered_fallbacks=*/true, da_font.registered_font_id,
+        /*install_dr_entry=*/true, CPDF_AnnotFontMap::Owner::kWidget);
     if (!map.HasDefaultFont()) {
       return false;
     }

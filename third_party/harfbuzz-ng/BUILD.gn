@@ -381,9 +381,10 @@ if (use_system_harfbuzz) {
 
       # Size reductions by disabling parts that we do not currently require:
 
-      # SkPDF needs subsetting but does not require subsetting of layout or CFF tables.
+      # SkPDF needs subsetting but does not require subsetting of layout tables.
+      # EmbedPDF: CFF subsetting is compiled in (registered OpenType/CFF fonts
+      # are subset into FontFile3 /OpenType programs).
       "HB_NO_SUBSET_LAYOUT",
-      "HB_NO_SUBSET_CFF",
 
       # Fallback shaper not required, we only use the HarfBuzz internal OT shaper.
       "HB_NO_FALLBACK_SHAPE",
@@ -427,12 +428,8 @@ if (use_system_harfbuzz) {
       defines += [ "HAVE_PTHREAD" ]
     }
 
-    if (enable_paint_preview) {
-      # Paint Previews make use of CFF subsetting. However, enabling this is
-      # expensive for binary size so only compile it when Paint Previews are
-      # compiled.
-      defines -= [ "HB_NO_SUBSET_CFF" ]
-    }
+    # EmbedPDF: CFF subsetting is always compiled in (see the defines above),
+    # so the Paint Preview toggle that used to enable it is gone.
 
     if (is_component_build) {
       if (is_win) {

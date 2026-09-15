@@ -14,6 +14,7 @@
 #include "core/fpdfapi/font/cpdf_font.h"
 #include "core/fpdfapi/parser/cpdf_dictionary.h"
 #include "core/fpdfapi/parser/cpdf_document.h"
+#include "core/fpdfapi/parser/cpdf_indirect_object_holder.h"
 #include "core/fpdfapi/parser/cpdf_reference.h"
 #include "core/fpdfdoc/cpdf_annotfontsubset.h"
 #include "core/fpdfdoc/cpdf_interactiveform.h"
@@ -28,8 +29,21 @@ namespace {
 
 constexpr char kRegisteredFontResourcePrefix[] = "ERegF";
 
+// Test-only injection, see FailAfterStagedFontsForTesting().
+int g_fail_after_staged_fonts_for_testing = 0;
+
 ByteString ResourceKeyForRegisteredFont(CFX_FontRegistry::FontId font_id) {
   return ByteString::Format("%s%u", kRegisteredFontResourcePrefix, font_id);
+}
+
+// /AcroForm /DR /Font as it is, or nullptr; creates nothing.
+RetainPtr<const CPDF_Dictionary> GetDrFontDict(const CPDF_Document* doc) {
+  const CPDF_Dictionary* root_dict = doc->GetRoot();
+  RetainPtr<const CPDF_Dictionary> acroform_dict =
+      root_dict ? root_dict->GetDictFor("AcroForm") : nullptr;
+  RetainPtr<const CPDF_Dictionary> dr_dict =
+      acroform_dict ? acroform_dict->GetDictFor("DR") : nullptr;
+  return dr_dict ? dr_dict->GetDictFor("Font") : nullptr;
 }
 
 RetainPtr<CPDF_Dictionary> GetOrCreateDrFontDict(CPDF_Document* doc) {
@@ -62,16 +76,29 @@ bool PDFontSupportsUnicode(const RetainPtr<CPDF_Font>& font, uint16_t word) {
 
 }  // namespace
 
+CPDF_AnnotFontMap::PreparedFontResources::PreparedFontResources() = default;
+
+CPDF_AnnotFontMap::PreparedFontResources::PreparedFontResources(
+    PreparedFontResources&& that) noexcept = default;
+
+CPDF_AnnotFontMap::PreparedFontResources&
+CPDF_AnnotFontMap::PreparedFontResources::operator=(
+    PreparedFontResources&& that) noexcept = default;
+
+CPDF_AnnotFontMap::PreparedFontResources::~PreparedFontResources() = default;
+
 CPDF_AnnotFontMap::CPDF_AnnotFontMap(
     CPDF_Document* doc,
     RetainPtr<CPDF_Font> default_font,
     const ByteString& default_font_alias,
     bool allow_registered_fallbacks,
     CFX_FontRegistry::FontId registered_font_id,
-    bool install_dr_entry)
+    bool install_dr_entry,
+    Owner owner)
     : doc_(doc),
       allow_registered_fallbacks_(allow_registered_fallbacks),
-      install_dr_entry_(install_dr_entry) {
+      install_dr_entry_(install_dr_entry),
+      owner_(owner) {
   FontEntry entry;
   entry.font = std::move(default_font);
   entry.alias = default_font_alias;
@@ -97,24 +124,25 @@ CPDF_AnnotFontMap::CPDF_AnnotFontMap(
 }
 
 CPDF_AnnotFontMap::~CPDF_AnnotFontMap() {
-  DeleteTemporaryLayoutObjects();
+  ReleaseLayoutFonts();
 }
 
 // static
-bool CPDF_AnnotFontMap::ReserveRegisteredFontAlias(
-    CPDF_Document* doc,
+bool CPDF_AnnotFontMap::ChooseRegisteredFontAlias(
+    const CPDF_Document* doc,
     CFX_FontRegistry::FontId font_id,
     ByteString* resource_key) {
   if (!doc || !resource_key || !CFX_FontRegistry::IsValidFont(font_id)) {
     return false;
   }
 
-  RetainPtr<CPDF_Dictionary> font_res = GetOrCreateDrFontDict(doc);
+  ByteString key = ResourceKeyForRegisteredFont(font_id);
+  RetainPtr<const CPDF_Dictionary> font_res = GetDrFontDict(doc);
   if (!font_res) {
-    return false;
+    *resource_key = key;  // nothing to collide with
+    return true;
   }
 
-  ByteString key = ResourceKeyForRegisteredFont(font_id);
   if (RetainPtr<const CPDF_Dictionary> existing_font_dict =
           font_res->GetDictFor(key.AsStringView())) {
     // EmbedPDF: identity lives in the dictionary (family, then hint), not in
@@ -131,6 +159,24 @@ bool CPDF_AnnotFontMap::ReserveRegisteredFontAlias(
   const ByteString base_key = key;
   for (int suffix = 1; font_res->KeyExist(key.AsStringView()); ++suffix) {
     key = ByteString::Format("%s_%d", base_key.c_str(), suffix);
+  }
+  *resource_key = key;
+  return true;
+}
+
+// static
+bool CPDF_AnnotFontMap::ReserveRegisteredFontAlias(
+    CPDF_Document* doc,
+    CFX_FontRegistry::FontId font_id,
+    ByteString* resource_key) {
+  ByteString key;
+  if (!ChooseRegisteredFontAlias(doc, font_id, &key)) {
+    return false;
+  }
+  // The appearance generators expect /AcroForm /DR to exist once a /DA
+  // names a font; the real entry under |key| arrives with the appearance.
+  if (!GetOrCreateDrFontDict(doc)) {
+    return false;
   }
   doc->ReserveSessionFontAlias(key, font_id);
   *resource_key = key;
@@ -172,6 +218,28 @@ bool CPDF_AnnotFontMap::HasDefaultFont() const {
   return !fonts_.empty() && fonts_.front().font;
 }
 
+CPDF_AnnotFontSubset::Embedding CPDF_AnnotFontMap::EmbeddingForRegisteredFonts()
+    const {
+  // §2 of the Phase C note: the document's policy, with DEFAULT meaning
+  // subset for annotation text and the whole program for form field text.
+  switch (doc_ ? doc_->GetFontEmbeddingPolicy()
+               : CPDF_Document::FontEmbeddingPolicy::kDefault) {
+    case CPDF_Document::FontEmbeddingPolicy::kSubset:
+      return CPDF_AnnotFontSubset::Embedding::kSubset;
+    case CPDF_Document::FontEmbeddingPolicy::kFull:
+      return CPDF_AnnotFontSubset::Embedding::kFull;
+    case CPDF_Document::FontEmbeddingPolicy::kDefault:
+      return owner_ == Owner::kWidget
+                 ? CPDF_AnnotFontSubset::Embedding::kFull
+                 : CPDF_AnnotFontSubset::Embedding::kSubset;
+  }
+}
+
+// static
+void CPDF_AnnotFontMap::FailAfterStagedFontsForTesting(int staged_count) {
+  g_fail_after_staged_fonts_for_testing = staged_count;
+}
+
 void CPDF_AnnotFontMap::InstallDrEntry(const ByteString& alias,
                                        const CPDF_Dictionary* font_dict) {
   if (!doc_ || alias.IsEmpty() || !font_dict || font_dict->GetObjNum() == 0) {
@@ -195,14 +263,19 @@ void CPDF_AnnotFontMap::InstallDrEntry(const ByteString& alias,
   font_res->SetNewFor<CPDF_Reference>(alias, doc_, font_dict->GetObjNum());
 }
 
-RetainPtr<CPDF_Dictionary> CPDF_AnnotFontMap::CreateFontResourceDict() {
+std::optional<CPDF_AnnotFontMap::PreparedFontResources>
+CPDF_AnnotFontMap::PrepareFontResources() {
   if (!doc_) {
-    return nullptr;
+    return std::nullopt;
   }
 
-  auto resource_font_dict = doc_->New<CPDF_Dictionary>();
+  PreparedFontResources prepared;
+  prepared.font_resources = doc_->New<CPDF_Dictionary>();
+  const CPDF_AnnotFontSubset::Embedding embedding =
+      EmbeddingForRegisteredFonts();
+  int staged_count = 0;
   for (size_t i = 0; i < fonts_.size(); ++i) {
-    FontEntry& entry = fonts_[i];
+    const FontEntry& entry = fonts_[i];
     if (!entry.font || entry.alias.IsEmpty()) {
       continue;
     }
@@ -212,20 +285,27 @@ RetainPtr<CPDF_Dictionary> CPDF_AnnotFontMap::CreateFontResourceDict() {
       // needs a resource even when no glyph of it was drawn (empty text, or
       // text drawn entirely by fallback fonts).
       const bool required = i == 0 && install_dr_entry_;
-      RetainPtr<CPDF_Dictionary> font_resource =
-          CPDF_AnnotFontSubset::BuildRegisteredFontResource(
-              doc_, entry.registered_font_id, entry.glyph_to_unicode, required);
-      if (!font_resource) {
-        if (required) {
-          return nullptr;  // never leave /DA naming a font that is not there
-        }
-        continue;
+      if (g_fail_after_staged_fonts_for_testing > 0 &&
+          staged_count >= g_fail_after_staged_fonts_for_testing) {
+        return std::nullopt;  // the injected failure of the next resource
       }
-      resource_font_dict->SetNewFor<CPDF_Reference>(entry.alias, doc_,
-                                                    font_resource->GetObjNum());
-      if (required) {
-        InstallDrEntry(entry.alias, font_resource.Get());
+      PreparedFontResources::StagedEntry staged;
+      switch (CPDF_AnnotFontSubset::StageRegisteredFontResource(
+          entry.registered_font_id, entry.glyph_to_unicode, required, embedding,
+          &staged.resource)) {
+        case CPDF_AnnotFontSubset::StageStatus::kUnused:
+          continue;  // a fallback no glyph of which was drawn
+        case CPDF_AnnotFontSubset::StageStatus::kFailed:
+          // The /DA font, or a font the appearance bytes name for glyphs it
+          // drew: without its resource the appearance would be broken.
+          return std::nullopt;
+        case CPDF_AnnotFontSubset::StageStatus::kStaged:
+          break;
       }
+      staged.alias = entry.alias;
+      staged.install_in_dr = required;
+      prepared.registered.push_back(std::move(staged));
+      ++staged_count;
       continue;
     }
 
@@ -236,13 +316,40 @@ RetainPtr<CPDF_Dictionary> CPDF_AnnotFontMap::CreateFontResourceDict() {
 
     const uint32_t font_obj_num = font_dict->GetObjNum();
     if (font_obj_num != 0) {
-      resource_font_dict->SetNewFor<CPDF_Reference>(entry.alias, doc_,
-                                                    font_obj_num);
+      prepared.font_resources->SetNewFor<CPDF_Reference>(entry.alias, doc_,
+                                                         font_obj_num);
     } else {
-      resource_font_dict->SetFor(entry.alias, font_dict->Clone());
+      prepared.font_resources->SetFor(entry.alias, font_dict->Clone());
     }
   }
-  return resource_font_dict;
+  return prepared;
+}
+
+RetainPtr<CPDF_Dictionary> CPDF_AnnotFontMap::PublishFontResources(
+    PreparedFontResources prepared) {
+  if (!doc_ || !prepared.font_resources) {
+    return nullptr;
+  }
+  for (PreparedFontResources::StagedEntry& staged : prepared.registered) {
+    RetainPtr<CPDF_Dictionary> font_resource =
+        CPDF_AnnotFontSubset::PublishStagedFontResource(
+            doc_, std::move(staged.resource));
+    CHECK(font_resource);  // a staged resource is complete by construction
+    prepared.font_resources->SetNewFor<CPDF_Reference>(
+        staged.alias, doc_, font_resource->GetObjNum());
+    if (staged.install_in_dr) {
+      InstallDrEntry(staged.alias, font_resource.Get());
+    }
+  }
+  return prepared.font_resources;
+}
+
+RetainPtr<CPDF_Dictionary> CPDF_AnnotFontMap::CreateFontResourceDict() {
+  std::optional<PreparedFontResources> prepared = PrepareFontResources();
+  if (!prepared.has_value()) {
+    return nullptr;  // never leave an appearance naming a font not there
+  }
+  return PublishFontResources(std::move(*prepared));
 }
 
 RetainPtr<CPDF_Font> CPDF_AnnotFontMap::GetPDFFont(int32_t font_index) {
@@ -338,27 +445,20 @@ bool CPDF_AnnotFontMap::SupportsWord(int32_t font_index, uint16_t word) const {
   return PDFontSupportsUnicode(entry.font, word);
 }
 
-void CPDF_AnnotFontMap::DeleteTemporaryLayoutObjects() {
+void CPDF_AnnotFontMap::ReleaseLayoutFonts() {
+  // The fonts first: their dictionaries reference streams in the scratch
+  // holders, which go second.
   fonts_.clear();
-  if (!doc_) {
-    temporary_layout_object_numbers_.clear();
-    return;
-  }
-
-  for (uint32_t obj_num : temporary_layout_object_numbers_) {
-    doc_->DeleteIndirectObject(obj_num);
-  }
-  temporary_layout_object_numbers_.clear();
+  layout_scratch_.clear();
 }
 
 RetainPtr<CPDF_Font> CPDF_AnnotFontMap::CreateRegisteredLayoutFont(
     CFX_FontRegistry::FontId font_id) {
   CPDF_AnnotFontSubset::LayoutFont layout_font =
       CPDF_AnnotFontSubset::CreateLayoutFont(doc_, font_id);
-  temporary_layout_object_numbers_.insert(
-      temporary_layout_object_numbers_.end(),
-      layout_font.temporary_object_numbers.begin(),
-      layout_font.temporary_object_numbers.end());
+  if (layout_font.scratch) {
+    layout_scratch_.push_back(std::move(layout_font.scratch));
+  }
   return std::move(layout_font.font);
 }
 

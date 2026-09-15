@@ -27,6 +27,8 @@
 
 #include "build/build_config.h"
 #include "constants/annotation_common.h"
+#include "core/fpdfapi/edit/cpdf_stringarchivestream.h"
+#include "core/fpdfapi/font/cpdf_font.h"
 #include "core/fpdfapi/font/cpdf_tounicodemap.h"
 #include "core/fpdfapi/page/cpdf_annotcontext.h"
 #include "core/fpdfapi/page/cpdf_page.h"
@@ -40,12 +42,14 @@
 #include "core/fpdfapi/parser/cpdf_stream.h"
 #include "core/fpdfapi/parser/cpdf_stream_acc.h"
 #include "core/fpdfapi/parser/cpdf_string.h"
+#include "core/fpdfdoc/cpdf_annotfontmap.h"
 #include "core/fpdfdoc/cpdf_annotfontsubset.h"
 #include "core/fxcrt/compiler_specific.h"
 #include "core/fxcrt/containers/contains.h"
 #include "core/fxcrt/fx_memcpy_wrappers.h"
 #include "core/fxcrt/fx_safe_types.h"
 #include "core/fxcrt/fx_stream.h"
+#include "core/fxcrt/fx_string_wrappers.h"
 #include "core/fxcrt/fx_system.h"
 #include "core/fxcrt/span.h"
 #include "core/fxge/cfx_defaultrenderdevice.h"
@@ -53,6 +57,7 @@
 #include "core/fxge/cfx_fontregistry.h"
 #include "fpdfsdk/cpdfsdk_helpers.h"
 #include "public/cpp/fpdf_scopers.h"
+#include "public/epdf_font.h"
 #include "public/fpdf_attachment.h"
 #include "public/fpdf_edit.h"
 #include "public/fpdf_formfill.h"
@@ -119,6 +124,17 @@ std::vector<uint8_t> LoadRobotoVariableAbcFontData() {
       "harfbuzz-ng/src/test/subset/data/fonts/Roboto-Variable.ABC.ttf");
   if (font_path.empty()) {
     ADD_FAILURE() << "Failed to find Roboto-Variable.ABC test font";
+    return {};
+  }
+  return GetFileContents(font_path.c_str());
+}
+
+std::vector<uint8_t> LoadCffLatinFontData() {
+  // A small OpenType/CFF font (no CIDFont operators) with A, B, C.
+  std::string font_path = PathService::GetThirdPartyFilePath(
+      "harfbuzz-ng/src/test/subset/data/fonts/gpos1_2_font.otf");
+  if (font_path.empty()) {
+    ADD_FAILURE() << "Failed to find gpos1_2_font.otf";
     return {};
   }
   return GetFileContents(font_path.c_str());
@@ -285,7 +301,9 @@ RetainPtr<const CPDF_Dictionary> GetAppearanceFontDict(
   return font_dict ? font_dict->GetDictFor(font_alias.AsStringView()) : nullptr;
 }
 
-bool AppearanceFontHasEmbeddedSubset(const CPDF_Dictionary* font_dict) {
+// A Type0 font written by EmbedPDF with an embedded TrueType program and a
+// ToUnicode map, subset or whole.
+bool AppearanceFontEmbedsProgram(const CPDF_Dictionary* font_dict) {
   if (!font_dict || font_dict->GetNameFor("Subtype") != "Type0" ||
       !font_dict->GetStreamFor("ToUnicode")) {
     return false;
@@ -301,12 +319,33 @@ bool AppearanceFontHasEmbeddedSubset(const CPDF_Dictionary* font_dict) {
       descendant_fonts->GetDictAt(0);
   RetainPtr<const CPDF_Dictionary> font_descriptor =
       cid_font_dict ? cid_font_dict->GetDictFor("FontDescriptor") : nullptr;
-  if (!font_descriptor || !font_descriptor->GetStreamFor("FontFile2")) {
+  return font_descriptor && font_descriptor->GetStreamFor("FontFile2");
+}
+
+bool AppearanceFontIsSubsetTagged(const CPDF_Dictionary* font_dict) {
+  ByteString base_font = font_dict ? font_dict->GetNameFor("BaseFont") : "";
+  return base_font.GetLength() > 7 && base_font[6] == '+';
+}
+
+bool AppearanceFontHasEmbeddedSubset(const CPDF_Dictionary* font_dict) {
+  return AppearanceFontEmbedsProgram(font_dict) &&
+         AppearanceFontIsSubsetTagged(font_dict);
+}
+
+// The whole program of |size| bytes, untagged (Embedding::kFull).
+bool AppearanceFontEmbedsWholeProgram(const CPDF_Dictionary* font_dict,
+                                      size_t size) {
+  if (!AppearanceFontEmbedsProgram(font_dict) ||
+      AppearanceFontIsSubsetTagged(font_dict)) {
     return false;
   }
-
-  ByteString base_font = font_dict->GetNameFor("BaseFont");
-  return base_font.GetLength() > 7 && base_font[6] == '+';
+  RetainPtr<const CPDF_Array> descendant_fonts =
+      font_dict->GetArrayFor("DescendantFonts");
+  RetainPtr<const CPDF_Dictionary> font_descriptor =
+      descendant_fonts->GetDictAt(0)->GetDictFor("FontDescriptor");
+  RetainPtr<const CPDF_Stream> program =
+      font_descriptor->GetStreamFor("FontFile2");
+  return program->GetDict()->GetIntegerFor("Length1") == static_cast<int>(size);
 }
 
 bool AppearanceFontMapsUnicode(const CPDF_Dictionary* font_dict,
@@ -321,14 +360,18 @@ bool AppearanceFontMapsUnicode(const CPDF_Dictionary* font_dict,
   return to_unicode_map.ReverseLookup(value) != 0;
 }
 
+// |expect_subset|: the DEFAULT embedding policy subsets annotation text and
+// embeds form field text whole (Phase C note §2).
 void ExpectRegisteredAppearanceMapsUnicode(
     FPDF_ANNOTATION annot,
     EPDF_FONT_ID font_id,
-    std::initializer_list<wchar_t> unicodes) {
+    std::initializer_list<wchar_t> unicodes,
+    bool expect_subset = true) {
   RetainPtr<const CPDF_Dictionary> font_dict =
       GetAppearanceFontDict(annot, RegisteredFontAlias(font_id));
   ASSERT_TRUE(font_dict);
-  EXPECT_TRUE(AppearanceFontHasEmbeddedSubset(font_dict.Get()));
+  EXPECT_TRUE(AppearanceFontEmbedsProgram(font_dict.Get()));
+  EXPECT_EQ(expect_subset, AppearanceFontIsSubsetTagged(font_dict.Get()));
   for (wchar_t unicode : unicodes) {
     EXPECT_TRUE(AppearanceFontMapsUnicode(font_dict.Get(), unicode));
   }
@@ -1958,7 +2001,10 @@ TEST_F(FPDFAnnotEmbedderTest, WidgetRegisteredFontInstallsRealDrEntry) {
     RetainPtr<const CPDF_Dictionary> dr_entry =
         GetDrFontEntry(document(), alias);
     ASSERT_TRUE(dr_entry);
-    EXPECT_TRUE(AppearanceFontHasEmbeddedSubset(dr_entry.Get()));
+    // Form field text is embedded whole under the DEFAULT policy (Phase C
+    // note §2): the program is shared by every widget that fills in later.
+    EXPECT_TRUE(
+        AppearanceFontEmbedsWholeProgram(dr_entry.Get(), roboto.size()));
     EXPECT_EQ(dr_entry.Get(), GetAppearanceFontDict(annot.get(), alias).Get());
     EXPECT_TRUE(AppearanceFontMapsUnicode(dr_entry.Get(), 'h'));
     EXPECT_EQ(L"Roboto", GetType0FontDescriptor(dr_entry.Get())
@@ -2443,6 +2489,470 @@ TEST_F(FPDFAnnotEmbedderTest, RichTextJsonFromAcrobatBareLineBreak) {
           "{\"text\":\"How are you doing this is great! \\rnow a new line\"}"));
 }
 
+namespace {
+
+RetainPtr<const CPDF_Dictionary> GetType0DescendantFont(
+    const CPDF_Dictionary* font_dict) {
+  RetainPtr<const CPDF_Array> descendants =
+      font_dict ? font_dict->GetArrayFor("DescendantFonts") : nullptr;
+  return descendants ? descendants->GetDictAt(0) : nullptr;
+}
+
+ScopedFPDFAnnotation AuthorFreeText(FPDF_PAGE page,
+                                    EPDF_FONT_ID font_id,
+                                    const wchar_t* text) {
+  ScopedFPDFAnnotation annot(FPDFPage_CreateAnnot(page, FPDF_ANNOT_FREETEXT));
+  if (!annot) {
+    return annot;
+  }
+  const FS_RECTF rect{50.0f, 320.0f, 350.0f, 250.0f};
+  EXPECT_TRUE(FPDFAnnot_SetRect(annot.get(), &rect));
+  ScopedFPDFWideString contents = GetFPDFWideString(text);
+  EXPECT_TRUE(
+      FPDFAnnot_SetStringValue(annot.get(), "Contents", contents.get()));
+  EXPECT_TRUE(EPDFAnnot_SetDefaultAppearanceRegisteredFont(annot.get(), font_id,
+                                                           24.0f, 0, 0, 0));
+  EXPECT_TRUE(EPDFAnnot_GenerateAppearance(annot.get()));
+  return annot;
+}
+
+}  // namespace
+
+// D landing 1: an OpenType/CFF program is written as a Type 0 CIDFont with a
+// FontFile3 /OpenType stream (ISO 32000-2 Table 124, 9.7.4.2), subset by
+// HarfBuzz, and renders.
+TEST_F(FPDFAnnotEmbedderTest, RegisteredCffFontEmitsCidFontType0) {
+  ScopedRegisteredFonts scoped_fonts;
+  std::vector<uint8_t> cff = LoadCffLatinFontData();
+  ASSERT_FALSE(cff.empty());
+  ASSERT_EQ(CPDF_AnnotFontSubset::ProgramFormat::kOpenTypeCFF,
+            CPDF_AnnotFontSubset::DetectProgramFormat(cff));
+  EPDF_FONT_ID font_id = EPDFFont_RegisterMemFont64(
+      "CffLatin", /*weight=*/400, /*italic=*/0, cff.data(), cff.size());
+  ASSERT_NE(0u, font_id);
+
+  ScopedFPDFDocument doc(FPDF_CreateNewDocument());
+  ScopedFPDFPage page(FPDFPage_New(doc.get(), 0, 400, 400));
+  ScopedFPDFAnnotation annot = AuthorFreeText(page.get(), font_id, L"ABC");
+  ASSERT_TRUE(annot);
+
+  RetainPtr<const CPDF_Dictionary> font_dict =
+      GetAppearanceFontDict(annot.get(), RegisteredFontAlias(font_id));
+  ASSERT_TRUE(font_dict);
+  EXPECT_EQ("Type0", font_dict->GetNameFor("Subtype"));
+  EXPECT_EQ("Identity-H", font_dict->GetNameFor("Encoding"));
+  RetainPtr<const CPDF_Dictionary> cid_font =
+      GetType0DescendantFont(font_dict.Get());
+  ASSERT_TRUE(cid_font);
+  EXPECT_EQ("CIDFontType0", cid_font->GetNameFor("Subtype"));
+  EXPECT_FALSE(cid_font->KeyExist("CIDToGIDMap"));
+  RetainPtr<const CPDF_Dictionary> descriptor =
+      cid_font->GetDictFor("FontDescriptor");
+  ASSERT_TRUE(descriptor);
+  EXPECT_FALSE(descriptor->KeyExist("FontFile2"));
+  RetainPtr<const CPDF_Stream> program = descriptor->GetStreamFor("FontFile3");
+  ASSERT_TRUE(program);
+  EXPECT_EQ("OpenType", program->GetDict()->GetNameFor("Subtype"));
+  auto acc = pdfium::MakeRetain<CPDF_StreamAcc>(program);
+  acc->LoadAllDataFiltered();
+  pdfium::span<const uint8_t> bytes = acc->GetSpan();
+  ASSERT_GE(bytes.size(), 4u);
+  EXPECT_EQ('O', bytes[0]);
+  EXPECT_EQ('T', bytes[1]);
+  EXPECT_EQ('T', bytes[2]);
+  EXPECT_EQ('O', bytes[3]);
+  EXPECT_LT(bytes.size(), cff.size());  // CFF subsetting is compiled in
+  EXPECT_TRUE(font_dict->GetNameFor("BaseFont").Contains("+CffLatin"));
+  EXPECT_TRUE(AppearanceFontMapsUnicode(font_dict.Get(), 'A'));
+
+  ScopedFPDFBitmap bitmap =
+      EmbedderTest::RenderPageWithFlags(page.get(), nullptr, FPDF_ANNOT);
+  ASSERT_TRUE(bitmap);
+  EXPECT_GT(CountInkPixels(bitmap.get(), 50, 80, 350, 150, 0xFFFFFFFFu), 0);
+}
+
+// D landing 1: a CID-keyed CFF program keeps its CIDs. The appearance bytes
+// carry the CID (not the GID), /W is keyed by CID, ToUnicode by charcode,
+// the subset keeps the GID, and the reader maps CID → GID through the charset.
+TEST_F(FPDFAnnotEmbedderTest, RegisteredCidKeyedCffKeepsCidsInAppearance) {
+  ScopedRegisteredFonts scoped_fonts;
+  std::vector<uint8_t> cjk = LoadNotoSansSCFontData();
+  ASSERT_FALSE(cjk.empty());
+  EPDF_FONT_ID font_id = EPDFFont_RegisterMemFont64(
+      "Noto Sans SC", /*weight=*/400, /*italic=*/0, cjk.data(), cjk.size());
+  ASSERT_NE(0u, font_id);
+
+  // The fixture maps U+4E00 to CID 9831 at GID 3: the two differ.
+  {
+    std::unique_ptr<CFX_Font> font = CFX_FontRegistry::CreateFont(font_id);
+    ASSERT_TRUE(font);
+    CPDF_AnnotFontSubset::GlyphIdentity identity(font.get());
+    EXPECT_FALSE(identity.IsIdentity());
+    EXPECT_EQ(3u, identity.GidOf(9831).value());
+    EXPECT_EQ(9831, identity.CidOf(3).value());
+  }
+
+  ScopedFPDFDocument doc(FPDF_CreateNewDocument());
+  ScopedFPDFPage page(FPDFPage_New(doc.get(), 0, 400, 400));
+  ScopedFPDFAnnotation annot = AuthorFreeText(page.get(), font_id, L"\x4e00");
+  ASSERT_TRUE(annot);
+
+  const ByteString stream = GetNormalAppearanceStreamBytes(annot.get());
+  ASSERT_FALSE(stream.IsEmpty());
+  EXPECT_TRUE(stream.Contains(ByteStringView("\x26\x67")));      // CID 9831
+  EXPECT_FALSE(stream.Contains(ByteStringView("\x00\x03", 2)));  // not GID 3
+
+  RetainPtr<const CPDF_Dictionary> font_dict =
+      GetAppearanceFontDict(annot.get(), RegisteredFontAlias(font_id));
+  ASSERT_TRUE(font_dict);
+  RetainPtr<const CPDF_Dictionary> cid_font =
+      GetType0DescendantFont(font_dict.Get());
+  ASSERT_TRUE(cid_font);
+  EXPECT_EQ("CIDFontType0", cid_font->GetNameFor("Subtype"));
+  RetainPtr<const CPDF_Array> widths = cid_font->GetArrayFor("W");
+  ASSERT_TRUE(widths);
+  bool keyed_by_cid = false;
+  for (size_t i = 0; i < widths->size(); ++i) {
+    if (widths->GetIntegerAt(i) == 9831) {
+      keyed_by_cid = true;
+    }
+  }
+  EXPECT_TRUE(keyed_by_cid);
+  EXPECT_TRUE(AppearanceFontMapsUnicode(font_dict.Get(), L'\x4e00'));
+  CPDF_ToUnicodeMap to_unicode(font_dict->GetStreamFor("ToUnicode"));
+  EXPECT_EQ(9831u, to_unicode.ReverseLookup(L'\x4e00'));
+
+  // The embedded subset still holds the glyph at GID 3.
+  RetainPtr<const CPDF_Stream> program =
+      cid_font->GetDictFor("FontDescriptor")->GetStreamFor("FontFile3");
+  ASSERT_TRUE(program);
+  auto acc = pdfium::MakeRetain<CPDF_StreamAcc>(program);
+  acc->LoadAllDataFiltered();
+  EXPECT_EQ(CPDF_AnnotFontSubset::ProgramFormat::kOpenTypeCFF,
+            CPDF_AnnotFontSubset::DetectProgramFormat(acc->GetSpan()));
+
+  // And our own reader draws it (CID → GID through the charset).
+  ScopedFPDFBitmap bitmap =
+      EmbedderTest::RenderPageWithFlags(page.get(), nullptr, FPDF_ANNOT);
+  ASSERT_TRUE(bitmap);
+  EXPECT_GT(CountInkPixels(bitmap.get(), 50, 80, 350, 150, 0xFFFFFFFFu), 0);
+}
+
+// D landing 1: writing a FontFile3 /OpenType program raises an older file to
+// PDF 1.6; a 1.7 file is left alone.
+TEST_F(FPDFAnnotEmbedderTest, CffProgramRaisesPdfVersionTo16) {
+  ScopedRegisteredFonts scoped_fonts;
+  std::vector<uint8_t> cff = LoadCffLatinFontData();
+  ASSERT_FALSE(cff.empty());
+  EPDF_FONT_ID font_id = EPDFFont_RegisterMemFont64(
+      "CffLatin", /*weight=*/400, /*italic=*/0, cff.data(), cff.size());
+  ASSERT_NE(0u, font_id);
+
+  // A 1.4 file: a fresh document saved with that version and reloaded.
+  std::string old_pdf;
+  {
+    ScopedFPDFDocument doc(FPDF_CreateNewDocument());
+    ScopedFPDFPage page(FPDFPage_New(doc.get(), 0, 400, 400));
+    ASSERT_TRUE(FPDFPage_GenerateContent(page.get()));
+    ASSERT_TRUE(FPDF_SaveWithVersion(doc.get(), this, 0, 14));
+    old_pdf = GetString();
+    ClearString();
+  }
+  ASSERT_EQ(0u, old_pdf.find("%PDF-1.4"));
+
+  ScopedFPDFDocument doc(FPDF_LoadMemDocument(
+      old_pdf.data(), static_cast<int>(old_pdf.size()), nullptr));
+  ASSERT_TRUE(doc);
+  ScopedFPDFPage page(FPDF_LoadPage(doc.get(), 0));
+  ASSERT_TRUE(page);
+  ScopedFPDFAnnotation annot = AuthorFreeText(page.get(), font_id, L"ABC");
+  ASSERT_TRUE(annot);
+
+  CPDF_Document* cpdf_doc = CPDFDocumentFromFPDFDocument(doc.get());
+  EXPECT_EQ("1.6", cpdf_doc->GetRoot()->GetNameFor("Version"));
+
+  // A TrueType program does not touch the version.
+  std::vector<uint8_t> roboto = LoadRobotoFontData();
+  EPDF_FONT_ID roboto_id = EPDFFont_RegisterMemFont64(
+      "Roboto", /*weight=*/400, /*italic=*/0, roboto.data(), roboto.size());
+  ScopedFPDFDocument doc2(FPDF_LoadMemDocument(
+      old_pdf.data(), static_cast<int>(old_pdf.size()), nullptr));
+  ScopedFPDFPage page2(FPDF_LoadPage(doc2.get(), 0));
+  ScopedFPDFAnnotation annot2 = AuthorFreeText(page2.get(), roboto_id, L"ABC");
+  ASSERT_TRUE(annot2);
+  EXPECT_FALSE(
+      CPDFDocumentFromFPDFDocument(doc2.get())->GetRoot()->KeyExist("Version"));
+}
+
+namespace {
+
+std::string SerializeObject(const CPDF_Object* object) {
+  fxcrt::ostringstream buffer;
+  CPDF_StringArchiveStream archive(&buffer);
+  EXPECT_TRUE(object && object->WriteTo(&archive, nullptr));
+  return std::string(buffer.str().data(), buffer.str().size());
+}
+
+std::string SerializeDrDict(FPDF_DOCUMENT doc) {
+  const CPDF_Dictionary* root = CPDFDocumentFromFPDFDocument(doc)->GetRoot();
+  RetainPtr<const CPDF_Dictionary> acroform = root->GetDictFor("AcroForm");
+  return SerializeObject(acroform ? acroform->GetDictFor("DR").Get() : nullptr);
+}
+
+// |sfnt| wrapped as a one-font TrueType collection: a 16-byte 'ttcf' header
+// in front, every table record offset moved by it. FreeType opens face 0 of
+// such a file; the registry refuses the format (Phase C note §3).
+std::vector<uint8_t> WrapAsCollection(pdfium::span<const uint8_t> sfnt) {
+  static constexpr size_t kHeaderSize = 16;
+  std::vector<uint8_t> ttc = {'t', 't', 'c', 'f', 0, 1, 0, 0,
+                              0,   0,   0,   1,   0, 0, 0, kHeaderSize};
+  ttc.insert(ttc.end(), sfnt.begin(), sfnt.end());
+  const size_t num_tables = (sfnt[4] << 8) | sfnt[5];
+  for (size_t i = 0; i < num_tables; ++i) {
+    const size_t record = kHeaderSize + 12 + i * 16;
+    uint32_t offset = (ttc[record + 8] << 24) | (ttc[record + 9] << 16) |
+                      (ttc[record + 10] << 8) | ttc[record + 11];
+    offset += kHeaderSize;
+    ttc[record + 8] = offset >> 24;
+    ttc[record + 9] = offset >> 16;
+    ttc[record + 10] = offset >> 8;
+    ttc[record + 11] = offset;
+  }
+  return ttc;
+}
+
+}  // namespace
+
+// D8 (Phase C note §6): a font resource that fails to stage after another
+// was staged leaves the document exactly as it was. The FreeText below needs
+// two registered fonts (the /DA font and a CJK fallback); the injection makes
+// the second one fail. Nothing of the first may remain: no object number,
+// no /DR entry, no alias, no change to the annotation.
+TEST_F(FPDFAnnotEmbedderTest,
+       FreeTextStagedFontFailureLeavesDocumentUntouched) {
+  ScopedRegisteredFonts scoped_fonts;
+  std::vector<uint8_t> roboto = LoadRobotoFontData();
+  std::vector<uint8_t> noto = LoadNotoSansSCFontData();
+  ASSERT_FALSE(roboto.empty());
+  ASSERT_FALSE(noto.empty());
+  EPDF_FONT_ID roboto_id = EPDFFont_RegisterMemFont64(
+      "Roboto", /*weight=*/400, /*italic=*/0, roboto.data(), roboto.size());
+  EPDF_FONT_ID noto_id = EPDFFont_RegisterMemFont64(
+      "NotoSansSC", /*weight=*/400, /*italic=*/0, noto.data(), noto.size());
+  ASSERT_NE(0u, roboto_id);
+  ASSERT_NE(0u, noto_id);
+  ASSERT_TRUE(EPDFFont_AddFallbackFont(noto_id));
+
+  ScopedFPDFDocument doc(FPDF_CreateNewDocument());
+  ASSERT_TRUE(doc);
+  ScopedFPDFPage page(FPDFPage_New(doc.get(), 0, 400, 400));
+  ASSERT_TRUE(page);
+  ScopedFPDFAnnotation annot(
+      FPDFPage_CreateAnnot(page.get(), FPDF_ANNOT_FREETEXT));
+  ASSERT_TRUE(annot);
+  const FS_RECTF rect{50.0f, 320.0f, 350.0f, 250.0f};
+  ASSERT_TRUE(FPDFAnnot_SetRect(annot.get(), &rect));
+  ScopedFPDFWideString contents = GetFPDFWideString(L"AB\x4e00");
+  ASSERT_TRUE(
+      FPDFAnnot_SetStringValue(annot.get(), "Contents", contents.get()));
+  ASSERT_TRUE(EPDFAnnot_SetDefaultAppearanceRegisteredFont(
+      annot.get(), roboto_id, 24.0f, 0, 0, 0));
+
+  CPDF_Document* cpdf_doc = CPDFDocumentFromFPDFDocument(doc.get());
+  const CPDF_Dictionary* annot_dict =
+      CPDFAnnotContextFromFPDFAnnotation(annot.get())->GetAnnotDict();
+  const std::string annot_before = SerializeObject(annot_dict);
+  const std::string dr_before = SerializeDrDict(doc.get());
+  const uint32_t last_obj_before = cpdf_doc->GetLastObjNum();
+  const ByteString da_alias = RegisteredFontAlias(roboto_id);
+  ASSERT_EQ(roboto_id, cpdf_doc->LookupSessionFontAlias(da_alias));
+
+  CPDF_AnnotFontMap::FailAfterStagedFontsForTesting(1);
+  EXPECT_FALSE(EPDFAnnot_GenerateAppearance(annot.get()));
+  CPDF_AnnotFontMap::FailAfterStagedFontsForTesting(0);
+
+  EXPECT_EQ(annot_before, SerializeObject(annot_dict));
+  EXPECT_EQ(dr_before, SerializeDrDict(doc.get()));
+  EXPECT_EQ(last_obj_before, cpdf_doc->GetLastObjNum());
+  EXPECT_FALSE(GetDrFontEntry(doc.get(), da_alias));
+  EXPECT_EQ(roboto_id, cpdf_doc->LookupSessionFontAlias(da_alias));
+  EXPECT_FALSE(cpdf_doc->LookupSessionFontAlias(RegisteredFontAlias(noto_id))
+                   .has_value());
+
+  // Without the injection the same annotation publishes both fonts.
+  ASSERT_TRUE(EPDFAnnot_GenerateAppearance(annot.get()));
+  EXPECT_GT(cpdf_doc->GetLastObjNum(), last_obj_before);
+  RetainPtr<const CPDF_Dictionary> da_font =
+      GetAppearanceFontDict(annot.get(), da_alias);
+  RetainPtr<const CPDF_Dictionary> fallback_font =
+      GetAppearanceFontDict(annot.get(), RegisteredFontAlias(noto_id));
+  ASSERT_TRUE(da_font);
+  ASSERT_TRUE(fallback_font);
+  EXPECT_TRUE(AppearanceFontHasEmbeddedSubset(da_font.Get()));
+  EXPECT_TRUE(AppearanceFontMapsUnicode(da_font.Get(), 'A'));
+  EXPECT_TRUE(AppearanceFontMapsUnicode(fallback_font.Get(), L'\x4e00'));
+  EXPECT_EQ(da_font.Get(), GetDrFontEntry(doc.get(), da_alias).Get());
+}
+
+// Laying out with a registered font allocates no document object: the
+// layout font's streams live in a scratch holder of their own.
+TEST_F(FPDFAnnotEmbedderTest, RegisteredLayoutFontAllocatesNoDocumentObject) {
+  ScopedRegisteredFonts scoped_fonts;
+  std::vector<uint8_t> roboto = LoadRobotoFontData();
+  ASSERT_FALSE(roboto.empty());
+  EPDF_FONT_ID roboto_id = EPDFFont_RegisterMemFont64(
+      "Roboto", /*weight=*/400, /*italic=*/0, roboto.data(), roboto.size());
+  ASSERT_NE(0u, roboto_id);
+
+  ScopedFPDFDocument doc(FPDF_CreateNewDocument());
+  CPDF_Document* cpdf_doc = CPDFDocumentFromFPDFDocument(doc.get());
+  const uint32_t last_obj_before = cpdf_doc->GetLastObjNum();
+  {
+    CPDF_AnnotFontSubset::LayoutFont layout =
+        CPDF_AnnotFontSubset::CreateLayoutFont(cpdf_doc, roboto_id);
+    ASSERT_TRUE(layout.font);
+    ASSERT_TRUE(layout.scratch);
+    EXPECT_NE(0u, layout.font->CharCodeFromUnicode('A'));
+    EXPECT_GT(layout.font->GetCharWidthF(layout.font->CharCodeFromUnicode('A')),
+              0);
+    EXPECT_EQ(0u, layout.font->GetFontDict()->GetObjNum());
+  }
+  EXPECT_EQ(last_obj_before, cpdf_doc->GetLastObjNum());
+}
+
+// Phase C note §2: the document's embedding policy. DEFAULT subsets
+// annotation text; FULL embeds the whole program, untagged; SUBSET subsets
+// form field text too, which DEFAULT embeds whole.
+TEST_F(FPDFAnnotEmbedderTest, FontEmbeddingPolicyGovernsRegisteredResources) {
+  ScopedRegisteredFonts scoped_fonts;
+  std::vector<uint8_t> roboto = LoadRobotoFontData();
+  ASSERT_FALSE(roboto.empty());
+  EPDF_FONT_ID roboto_id = EPDFFont_RegisterMemFont64(
+      "Roboto", /*weight=*/400, /*italic=*/0, roboto.data(), roboto.size());
+  ASSERT_NE(0u, roboto_id);
+  const ByteString alias = RegisteredFontAlias(roboto_id);
+
+  EXPECT_EQ(-1, EPDFDoc_GetFontEmbeddingPolicy(nullptr));
+  EXPECT_FALSE(EPDFDoc_SetFontEmbeddingPolicy(nullptr, 0));
+
+  CreateEmptyDocument();
+  {
+    EXPECT_EQ(EPDF_FONT_EMBEDDING_POLICY_DEFAULT,
+              EPDFDoc_GetFontEmbeddingPolicy(document()));
+    EXPECT_FALSE(EPDFDoc_SetFontEmbeddingPolicy(document(), 3));
+    EXPECT_FALSE(EPDFDoc_SetFontEmbeddingPolicy(document(), -1));
+    EXPECT_EQ(EPDF_FONT_EMBEDDING_POLICY_DEFAULT,
+              EPDFDoc_GetFontEmbeddingPolicy(document()));
+
+    ScopedFPDFPage page(FPDFPage_New(document(), 0, 400, 400));
+    ASSERT_TRUE(page);
+
+    // DEFAULT: FreeText subset.
+    ScopedFPDFAnnotation subset_annot =
+        AuthorFreeText(page.get(), roboto_id, L"ABC");
+    ASSERT_TRUE(subset_annot);
+    EXPECT_TRUE(AppearanceFontHasEmbeddedSubset(
+        GetAppearanceFontDict(subset_annot.get(), alias).Get()));
+
+    // FULL: the same annotation regenerated carries the whole program.
+    ASSERT_TRUE(EPDFDoc_SetFontEmbeddingPolicy(
+        document(), EPDF_FONT_EMBEDDING_POLICY_FULL));
+    EXPECT_EQ(EPDF_FONT_EMBEDDING_POLICY_FULL,
+              EPDFDoc_GetFontEmbeddingPolicy(document()));
+    ASSERT_TRUE(EPDFAnnot_GenerateAppearance(subset_annot.get()));
+    RetainPtr<const CPDF_Dictionary> full_font =
+        GetAppearanceFontDict(subset_annot.get(), alias);
+    EXPECT_TRUE(
+        AppearanceFontEmbedsWholeProgram(full_font.Get(), roboto.size()));
+    EXPECT_TRUE(AppearanceFontMapsUnicode(full_font.Get(), 'A'));
+    EXPECT_EQ(full_font.Get(), GetDrFontEntry(document(), alias).Get());
+
+    // An empty annotation (no glyph drawn, so no ToUnicode) under FULL also
+    // carries the whole program, untagged: its /DA font must survive a save.
+    // Under SUBSET it is the minimal glyph-0 subset, tagged like any other.
+    auto program_length = [](const CPDF_Dictionary* font_dict) {
+      RetainPtr<const CPDF_Dictionary> descriptor =
+          GetType0FontDescriptor(font_dict);
+      RetainPtr<const CPDF_Stream> program =
+          descriptor ? descriptor->GetStreamFor("FontFile2") : nullptr;
+      return program ? program->GetDict()->GetIntegerFor("Length1") : -1;
+    };
+    ScopedFPDFAnnotation empty_annot =
+        AuthorFreeText(page.get(), roboto_id, L"");
+    ASSERT_TRUE(empty_annot);
+    RetainPtr<const CPDF_Dictionary> whole_font =
+        GetAppearanceFontDict(empty_annot.get(), alias);
+    ASSERT_TRUE(whole_font);
+    EXPECT_FALSE(AppearanceFontIsSubsetTagged(whole_font.Get()));
+    EXPECT_EQ(static_cast<int>(roboto.size()),
+              program_length(whole_font.Get()));
+    ASSERT_TRUE(EPDFDoc_SetFontEmbeddingPolicy(
+        document(), EPDF_FONT_EMBEDDING_POLICY_SUBSET));
+    ASSERT_TRUE(EPDFAnnot_GenerateAppearance(empty_annot.get()));
+    RetainPtr<const CPDF_Dictionary> minimal_font =
+        GetAppearanceFontDict(empty_annot.get(), alias);
+    ASSERT_TRUE(minimal_font);
+    EXPECT_TRUE(AppearanceFontIsSubsetTagged(minimal_font.Get()));
+    EXPECT_GT(program_length(minimal_font.Get()), 0);
+    EXPECT_LT(program_length(minimal_font.Get()),
+              static_cast<int>(roboto.size() / 10));
+
+    // SUBSET: a form field, which DEFAULT embeds whole, is subset too.
+    ScopedFPDFAnnotation widget(
+        EPDFPage_CreateAnnot(page.get(), FPDF_ANNOT_WIDGET));
+    ASSERT_TRUE(widget);
+    const FS_RECTF rect{50.0f, 200.0f, 350.0f, 150.0f};
+    ASSERT_TRUE(FPDFAnnot_SetRect(widget.get(), &rect));
+    ASSERT_TRUE(EPDFAnnot_SetDefaultAppearanceRegisteredFont(
+        widget.get(), roboto_id, 12.0f, 0, 0, 0));
+    ScopedFPDFWideString field_name = GetFPDFWideString(L"policy_text");
+    const uint32_t field = EPDFForm_CreateField(
+        document(), 4 /* EPDF_FORMFIELD_FAMILY_TEXT */, field_name.get());
+    ASSERT_GT(field, 0u);
+    ASSERT_TRUE(EPDFForm_AttachWidget(
+        document(), field, EPDFAnnot_GetObjectNumber(widget.get()), nullptr));
+    ScopedFPDFWideString value = GetFPDFWideString(L"hello");
+    ASSERT_TRUE(EPDFForm_SetTextValue(document(), field, value.get(), nullptr,
+                                      0, nullptr));
+    ASSERT_TRUE(EPDFAnnot_GenerateFormFieldAP(widget.get()));
+    EXPECT_TRUE(AppearanceFontHasEmbeddedSubset(
+        GetAppearanceFontDict(widget.get(), alias).Get()));
+  }
+  CloseDocument();
+}
+
+// Phase C note §3 and §9: only TrueType and OpenType/CFF sfnts are
+// registered. A collection FreeType would open is refused at the door, and
+// so are bytes that are not an sfnt at all.
+TEST_F(FPDFAnnotEmbedderTest, RegistrationRefusesUnsupportedProgramFormats) {
+  ScopedRegisteredFonts scoped_fonts;
+  std::vector<uint8_t> roboto = LoadRobotoFontData();
+  ASSERT_FALSE(roboto.empty());
+  EXPECT_EQ(CFX_FontRegistry::ProgramFormat::kTrueType,
+            CFX_FontRegistry::DetectProgramFormat(roboto));
+
+  const std::vector<uint8_t> ttc = WrapAsCollection(roboto);
+  EXPECT_EQ(CFX_FontRegistry::ProgramFormat::kUnsupported,
+            CFX_FontRegistry::DetectProgramFormat(ttc));
+  {
+    CFX_Font font;  // the refusal is policy, not an unloadable file
+    EXPECT_TRUE(font.LoadEmbedded(ttc, /*force_vertical=*/false,
+                                  /*object_tag=*/0));
+  }
+  EXPECT_EQ(0u, EPDFFont_RegisterMemFont64("Roboto TTC", 400, 0, ttc.data(),
+                                           ttc.size()));
+
+  const std::string type1 = "%!PS-AdobeFont-1.0: NotAFont";
+  EXPECT_EQ(CFX_FontRegistry::ProgramFormat::kUnsupported,
+            CFX_FontRegistry::DetectProgramFormat(pdfium::as_byte_span(type1)));
+  EXPECT_EQ(0u, EPDFFont_RegisterMemFont64("Type1", 400, 0, type1.data(),
+                                           type1.size()));
+
+  // The real thing still registers.
+  EXPECT_NE(0u, EPDFFont_RegisterMemFont64("Roboto", 400, 0, roboto.data(),
+                                           roboto.size()));
+}
+
 TEST_F(FPDFAnnotEmbedderTest, FreeTextRegisteredFontMarkerSurvivesAliasSuffix) {
   ScopedRegisteredFonts scoped_fonts;
 
@@ -2538,7 +3048,8 @@ TEST_F(FPDFAnnotEmbedderTest, TextFieldKoreanUsesRegisteredDroidFallbackFont) {
     // The annotation-plane companion regenerates the same appearance.
     ASSERT_TRUE(EPDFAnnot_GenerateFormFieldAP(annot.get()));
     ExpectRegisteredAppearanceMapsUnicode(annot.get(), font_id,
-                                          {L'\xD55C', L'\xAE00'});
+                                          {L'\xD55C', L'\xAE00'},
+                                          /*expect_subset=*/false);
   }
   CloseDocument();
 }
@@ -2578,7 +3089,8 @@ TEST_F(FPDFAnnotEmbedderTest, ComboBoxKoreanUsesRegisteredDroidFallbackFont) {
 
     ASSERT_TRUE(EPDFAnnot_GenerateFormFieldAP(annot.get()));
     ExpectRegisteredAppearanceMapsUnicode(annot.get(), font_id,
-                                          {L'\xD55C', L'\xAE00'});
+                                          {L'\xD55C', L'\xAE00'},
+                                          /*expect_subset=*/false);
   }
   CloseDocument();
 }
@@ -2618,7 +3130,8 @@ TEST_F(FPDFAnnotEmbedderTest, ListBoxKoreanUsesRegisteredDroidFallbackFont) {
 
     ASSERT_TRUE(EPDFAnnot_GenerateFormFieldAP(annot.get()));
     ExpectRegisteredAppearanceMapsUnicode(annot.get(), font_id,
-                                          {L'\xD55C', L'\xAE00'});
+                                          {L'\xD55C', L'\xAE00'},
+                                          /*expect_subset=*/false);
   }
   CloseDocument();
 }
