@@ -43,6 +43,7 @@
 #include "core/fpdfdoc/cpdf_formfield.h"
 #include "core/fpdfdoc/cpdf_generateap.h"
 #include "core/fpdfdoc/cpdf_interactiveform.h"
+#include "core/fpdfdoc/cpdf_richtextparser.h"
 #include "core/fxcrt/check.h"
 #include "core/fxcrt/containers/contains.h"
 #include "core/fxcrt/containers/unique_ptr_adapters.h"
@@ -55,8 +56,8 @@
 #include "core/fxge/cfx_fontregistry.h"
 #include "fpdfsdk/cpdfsdk_formfillenvironment.h"
 #include "fpdfsdk/cpdfsdk_helpers.h"
-#include "fpdfsdk/epdf_appearance_exporter.h"
 #include "fpdfsdk/cpdfsdk_interactiveform.h"
+#include "fpdfsdk/epdf_appearance_exporter.h"
 
 namespace {
 
@@ -3292,6 +3293,29 @@ EPDFAnnot_GetRichContent(FPDF_ANNOTATION annot,
   // SAFETY: same pattern as other getters.
   return Utf16EncodeMaybeCopyAndReturnLength(
       ws, UNSAFE_BUFFERS(SpanFromFPDFApiArgs(buffer, buflen)));
+}
+
+FPDF_EXPORT unsigned long FPDF_CALLCONV
+EPDFAnnot_GetRichTextJSON(FPDF_ANNOTATION annot,
+                          char* buffer,
+                          unsigned long buflen) {
+  CPDF_AnnotContext* context = CPDFAnnotContextFromFPDFAnnotation(annot);
+  if (!context) {
+    return 0;
+  }
+  const CPDF_Dictionary* annot_dict = context->GetAnnotDict();
+  if (!annot_dict) {
+    return 0;
+  }
+  CPDF_Document* doc = context->GetPage()->GetDocument();
+  const CPDF_Dictionary* root = doc ? doc->GetRoot() : nullptr;
+  RetainPtr<const CPDF_Dictionary> acroform =
+      root ? root->GetDictFor("AcroForm") : nullptr;
+  const ByteString json = CPDF_RichTextParser::ToJSON(
+      CPDF_RichTextParser::FromAnnotation(annot_dict, acroform.Get()));
+  // SAFETY: same pattern as other getters.
+  return NulTerminateMaybeCopyAndReturnLength(
+      json, UNSAFE_BUFFERS(SpanFromFPDFApiArgs(buffer, buflen)));
 }
 
 FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV

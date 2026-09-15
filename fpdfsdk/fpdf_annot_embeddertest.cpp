@@ -2280,6 +2280,169 @@ TEST_F(FPDFAnnotEmbedderTest, VariableFontIsInstancedAtRegistration) {
   EXPECT_EQ(700, descriptor->GetIntegerFor("FontWeight"));
 }
 
+namespace {
+
+std::string GetRichTextJson(FPDF_ANNOTATION annot) {
+  const unsigned long length = EPDFAnnot_GetRichTextJSON(annot, nullptr, 0);
+  if (length == 0) {
+    return std::string();
+  }
+  std::vector<char> buffer(length);
+  EXPECT_EQ(length, EPDFAnnot_GetRichTextJSON(annot, buffer.data(), length));
+  return std::string(buffer.data());
+}
+
+}  // namespace
+
+// B: without /RC the rich text model is synthesised from /Contents and /DA,
+// so callers always get one shape.
+TEST_F(FPDFAnnotEmbedderTest, RichTextJsonFromContentsOnly) {
+  ScopedFPDFDocument doc(FPDF_CreateNewDocument());
+  ScopedFPDFPage page(FPDFPage_New(doc.get(), 0, 400, 400));
+  ScopedFPDFAnnotation annot(
+      FPDFPage_CreateAnnot(page.get(), FPDF_ANNOT_FREETEXT));
+  ASSERT_TRUE(annot);
+  const FS_RECTF rect{50.0f, 320.0f, 350.0f, 250.0f};
+  ASSERT_TRUE(FPDFAnnot_SetRect(annot.get(), &rect));
+  ScopedFPDFWideString contents = GetFPDFWideString(L"Hello\rWorld");
+  ASSERT_TRUE(
+      FPDFAnnot_SetStringValue(annot.get(), "Contents", contents.get()));
+  ASSERT_TRUE(EPDFAnnot_SetDefaultAppearance(annot.get(), FPDF_FONT_HELVETICA,
+                                             12.0f, 255, 0, 0));
+
+  const std::string json = GetRichTextJson(annot.get());
+  EXPECT_NE(std::string::npos, json.find("\"source\":\"contents\""));
+  EXPECT_NE(std::string::npos, json.find("\"family\":\"Helvetica\""));
+  EXPECT_NE(std::string::npos, json.find("\"size\":12"));
+  EXPECT_NE(std::string::npos, json.find("\"color\":\"#FF0000\""));
+  EXPECT_NE(std::string::npos, json.find("{\"text\":\"Hello\"}"));
+  EXPECT_NE(std::string::npos, json.find("{\"text\":\"World\"}"));
+  EXPECT_NE(std::string::npos, json.find("\"diagnostics\":[]"));
+}
+
+TEST_F(FPDFAnnotEmbedderTest, RichTextJsonFromRCAndDS) {
+  ScopedFPDFDocument doc(FPDF_CreateNewDocument());
+  ScopedFPDFPage page(FPDFPage_New(doc.get(), 0, 400, 400));
+  ScopedFPDFAnnotation annot(
+      FPDFPage_CreateAnnot(page.get(), FPDF_ANNOT_FREETEXT));
+  ASSERT_TRUE(annot);
+  const FS_RECTF rect{50.0f, 320.0f, 350.0f, 250.0f};
+  ASSERT_TRUE(FPDFAnnot_SetRect(annot.get(), &rect));
+  ScopedFPDFWideString contents = GetFPDFWideString(L"bold plain");
+  ASSERT_TRUE(
+      FPDFAnnot_SetStringValue(annot.get(), "Contents", contents.get()));
+  ASSERT_TRUE(EPDFAnnot_SetDefaultAppearance(annot.get(), FPDF_FONT_HELVETICA,
+                                             12.0f, 0, 0, 0));
+  ScopedFPDFWideString ds = GetFPDFWideString(
+      L"font: 'Noto Sans',sans-serif 20.0pt; text-align:right");
+  ASSERT_TRUE(FPDFAnnot_SetStringValue(annot.get(), "DS", ds.get()));
+  ScopedFPDFWideString rc = GetFPDFWideString(
+      L"<?xml version=\"1.0\"?><body xmlns=\"http://www.w3.org/1999/xhtml\" "
+      L"style=\"color:#0000FF\"><p dir=\"ltr\"><span "
+      L"style=\"font-weight:bold\">"
+      L"bold</span> plain</p></body>");
+  ASSERT_TRUE(FPDFAnnot_SetStringValue(annot.get(), "RC", rc.get()));
+
+  const std::string json = GetRichTextJson(annot.get());
+  EXPECT_NE(std::string::npos, json.find("\"source\":\"rc\""));
+  EXPECT_NE(std::string::npos, json.find("\"family\":\"Noto Sans\""));  // DS
+  EXPECT_NE(std::string::npos, json.find("\"size\":20"));               // DS
+  EXPECT_NE(std::string::npos, json.find("\"color\":\"#0000FF\""));     // body
+  EXPECT_NE(std::string::npos, json.find("\"align\":\"right\""));       // DS
+  EXPECT_NE(std::string::npos,
+            json.find("{\"text\":\"bold\",\"style\":{\"weight\":700}}"));
+  EXPECT_NE(std::string::npos, json.find("{\"text\":\" plain\"}"));
+}
+
+// Acrobat-authored fixtures (experiments 05 / 07 / 04 of the plan).
+TEST_F(FPDFAnnotEmbedderTest, RichTextJsonFromAcrobatDecorations) {
+  ASSERT_TRUE(OpenDocument("freetext_rich_text_acrobat_decorations.pdf"));
+  ScopedPage page = LoadScopedPage(0);
+  ASSERT_TRUE(page);
+  std::string json;
+  for (int i = 0; i < FPDFPage_GetAnnotCount(page.get()); ++i) {
+    ScopedFPDFAnnotation annot(FPDFPage_GetAnnot(page.get(), i));
+    if (FPDFAnnot_GetSubtype(annot.get()) == FPDF_ANNOT_FREETEXT) {
+      json = GetRichTextJson(annot.get());
+    }
+  }
+  ASSERT_FALSE(json.empty());
+  EXPECT_NE(std::string::npos, json.find("\"source\":\"rc\""));
+  EXPECT_NE(std::string::npos, json.find("\"family\":\"Helvetica\""));
+  EXPECT_NE(std::string::npos,
+            json.find("\"weight\":400,\"italic\":false,\"size\":24"));
+  EXPECT_NE(std::string::npos,
+            json.find("{\"text\":\"hello\",\"style\":{\"weight\":700}}"));
+  EXPECT_NE(
+      std::string::npos,
+      json.find("{\"text\":\"how\",\"style\":{\"decoration\":[\"word\"]}}"));
+  EXPECT_NE(std::string::npos,
+            json.find("{\"text\":\"are\",\"style\":{\"italic\":true}}"));
+  EXPECT_NE(std::string::npos, json.find("{\"text\":\" you \"}"));
+  EXPECT_NE(std::string::npos,
+            json.find("{\"text\":\"doing?\",\"style\":{\"decoration\":[\"line-"
+                      "through\"]}}"));
+  EXPECT_NE(std::string::npos, json.find("\"diagnostics\":[]"));
+}
+
+TEST_F(FPDFAnnotEmbedderTest, RichTextJsonFromAcrobatProperties) {
+  ASSERT_TRUE(OpenDocument("freetext_rich_text_acrobat_properties.pdf"));
+  ScopedPage page = LoadScopedPage(0);
+  ASSERT_TRUE(page);
+  bool saw_center = false;
+  bool saw_scripts = false;
+  bool saw_empty = false;
+  for (int i = 0; i < FPDFPage_GetAnnotCount(page.get()); ++i) {
+    ScopedFPDFAnnotation annot(FPDFPage_GetAnnot(page.get(), i));
+    if (FPDFAnnot_GetSubtype(annot.get()) != FPDF_ANNOT_FREETEXT) {
+      continue;
+    }
+    const std::string json = GetRichTextJson(annot.get());
+    ASSERT_FALSE(json.empty());
+    if (json.find("Welcome") != std::string::npos) {
+      saw_center = true;
+      EXPECT_NE(std::string::npos,
+                json.find("\"weight\":700,\"italic\":false,\"size\":26"));
+      EXPECT_NE(std::string::npos,
+                json.find("\"align\":\"center\",\"dir\":\"ltr\",\"runs\""));
+      EXPECT_NE(std::string::npos, json.find("{\"text\":\"Welcome\\r\\r\"}"));
+      EXPECT_NE(std::string::npos,
+                json.find("\"style\":{\"weight\":400,\"size\":18}"));
+    } else if (json.find("\"script\":\"sub\"") != std::string::npos) {
+      saw_scripts = true;
+      EXPECT_NE(
+          std::string::npos,
+          json.find("{\"text\":\"hello\\r\",\"style\":{\"script\":\"sub\"}}"));
+      EXPECT_NE(
+          std::string::npos,
+          json.find("{\"text\":\"hello\",\"style\":{\"script\":\"super\"}}"));
+    } else {
+      // The never-typed box: no RC, no Contents, DS names the family.
+      saw_empty = true;
+      EXPECT_NE(std::string::npos, json.find("\"source\":\"contents\""));
+      EXPECT_NE(std::string::npos, json.find("\"family\":\"Helvetica\""));
+      EXPECT_NE(std::string::npos, json.find("\"size\":18"));
+    }
+  }
+  EXPECT_TRUE(saw_center);
+  EXPECT_TRUE(saw_scripts);
+  EXPECT_TRUE(saw_empty);
+}
+
+TEST_F(FPDFAnnotEmbedderTest, RichTextJsonFromAcrobatBareLineBreak) {
+  ASSERT_TRUE(OpenDocument("freetext_rich_text_acrobat_lines.pdf"));
+  ScopedPage page = LoadScopedPage(0);
+  ASSERT_TRUE(page);
+  ASSERT_EQ(1, FPDFPage_GetAnnotCount(page.get()));
+  ScopedFPDFAnnotation annot(FPDFPage_GetAnnot(page.get(), 0));
+  const std::string json = GetRichTextJson(annot.get());
+  EXPECT_NE(std::string::npos, json.find("\"size\":22"));
+  EXPECT_NE(
+      std::string::npos,
+      json.find(
+          "{\"text\":\"How are you doing this is great! \\rnow a new line\"}"));
+}
+
 TEST_F(FPDFAnnotEmbedderTest, FreeTextRegisteredFontMarkerSurvivesAliasSuffix) {
   ScopedRegisteredFonts scoped_fonts;
 

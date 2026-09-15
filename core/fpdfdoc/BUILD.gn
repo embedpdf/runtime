@@ -19,6 +19,9 @@ source_set("fpdfdoc") {
     "cpdf_annotfontmap.h",
     "cpdf_annotfontsubset.cpp",
     "cpdf_annotfontsubset.h",
+    "cpdf_richtext.h",
+    "cpdf_richtextparser.cpp",
+    "cpdf_richtextparser.h",
     "cpdf_annotlist.cpp",
     "cpdf_annotlist.h",
     "cpdf_apsettings.cpp",
@@ -118,6 +121,7 @@ pdfium_unittest_source_set("unittests") {
     "cpdf_generateap_unittest.cpp",
     "cpdf_interactiveform_unittest.cpp",
     "cpdf_metadata_unittest.cpp",
+    "cpdf_richtextparser_unittest.cpp",
     "cpdf_nametree_unittest.cpp",
     "cpdf_pagelabel_unittest.cpp",
   ]

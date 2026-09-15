@@ -1491,6 +1491,25 @@ EPDFAnnot_GetRichContent(FPDF_ANNOTATION annot,
                          unsigned long buflen);
 
 // Experimental EmbedPDF Extension API.
+// The rich text of a FreeText annotation (/RC over /DS and /DA) or of a rich
+// text field (/RV), as UTF-8 JSON: {"source":"rc"|"contents","body":{...},
+// "paragraphs":[{"align","dir","runs":[{"text","style":{deltas}}]}],
+// "diagnostics":[{"code","detail"}]}. When there is no rich text the document
+// is synthesised from /Contents (one paragraph per line break) and "source" is
+// "contents", so callers always get one model. Read-only.
+//
+//   annot  - handle to an annotation.
+//   buffer - buffer for the UTF-8 JSON, NUL-terminated. May be NULL.
+//   buflen - length of the buffer in bytes.
+//
+// Returns the number of bytes needed including the NUL, or 0 on error. If
+// |buflen| is smaller than that, nothing is copied.
+FPDF_EXPORT unsigned long FPDF_CALLCONV
+EPDFAnnot_GetRichTextJSON(FPDF_ANNOTATION annot,
+                          char* buffer,
+                          unsigned long buflen);
+
+// Experimental EmbedPDF Extension API.
 // Set the line endings of a Line, Polyline, or FreeText annotation.
 // For Line/Polyline: writes /LE as a 2-element array [start_style, end_style].
 // For FreeText: writes /LE as a single name using end_style (Acrobat
