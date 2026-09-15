@@ -3821,6 +3821,37 @@ TEST_F(FPDFAnnotEmbedderTest, RichTextResolvesDocumentProgramWhenUnregistered) {
   EXPECT_NE(std::string::npos, json.find("\"family\":\"Roboto\""));
 }
 
+// The identity a host maps back to its own keys: family (given, else the
+// font's own), weight and italic, as the document will name the face.
+TEST_F(FPDFAnnotEmbedderTest, RegisteredFontIdentityGetters) {
+  ScopedRegisteredFonts scoped_fonts;
+  std::vector<uint8_t> roboto = LoadRobotoFontData();
+  ASSERT_FALSE(roboto.empty());
+  EPDF_FONT_ID named = EPDFFont_RegisterMemFont64(
+      "My Roboto", /*weight=*/700, /*italic=*/1, roboto.data(), roboto.size());
+  EPDF_FONT_ID inferred = EPDFFont_RegisterMemFont64(
+      "", /*weight=*/0, /*italic=*/-1, roboto.data(), roboto.size());
+  ASSERT_NE(0u, named);
+  ASSERT_NE(0u, inferred);
+
+  char buffer[64] = {};
+  const unsigned long length = EPDFFont_GetFamilyName(named, nullptr, 0);
+  ASSERT_EQ(strlen("My Roboto") + 1, length);
+  ASSERT_EQ(length, EPDFFont_GetFamilyName(named, buffer, sizeof(buffer)));
+  EXPECT_STREQ("My Roboto", buffer);
+  EXPECT_EQ(700, EPDFFont_GetWeight(named));
+  EXPECT_TRUE(EPDFFont_IsItalic(named));
+
+  ASSERT_LT(0u, EPDFFont_GetFamilyName(inferred, buffer, sizeof(buffer)));
+  EXPECT_STREQ("Roboto", buffer);
+  EXPECT_EQ(400, EPDFFont_GetWeight(inferred));
+  EXPECT_FALSE(EPDFFont_IsItalic(inferred));
+
+  EXPECT_EQ(0u, EPDFFont_GetFamilyName(999, buffer, sizeof(buffer)));
+  EXPECT_EQ(0, EPDFFont_GetWeight(999));
+  EXPECT_FALSE(EPDFFont_IsItalic(999));
+}
+
 TEST_F(FPDFAnnotEmbedderTest, FreeTextRegisteredFontMarkerSurvivesAliasSuffix) {
   ScopedRegisteredFonts scoped_fonts;
 

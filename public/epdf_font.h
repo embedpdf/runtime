@@ -110,6 +110,19 @@ EPDFFont_AuthorizeEditing(EPDF_FONT_ID font_id);
 // OpenType/CFF sfnts (Type1, bare CFF, collections, WOFF).
 FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV EPDFFont_IsInstanced(EPDF_FONT_ID font_id);
 
+// EmbedPDF: the persistent identity of a registered font, as resolved at
+// registration: the family (the name given, else the font's own), the
+// weight (100..900) and the italic flag. A saved document names a face by
+// these (the font descriptor's /FontFamily, /FontWeight, /ItalicAngle), and
+// a rich text body reads back with them, so a host maps them to its own
+// font keys. |buffer| receives the family as UTF-8, NUL-terminated; the
+// return value is the byte length including the terminator, 0 for an
+// unknown id. Pass NULL/0 to query the length.
+FPDF_EXPORT unsigned long FPDF_CALLCONV
+EPDFFont_GetFamilyName(EPDF_FONT_ID font_id, char* buffer, unsigned long buflen);
+FPDF_EXPORT int FPDF_CALLCONV EPDFFont_GetWeight(EPDF_FONT_ID font_id);
+FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV EPDFFont_IsItalic(EPDF_FONT_ID font_id);
+
 // EmbedPDF: how much of a registered font's program the appearances authored
 // in a document carry. DEFAULT subsets annotation text (FreeText, redaction
 // labels) and embeds form field text whole; SUBSET and FULL apply to both.

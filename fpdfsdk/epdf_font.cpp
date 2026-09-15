@@ -10,6 +10,7 @@
 
 #include "core/fpdfapi/parser/cpdf_document.h"
 #include "core/fxcrt/bytestring.h"
+#include "core/fxcrt/compiler_specific.h"
 #include "core/fxcrt/retain_ptr.h"
 #include "core/fxcrt/span.h"
 #include "core/fxge/cfx_fontregistry.h"
@@ -100,6 +101,31 @@ EPDFFont_AuthorizeEditing(EPDF_FONT_ID font_id) {
 
 FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV EPDFFont_IsInstanced(EPDF_FONT_ID font_id) {
   return CFX_FontRegistry::IsInstanced(font_id);
+}
+
+FPDF_EXPORT unsigned long FPDF_CALLCONV
+EPDFFont_GetFamilyName(EPDF_FONT_ID font_id,
+                       char* buffer,
+                       unsigned long buflen) {
+  if (!CFX_FontRegistry::IsValidFont(font_id)) {
+    return 0;
+  }
+  const ByteString family = CFX_FontRegistry::GetFamilyName(font_id);
+  // SAFETY: same pattern as the other UTF-8 getters.
+  return NulTerminateMaybeCopyAndReturnLength(
+      family, UNSAFE_BUFFERS(SpanFromFPDFApiArgs(buffer, buflen)));
+}
+
+FPDF_EXPORT int FPDF_CALLCONV EPDFFont_GetWeight(EPDF_FONT_ID font_id) {
+  if (!CFX_FontRegistry::IsValidFont(font_id)) {
+    return 0;
+  }
+  return CFX_FontRegistry::GetStyleWeight(font_id);
+}
+
+FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV EPDFFont_IsItalic(EPDF_FONT_ID font_id) {
+  return CFX_FontRegistry::IsValidFont(font_id) &&
+         CFX_FontRegistry::IsStyleItalic(font_id);
 }
 
 FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV

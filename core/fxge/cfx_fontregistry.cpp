@@ -312,8 +312,17 @@ CFX_FontRegistry::FontId RegisterLoadedFontSource(
   registered_font->source_hash = CRYPT_SHA256Generate(data);
   registered_font->base_font_name = NormalizeBaseFontName(
       family_name.IsEmpty() ? font->GetBaseFontName() : family_name);
-  registered_font->family_name =
-      family_name.IsEmpty() ? font->GetBaseFontName() : family_name;
+  // The persistent identity (descriptor /FontFamily, rich text families):
+  // the family given, else the font's own family from its name table
+  // ("Roboto", never the PostScript "Roboto-Regular"), so a later session
+  // that registers the family by name still resolves the saved face.
+  registered_font->family_name = family_name;
+  if (registered_font->family_name.IsEmpty()) {
+    registered_font->family_name = font->GetFamilyName();
+  }
+  if (registered_font->family_name.IsEmpty()) {
+    registered_font->family_name = font->GetBaseFontName();
+  }
   registered_font->family_name.Trim(' ');
   registered_font->weight = NormalizeWeight(weight, *font);
   registered_font->italic = NormalizeItalic(italic, *font);
