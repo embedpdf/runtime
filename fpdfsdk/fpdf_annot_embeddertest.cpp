@@ -3246,6 +3246,38 @@ std::vector<StrokedSegment> ParseStrokedSegments(const std::string& content) {
   return segments;
 }
 
+// The first clipping rectangle of a content stream: the `x y w h re` that a
+// `W` follows — Acrobat's text plate (`re\nW\nn`) and ours (`re W n`).
+std::optional<CFX_FloatRect> ParseClipRect(const std::string& content) {
+  std::istringstream in(content);
+  std::vector<std::string> operands;
+  std::optional<CFX_FloatRect> last_re;
+  std::string previous;
+  std::string token;
+  while (in >> token) {
+    if (token == "re" && operands.size() >= 4) {
+      const float x =
+          static_cast<float>(atof(operands[operands.size() - 4].c_str()));
+      const float y =
+          static_cast<float>(atof(operands[operands.size() - 3].c_str()));
+      const float w =
+          static_cast<float>(atof(operands[operands.size() - 2].c_str()));
+      const float h = static_cast<float>(atof(operands.back().c_str()));
+      last_re = CFX_FloatRect(x, y, x + w, y + h);
+    } else if (token == "W" && previous == "re" && last_re.has_value()) {
+      return last_re;
+    } else if (isdigit(static_cast<unsigned char>(token[0])) ||
+               token[0] == '-' || token[0] == '.') {
+      operands.push_back(token);
+      previous = token;
+      continue;
+    }
+    operands.clear();
+    previous = token;
+  }
+  return std::nullopt;
+}
+
 std::string RichTextJsonRuns(const std::string& json) {
   const size_t start = json.find("\"paragraphs\"");
   return start == std::string::npos ? std::string() : json.substr(start);
@@ -3272,6 +3304,13 @@ class RichTextParityTest : public FPDFAnnotEmbedderTest {
                       int annot_index,
                       const std::vector<Deviation>& deviations) {
     ASSERT_TRUE(OpenDocument(fixture));
+    CompareOpenAnnot(annot_index, deviations);
+  }
+
+  // One annotation of the OPEN document: our regenerated appearance places
+  // every glyph where Acrobat's did, and clips the text to the same plate.
+  void CompareOpenAnnot(int annot_index,
+                        const std::vector<Deviation>& deviations) {
     ScopedPage page = LoadScopedPage(0);
     ASSERT_TRUE(page);
     ScopedFPDFAnnotation annot(FPDFPage_GetAnnot(page.get(), annot_index));
@@ -3288,6 +3327,18 @@ class RichTextParityTest : public FPDFAnnotEmbedderTest {
     EXPECT_NE(acrobat_stream, our_stream);
     const std::vector<PlacedChar> ours = PlaceCharacters(
         document(), annot.get(), std::string(our_stream.c_str()));
+
+    // The plate: the box deflated by twice the border width, on every side.
+    const std::optional<CFX_FloatRect> acrobat_clip =
+        ParseClipRect(std::string(acrobat_stream.c_str()));
+    const std::optional<CFX_FloatRect> our_clip =
+        ParseClipRect(std::string(our_stream.c_str()));
+    ASSERT_TRUE(acrobat_clip.has_value());
+    ASSERT_TRUE(our_clip.has_value());
+    EXPECT_NEAR(acrobat_clip->left, our_clip->left, 0.02f);
+    EXPECT_NEAR(acrobat_clip->bottom, our_clip->bottom, 0.02f);
+    EXPECT_NEAR(acrobat_clip->right, our_clip->right, 0.02f);
+    EXPECT_NEAR(acrobat_clip->top, our_clip->top, 0.02f);
 
     std::string acrobat_text;
     std::string our_text;
@@ -3360,6 +3411,29 @@ TEST_F(RichTextParityTest, DecorationsFixtureMatchesAcrobat) {
 TEST_F(RichTextParityTest, PropertiesFixtureMatchesAcrobat) {
   // Centred paragraph, an empty line, a size change mid-paragraph.
   CompareFixture("freetext_rich_text_acrobat_properties.pdf", 0, {});
+}
+
+TEST_F(RichTextParityTest, BorderWidthsFixtureMatchesAcrobat) {
+  // Thirteen boxes, Helvetica 24, borders 1–12 pt (index 0: 10 pt, seven
+  // wrapped lines). The plate is the box deflated by 2 × the border width,
+  // so both the clip and the line breaks follow Acrobat at every width —
+  // "border + 1" only ever matched the 1 pt fixtures.
+  ASSERT_TRUE(OpenDocument("freetext_rich_text_acrobat_border_widths.pdf"));
+  for (int i = 0; i < 13; ++i) {
+    SCOPED_TRACE(testing::Message() << "annotation " << i);
+    CompareOpenAnnot(i, {});
+  }
+}
+
+TEST_F(RichTextParityTest, CalloutWidthsFixtureMatchesAcrobat) {
+  // Six callouts, borders 1–7 pt: the text box is /Rect inset by /RD, and
+  // the plate is that box deflated by 2 × the border width — the same rule
+  // as a plain box (the callout constant was never measured).
+  ASSERT_TRUE(OpenDocument("freetext_rich_text_acrobat_callout_widths.pdf"));
+  for (int i = 0; i < 6; ++i) {
+    SCOPED_TRACE(testing::Message() << "annotation " << i);
+    CompareOpenAnnot(i, {});
+  }
 }
 
 TEST_F(RichTextParityTest, SubSuperscriptFixtureMatchesAcrobat) {
@@ -3593,6 +3667,85 @@ TEST_F(FPDFAnnotEmbedderTest, SetRichTextJSONWithRegisteredBodyFont) {
 // D8 at the writer level (Phase C note §6): the second of two font
 // resources fails after the first was staged; nothing is written, not even
 // the /DA alias reservation, and the same call succeeds afterwards.
+// The plate rule for boxes we generate ourselves: CPVT (plain /Contents) and
+// the rich engine agree, at every width, including a border that swallows
+// the box (an empty plate: the border still paints, no text is laid out).
+TEST_F(FPDFAnnotEmbedderTest, FreeTextPlateFollowsBorderWidth) {
+  for (const bool rich : {false, true}) {
+    SCOPED_TRACE(rich ? "rich engine" : "CPVT");
+    ScopedFPDFDocument doc(FPDF_CreateNewDocument());
+    ASSERT_TRUE(doc);
+    if (rich) {
+      ASSERT_TRUE(
+          EPDFDoc_SetFreeTextLayout(doc.get(), EPDF_FREETEXT_LAYOUT_RICH));
+    }
+    ScopedFPDFPage page(FPDFPage_New(doc.get(), 0, 400, 400));
+    ASSERT_TRUE(page);
+    for (const float width : {0.0f, 1.0f, 2.0f, 5.0f}) {
+      SCOPED_TRACE(testing::Message() << "border " << width);
+      ScopedFPDFAnnotation annot(
+          FPDFPage_CreateAnnot(page.get(), FPDF_ANNOT_FREETEXT));
+      ASSERT_TRUE(annot);
+      const FS_RECTF rect{/*left=*/100.0f, /*top=*/300.0f, /*right=*/300.0f,
+                          /*bottom=*/200.0f};
+      ASSERT_TRUE(FPDFAnnot_SetRect(annot.get(), &rect));
+      ASSERT_TRUE(EPDFAnnot_SetDefaultAppearance(
+          annot.get(), FPDF_FONT_HELVETICA, 12.0f, 0, 0, 0));
+      ScopedFPDFWideString contents = GetFPDFWideString(L"plate");
+      ASSERT_TRUE(
+          FPDFAnnot_SetStringValue(annot.get(), "Contents", contents.get()));
+      ASSERT_TRUE(EPDFAnnot_SetBorderStyle(annot.get(), FPDF_ANNOT_BS_SOLID, width));
+      ASSERT_TRUE(EPDFAnnot_GenerateAppearance(annot.get()));
+      const std::string stream(
+          GetNormalAppearanceStreamBytes(annot.get()).c_str());
+      const float inset = 2 * width;
+      // The first Td is the plate's left edge; the baseline sits below the
+      // plate's top (by the ascent) on both engines.
+      const std::vector<PlacedChar> placed =
+          PlaceCharacters(doc.get(), annot.get(), stream);
+      ASSERT_FALSE(placed.empty());
+      EXPECT_NEAR(100.0f + inset, placed[0].x, 0.02f);
+      EXPECT_LT(placed[0].y, 300.0f - inset);
+      EXPECT_GT(placed[0].y, 300.0f - inset - 1.2f * 12.0f);
+      if (rich) {
+        const std::optional<CFX_FloatRect> clip = ParseClipRect(stream);
+        ASSERT_TRUE(clip.has_value());
+        EXPECT_NEAR(100.0f + inset, clip->left, 0.01f);
+        EXPECT_NEAR(200.0f + inset, clip->bottom, 0.01f);
+        EXPECT_NEAR(300.0f - inset, clip->right, 0.01f);
+        EXPECT_NEAR(300.0f - inset, clip->top, 0.01f);
+      }
+    }
+    // A 60 pt border on a 200 × 100 box: the plate is empty. The
+    // appearance still generates (fill and border), and no glyph is placed.
+    ScopedFPDFAnnotation swallowed(
+        FPDFPage_CreateAnnot(page.get(), FPDF_ANNOT_FREETEXT));
+    ASSERT_TRUE(swallowed);
+    const FS_RECTF rect{100.0f, 300.0f, 300.0f, 200.0f};
+    ASSERT_TRUE(FPDFAnnot_SetRect(swallowed.get(), &rect));
+    ASSERT_TRUE(EPDFAnnot_SetDefaultAppearance(
+        swallowed.get(), FPDF_FONT_HELVETICA, 12.0f, 0, 0, 0));
+    ScopedFPDFWideString contents = GetFPDFWideString(L"gone");
+    ASSERT_TRUE(
+        FPDFAnnot_SetStringValue(swallowed.get(), "Contents", contents.get()));
+    ASSERT_TRUE(
+        EPDFAnnot_SetBorderStyle(swallowed.get(), FPDF_ANNOT_BS_SOLID, 60.0f));
+    ASSERT_TRUE(EPDFAnnot_GenerateAppearance(swallowed.get()));
+    const std::string stream(
+        GetNormalAppearanceStreamBytes(swallowed.get()).c_str());
+    EXPECT_NE(std::string::npos, stream.find(" re"));  // the border
+    if (rich) {
+      EXPECT_EQ(std::string::npos, stream.find("BT"));
+    } else {
+      // CPVT still emits the text, clipped to the (empty) plate.
+      const std::optional<CFX_FloatRect> clip = ParseClipRect(stream);
+      ASSERT_TRUE(clip.has_value());
+      EXPECT_NEAR(0.0f, clip->Width(), 0.01f);
+      EXPECT_NEAR(0.0f, clip->Height(), 0.01f);
+    }
+  }
+}
+
 TEST_F(FPDFAnnotEmbedderTest, RichTextWriterFailureLeavesDocumentUntouched) {
   ScopedRegisteredFonts scoped_fonts;
   std::vector<uint8_t> roboto = LoadRobotoFontData();

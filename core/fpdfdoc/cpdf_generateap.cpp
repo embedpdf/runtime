@@ -2154,9 +2154,38 @@ CalloutEnvelope AppendCalloutEnvelope(fxcrt::ostringstream& appearance_stream,
   return {text_box, border_w, box_rot};
 }
 
-// Acrobat's inset of the text from the border: one point (measured, plan
-// §6: the first baseline sits border + 1 below the top edge).
-constexpr float kRichTextPadding = 1.0f;
+// Acrobat's text PLATE — where the text lays out, clips and scrolls — is the
+// box deflated by TWICE the border width on every side: the ink band and an
+// equal breathing band, so the text never touches the stroke. Measured from
+// Acrobat 26 appearance streams at 1–12 pt on plain boxes and 1–7 pt on
+// callouts (plan `2026-09-15-free-text-plate-inset.md`); no /RD is involved,
+// the inset is derived at appearance time. One formula for every branch —
+// rich and CPVT, plain box and callout — and the TypeScript `textPlateInset`
+// mirrors it so the live editor sits exactly where the baked text lands.
+// Acrobat's thinnest border is 1 pt; a width of 0 is ours alone and gives no
+// inset (the plate is the box) rather than an invented minimum.
+float FreeTextPlateInset(float border_width) {
+  return 2.0f * std::max(border_width, 0.0f);
+}
+
+// The plate of a box. A border that swallows the box leaves an EMPTY plate
+// (zero width and/or height at the box centre): the envelope still paints,
+// the text has nowhere to go. Never an inverted rect.
+CFX_FloatRect FreeTextPlate(const CFX_FloatRect& box, float border_width) {
+  CFX_FloatRect plate = box;
+  plate.Normalize();
+  const float inset = FreeTextPlateInset(border_width);
+  if (plate.Width() > 2 * inset && plate.Height() > 2 * inset) {
+    plate.Deflate(inset, inset);
+    return plate;
+  }
+  const float width = std::max(0.0f, plate.Width() - 2 * inset);
+  const float height = std::max(0.0f, plate.Height() - 2 * inset);
+  const float cx = (plate.left + plate.right) / 2;
+  const float cy = (plate.bottom + plate.top) / 2;
+  return CFX_FloatRect(cx - width / 2, cy - height / 2, cx + width / 2,
+                       cy + height / 2);
+}
 
 // Numbers with three decimals, trailing zeros trimmed: what Acrobat writes
 // ("128.982", "-26.4", "11.88"), and enough for the 0.05 pt parity.
@@ -2525,14 +2554,14 @@ PrepareRichFreeTextAPInternal(CPDF_Document* doc,
   RetainPtr<const CPDF_Array> cl = annot_dict->GetArrayFor("CL");
   const bool is_callout =
       intent == "FreeTextCallout" && cl && (cl->size() == 4 || cl->size() == 6);
+  CFX_FloatRect box;
   CFX_FloatRect text_area;
   bool inline_rotation = false;
   if (is_callout) {
     const CalloutEnvelope envelope =
         AppendCalloutEnvelope(stream, annot_dict, cl.Get(), in.da_color);
-    text_area = envelope.text_box;
-    text_area.Deflate(envelope.border_w + kRichTextPadding,
-                      envelope.border_w + kRichTextPadding);
+    box = envelope.text_box;
+    text_area = FreeTextPlate(box, envelope.border_w);
     inline_rotation = envelope.box_rot.is_rotated;
   } else {
     const BorderStyleInfo border_style_info =
@@ -2553,30 +2582,33 @@ PrepareRichFreeTextAPInternal(CPDF_Document* doc,
     if (border_stream.GetLength() > 0) {
       stream << "q\n" << border_stream << "Q\n";
     }
-    text_area = rect;
-    text_area.Deflate(border_style_info.width + kRichTextPadding,
-                      border_style_info.width + kRichTextPadding);
+    box = rect;
+    text_area = FreeTextPlate(box, border_style_info.width);
     prepared->use_transform = rot_info.is_rotated;
     prepared->matrix = rot_info.matrix;
     prepared->bbox = rot_info.bbox;
   }
-  if (text_area.Width() <= 0 || text_area.Height() <= 0) {
-    return nullptr;  // an empty rect has nowhere to lay text out
+  // An empty BOX is invalid input (nothing to draw at all); a valid box whose
+  // border swallowed its plate still paints its envelope above — the text
+  // has nowhere to go and lays out nothing.
+  if (box.Width() <= 0 || box.Height() <= 0) {
+    return nullptr;
   }
+  if (text_area.Width() > 0 && text_area.Height() > 0) {
+    CPDF_RichTextLayout::Options options;
+    options.typographic_features = doc->GetTypographicFeaturesEnabled();
+    CPDF_RichTextLayout layout(&map, options);
+    const CPDF_RichTextLayout::Result result =
+        layout.Arrange(*in.document, text_area, GetVerticalAlign(annot_dict));
+    prepared->body_size = result.body_size;
+    prepared->degraded = result.degraded;
+    prepared->auto_size_fell_back = result.auto_size_fell_back;
 
-  CPDF_RichTextLayout::Options options;
-  options.typographic_features = doc->GetTypographicFeaturesEnabled();
-  CPDF_RichTextLayout layout(&map, options);
-  const CPDF_RichTextLayout::Result result =
-      layout.Arrange(*in.document, text_area, GetVerticalAlign(annot_dict));
-  prepared->body_size = result.body_size;
-  prepared->degraded = result.degraded;
-  prepared->auto_size_fell_back = result.auto_size_fell_back;
-
-  stream << "/Tx BMC\nq\n";
-  WriteRect(stream, text_area) << " re W n\n";
-  EmitRichTextBody(stream, result, map, text_area);
-  stream << "Q\nEMC\n";
+    stream << "/Tx BMC\nq\n";
+    WriteRect(stream, text_area) << " re W n\n";
+    EmitRichTextBody(stream, result, map, text_area);
+    stream << "Q\nEMC\n";
+  }
   if (inline_rotation) {
     stream << "Q\n";  // closes the inline box rotation of the callout
   }
@@ -2728,11 +2760,8 @@ bool GenerateFreeTextAP(APGenerationTarget* target,
     const float border_w = envelope.border_w;
     const ShapeRotationInfo box_rot = envelope.box_rot;
 
-    // (h) Draw text inside the text box.
-    static constexpr float kCalloutTextPadding = 2.0f;
-    CFX_FloatRect text_body = text_box;
-    text_body.Deflate(border_w + kCalloutTextPadding,
-                      border_w + kCalloutTextPadding);
+    // (h) Draw text inside the text box, on Acrobat's plate.
+    const CFX_FloatRect text_body = FreeTextPlate(text_box, border_w);
 
     CFX_Color actual_text_color = da_color;
     auto tc = annot_dict->GetArrayFor("TextColor");
@@ -2815,8 +2844,8 @@ bool GenerateFreeTextAP(APGenerationTarget* target,
     const float half_border_width = border_style_info.width / 2.0f;
     CFX_FloatRect background_rect = rect;
     background_rect.Deflate(half_border_width, half_border_width);
-    CFX_FloatRect body_rect = background_rect;
-    body_rect.Deflate(half_border_width, half_border_width);
+    const CFX_FloatRect body_rect =
+        FreeTextPlate(rect, border_style_info.width);
 
     auto color_array = annot_dict->GetArrayFor(pdfium::annotation::kC);
     if (color_array) {
