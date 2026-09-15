@@ -43,7 +43,9 @@
 #include "core/fpdfdoc/cpdf_formfield.h"
 #include "core/fpdfdoc/cpdf_generateap.h"
 #include "core/fpdfdoc/cpdf_interactiveform.h"
+#include "core/fpdfdoc/cpdf_richtextjson.h"
 #include "core/fpdfdoc/cpdf_richtextparser.h"
+#include "core/fpdfdoc/cpdf_richtextwriter.h"
 #include "core/fxcrt/check.h"
 #include "core/fxcrt/containers/contains.h"
 #include "core/fxcrt/containers/unique_ptr_adapters.h"
@@ -3316,6 +3318,146 @@ EPDFAnnot_GetRichTextJSON(FPDF_ANNOTATION annot,
   // SAFETY: same pattern as other getters.
   return NulTerminateMaybeCopyAndReturnLength(
       json, UNSAFE_BUFFERS(SpanFromFPDFApiArgs(buffer, buflen)));
+}
+
+namespace {
+
+// The rich text setters share one path: build the document, then write
+// all four forms and the appearance through CPDF_RichTextWriter, or nothing.
+bool ApplyRichTextDocument(FPDF_ANNOTATION annot,
+                           const CPDF_RichTextDocument& document) {
+  CPDF_AnnotContext* context = CPDFAnnotContextFromFPDFAnnotation(annot);
+  if (!context) {
+    return false;
+  }
+  RetainPtr<CPDF_Dictionary> annot_dict = context->GetMutableAnnotDict();
+  if (!annot_dict || annot_dict->GetNameFor("Subtype") != "FreeText") {
+    return false;
+  }
+  CPDF_Document* doc = context->GetPage()->GetDocument();
+  if (!doc) {
+    return false;
+  }
+  return CPDF_RichTextWriter::Apply(doc, annot_dict.Get(), document, nullptr);
+}
+
+RetainPtr<const CPDF_Dictionary> AcroFormDictOf(FPDF_ANNOTATION annot) {
+  CPDF_AnnotContext* context = CPDFAnnotContextFromFPDFAnnotation(annot);
+  CPDF_Document* doc = context ? context->GetPage()->GetDocument() : nullptr;
+  const CPDF_Dictionary* root = doc ? doc->GetRoot() : nullptr;
+  return root ? root->GetDictFor("AcroForm") : nullptr;
+}
+
+}  // namespace
+
+FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV
+EPDFAnnot_SetRichTextJSON(FPDF_ANNOTATION annot, FPDF_BYTESTRING json_utf8) {
+  CPDF_AnnotContext* context = CPDFAnnotContextFromFPDFAnnotation(annot);
+  if (!context || !json_utf8) {
+    return false;
+  }
+  CPDF_RichTextDocument document;
+  bool has_body = false;
+  if (!CPDF_RichTextJson::Parse(ByteString(json_utf8), &document, &has_body)) {
+    return false;
+  }
+  if (!has_body) {
+    // The annotation's current body style (DA ∪ DS ∪ RC body) stays.
+    RetainPtr<const CPDF_Dictionary> acroform = AcroFormDictOf(annot);
+    const CPDF_RichTextDocument current = CPDF_RichTextParser::FromAnnotation(
+        context->GetAnnotDict(), acroform.Get());
+    document.body = current.body;
+    document.body_paragraph = current.body_paragraph;
+    for (CPDF_RichTextParagraph& paragraph : document.paragraphs) {
+      // Paragraph defaults given without a body inherit the current ones.
+      CPDF_RichTextParagraphProps props = current.body_paragraph;
+      props.align = paragraph.props.align;
+      props.rtl = paragraph.props.rtl;
+      if (paragraph.props.line_height.has_value()) {
+        props.line_height = paragraph.props.line_height;
+      }
+      props.margin_top = paragraph.props.margin_top;
+      props.margin_bottom = paragraph.props.margin_bottom;
+      props.margin_left = paragraph.props.margin_left;
+      props.margin_right = paragraph.props.margin_right;
+      props.text_indent = paragraph.props.text_indent;
+      props.unknown_declarations = paragraph.props.unknown_declarations;
+      paragraph.props = props;
+    }
+  }
+  return ApplyRichTextDocument(annot, document);
+}
+
+FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV
+EPDFAnnot_SetRichTextXHTML(FPDF_ANNOTATION annot, FPDF_WIDESTRING xhtml) {
+  CPDF_AnnotContext* context = CPDFAnnotContextFromFPDFAnnotation(annot);
+  if (!context || !xhtml) {
+    return false;
+  }
+  const WideString xml = WideStringFromFPDFWideString(xhtml);
+  if (xml.IsEmpty()) {
+    return false;
+  }
+  RetainPtr<const CPDF_Dictionary> acroform = AcroFormDictOf(annot);
+  CPDF_RichTextStyle defaults;
+  CPDF_RichTextParagraphProps paragraph_defaults;
+  std::vector<CPDF_RichTextDiagnostic> diagnostics;
+  CPDF_RichTextParser::DefaultsFromAnnotation(
+      context->GetAnnotDict(), acroform.Get(), &defaults, &paragraph_defaults,
+      &diagnostics);
+  const CPDF_RichTextDocument document = CPDF_RichTextParser::ParseRichContent(
+      xml, defaults, paragraph_defaults, WideString());
+  for (const CPDF_RichTextDiagnostic& diagnostic : document.diagnostics) {
+    if (diagnostic.code == CPDF_RichTextDiagnostic::Code::kMalformedRC) {
+      return false;
+    }
+  }
+  return ApplyRichTextDocument(annot, document);
+}
+
+FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV
+EPDFDoc_SetTypographicFeatures(FPDF_DOCUMENT document, FPDF_BOOL enabled) {
+  CPDF_Document* doc = CPDFDocumentFromFPDFDocument(document);
+  if (!doc) {
+    return false;
+  }
+  doc->SetTypographicFeaturesEnabled(!!enabled);
+  return true;
+}
+
+FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV
+EPDFDoc_GetTypographicFeatures(FPDF_DOCUMENT document) {
+  const CPDF_Document* doc = CPDFDocumentFromFPDFDocument(document);
+  return doc && doc->GetTypographicFeaturesEnabled();
+}
+
+FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV
+EPDFDoc_SetFreeTextLayout(FPDF_DOCUMENT document, int layout) {
+  CPDF_Document* doc = CPDFDocumentFromFPDFDocument(document);
+  if (!doc) {
+    return false;
+  }
+  switch (layout) {
+    case EPDF_FREETEXT_LAYOUT_CPVT:
+      doc->SetFreeTextLayout(CPDF_Document::FreeTextLayout::kCpvt);
+      return true;
+    case EPDF_FREETEXT_LAYOUT_RICH:
+      doc->SetFreeTextLayout(CPDF_Document::FreeTextLayout::kRich);
+      return true;
+    default:
+      return false;
+  }
+}
+
+FPDF_EXPORT int FPDF_CALLCONV
+EPDFDoc_GetFreeTextLayout(FPDF_DOCUMENT document) {
+  const CPDF_Document* doc = CPDFDocumentFromFPDFDocument(document);
+  if (!doc) {
+    return -1;
+  }
+  return doc->GetFreeTextLayout() == CPDF_Document::FreeTextLayout::kRich
+             ? EPDF_FREETEXT_LAYOUT_RICH
+             : EPDF_FREETEXT_LAYOUT_CPVT;
 }
 
 FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV

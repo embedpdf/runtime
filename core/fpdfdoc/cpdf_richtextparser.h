@@ -58,6 +58,15 @@ class CPDF_RichTextParser {
       const CPDF_Dictionary* annot_dict,
       const CPDF_Dictionary* acroform_dict);
 
+  // DA ∪ DS alone (no /RC): the defaults an imported XHTML body style is
+  // applied on top of.
+  static void DefaultsFromAnnotation(
+      const CPDF_Dictionary* annot_dict,
+      const CPDF_Dictionary* acroform_dict,
+      CPDF_RichTextStyle* style,
+      CPDF_RichTextParagraphProps* paragraph,
+      std::vector<CPDF_RichTextDiagnostic>* diagnostics);
+
   // UTF-8 JSON, the wire shape of EPDFAnnot_GetRichTextJSON().
   static ByteString ToJSON(const CPDF_RichTextDocument& document);
 };

@@ -55,7 +55,7 @@ constexpr uint16_t kFsTypeBitmapOnly = 0x0200;
 
 // Bits 1-3 are exclusive levels; when a font sets more than one, the least
 // restrictive applies (OpenType spec).
-CFX_FontRegistry::EmbeddingPermission ClassifyFsType(uint16_t fs_type) {
+CFX_FontRegistry::EmbeddingPermission ClassifyFsTypeImpl(uint16_t fs_type) {
   if (fs_type & kFsTypeBitmapOnly) {
     return CFX_FontRegistry::EmbeddingPermission::kBitmapOnly;
   }
@@ -267,7 +267,7 @@ CFX_FontRegistry::FontId RegisterLoadedFontSource(
   // so nothing downstream has to remember to check.
   const uint16_t fs_type = font->GetFace()->GetFsTypeFlags();
   const CFX_FontRegistry::EmbeddingPermission permission =
-      ClassifyFsType(fs_type);
+      ClassifyFsTypeImpl(fs_type);
   if (permission == CFX_FontRegistry::EmbeddingPermission::kRestricted ||
       permission == CFX_FontRegistry::EmbeddingPermission::kBitmapOnly) {
     return CFX_FontRegistry::kInvalidFontId;
@@ -333,6 +333,12 @@ int StyleScore(const RegisteredFont& font, int weight, bool italic) {
 }
 
 }  // namespace
+
+// static
+CFX_FontRegistry::EmbeddingPermission CFX_FontRegistry::ClassifyFsType(
+    uint16_t fs_type) {
+  return ClassifyFsTypeImpl(fs_type);
+}
 
 // static
 CFX_FontRegistry::ProgramFormat CFX_FontRegistry::DetectProgramFormat(

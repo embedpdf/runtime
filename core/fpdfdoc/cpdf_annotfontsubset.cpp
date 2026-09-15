@@ -737,6 +737,53 @@ CPDF_AnnotFontSubset::StageRegisteredFontResource(
 }
 
 // static
+CPDF_AnnotFontSubset::StageStatus
+CPDF_AnnotFontSubset::StageDocumentProgramResource(
+    const CFX_Font* font,
+    RetainPtr<CPDF_Stream> program_stream,
+    const ByteString& base_font_name,
+    const FaceIdentity& identity,
+    const GlyphUnicodeMap& glyph_to_unicode,
+    bool required_by_default_appearance,
+    StagedFontResource* out) {
+  if (!out || !font || !program_stream || program_stream->GetObjNum() == 0) {
+    return StageStatus::kFailed;
+  }
+  const GlyphIdentity glyph_identity(font);
+  std::map<uint32_t, uint32_t> widths;
+  std::multimap<uint32_t, uint32_t> to_unicode;
+  for (const auto& [charcode, unicode] : glyph_to_unicode) {
+    if (charcode == 0 || charcode > kMaxPdfCid) {
+      continue;
+    }
+    std::optional<uint32_t> gid =
+        glyph_identity.GidOf(static_cast<uint16_t>(charcode));
+    if (!gid.has_value() || *gid == 0) {
+      continue;
+    }
+    widths[charcode] = font->GetGlyphWidth(*gid);
+    to_unicode.emplace(charcode, unicode);
+  }
+  if (widths.empty()) {
+    if (!required_by_default_appearance) {
+      return StageStatus::kUnused;
+    }
+    widths[0] = font->GetGlyphWidth(0);
+  }
+  // The parts are built against the program's bytes for the format; the
+  // stream object itself is what the descriptor will reference.
+  StagedFontResource staged;
+  if (!BuildCompositeFontParts(
+          const_cast<CFX_Font*>(font), NormalizeBaseFontName(base_font_name),
+          font->GetFontSpan(), identity, widths, to_unicode, &staged)) {
+    return StageStatus::kFailed;
+  }
+  staged.program = std::move(program_stream);  // never a copy
+  *out = std::move(staged);
+  return StageStatus::kStaged;
+}
+
+// static
 RetainPtr<CPDF_Dictionary> CPDF_AnnotFontSubset::PublishStagedFontResource(
     CPDF_Document* doc,
     StagedFontResource staged) {
@@ -745,8 +792,11 @@ RetainPtr<CPDF_Dictionary> CPDF_AnnotFontSubset::PublishStagedFontResource(
     return nullptr;
   }
   // Leaves first, so every reference written by LinkCompositeFont names an
-  // object that is already in the document.
-  doc->AddIndirectObject(staged.program);
+  // object that is already in the document. A document program's stream is
+  // already there.
+  if (staged.program->GetObjNum() == 0) {
+    doc->AddIndirectObject(staged.program);
+  }
   if (staged.to_unicode) {
     doc->AddIndirectObject(staged.to_unicode);
   }

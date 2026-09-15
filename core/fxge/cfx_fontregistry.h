@@ -62,6 +62,9 @@ class CFX_FontRegistry {
   // EmbedPDF: permissions (§3.4 of the rich text plan).
   static std::optional<EmbeddingPermission> GetEmbeddingPermission(
       FontId font_id);
+  // The permission an OS/2 fsType value grants (OpenType spec, OS/2 table);
+  // also used for programs already embedded in a document.
+  static EmbeddingPermission ClassifyFsType(uint16_t fs_type);
   static bool IsEditingAuthorized(FontId font_id);
   static bool AuthorizeEditing(FontId font_id);
   // False when fsType forbids subsetting (bit 0x0100): embed the whole program.

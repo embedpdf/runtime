@@ -1137,7 +1137,14 @@ void CPDF_TextPage::ProcessMarkedContent(const TransformedTextObject& obj) {
   }
 
   RetainPtr<CPDF_Font> const font = pTextObj->GetFont();
-  for (size_t k = 0; k < actual_text.GetLength(); ++k) {
+  // EmbedPDF: an ActualText string is the logical text. The line is closed
+  // as if its characters were in visual order (CloseTempLine reverses
+  // right-to-left segments), so a right-to-left string is appended in
+  // visual order here; otherwise every RTL ActualText (Acrobat writes one
+  // around each shaped Hebrew or Arabic run) extracted backwards.
+  const size_t length = actual_text.GetLength();
+  for (size_t v = 0; v < length; ++v) {
+    const size_t k = bR2L ? length - 1 - v : v;
     wchar_t wChar = actual_text[k];
     if (wChar <= 0x80 && !isprint(wChar)) {
       wChar = 0x20;

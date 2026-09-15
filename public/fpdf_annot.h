@@ -1509,6 +1509,51 @@ EPDFAnnot_GetRichTextJSON(FPDF_ANNOTATION annot,
                           char* buffer,
                           unsigned long buflen);
 
+// Experimental EmbedPDF Extension API (rich text, Phase D).
+// Replace the annotation's rich text with |json_utf8|, the shape
+// EPDFAnnot_GetRichTextJSON() writes ("source" and "diagnostics" ignored;
+// "body" optional, in which case the annotation's current body style is
+// kept). Writes /RC, /DS, /DA and /Contents and regenerates the appearance
+// through the rich layout engine, all of it or nothing: invalid JSON, an
+// empty rect, or a font resource that cannot be built return false and
+// change nothing. An unresolvable family is not a failure: it substitutes
+// and the run reads back "degraded".
+//
+//   annot     - handle to a FreeText annotation.
+//   json_utf8 - the document, UTF-8 JSON.
+FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV
+EPDFAnnot_SetRichTextJSON(FPDF_ANNOTATION annot, FPDF_BYTESTRING json_utf8);
+
+// Experimental EmbedPDF Extension API (rich text, Phase D).
+// Import raw XHTML (the XFA rich text subset, e.g. another producer's /RC)
+// over the annotation's DA and DS defaults; same effects and failures as
+// EPDFAnnot_SetRichTextJSON(). Malformed XML returns false.
+FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV
+EPDFAnnot_SetRichTextXHTML(FPDF_ANNOTATION annot, FPDF_WIDESTRING xhtml);
+
+// Experimental EmbedPDF Extension API (rich text, Phase D).
+// Latin typographic features (kern, liga, clig, calt, dlig) when shaping
+// rich text. Off by default: Acrobat's appearances show plain advance
+// widths and no ligatures, and parity with what Acrobat draws wins. Session
+// state of the document handle; applies to appearances generated after
+// the call.
+FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV
+EPDFDoc_SetTypographicFeatures(FPDF_DOCUMENT document, FPDF_BOOL enabled);
+FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV
+EPDFDoc_GetTypographicFeatures(FPDF_DOCUMENT document);
+
+// Experimental EmbedPDF Extension API (rich text, Phase D).
+// Which engine lays out a plain FreeText (one without /RC): the CPVT engine
+// (today's default) or the rich text engine that also draws /RC. An
+// annotation with /RC always uses the rich engine. Session state of the
+// document handle.
+#define EPDF_FREETEXT_LAYOUT_CPVT 0
+#define EPDF_FREETEXT_LAYOUT_RICH 1
+FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV
+EPDFDoc_SetFreeTextLayout(FPDF_DOCUMENT document, int layout);
+// Returns one of EPDF_FREETEXT_LAYOUT_*, or -1 for an invalid document.
+FPDF_EXPORT int FPDF_CALLCONV EPDFDoc_GetFreeTextLayout(FPDF_DOCUMENT document);
+
 // Experimental EmbedPDF Extension API.
 // Set the line endings of a Line, Polyline, or FreeText annotation.
 // For Line/Polyline: writes /LE as a 2-element array [start_style, end_style].

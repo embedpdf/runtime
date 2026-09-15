@@ -1357,14 +1357,16 @@ CPDF_RichTextDocument CPDF_RichTextParser::ParseRichContent(
 }
 
 // static
-CPDF_RichTextDocument CPDF_RichTextParser::FromAnnotation(
+void CPDF_RichTextParser::DefaultsFromAnnotation(
     const CPDF_Dictionary* annot_dict,
-    const CPDF_Dictionary* acroform_dict) {
-  CPDF_RichTextStyle defaults;
-  CPDF_RichTextParagraphProps paragraph_defaults;
-  std::vector<Diagnostic> diagnostics;
+    const CPDF_Dictionary* acroform_dict,
+    CPDF_RichTextStyle* style,
+    CPDF_RichTextParagraphProps* paragraph,
+    std::vector<Diagnostic>* diagnostics) {
+  CPDF_RichTextStyle& defaults = *style;
+  CPDF_RichTextParagraphProps& paragraph_defaults = *paragraph;
   if (!annot_dict) {
-    return FromPlainText(WideString(), defaults, paragraph_defaults);
+    return;
   }
 
   // /DA: font name (→ face through /DR), size, colour.
@@ -1408,7 +1410,7 @@ CPDF_RichTextDocument CPDF_RichTextParser::FromAnnotation(
   if (!ds.IsEmpty()) {
     CPDF_RichTextStyleDelta ds_delta;
     ds_delta.size = defaults.size > 0 ? defaults.size : 12.0f;
-    ParseInlineStyle(ds, &ds_delta, &paragraph_defaults, &diagnostics);
+    ParseInlineStyle(ds, &ds_delta, &paragraph_defaults, diagnostics);
     if (ds_delta.size == (defaults.size > 0 ? defaults.size : 12.0f)) {
       ds_delta.size.reset();
     }
@@ -1417,6 +1419,20 @@ CPDF_RichTextDocument CPDF_RichTextParser::FromAnnotation(
   if (defaults.size <= 0 && annot_dict->GetNameFor("Subtype") == "FreeText") {
     defaults.size = 12.0f;  // DA size 0 (auto) has no meaning for rich text
   }
+}
+
+// static
+CPDF_RichTextDocument CPDF_RichTextParser::FromAnnotation(
+    const CPDF_Dictionary* annot_dict,
+    const CPDF_Dictionary* acroform_dict) {
+  CPDF_RichTextStyle defaults;
+  CPDF_RichTextParagraphProps paragraph_defaults;
+  std::vector<Diagnostic> diagnostics;
+  if (!annot_dict) {
+    return FromPlainText(WideString(), defaults, paragraph_defaults);
+  }
+  DefaultsFromAnnotation(annot_dict, acroform_dict, &defaults,
+                         &paragraph_defaults, &diagnostics);
 
   const bool is_widget = annot_dict->GetNameFor("Subtype") == "Widget";
   WideString rich = annot_dict->GetUnicodeTextFor(is_widget ? "RV" : "RC");

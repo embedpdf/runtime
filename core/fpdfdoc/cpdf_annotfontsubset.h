@@ -89,6 +89,17 @@ class CPDF_AnnotFontSubset final {
   static LayoutFont CreateLayoutFont(CPDF_Document* doc,
                                      CFX_FontRegistry::FontId font_id);
 
+  // The persistent identity written into every font dictionary built for a
+  // registered font: /FontFamily, /FontWeight and /ItalicAngle in the font
+  // descriptor (what a later session and Acrobat resolve by) plus a private
+  // session hint (EmbedPDFRegisteredFontId) on the top-level font dictionary.
+  struct FaceIdentity {
+    ByteString family;
+    int weight = 400;
+    bool italic = false;
+  };
+  static FaceIdentity IdentityForRegisteredFont(CFX_FontRegistry::FontId id);
+
   // How much of the program a resource carries (§2 of the Phase C note).
   // The caller resolves the document's policy and the resource's owner into
   // one of these; fsType "no subsetting" forces kFull regardless.
@@ -137,10 +148,27 @@ class CPDF_AnnotFontSubset final {
       Embedding embedding,
       StagedFontResource* out);
 
+  // The resource for a program already embedded in the document (Phase C
+  // note §1.3): a new Type0 dictionary whose descriptor references the
+  // existing FontFile stream, never a copy; widths and metrics come from
+  // |font|, loaded over that stream's bytes. |base_font_name| is the
+  // existing dictionary's BaseFont (its subset tag, if any, still applies).
+  // The glyph map is keyed as for registered fonts (charcode == CID).
+  static StageStatus StageDocumentProgramResource(
+      const CFX_Font* font,
+      RetainPtr<CPDF_Stream> program_stream,
+      const ByteString& base_font_name,
+      const FaceIdentity& identity,
+      const GlyphUnicodeMap& glyph_to_unicode,
+      bool required_by_default_appearance,
+      StagedFontResource* out);
+
   // Publish adds every part of |staged| to |doc| as an indirect object
-  // (program, ToUnicode, widths, descriptor, CIDFont, Type0, in that order),
-  // links them and raises the catalog /Version when the program needs
-  // PDF 1.6. Returns the Type0 dictionary, now indirect.
+  // (program, ToUnicode, widths, descriptor, CIDFont, Type0, in that order;
+  // a part that already has an object number, the existing stream of a
+  // document program, is left alone), links them and raises the catalog
+  // /Version when the program needs PDF 1.6. Returns the Type0 dictionary,
+  // now indirect.
   static RetainPtr<CPDF_Dictionary> PublishStagedFontResource(
       CPDF_Document* doc,
       StagedFontResource staged);
@@ -153,17 +181,6 @@ class CPDF_AnnotFontSubset final {
       const GlyphUnicodeMap& glyph_to_unicode,
       bool required_by_default_appearance,
       Embedding embedding = Embedding::kSubset);
-
-  // The persistent identity written into every font dictionary built for a
-  // registered font: /FontFamily, /FontWeight and /ItalicAngle in the font
-  // descriptor (what a later session and Acrobat resolve by) plus a private
-  // session hint (EmbedPDFRegisteredFontId) on the top-level font dictionary.
-  struct FaceIdentity {
-    ByteString family;
-    int weight = 400;
-    bool italic = false;
-  };
-  static FaceIdentity IdentityForRegisteredFont(CFX_FontRegistry::FontId id);
 
   // True when |font_dict| was written by EmbedPDF for a registered font: a
   // real Type0 subset (A1 and later) or the legacy descriptor-less /Type1

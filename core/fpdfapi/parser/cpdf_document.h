@@ -151,6 +151,19 @@ class CPDF_Document : public Observable,
     font_embedding_policy_ = policy;
   }
 
+  // EmbedPDF (rich text, Phase D): session switches for appearances laid
+  // out by CPDF_RichTextLayout. Latin typographic features (kern, liga…)
+  // are off for Acrobat parity unless turned on here. Plain FreeText (no
+  // /RC) keeps the CPVT layout unless the rich engine is selected; an
+  // annotation with /RC always uses the rich engine.
+  bool GetTypographicFeaturesEnabled() const { return typographic_features_; }
+  void SetTypographicFeaturesEnabled(bool enabled) {
+    typographic_features_ = enabled;
+  }
+  enum class FreeTextLayout : uint8_t { kCpvt, kRich };
+  FreeTextLayout GetFreeTextLayout() const { return free_text_layout_; }
+  void SetFreeTextLayout(FreeTextLayout layout) { free_text_layout_ = layout; }
+
   virtual CPDF_Parser* GetParser() const;
   virtual const CPDF_Dictionary* GetRoot() const;
   virtual RetainPtr<CPDF_Dictionary> GetMutableRoot();
@@ -345,6 +358,8 @@ class CPDF_Document : public Observable,
   std::map<ByteString, uint32_t> session_font_aliases_;  // EmbedPDF, see above.
   FontEmbeddingPolicy font_embedding_policy_ =
       FontEmbeddingPolicy::kDefault;  // EmbedPDF, see above.
+  bool typographic_features_ = false;  // EmbedPDF, see above.
+  FreeTextLayout free_text_layout_ = FreeTextLayout::kCpvt;  // EmbedPDF.
 
   // EmbedPDF: destroyed before everything declared above it (the parser
   // included), after the extension and the stock font clearer.
