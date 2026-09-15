@@ -2453,7 +2453,7 @@ TEST_F(FPDFAnnotEmbedderTest, RichTextJsonFromAcrobatProperties) {
       EXPECT_NE(std::string::npos,
                 json.find("\"weight\":700,\"italic\":false,\"size\":26"));
       EXPECT_NE(std::string::npos,
-                json.find("\"align\":\"center\",\"dir\":\"ltr\",\"runs\""));
+                json.find("\"align\":\"center\",\"runs\""));  // differs from the body
       EXPECT_NE(std::string::npos, json.find("{\"text\":\"Welcome\\r\\r\"}"));
       EXPECT_NE(std::string::npos,
                 json.find("\"style\":{\"weight\":400,\"size\":18}"));
@@ -3667,6 +3667,84 @@ TEST_F(FPDFAnnotEmbedderTest, SetRichTextJSONWithRegisteredBodyFont) {
 // D8 at the writer level (Phase C note §6): the second of two font
 // resources fails after the first was staged; nothing is written, not even
 // the /DA alias reservation, and the same call succeeds afterwards.
+// Alignment lives on the annotation (/Q, then the /DS and /RC body). Paragraphs
+// the JSON sends without an alignment — the editor's commit, the toggle's
+// body write — keep following it, across the plain → rich transition and on
+// a rich box; and the echo names a paragraph's alignment only where it
+// differs from the body, so nothing pins a block to a resolved value.
+TEST_F(FPDFAnnotEmbedderTest, RichTextAlignmentFollowsTheAnnotation) {
+  ScopedFPDFDocument doc(FPDF_CreateNewDocument());
+  ASSERT_TRUE(doc);
+  ScopedFPDFPage page(FPDFPage_New(doc.get(), 0, 400, 400));
+  ASSERT_TRUE(page);
+  static constexpr const char* kAlignNames[] = {"left", "center", "right"};
+  float x[3] = {0, 0, 0};
+  for (int q = 0; q < 3; ++q) {
+    SCOPED_TRACE(kAlignNames[q]);
+    ScopedFPDFAnnotation annot(
+        FPDFPage_CreateAnnot(page.get(), FPDF_ANNOT_FREETEXT));
+    ASSERT_TRUE(annot);
+    const FS_RECTF rect{50.0f, 300.0f, 350.0f, 250.0f};
+    ASSERT_TRUE(FPDFAnnot_SetRect(annot.get(), &rect));
+    ASSERT_TRUE(EPDFAnnot_SetDefaultAppearance(
+        annot.get(), FPDF_FONT_HELVETICA, 12.0f, 0, 0, 0));
+    ASSERT_TRUE(EPDFAnnot_SetTextAlignment(annot.get(), static_cast<FPDF_TEXT_ALIGNMENT>(q)));
+    // A plain box becoming rich: paragraphs only, no body, no alignment.
+    ASSERT_TRUE(EPDFAnnot_SetRichTextJSON(
+        annot.get(), "{\"paragraphs\":[{\"runs\":[{\"text\":\"aligned\"}]}]}"));
+    EXPECT_EQ(q, static_cast<int>(EPDFAnnot_GetTextAlignment(annot.get())));
+    const std::string json = GetRichTextJson(annot.get());
+    EXPECT_NE(std::string::npos,
+              json.find(std::string("\"align\":\"") + kAlignNames[q] +
+                        "\",\"dir\":\"ltr\""))
+        << json;
+    EXPECT_NE(std::string::npos, json.find("\"paragraphs\":[{\"runs\""))
+        << json;
+    const std::vector<PlacedChar> placed = PlaceCharacters(
+        doc.get(), annot.get(),
+        std::string(GetNormalAppearanceStreamBytes(annot.get()).c_str()));
+    ASSERT_FALSE(placed.empty());
+    x[q] = placed[0].x;
+  }
+  // Left, centre and right of the same plate: the centred line starts
+  // halfway between the other two.
+  EXPECT_LT(x[0] + 20.0f, x[1]);
+  EXPECT_LT(x[1] + 20.0f, x[2]);
+  EXPECT_NEAR((x[0] + x[2]) / 2, x[1], 0.05f);
+
+  // A body without an alignment (what a formatting toggle sends) keeps the
+  // annotation's too.
+  ScopedFPDFAnnotation bold(
+      FPDFPage_CreateAnnot(page.get(), FPDF_ANNOT_FREETEXT));
+  ASSERT_TRUE(bold);
+  const FS_RECTF rect{50.0f, 200.0f, 350.0f, 150.0f};
+  ASSERT_TRUE(FPDFAnnot_SetRect(bold.get(), &rect));
+  ASSERT_TRUE(EPDFAnnot_SetDefaultAppearance(bold.get(), FPDF_FONT_HELVETICA,
+                                             12.0f, 0, 0, 0));
+  ASSERT_TRUE(EPDFAnnot_SetTextAlignment(bold.get(), static_cast<FPDF_TEXT_ALIGNMENT>(1)));
+  ASSERT_TRUE(EPDFAnnot_SetRichTextJSON(
+      bold.get(),
+      "{\"body\":{\"weight\":700},"
+      "\"paragraphs\":[{\"runs\":[{\"text\":\"aligned\"}]}]}"));
+  const std::string bold_json = GetRichTextJson(bold.get());
+  EXPECT_NE(std::string::npos,
+            bold_json.find("\"weight\":700,\"italic\":false"))
+      << bold_json;
+  EXPECT_NE(std::string::npos,
+            bold_json.find("\"align\":\"center\",\"dir\":\"ltr\""))
+      << bold_json;
+  EXPECT_NE(std::string::npos, bold_json.find("\"paragraphs\":[{\"runs\""))
+      << bold_json;
+  // A paragraph that says otherwise still wins.
+  ASSERT_TRUE(EPDFAnnot_SetRichTextJSON(
+      bold.get(),
+      "{\"paragraphs\":[{\"align\":\"right\",\"runs\":[{\"text\":\"r\"}]}]}"));
+  const std::string right_json = GetRichTextJson(bold.get());
+  EXPECT_NE(std::string::npos,
+            right_json.find("\"paragraphs\":[{\"align\":\"right\",\"runs\""))
+      << right_json;
+}
+
 // The plate rule for boxes we generate ourselves: CPVT (plain /Contents) and
 // the rich engine agree, at every width, including a border that swallows
 // the box (an empty plate: the border still paints, no text is laid out).

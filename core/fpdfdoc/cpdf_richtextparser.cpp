@@ -1176,25 +1176,41 @@ ByteString JsonStyleDelta(const CPDF_RichTextStyleDelta& delta) {
   return out;
 }
 
-ByteString JsonParagraphProps(const CPDF_RichTextParagraphProps& props) {
+// The body names its alignment and direction always; a paragraph names them
+// only where they differ from the body (|base|), the contract the DTO
+// states — so a paragraph that says nothing keeps following the body when
+// the document comes back through the set API, and an editor that renders
+// what it is given does not pin every block to a resolved value.
+ByteString JsonParagraphProps(const CPDF_RichTextParagraphProps& props,
+                              const CPDF_RichTextParagraphProps* base) {
   ByteString out;
-  out += ByteString("\"align\":\"") + AlignName(props.align) + "\"";
-  out += ByteString(",\"dir\":\"") + (props.rtl ? "rtl" : "ltr") + "\"";
+  auto field = [&out](const ByteString& text) {
+    if (!out.IsEmpty()) {
+      out += ",";
+    }
+    out += text;
+  };
+  if (!base || props.align != base->align) {
+    field(ByteString("\"align\":\"") + AlignName(props.align) + "\"");
+  }
+  if (!base || props.rtl != base->rtl) {
+    field(ByteString("\"dir\":\"") + (props.rtl ? "rtl" : "ltr") + "\"");
+  }
   if (props.line_height) {
-    out += ",\"lineHeight\":" + JsonNumber(*props.line_height);
+    field("\"lineHeight\":" + JsonNumber(*props.line_height));
   }
   if (props.margin_top != 0 || props.margin_bottom != 0 ||
       props.margin_left != 0 || props.margin_right != 0) {
-    out += ",\"margins\":{\"top\":" + JsonNumber(props.margin_top) +
-           ",\"bottom\":" + JsonNumber(props.margin_bottom) +
-           ",\"left\":" + JsonNumber(props.margin_left) +
-           ",\"right\":" + JsonNumber(props.margin_right) + "}";
+    field("\"margins\":{\"top\":" + JsonNumber(props.margin_top) +
+          ",\"bottom\":" + JsonNumber(props.margin_bottom) +
+          ",\"left\":" + JsonNumber(props.margin_left) +
+          ",\"right\":" + JsonNumber(props.margin_right) + "}");
   }
   if (props.text_indent != 0) {
-    out += ",\"textIndent\":" + JsonNumber(props.text_indent);
+    field("\"textIndent\":" + JsonNumber(props.text_indent));
   }
   if (!props.unknown_declarations.IsEmpty()) {
-    out += ",\"unknown\":" + JsonString(props.unknown_declarations);
+    field("\"unknown\":" + JsonString(props.unknown_declarations));
   }
   return out;
 }
@@ -1469,7 +1485,7 @@ ByteString CPDF_RichTextParser::ToJSON(const CPDF_RichTextDocument& document) {
   out += ByteString(",\"script\":\"") + ScriptName(document.body.script) + "\"";
   out += ",\"letterSpacing\":" + JsonNumber(document.body.letter_spacing);
   out += ",\"horizontalScale\":" + JsonNumber(document.body.horz_scale);
-  out += "," + JsonParagraphProps(document.body_paragraph);
+  out += "," + JsonParagraphProps(document.body_paragraph, nullptr);
   out += "},\"paragraphs\":[";
   bool first_paragraph = true;
   for (const CPDF_RichTextParagraph& paragraph : document.paragraphs) {
@@ -1477,7 +1493,9 @@ ByteString CPDF_RichTextParser::ToJSON(const CPDF_RichTextDocument& document) {
       out += ",";
     }
     first_paragraph = false;
-    out += "{" + JsonParagraphProps(paragraph.props) + ",\"runs\":[";
+    const ByteString props =
+        JsonParagraphProps(paragraph.props, &document.body_paragraph);
+    out += "{" + props + (props.IsEmpty() ? "" : ",") + "\"runs\":[";
     bool first_run = true;
     for (const CPDF_RichTextRun& run : paragraph.runs) {
       if (!first_run) {

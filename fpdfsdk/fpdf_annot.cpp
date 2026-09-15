@@ -3356,34 +3356,23 @@ EPDFAnnot_SetRichTextJSON(FPDF_ANNOTATION annot, FPDF_BYTESTRING json_utf8) {
   if (!context || !json_utf8) {
     return false;
   }
+  // The annotation's current paragraph defaults (/Q, /DS, the /RC body) are
+  // the base for everything the JSON leaves unsaid — a body without an
+  // alignment, a paragraph without one — so a centred box stays centred
+  // when its paragraphs are replaced or its body restyled. (The STYLE of a
+  // given body stays engine defaults under the given keys, as documented.)
+  RetainPtr<const CPDF_Dictionary> acroform = AcroFormDictOf(annot);
+  const CPDF_RichTextDocument current = CPDF_RichTextParser::FromAnnotation(
+      context->GetAnnotDict(), acroform.Get());
   CPDF_RichTextDocument document;
   bool has_body = false;
-  if (!CPDF_RichTextJson::Parse(ByteString(json_utf8), &document, &has_body)) {
+  if (!CPDF_RichTextJson::Parse(ByteString(json_utf8), &document, &has_body,
+                                &current.body_paragraph)) {
     return false;
   }
   if (!has_body) {
     // The annotation's current body style (DA ∪ DS ∪ RC body) stays.
-    RetainPtr<const CPDF_Dictionary> acroform = AcroFormDictOf(annot);
-    const CPDF_RichTextDocument current = CPDF_RichTextParser::FromAnnotation(
-        context->GetAnnotDict(), acroform.Get());
     document.body = current.body;
-    document.body_paragraph = current.body_paragraph;
-    for (CPDF_RichTextParagraph& paragraph : document.paragraphs) {
-      // Paragraph defaults given without a body inherit the current ones.
-      CPDF_RichTextParagraphProps props = current.body_paragraph;
-      props.align = paragraph.props.align;
-      props.rtl = paragraph.props.rtl;
-      if (paragraph.props.line_height.has_value()) {
-        props.line_height = paragraph.props.line_height;
-      }
-      props.margin_top = paragraph.props.margin_top;
-      props.margin_bottom = paragraph.props.margin_bottom;
-      props.margin_left = paragraph.props.margin_left;
-      props.margin_right = paragraph.props.margin_right;
-      props.text_indent = paragraph.props.text_indent;
-      props.unknown_declarations = paragraph.props.unknown_declarations;
-      paragraph.props = props;
-    }
   }
   return ApplyRichTextDocument(annot, document);
 }

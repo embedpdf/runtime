@@ -290,7 +290,28 @@ TEST(CPDF_RichTextParserTest, JsonShape) {
       "\"color\":\"#FFC100\",\"decoration\":[\"word\"]}}"));
   EXPECT_TRUE(json.Contains("{\"text\":\"\\r\",\"style\":"));
   EXPECT_TRUE(json.Contains("\"diagnostics\":[]"));
-  EXPECT_TRUE(json.Contains("\"align\":\"left\",\"dir\":\"ltr\""));
+  EXPECT_TRUE(json.Contains("\"align\":\"left\",\"dir\":\"ltr\""));  // the body
+
+  // A paragraph names only what differs from the body.
+  CPDF_RichTextDocument aligned;
+  aligned.body_paragraph.align = CPDF_RichTextParagraphProps::Align::kCenter;
+  CPDF_RichTextParagraph same;
+  same.props = aligned.body_paragraph;
+  same.runs.push_back({L"same", {}});
+  CPDF_RichTextParagraph right;
+  right.props = aligned.body_paragraph;
+  right.props.align = CPDF_RichTextParagraphProps::Align::kRight;
+  right.runs.push_back({L"right", {}});
+  CPDF_RichTextParagraph rtl;
+  rtl.props = aligned.body_paragraph;
+  rtl.props.rtl = true;
+  rtl.runs.push_back({L"rtl", {}});
+  aligned.paragraphs = {same, right, rtl};
+  const ByteString aligned_json = CPDF_RichTextParser::ToJSON(aligned);
+  EXPECT_TRUE(aligned_json.Contains("\"align\":\"center\",\"dir\":\"ltr\"}"));
+  EXPECT_TRUE(aligned_json.Contains("\"paragraphs\":[{\"runs\":[{\"text\":\"same\"}]}"));
+  EXPECT_TRUE(aligned_json.Contains("{\"align\":\"right\",\"runs\":"));
+  EXPECT_TRUE(aligned_json.Contains("{\"dir\":\"rtl\",\"runs\":"));
 
   CPDF_RichTextDocument plain = CPDF_RichTextParser::FromPlainText(
       L"a \"quoted\" \\ line\ttab", Defaults(), CPDF_RichTextParagraphProps());

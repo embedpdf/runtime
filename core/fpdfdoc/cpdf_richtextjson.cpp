@@ -541,7 +541,8 @@ bool ReadParagraphProps(const JsonValue* object,
 // static
 bool CPDF_RichTextJson::Parse(const ByteString& json_utf8,
                               CPDF_RichTextDocument* out,
-                              bool* has_body) {
+                              bool* has_body,
+                              const CPDF_RichTextParagraphProps* base_paragraph) {
   *has_body = false;
   JsonValue root;
   JsonReader reader(json_utf8);
@@ -549,6 +550,11 @@ bool CPDF_RichTextJson::Parse(const ByteString& json_utf8,
     return false;
   }
   CPDF_RichTextDocument document;
+  // What the JSON does not say about paragraphs is inherited: the body's
+  // alignment/direction from the base, each paragraph's from the body.
+  if (base_paragraph) {
+    document.body_paragraph = *base_paragraph;
+  }
 
   if (const JsonValue* body = root.Get("body")) {
     CPDF_RichTextStyleDelta delta;
