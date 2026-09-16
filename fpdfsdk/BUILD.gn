@@ -169,6 +169,7 @@ pdfium_embeddertest_source_set("embeddertests") {
     "epdf_form_embeddertest.cpp",
     # EmbedPDF: covers the /Names /Pages and /Templates name-tree APIs.
     "epdf_named_pages_embeddertest.cpp",
+    "epdf_redact_embeddertest.cpp",
     # EmbedPDF: covers the digital-signature APIs.
     "epdf_signature_embeddertest.cpp",
     # EmbedPDF: covers generic document/page /PieceInfo metadata APIs.

@@ -1,0 +1,36 @@
+{{header}}
+{{object 1 0}} << /Type /Catalog /Pages 2 0 R >>
+endobj
+{{object 2 0}} << /Type /Pages /Count 2 /Kids [3 0 R 7 0 R] >>
+endobj
+{{object 3 0}} << /Type /Page /Parent 2 0 R /MediaBox [0 0 600 600] /Resources << /XObject << /Im 6 0 R >> >> /Contents 4 0 R /Annots [5 0 R] >>
+endobj
+{{object 4 0}} <<  {{streamlen}} >>
+stream
+q 100 0 0 100 50 50 cm /Im Do Q
+q 100 0 0 100 250 50 cm /Im Do Q
+endstream
+endobj
+{{object 5 0}} << /Type /Annot /Subtype /Redact /Rect [50 50 100 150] >>
+endobj
+{{object 6 0}} << /Type /XObject /Subtype /Image /Width 10 /Height 10 /ColorSpace /DeviceRGB /BitsPerComponent 8 /Filter /ASCIIHexDecode /SMask 9 0 R {{streamlen}} >>
+stream
+ff0000ff0000ff0000ff0000ff0000ff0000ff0000ff0000ff0000ff0000ff0000ff0000ff0000ff0000ff0000ff0000ff0000ff0000ff0000ff0000ff0000ff0000ff0000ff0000ff0000ff0000ff0000ff0000ff0000ff0000ff0000ff0000ff0000ff0000ff0000ff0000ff0000ff0000ff0000ff0000ff0000ff0000ff0000ff0000ff0000ff0000ff0000ff0000ff0000ff0000ff0000ff0000ff0000ff0000ff0000ff0000ff0000ff0000ff0000ff0000ff0000ff0000ff0000ff0000ff0000ff0000ff0000ff0000ff0000ff0000ff0000ff0000ff0000ff0000ff0000ff0000ff0000ff0000ff0000ff0000ff0000ff0000ff0000ff0000ff0000ff0000ff0000ff0000ff0000ff0000ff0000ff0000ff0000ff0000ff0000ff0000ff0000ff0000ff0000ff0000>
+endstream
+endobj
+{{object 7 0}} << /Type /Page /Parent 2 0 R /MediaBox [0 0 600 600] /Resources << /XObject << /Im 6 0 R >> >> /Contents 8 0 R >>
+endobj
+{{object 8 0}} <<  {{streamlen}} >>
+stream
+q 100 0 0 100 50 50 cm /Im Do Q
+endstream
+endobj
+{{object 9 0}} << /Type /XObject /Subtype /Image /Width 10 /Height 10 /ColorSpace /DeviceGray /BitsPerComponent 8 /Filter /ASCIIHexDecode {{streamlen}} >>
+stream
+80808080808080808080808080808080808080808080808080808080808080808080808080808080808080808080808080808080808080808080808080808080808080808080808080808080808080808080808080808080808080808080808080808080>
+endstream
+endobj
+{{xref}}
+{{trailer}}
+{{startxref}}
+%%EOF

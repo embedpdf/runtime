@@ -1,0 +1,46 @@
+%PDF-1.7
+% ò¤ô
+1 0 obj << /Type /Catalog /Pages 2 0 R >>
+endobj
+2 0 obj << /Type /Pages /Count 1 /Kids [3 0 R] >>
+endobj
+3 0 obj << /Type /Page /Parent 2 0 R /MediaBox [0 0 600 600] /Resources << /XObject << /Outer 6 0 R >> /Font << /F1 8 0 R >> >> /Contents 4 0 R /Annots [5 0 R] >>
+endobj
+4 0 obj <<  /Length 70 >>
+stream
+q 2 0 0 2 100 100 cm /Outer Do Q
+BT /F1 20 Tf 50 300 Td (PUBLIC) Tj ET
+endstream
+endobj
+5 0 obj << /Type /Annot /Subtype /Redact /Rect [299 135 390 160] >>
+endobj
+6 0 obj << /Type /XObject /Subtype /Form /BBox [0 0 250 200] /Resources << /XObject << /Inner 7 0 R >> >> /Length 30 >>
+stream
+q 1 0 0 1 100 0 cm /Inner Do Q
+endstream
+endobj
+7 0 obj << /Type /XObject /Subtype /Form /BBox [0 0 100 60] /Resources << /Font << /F1 8 0 R >> >> /Length 35 >>
+stream
+BT /F1 10 Tf 0 20 Td (SECRET) Tj ET
+endstream
+endobj
+8 0 obj << /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>
+endobj
+xref
+0 9
+0000000000 65535 f 
+0000000015 00000 n 
+0000000064 00000 n 
+0000000121 00000 n 
+0000000291 00000 n 
+0000000412 00000 n 
+0000000487 00000 n 
+0000000662 00000 n 
+0000000835 00000 n 
+trailer <<
+  /Root 1 0 R
+  /Size 9
+>>
+startxref
+905
+%%EOF
