@@ -12,6 +12,7 @@
 #include "core/fpdfapi/edit/cpdf_contentstream_write_utils.h"
 #include "core/fpdfapi/edit/cpdf_pagecontentgenerator.h"
 #include "core/fpdfapi/edit/cpdf_pagecontentmanager.h"
+#include "core/fpdfapi/edit/cpdf_redaction_mark_sanitizer.h"
 #include "core/fpdfapi/font/cpdf_cidfont.h"
 #include "core/fpdfapi/font/cpdf_font.h"
 #include "core/fpdfapi/page/cpdf_form.h"
@@ -179,6 +180,7 @@ CFX_FloatRect GlyphBBoxInPage(const CPDF_TextObject* to,
                               CPDF_Font* font,
                               uint32_t code,
                               const CPDF_TextObject::Item& it,
+                              const CFX_Matrix& text_matrix,
                               const CFX_Matrix& parent_to_page) {
   FX_RECT r_font_units = font->GetCharBBox(code);
   const float fs = to->GetFontSize();
@@ -194,8 +196,7 @@ CFX_FloatRect GlyphBBoxInPage(const CPDF_TextObject* to,
   glyph_box.top += it.origin_.y;
 
   // Text matrix to page space (for this text object), then parent to page.
-  const CFX_Matrix tm = to->GetTextMatrix();
-  glyph_box = tm.TransformRect(glyph_box);
+  glyph_box = text_matrix.TransformRect(glyph_box);
   return parent_to_page.TransformRect(glyph_box);
 }
 
@@ -249,8 +250,8 @@ struct RedactionState {
   float kerning_accumulator = 0.0f;
   bool has_explicit_kerning = false;
 
-  // For synthesized kerning using origins when no explicit TJ exists.
-  CFX_PointF prev_glyph_origin{};
+  // Use raw writing-axis positions, without vertical glyph-origin offsets.
+  float prev_glyph_pos = 0.0f;
   uint32_t prev_glyph_code = 0;
 
   void ResetBetweenRuns() {
@@ -258,11 +259,11 @@ struct RedactionState {
     has_explicit_kerning = false;
   }
 
-  void AppendKeptGlyph(const CPDF_TextObject::Item& item) {
+  void AppendKeptGlyph(const CPDF_TextObject::Item& item, float raw_pos) {
     DCHECK(font);
     DCHECK(!strings.empty());
     font->AppendChar(&strings.back(), item.char_code_);
-    prev_glyph_origin = item.origin_;
+    prev_glyph_pos = raw_pos;
     prev_glyph_code = item.char_code_;
   }
 };
@@ -290,6 +291,11 @@ RedactOutcome RedactTextObjectMulti(CPDF_TextObject* to,
   bool any_kept = false;
   bool any_removed = false;
 
+  // Hit-test every glyph against the original matrix. Shifting the object
+  // during the walk would displace later regions and leave redacted text behind.
+  const CFX_Matrix original_tm = to->GetTextMatrix();
+  CFX_Matrix final_tm = original_tm;
+
   RedactionState st;
   st.font = font;
   st.strings.push_back(ByteString());  // start first run
@@ -310,7 +316,7 @@ RedactOutcome RedactTextObjectMulti(CPDF_TextObject* to,
 
     // Decide keep/remove by intersection.
     const CFX_FloatRect gbox =
-        GlyphBBoxInPage(to, font, it.char_code_, it, parent_to_page);
+        GlyphBBoxInPage(to, font, it.char_code_, it, original_tm, parent_to_page);
     const bool hit = IntersectsAny(gbox, page_rects);
 
     if (hit) {
@@ -320,26 +326,19 @@ RedactOutcome RedactTextObjectMulti(CPDF_TextObject* to,
       continue;
     }
 
-    // First kept glyph in the object.
+    // Raw layout position along the writing axis, including original TJ gaps.
+    const float raw_pos = i > 0 ? to->GetCharPositions()[i - 1] : 0.0f;
+
+    // First kept glyph in the object. TJ cannot express a leading gap, so
+    // preserve its position by shifting the final matrix along the writing axis.
     if (!any_kept) {
-      float leading_offset_user = 0.0f;
-
-      if (st.kerning_accumulator != 0.0f) {
-        // Remove pre-run spacing by shifting the text matrix (TJ cannot lead).
-        leading_offset_user = -st.kerning_accumulator * fs / 1000.0f;
-        st.kerning_accumulator = 0.0f;
-        st.has_explicit_kerning = false;
+      st.ResetBetweenRuns();
+      if (is_vert) {
+        final_tm.e += raw_pos * final_tm.c;
+        final_tm.f += raw_pos * final_tm.d;
       } else {
-        // If no pending spacing, align the run's origin to the first kept glyph.
-        leading_offset_user = is_vert ? it.origin_.y : it.origin_.x;
-      }
-
-      if (leading_offset_user != 0.0f) {
-        CFX_Matrix tm = to->GetTextMatrix();
-        // Move along the text X axis in user space (handles rotation).
-        tm.e += leading_offset_user * tm.a;
-        tm.f += leading_offset_user * tm.b;
-        to->SetTextMatrix(tm);
+        final_tm.e += raw_pos * final_tm.a;
+        final_tm.f += raw_pos * final_tm.b;
       }
     } else {
       // Between kept runs: emit an inter-run kerning.
@@ -349,10 +348,8 @@ RedactOutcome RedactTextObjectMulti(CPDF_TextObject* to,
           k = 0.0f;
         FlushSegment(&st, k);
       } else {
-        // Infer kerning from origins of consecutive kept glyphs.
-        const float delta_user = is_vert
-                                     ? (it.origin_.y - st.prev_glyph_origin.y)
-                                     : (it.origin_.x - st.prev_glyph_origin.x);
+        // Infer kerning from consecutive kept glyphs' layout positions.
+        const float delta_user = raw_pos - st.prev_glyph_pos;
         const float delta_mth = delta_user * 1000.0f / fs;
         const float nominal_advance_mth =
             AdvanceThousandths(to, font, st.prev_glyph_code);
@@ -364,13 +361,15 @@ RedactOutcome RedactTextObjectMulti(CPDF_TextObject* to,
     }
 
     // Keep this glyph.
-    st.AppendKeptGlyph(it);
+    st.AppendKeptGlyph(it, raw_pos);
     st.ResetBetweenRuns();
     any_kept = true;
   }
 
   if (!any_kept)
     return any_removed ? RedactOutcome::kRemovedAll : RedactOutcome::kUnchanged;
+  if (!any_removed)
+    return RedactOutcome::kUnchanged;
 
   // If the last operation opened a new (empty) run by flushing a kerning,
   // drop the dangling run and its paired kerning so we keep the invariant
@@ -384,13 +383,11 @@ RedactOutcome RedactTextObjectMulti(CPDF_TextObject* to,
   CHECK(st.kernings.size() + 1 == st.strings.size());
 
   to->SetSegments(pdfium::span(st.strings), pdfium::span(st.kernings));
+  // Apply the accumulated leading shift only after all glyphs are tested.
+  to->SetTextMatrix(final_tm);
   to->SetDirty(true);
-  // Re-assert Tm to ensure downstream writers notice a change even when the
-  // numeric value is identical after float ops.
-  CFX_Matrix tm = to->GetTextMatrix();
-  to->SetTextMatrix(tm);
 
-  return any_removed ? RedactOutcome::kModified : RedactOutcome::kUnchanged;
+  return RedactOutcome::kModified;
 }
 
 // Map page-space rects into the image's sample grid (image-local).
@@ -778,8 +775,11 @@ bool RedactHolder(CPDF_Page* page_for_cache,
                   pdfium::span<const CFX_FloatRect> page_rects,
                   const CFX_Matrix& to_page,
                   bool recurse_forms,
-                  bool fill_black) {
+                  bool fill_black,
+                  CPDF_RedactionMarkSanitizer::SanitizedProperties*
+                      sanitized_properties) {
   bool changed = false;
+  CPDF_RedactionMarkSanitizer mark_sanitizer(holder, sanitized_properties);
   std::vector<CPDF_PageObject*> to_remove;
 
   for (auto it = holder->begin(); it != holder->end(); ++it) {
@@ -789,6 +789,9 @@ bool RedactHolder(CPDF_Page* page_for_cache,
 
     if (CPDF_TextObject* to = po->AsText()) {
       const RedactOutcome out = RedactTextObjectMulti(to, page_rects, to_page);
+      if (out != RedactOutcome::kUnchanged) {
+        mark_sanitizer.Record(po);
+      }
       if (out == RedactOutcome::kRemovedAll) {
         to_remove.push_back(po);
         changed = true;
@@ -800,6 +803,7 @@ bool RedactHolder(CPDF_Page* page_for_cache,
 
     if (CPDF_ImageObject* io = po->AsImage()) {
       if (RedactImageObject(page_for_cache, io, page_rects, to_page, fill_black)) {
+        mark_sanitizer.Record(po);
         changed = true;
       }
       continue;
@@ -836,6 +840,7 @@ bool RedactHolder(CPDF_Page* page_for_cache,
       }
       
       if (any_removed) {
+        mark_sanitizer.Record(po);
         if (remaining_subpaths.empty()) {
           // All subpaths were redacted - remove the entire path object
           to_remove.push_back(path);
@@ -864,6 +869,7 @@ bool RedactHolder(CPDF_Page* page_for_cache,
             bbox_page.right <= redact_rect.right &&
             bbox_page.bottom >= redact_rect.bottom &&
             bbox_page.top <= redact_rect.top) {
+          mark_sanitizer.Record(po);
           to_remove.push_back(shading);
           changed = true;
           break;
@@ -879,12 +885,16 @@ bool RedactHolder(CPDF_Page* page_for_cache,
           continue;
 
         const CFX_Matrix placement = fo->form_matrix();
-        const CFX_Matrix next_to_page = to_page * placement;
-        const bool form_changed = RedactHolder(page_for_cache, form, page_rects, next_to_page, true, fill_black);
+        const CFX_Matrix next_to_page = placement * to_page;
+        const bool form_changed =
+            RedactHolder(page_for_cache, form, page_rects, next_to_page, true,
+                         fill_black, sanitized_properties);
 
         if (form_changed) {
+          mark_sanitizer.Record(po);
           CPDF_PageContentGenerator form_gen(form);
           form_gen.GenerateContent();
+          fo->SetDirty(true);
           changed = true;
         }
       }
@@ -897,6 +907,15 @@ bool RedactHolder(CPDF_Page* page_for_cache,
       holder->RemovePageObject(obj);
     }
     changed = true;
+  }
+
+  if (changed) {
+    // Form placements may share the original stream and its dictionaries.
+    // Detach before sanitizing properties or regenerating the form content.
+    if (!holder->IsPage()) {
+      static_cast<CPDF_Form*>(holder)->CloneBackingStreamForWrite();
+    }
+    mark_sanitizer.Apply();
   }
 
   return changed;
@@ -916,9 +935,10 @@ bool RedactTextInRect(CPDF_Page* page,
   const CFX_Matrix identity;
 
   const CFX_FloatRect rects[] = {r};
+  CPDF_RedactionMarkSanitizer::SanitizedProperties sanitized_properties;
   const bool changed =
       RedactHolder(page, page, pdfium::span(rects), identity, recurse_forms,
-                   /*fill_black=*/draw_black_boxes);
+                   /*fill_black=*/draw_black_boxes, &sanitized_properties);
 
   if (draw_black_boxes) {
     AddBlackOverlayPaths(page, pdfium::span(rects));  // paint on top
@@ -945,9 +965,10 @@ bool RedactTextInRects(CPDF_Page* page,
   }
 
   const CFX_Matrix identity;
+  CPDF_RedactionMarkSanitizer::SanitizedProperties sanitized_properties;
   const bool changed =
       RedactHolder(page, page, pdfium::span(rects), identity, recurse_forms,
-                   /*fill_black=*/draw_black_boxes);
+                   /*fill_black=*/draw_black_boxes, &sanitized_properties);
 
   if (draw_black_boxes) {
     AddBlackOverlayPaths(page, pdfium::span(rects));  // paint on top

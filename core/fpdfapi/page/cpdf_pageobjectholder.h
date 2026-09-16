@@ -159,6 +159,9 @@ class CPDF_PageObjectHolder {
 
  protected:
   void LoadTransparencyInfo();
+  void SetDictForWrite(RetainPtr<CPDF_Dictionary> dict) {
+    dict_ = std::move(dict);
+  }
 
   RetainPtr<CPDF_Dictionary> page_resources_;
   RetainPtr<CPDF_Dictionary> resources_;
@@ -172,7 +175,7 @@ class CPDF_PageObjectHolder {
  private:
   bool background_alpha_needed_ = false;
   ParseState parse_state_ = ParseState::kNotParsed;
-  RetainPtr<CPDF_Dictionary> const dict_;
+  RetainPtr<CPDF_Dictionary> dict_;
   UnownedPtr<CPDF_Document> document_;
   std::vector<CFX_FloatRect> mask_bounding_boxes_;
   std::unique_ptr<CPDF_ContentParser> parser_;
