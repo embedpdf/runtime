@@ -3297,6 +3297,15 @@ EPDFAnnot_GetRichContent(FPDF_ANNOTATION annot,
       ws, UNSAFE_BUFFERS(SpanFromFPDFApiArgs(buffer, buflen)));
 }
 
+namespace {
+
+const CPDF_Document* DocOf(FPDF_ANNOTATION annot) {
+  CPDF_AnnotContext* context = CPDFAnnotContextFromFPDFAnnotation(annot);
+  return context ? context->GetPage()->GetDocument() : nullptr;
+}
+
+}  // namespace
+
 FPDF_EXPORT unsigned long FPDF_CALLCONV
 EPDFAnnot_GetRichTextJSON(FPDF_ANNOTATION annot,
                           char* buffer,
@@ -3314,7 +3323,8 @@ EPDFAnnot_GetRichTextJSON(FPDF_ANNOTATION annot,
   RetainPtr<const CPDF_Dictionary> acroform =
       root ? root->GetDictFor("AcroForm") : nullptr;
   const ByteString json = CPDF_RichTextParser::ToJSON(
-      CPDF_RichTextParser::FromAnnotation(annot_dict, acroform.Get()));
+      CPDF_RichTextParser::FromAnnotation(annot_dict, acroform.Get(),
+                                          DocOf(annot)));
   // SAFETY: same pattern as other getters.
   return NulTerminateMaybeCopyAndReturnLength(
       json, UNSAFE_BUFFERS(SpanFromFPDFApiArgs(buffer, buflen)));
@@ -3363,7 +3373,7 @@ EPDFAnnot_SetRichTextJSON(FPDF_ANNOTATION annot, FPDF_BYTESTRING json_utf8) {
   // given body stays engine defaults under the given keys, as documented.)
   RetainPtr<const CPDF_Dictionary> acroform = AcroFormDictOf(annot);
   const CPDF_RichTextDocument current = CPDF_RichTextParser::FromAnnotation(
-      context->GetAnnotDict(), acroform.Get());
+      context->GetAnnotDict(), acroform.Get(), DocOf(annot));
   CPDF_RichTextDocument document;
   bool has_body = false;
   if (!CPDF_RichTextJson::Parse(ByteString(json_utf8), &document, &has_body,
@@ -3393,7 +3403,7 @@ EPDFAnnot_SetRichTextXHTML(FPDF_ANNOTATION annot, FPDF_WIDESTRING xhtml) {
   std::vector<CPDF_RichTextDiagnostic> diagnostics;
   CPDF_RichTextParser::DefaultsFromAnnotation(
       context->GetAnnotDict(), acroform.Get(), &defaults, &paragraph_defaults,
-      &diagnostics);
+      &diagnostics, DocOf(annot));
   const CPDF_RichTextDocument document = CPDF_RichTextParser::ParseRichContent(
       xml, defaults, paragraph_defaults, WideString());
   for (const CPDF_RichTextDiagnostic& diagnostic : document.diagnostics) {
@@ -3418,35 +3428,6 @@ FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV
 EPDFDoc_GetTypographicFeatures(FPDF_DOCUMENT document) {
   const CPDF_Document* doc = CPDFDocumentFromFPDFDocument(document);
   return doc && doc->GetTypographicFeaturesEnabled();
-}
-
-FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV
-EPDFDoc_SetFreeTextLayout(FPDF_DOCUMENT document, int layout) {
-  CPDF_Document* doc = CPDFDocumentFromFPDFDocument(document);
-  if (!doc) {
-    return false;
-  }
-  switch (layout) {
-    case EPDF_FREETEXT_LAYOUT_CPVT:
-      doc->SetFreeTextLayout(CPDF_Document::FreeTextLayout::kCpvt);
-      return true;
-    case EPDF_FREETEXT_LAYOUT_RICH:
-      doc->SetFreeTextLayout(CPDF_Document::FreeTextLayout::kRich);
-      return true;
-    default:
-      return false;
-  }
-}
-
-FPDF_EXPORT int FPDF_CALLCONV
-EPDFDoc_GetFreeTextLayout(FPDF_DOCUMENT document) {
-  const CPDF_Document* doc = CPDFDocumentFromFPDFDocument(document);
-  if (!doc) {
-    return -1;
-  }
-  return doc->GetFreeTextLayout() == CPDF_Document::FreeTextLayout::kRich
-             ? EPDF_FREETEXT_LAYOUT_RICH
-             : EPDF_FREETEXT_LAYOUT_CPVT;
 }
 
 FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV

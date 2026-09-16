@@ -548,6 +548,10 @@ bool CPDF_AnnotFontMap::HasDefaultFont() const {
   return !fonts_.empty() && fonts_.front().font;
 }
 
+bool CPDF_AnnotFontMap::DefaultFontIsStandard() const {
+  return HasDefaultFont() && fonts_.front().font->IsStandardFont();
+}
+
 CPDF_AnnotFontSubset::Embedding CPDF_AnnotFontMap::EmbeddingForRegisteredFonts()
     const {
   // §2 of the Phase C note: the document's policy, with DEFAULT meaning
@@ -887,11 +891,32 @@ int32_t CPDF_AnnotFontMap::AddRegisteredFallbackFont(
 // ---- Rich text
 // ----------------------------------------------------------------
 
+void CPDF_AnnotFontMap::PinRichFace(const WideString& family,
+                                    int weight,
+                                    bool italic,
+                                    int entry) {
+  if (entry < 0 || static_cast<size_t>(entry) >= fonts_.size()) {
+    return;
+  }
+  pinned_faces_.push_back(
+      {family, std::clamp(weight, 100, 900), italic, entry});
+}
+
 int CPDF_AnnotFontMap::ResolveRichFace(const WideString& family,
                                        int weight,
                                        bool italic) {
   weight = std::clamp(weight, 100, 900);
   bool degraded = false;
+
+  // 0. A face the caller pinned to an entry (the /DA font of a regenerated
+  // box).
+  const ByteString wanted_key = FamilyKey(family);
+  for (const PinnedFace& pinned : pinned_faces_) {
+    if (pinned.weight == weight && pinned.italic == italic &&
+        FamilyKey(pinned.family) == wanted_key) {
+      return pinned.entry;
+    }
+  }
 
   // 1. A registered font, by family, weight and italic.
   std::optional<CFX_FontRegistry::FontId> registered =

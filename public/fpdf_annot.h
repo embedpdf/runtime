@@ -1542,18 +1542,6 @@ EPDFDoc_SetTypographicFeatures(FPDF_DOCUMENT document, FPDF_BOOL enabled);
 FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV
 EPDFDoc_GetTypographicFeatures(FPDF_DOCUMENT document);
 
-// Experimental EmbedPDF Extension API (rich text, Phase D).
-// Which engine lays out a plain FreeText (one without /RC): the CPVT engine
-// (today's default) or the rich text engine that also draws /RC. An
-// annotation with /RC always uses the rich engine. Session state of the
-// document handle.
-#define EPDF_FREETEXT_LAYOUT_CPVT 0
-#define EPDF_FREETEXT_LAYOUT_RICH 1
-FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV
-EPDFDoc_SetFreeTextLayout(FPDF_DOCUMENT document, int layout);
-// Returns one of EPDF_FREETEXT_LAYOUT_*, or -1 for an invalid document.
-FPDF_EXPORT int FPDF_CALLCONV EPDFDoc_GetFreeTextLayout(FPDF_DOCUMENT document);
-
 // Experimental EmbedPDF Extension API.
 // Set the line endings of a Line, Polyline, or FreeText annotation.
 // For Line/Polyline: writes /LE as a 2-element array [start_style, end_style].

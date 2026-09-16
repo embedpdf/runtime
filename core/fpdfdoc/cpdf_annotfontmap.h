@@ -75,6 +75,10 @@ class CPDF_AnnotFontMap final : public IPVT_FontMap {
       const ByteString& alias);
 
   bool HasDefaultFont() const;
+  // The /DA font is one of the standard 14 (a non-embedded base-14 Type1):
+  // its metrics are PDFium's, not Acrobat's, so the rich layout resolves a
+  // standard family through its own parity face instead of this entry.
+  bool DefaultFontIsStandard() const;
 
   // The appearance's /Resources/Font, in the two steps of §6 of the Phase C
   // note. Prepare builds every registered font's resource off to the side:
@@ -139,6 +143,12 @@ class CPDF_AnnotFontMap final : public IPVT_FontMap {
   // already embedded in the document under that family; a standard-14 face
   // when the family is one; else Helvetica, marked degraded. Never fails.
   int ResolveRichFace(const WideString& family, int weight, bool italic);
+  // Regenerating a box whose /DA already names its body font: that entry IS
+  // the body face. Resolution must not re-derive it from the family (a
+  // registered font's family round-trips through /DR as a PostScript or
+  // subset name), so the rich layout keeps naming the /DA alias, exactly as
+  // CPVT always did. A pinned face wins over every resolution step.
+  void PinRichFace(const WideString& family, int weight, bool italic, int entry);
   // A registered fallback font, authorised for authoring, covering
   // |unicode|; -1 when there is none or fallbacks are not allowed.
   int FindRichFallback(uint32_t unicode, int weight, bool italic);
@@ -226,6 +236,13 @@ class CPDF_AnnotFontMap final : public IPVT_FontMap {
   // |fonts_| so they are destroyed after it: the fonts' dictionaries
   // reference streams in them.
   std::vector<std::unique_ptr<CPDF_IndirectObjectHolder>> layout_scratch_;
+  struct PinnedFace {
+    WideString family;
+    int weight;
+    bool italic;
+    int entry;
+  };
+  std::vector<PinnedFace> pinned_faces_;
   std::vector<FontEntry> fonts_;
 };
 

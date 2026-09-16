@@ -160,9 +160,6 @@ class CPDF_Document : public Observable,
   void SetTypographicFeaturesEnabled(bool enabled) {
     typographic_features_ = enabled;
   }
-  enum class FreeTextLayout : uint8_t { kCpvt, kRich };
-  FreeTextLayout GetFreeTextLayout() const { return free_text_layout_; }
-  void SetFreeTextLayout(FreeTextLayout layout) { free_text_layout_ = layout; }
 
   virtual CPDF_Parser* GetParser() const;
   virtual const CPDF_Dictionary* GetRoot() const;
@@ -359,7 +356,6 @@ class CPDF_Document : public Observable,
   FontEmbeddingPolicy font_embedding_policy_ =
       FontEmbeddingPolicy::kDefault;  // EmbedPDF, see above.
   bool typographic_features_ = false;  // EmbedPDF, see above.
-  FreeTextLayout free_text_layout_ = FreeTextLayout::kCpvt;  // EmbedPDF.
 
   // EmbedPDF: destroyed before everything declared above it (the parser
   // included), after the extension and the stock font clearer.

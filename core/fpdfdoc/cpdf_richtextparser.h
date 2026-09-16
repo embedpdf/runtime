@@ -16,6 +16,7 @@
 #include "core/fxcrt/widestring.h"
 
 class CPDF_Dictionary;
+class CPDF_Document;
 
 class CPDF_RichTextParser {
  public:
@@ -56,7 +57,8 @@ class CPDF_RichTextParser {
   // DA ∪ DS defaults, else its /Contents (or /V) as plain text.
   static CPDF_RichTextDocument FromAnnotation(
       const CPDF_Dictionary* annot_dict,
-      const CPDF_Dictionary* acroform_dict);
+      const CPDF_Dictionary* acroform_dict,
+      const CPDF_Document* doc = nullptr);
 
   // DA ∪ DS alone (no /RC): the defaults an imported XHTML body style is
   // applied on top of.
@@ -65,7 +67,11 @@ class CPDF_RichTextParser {
       const CPDF_Dictionary* acroform_dict,
       CPDF_RichTextStyle* style,
       CPDF_RichTextParagraphProps* paragraph,
-      std::vector<CPDF_RichTextDiagnostic>* diagnostics);
+      std::vector<CPDF_RichTextDiagnostic>* diagnostics,
+      // The /DA font may name a registered font whose /DR entry is not
+      // installed yet (a draft before its first appearance): the face then
+      // comes from the registry, through the alias reserved in |doc|.
+      const CPDF_Document* doc = nullptr);
 
   // UTF-8 JSON, the wire shape of EPDFAnnot_GetRichTextJSON().
   static ByteString ToJSON(const CPDF_RichTextDocument& document);

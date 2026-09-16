@@ -2602,8 +2602,9 @@ TEST_F(FPDFAnnotEmbedderTest, RegisteredCidKeyedCffKeepsCidsInAppearance) {
 
   const ByteString stream = GetNormalAppearanceStreamBytes(annot.get());
   ASSERT_FALSE(stream.IsEmpty());
-  EXPECT_TRUE(stream.Contains(ByteStringView("\x26\x67")));      // CID 9831
-  EXPECT_FALSE(stream.Contains(ByteStringView("\x00\x03", 2)));  // not GID 3
+  // The rich emitter writes two-byte codes as hex strings (Acrobat's shape).
+  EXPECT_TRUE(stream.Contains("2667"));   // CID 9831
+  EXPECT_FALSE(stream.Contains("0003"));  // not GID 3
 
   RetainPtr<const CPDF_Dictionary> font_dict =
       GetAppearanceFontDict(annot.get(), RegisteredFontAlias(font_id));
@@ -3745,18 +3746,13 @@ TEST_F(FPDFAnnotEmbedderTest, RichTextAlignmentFollowsTheAnnotation) {
       << right_json;
 }
 
-// The plate rule for boxes we generate ourselves: CPVT (plain /Contents) and
-// the rich engine agree, at every width, including a border that swallows
-// the box (an empty plate: the border still paints, no text is laid out).
+// The plate rule for boxes we generate ourselves, at every width, including
+// a border that swallows the box (an empty plate: the border still paints,
+// no text is laid out). Plain /Contents and /RC boxes share the one engine.
 TEST_F(FPDFAnnotEmbedderTest, FreeTextPlateFollowsBorderWidth) {
-  for (const bool rich : {false, true}) {
-    SCOPED_TRACE(rich ? "rich engine" : "CPVT");
+  {
     ScopedFPDFDocument doc(FPDF_CreateNewDocument());
     ASSERT_TRUE(doc);
-    if (rich) {
-      ASSERT_TRUE(
-          EPDFDoc_SetFreeTextLayout(doc.get(), EPDF_FREETEXT_LAYOUT_RICH));
-    }
     ScopedFPDFPage page(FPDFPage_New(doc.get(), 0, 400, 400));
     ASSERT_TRUE(page);
     for (const float width : {0.0f, 1.0f, 2.0f, 5.0f}) {
@@ -3778,21 +3774,19 @@ TEST_F(FPDFAnnotEmbedderTest, FreeTextPlateFollowsBorderWidth) {
           GetNormalAppearanceStreamBytes(annot.get()).c_str());
       const float inset = 2 * width;
       // The first Td is the plate's left edge; the baseline sits below the
-      // plate's top (by the ascent) on both engines.
+      // plate's top by the ascent; the clip is the plate.
       const std::vector<PlacedChar> placed =
           PlaceCharacters(doc.get(), annot.get(), stream);
       ASSERT_FALSE(placed.empty());
       EXPECT_NEAR(100.0f + inset, placed[0].x, 0.02f);
       EXPECT_LT(placed[0].y, 300.0f - inset);
       EXPECT_GT(placed[0].y, 300.0f - inset - 1.2f * 12.0f);
-      if (rich) {
-        const std::optional<CFX_FloatRect> clip = ParseClipRect(stream);
-        ASSERT_TRUE(clip.has_value());
-        EXPECT_NEAR(100.0f + inset, clip->left, 0.01f);
-        EXPECT_NEAR(200.0f + inset, clip->bottom, 0.01f);
-        EXPECT_NEAR(300.0f - inset, clip->right, 0.01f);
-        EXPECT_NEAR(300.0f - inset, clip->top, 0.01f);
-      }
+      const std::optional<CFX_FloatRect> clip = ParseClipRect(stream);
+      ASSERT_TRUE(clip.has_value());
+      EXPECT_NEAR(100.0f + inset, clip->left, 0.01f);
+      EXPECT_NEAR(200.0f + inset, clip->bottom, 0.01f);
+      EXPECT_NEAR(300.0f - inset, clip->right, 0.01f);
+      EXPECT_NEAR(300.0f - inset, clip->top, 0.01f);
     }
     // A 60 pt border on a 200 × 100 box: the plate is empty. The
     // appearance still generates (fill and border), and no glyph is placed.
@@ -3812,16 +3806,19 @@ TEST_F(FPDFAnnotEmbedderTest, FreeTextPlateFollowsBorderWidth) {
     const std::string stream(
         GetNormalAppearanceStreamBytes(swallowed.get()).c_str());
     EXPECT_NE(std::string::npos, stream.find(" re"));  // the border
-    if (rich) {
-      EXPECT_EQ(std::string::npos, stream.find("BT"));
-    } else {
-      // CPVT still emits the text, clipped to the (empty) plate.
-      const std::optional<CFX_FloatRect> clip = ParseClipRect(stream);
-      ASSERT_TRUE(clip.has_value());
-      EXPECT_NEAR(0.0f, clip->Width(), 0.01f);
-      EXPECT_NEAR(0.0f, clip->Height(), 0.01f);
-    }
+    EXPECT_EQ(std::string::npos, stream.find("BT"));
   }
+}
+
+// The document-level typographic features switch (kerning/ligatures off by
+// default for Acrobat parity).
+TEST_F(FPDFAnnotEmbedderTest, TypographicFeaturesSwitch) {
+  ScopedFPDFDocument doc(FPDF_CreateNewDocument());
+  EXPECT_FALSE(EPDFDoc_GetTypographicFeatures(doc.get()));
+  EXPECT_TRUE(EPDFDoc_SetTypographicFeatures(doc.get(), true));
+  EXPECT_TRUE(EPDFDoc_GetTypographicFeatures(doc.get()));
+  EXPECT_TRUE(EPDFDoc_SetTypographicFeatures(doc.get(), false));
+  EXPECT_FALSE(EPDFDoc_GetTypographicFeatures(doc.get()));
 }
 
 TEST_F(FPDFAnnotEmbedderTest, RichTextWriterFailureLeavesDocumentUntouched) {
@@ -3874,48 +3871,6 @@ TEST_F(FPDFAnnotEmbedderTest, RichTextWriterFailureLeavesDocumentUntouched) {
   EXPECT_TRUE(
       GetAppearanceFontDict(annot.get(), RegisteredFontAlias(amiri_id)));
   EXPECT_TRUE(GetDrFontEntry(doc.get(), RegisteredFontAlias(roboto_id)));
-}
-
-// The document switches: plain FreeText stays on CPVT unless the rich
-// engine is selected; an /RC always takes the rich engine.
-TEST_F(FPDFAnnotEmbedderTest, FreeTextLayoutSwitchSelectsRichEngine) {
-  ScopedFPDFDocument doc(FPDF_CreateNewDocument());
-  EXPECT_EQ(EPDF_FREETEXT_LAYOUT_CPVT, EPDFDoc_GetFreeTextLayout(doc.get()));
-  EXPECT_EQ(-1, EPDFDoc_GetFreeTextLayout(nullptr));
-  EXPECT_FALSE(EPDFDoc_SetFreeTextLayout(doc.get(), 7));
-  EXPECT_FALSE(EPDFDoc_GetTypographicFeatures(doc.get()));
-  EXPECT_TRUE(EPDFDoc_SetTypographicFeatures(doc.get(), true));
-  EXPECT_TRUE(EPDFDoc_GetTypographicFeatures(doc.get()));
-  EXPECT_TRUE(EPDFDoc_SetTypographicFeatures(doc.get(), false));
-
-  ScopedFPDFPage page(FPDFPage_New(doc.get(), 0, 400, 400));
-  ScopedFPDFAnnotation annot(
-      FPDFPage_CreateAnnot(page.get(), FPDF_ANNOT_FREETEXT));
-  ASSERT_TRUE(annot);
-  const FS_RECTF rect{100.0f, 300.0f, 300.0f, 200.0f};
-  ASSERT_TRUE(FPDFAnnot_SetRect(annot.get(), &rect));
-  ScopedFPDFWideString contents = GetFPDFWideString(L"Plain text");
-  ASSERT_TRUE(
-      FPDFAnnot_SetStringValue(annot.get(), "Contents", contents.get()));
-  ASSERT_TRUE(EPDFAnnot_SetDefaultAppearance(annot.get(), FPDF_FONT_HELVETICA,
-                                             20.0f, 0, 0, 0));
-
-  ASSERT_TRUE(EPDFAnnot_GenerateAppearance(annot.get()));
-  const std::string cpvt =
-      std::string(GetNormalAppearanceStreamBytes(annot.get()).c_str());
-  ASSERT_TRUE(EPDFDoc_SetFreeTextLayout(doc.get(), EPDF_FREETEXT_LAYOUT_RICH));
-  EXPECT_EQ(EPDF_FREETEXT_LAYOUT_RICH, EPDFDoc_GetFreeTextLayout(doc.get()));
-  ASSERT_TRUE(EPDFAnnot_GenerateAppearance(annot.get()));
-  const std::string rich =
-      std::string(GetNormalAppearanceStreamBytes(annot.get()).c_str());
-  EXPECT_NE(cpvt, rich);
-  // Acrobat's inset: the text starts border + 1 in from the left edge and
-  // the baseline sits 0.830 em below the top inset.
-  const std::vector<TextSegment> segments = ParseTextSegments(rich);
-  ASSERT_FALSE(segments.empty());
-  EXPECT_NEAR(102.0f, segments[0].x, 0.01f);
-  EXPECT_NEAR(300.0f - 2.0f - 0.830f * 20.0f, segments[0].y, 0.01f);
-  EXPECT_EQ("Plain ", segments[0].text);
 }
 
 // D5, the right-to-left case: an Arabic run is shaped, written in visual

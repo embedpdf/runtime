@@ -2216,18 +2216,6 @@ ByteString RichColorOperator(FX_ARGB argb, bool fill) {
          RichNumber(FXARGB_B(argb) / 255.0f) + (fill ? " rg\n" : " RG\n");
 }
 
-bool UseRichLayout(const CPDF_Document* doc,
-                   const CPDF_Dictionary* annot_dict) {
-  if (doc->GetFreeTextLayout() == CPDF_Document::FreeTextLayout::kRich) {
-    return true;
-  }
-  if (!annot_dict->GetUnicodeTextFor("RC").IsEmpty()) {
-    return true;
-  }
-  RetainPtr<const CPDF_Stream> rc = annot_dict->GetStreamFor("RC");
-  return rc && !rc->GetUnicodeText().IsEmpty();
-}
-
 ByteString HexUtf16(const WideString& text) {
   ByteString hex("<FEFF");
   for (wchar_t wch : text) {
@@ -2545,6 +2533,18 @@ PrepareRichFreeTextAPInternal(CPDF_Document* doc,
       return nullptr;
     }
     map.SetDefaultAppearanceEntry(body_entry, prepared->da_alias);
+  } else if (in.document->source == CPDF_RichTextDocument::Source::kContents &&
+             map.HasDefaultFont() && !map.DefaultFontIsStandard()) {
+    // Regenerating a PLAIN box: the parser derived the body face from the
+    // /DA font, so that entry IS the body face and the layout keeps naming
+    // the /DA alias — the contract every reader of a plain box, and CPVT
+    // before us, relied on. A standard-14 /DA font resolves by family to
+    // the Acrobat-parity face instead; an /RC body names its own family.
+    const CPDF_RichTextStyle& body = in.document->body;
+    map.PinRichFace(body.family, body.weight, body.italic,
+                    map.GetDefaultAppearanceEntry() >= 0
+                        ? map.GetDefaultAppearanceEntry()
+                        : 0);
   }
 
   fxcrt::ostringstream stream;
@@ -2590,7 +2590,9 @@ PrepareRichFreeTextAPInternal(CPDF_Document* doc,
   }
   // An empty BOX is invalid input (nothing to draw at all); a valid box whose
   // border swallowed its plate still paints its envelope above — the text
-  // has nowhere to go and lays out nothing.
+  // has nowhere to go and lays out nothing. A /Rect authored upside down
+  // (top below bottom) is a normal box, as it always was for CPVT.
+  box.Normalize();
   if (box.Width() <= 0 || box.Height() <= 0) {
     return nullptr;
   }
@@ -2663,7 +2665,7 @@ bool GenerateRichFreeTextAP(APGenerationTarget* target,
   RetainPtr<const CPDF_Dictionary> acroform =
       root ? root->GetDictFor("AcroForm") : nullptr;
   const CPDF_RichTextDocument document =
-      CPDF_RichTextParser::FromAnnotation(annot_dict, acroform.Get());
+      CPDF_RichTextParser::FromAnnotation(annot_dict, acroform.Get(), doc);
   RichFreeTextInputs in;
   in.document = &document;
   in.da_color = da_info.text_color;
@@ -2732,205 +2734,13 @@ bool GenerateFreeTextAP(APGenerationTarget* target,
     return false;
   }
 
-  // EmbedPDF (Phase D): an annotation with /RC, or a document that selected
-  // the rich engine, lays out through CPDF_RichTextLayout.
-  if (UseRichLayout(doc, annot_dict)) {
-    return GenerateRichFreeTextAP(target, annot_dict, blend_name, da_font,
-                                  std::move(default_font), font_name,
-                                  default_appearance_info.value());
-  }
-
-  fxcrt::ostringstream appearance_stream;
-  appearance_stream << "/" << kGSDictName << " gs ";
-
-  const CFX_Color& da_color = default_appearance_info.value().text_color;
-
-  // Detect FreeText Callout: IT-first (spec-correct), CL as geometry gate.
-  const ByteString intent = annot_dict->GetNameFor("IT");
-  RetainPtr<const CPDF_Array> cl = annot_dict->GetArrayFor("CL");
-  const bool intent_is_callout = (intent == "FreeTextCallout");
-  const bool has_valid_cl = cl && (cl->size() == 4 || cl->size() == 6);
-
-  if (intent_is_callout && has_valid_cl) {
-    // ---- Callout FreeText appearance ----
-
-    const CalloutEnvelope envelope = AppendCalloutEnvelope(
-        appearance_stream, annot_dict, cl.Get(), da_color);
-    const CFX_FloatRect text_box = envelope.text_box;
-    const float border_w = envelope.border_w;
-    const ShapeRotationInfo box_rot = envelope.box_rot;
-
-    // (h) Draw text inside the text box, on Acrobat's plate.
-    const CFX_FloatRect text_body = FreeTextPlate(text_box, border_w);
-
-    CFX_Color actual_text_color = da_color;
-    auto tc = annot_dict->GetArrayFor("TextColor");
-    if (tc && tc->size() >= 3) {
-      actual_text_color = fpdfdoc::CFXColorFromArray(*tc);
-    }
-
-    // EmbedPDF: use the annotation font map instead of CPVT_FontMap so
-    // FreeText AP generation can fall back to registered fonts and produce
-    // persistent, per-annotation subsets when saving.
-    CPDF_AnnotFontMap map(doc, std::move(default_font), font_name,
-                          target->IsPersistent(), da_font.registered_font_id,
-                          /*install_dr_entry=*/target->IsPersistent());
-    if (!map.HasDefaultFont()) {
-      return false;
-    }
-    CPVT_VariableText::Provider provider(&map);
-    CPVT_VariableText vt(&provider);
-
-    vt.SetPlateRect(text_body);
-    vt.SetAlignment(annot_dict->GetIntegerFor("Q"));
-    SetVtFontSize(default_appearance_info.value().font_size, vt);
-    vt.SetAutoReturn(true);
-    vt.SetMultiLine(true);
-    vt.Initialize();
-    vt.SetText(annot_dict->GetUnicodeTextFor(pdfium::annotation::kContents));
-    vt.RearrangeAll();
-
-    const CFX_FloatRect content_rect = vt.GetContentRect();
-    const float free_h = text_body.Height() - content_rect.Height();
-    float dy = 0.0f;
-    switch (GetVerticalAlign(annot_dict)) {
-      case CPDF_Annot::VerticalAlignment::kTop:
-        dy = 0.0f;
-        break;
-      case CPDF_Annot::VerticalAlignment::kMiddle:
-        dy = -free_h / 2.0f;
-        break;
-      case CPDF_Annot::VerticalAlignment::kBottom:
-        dy = -free_h;
-        break;
-    }
-
-    CFX_PointF offset(0.0f, dy);
-    const ByteString body =
-        GenerateEditAP(vt.GetProvider()->GetFontMap(), vt.GetIterator(), offset,
-                       /*continuous=*/true, /*sub_word=*/0);
-    if (body.GetLength() > 0) {
-      appearance_stream << "q\n";
-      WriteRect(appearance_stream, text_body) << " re W n\n";
-      appearance_stream << "BT\n"
-                        << GenerateColorAP(actual_text_color,
-                                           PaintOperation::kFill)
-                        << body << "ET\nQ\n";
-    }
-    if (box_rot.is_rotated) {
-      appearance_stream << "Q\n";  // close the (g) inline box rotation
-    }
-
-    // Finalize AP dict.
-    auto graphics_state_dict = GenerateExtGStateDict(*annot_dict, blend_name);
-    // EmbedPDF: collect both the original DA font and any registered fallback
-    // fonts actually used by this annotation into the AP resource dictionary.
-    auto resource_font_dict = map.CreateFontResourceDict();
-    if (!resource_font_dict) {
-      return false;  // registered /DA font without a resource: no appearance
-    }
-    auto resource_dict = GenerateResourcesDict(
-        doc, std::move(graphics_state_dict), std::move(resource_font_dict));
-    GenerateAndSetAPDict(target, annot_dict, &appearance_stream,
-                         std::move(resource_dict),
-                         /*is_text_markup_annotation=*/false);
-  } else {
-    // ---- Regular FreeText appearance (unchanged) ----
-
-    const BorderStyleInfo border_style_info =
-        GetBorderStyleInfo(annot_dict->GetDictFor("BS"));
-    const ShapeRotationInfo rot_info = GetShapeRotationInfo(annot_dict);
-    CFX_FloatRect rect = rot_info.bbox;
-    const float half_border_width = border_style_info.width / 2.0f;
-    CFX_FloatRect background_rect = rect;
-    background_rect.Deflate(half_border_width, half_border_width);
-    const CFX_FloatRect body_rect =
-        FreeTextPlate(rect, border_style_info.width);
-
-    auto color_array = annot_dict->GetArrayFor(pdfium::annotation::kC);
-    if (color_array) {
-      CFX_Color color = fpdfdoc::CFXColorFromArray(*color_array);
-      appearance_stream << "q\n"
-                        << GenerateColorAP(color, PaintOperation::kFill);
-      WriteRect(appearance_stream, background_rect) << " re f\nQ\n";
-    }
-
-    const ByteString border_stream =
-        GenerateBorderAP(rect, border_style_info, da_color);
-    if (border_stream.GetLength() > 0) {
-      appearance_stream << "q\n" << border_stream << "Q\n";
-    }
-
-    // EmbedPDF: same registered-font/subset path as the callout branch above.
-    CPDF_AnnotFontMap map(doc, std::move(default_font), font_name,
-                          target->IsPersistent(), da_font.registered_font_id,
-                          /*install_dr_entry=*/target->IsPersistent());
-    if (!map.HasDefaultFont()) {
-      return false;
-    }
-    CPVT_VariableText::Provider provider(&map);
-    CPVT_VariableText vt(&provider);
-
-    vt.SetPlateRect(body_rect);
-    vt.SetAlignment(annot_dict->GetIntegerFor("Q"));
-    SetVtFontSize(default_appearance_info.value().font_size, vt);
-    vt.SetAutoReturn(true);
-    vt.SetMultiLine(true);
-    vt.Initialize();
-    vt.SetText(annot_dict->GetUnicodeTextFor(pdfium::annotation::kContents));
-    vt.RearrangeAll();
-    const CFX_FloatRect content_rect = vt.GetContentRect();
-    const float free_h = body_rect.Height() - content_rect.Height();
-    float dy = 0.0f;
-
-    switch (GetVerticalAlign(annot_dict)) {
-      case CPDF_Annot::VerticalAlignment::kTop:
-        dy = 0.0f;
-        break;
-      case CPDF_Annot::VerticalAlignment::kMiddle:
-        dy = -free_h / 2.0f;
-        break;
-      case CPDF_Annot::VerticalAlignment::kBottom:
-        dy = -free_h;
-        break;
-    }
-
-    CFX_PointF offset(0.0f, dy);
-    const ByteString body =
-        GenerateEditAP(vt.GetProvider()->GetFontMap(), vt.GetIterator(), offset,
-                       /*continuous=*/true, /*sub_word=*/0);
-    if (body.GetLength() > 0) {
-      appearance_stream << "/Tx BMC\n" << "q\n";
-      if (content_rect.Width() > body_rect.Width() ||
-          content_rect.Height() > body_rect.Height()) {
-        WriteRect(appearance_stream, body_rect) << " re\nW\nn\n";
-      }
-      appearance_stream << "BT\n"
-                        << GenerateColorAP(da_color, PaintOperation::kFill)
-                        << body << "ET\n"
-                        << "Q\nEMC\n";
-    }
-
-    auto graphics_state_dict = GenerateExtGStateDict(*annot_dict, blend_name);
-    // EmbedPDF: include registered fallback subset fonts used by this FreeText
-    // appearance, scoped to this annotation/layer.
-    auto resource_font_dict = map.CreateFontResourceDict();
-    if (!resource_font_dict) {
-      return false;  // registered /DA font without a resource: no appearance
-    }
-    auto resource_dict = GenerateResourcesDict(
-        doc, std::move(graphics_state_dict), std::move(resource_font_dict));
-    if (rot_info.is_rotated) {
-      GenerateAndSetAPDictWithTransform(target, annot_dict, &appearance_stream,
-                                        std::move(resource_dict),
-                                        rot_info.matrix, rot_info.bbox);
-    } else {
-      GenerateAndSetAPDict(target, annot_dict, &appearance_stream,
-                           std::move(resource_dict),
-                           /*is_text_markup_annotation=*/false);
-    }
-  }
-  return true;
+  // EmbedPDF (Phase D, D4): every FreeText lays out through
+  // CPDF_RichTextLayout — a box with /RC from its rich document, a plain box
+  // from the document the parser synthesises out of /Contents, /DA and /Q.
+  // One engine, one line model, one plate; the CPVT path is gone.
+  return GenerateRichFreeTextAP(target, annot_dict, blend_name, da_font,
+                                std::move(default_font), font_name,
+                                default_appearance_info.value());
 }
 
 bool GenerateHighlightAP(APGenerationTarget* target,

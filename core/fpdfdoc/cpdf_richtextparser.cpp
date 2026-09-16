@@ -3,6 +3,9 @@
 
 #include "core/fpdfdoc/cpdf_richtextparser.h"
 
+#include "core/fpdfdoc/cpdf_annotfontmap.h"
+#include "core/fxge/cfx_fontregistry.h"
+
 #include <math.h>
 
 #include <algorithm>
@@ -939,6 +942,7 @@ RetainPtr<const CPDF_Dictionary> FontDescriptorOf(
 // The face a /DA font name stands for, from /DR when it is there.
 void ApplyDaFontFace(const ByteString& font_name,
                      const CPDF_Dictionary* acroform_dict,
+                     const CPDF_Document* doc,
                      CPDF_RichTextStyle* style) {
   RetainPtr<const CPDF_Dictionary> font_dict;
   if (acroform_dict) {
@@ -948,6 +952,19 @@ void ApplyDaFontFace(const ByteString& font_name,
     font_dict = fonts ? fonts->GetDictFor(font_name.AsStringView()) : nullptr;
   }
   if (!font_dict) {
+    // A registered font's alias before its /DR entry exists (a draft ahead
+    // of its first appearance): the registry knows the face.
+    if (doc) {
+      std::optional<CFX_FontRegistry::FontId> registered =
+          CPDF_AnnotFontMap::RegisteredFontIdFromAlias(doc, font_name);
+      if (registered.has_value()) {
+        style->family = WideString::FromUTF8(
+            CFX_FontRegistry::GetFamilyName(*registered).AsStringView());
+        style->weight = CFX_FontRegistry::GetStyleWeight(*registered);
+        style->italic = CFX_FontRegistry::IsStyleItalic(*registered);
+        return;
+      }
+    }
     if (!ApplyStandardAlias(font_name, style)) {
       style->family = WideString::FromUTF8(font_name.AsStringView());
     }
@@ -1378,7 +1395,8 @@ void CPDF_RichTextParser::DefaultsFromAnnotation(
     const CPDF_Dictionary* acroform_dict,
     CPDF_RichTextStyle* style,
     CPDF_RichTextParagraphProps* paragraph,
-    std::vector<Diagnostic>* diagnostics) {
+    std::vector<Diagnostic>* diagnostics,
+    const CPDF_Document* doc) {
   CPDF_RichTextStyle& defaults = *style;
   CPDF_RichTextParagraphProps& paragraph_defaults = *paragraph;
   if (!annot_dict) {
@@ -1389,7 +1407,7 @@ void CPDF_RichTextParser::DefaultsFromAnnotation(
   CPDF_DefaultAppearance da(annot_dict, acroform_dict);
   std::optional<CPDF_DefaultAppearance::FontNameAndSize> da_font = da.GetFont();
   if (da_font.has_value()) {
-    ApplyDaFontFace(da_font->name, acroform_dict, &defaults);
+    ApplyDaFontFace(da_font->name, acroform_dict, doc, &defaults);
     defaults.size = da_font->size;
   }
   if (std::optional<CFX_Color> da_color = da.GetColor()) {
@@ -1440,7 +1458,8 @@ void CPDF_RichTextParser::DefaultsFromAnnotation(
 // static
 CPDF_RichTextDocument CPDF_RichTextParser::FromAnnotation(
     const CPDF_Dictionary* annot_dict,
-    const CPDF_Dictionary* acroform_dict) {
+    const CPDF_Dictionary* acroform_dict,
+    const CPDF_Document* doc) {
   CPDF_RichTextStyle defaults;
   CPDF_RichTextParagraphProps paragraph_defaults;
   std::vector<Diagnostic> diagnostics;
@@ -1448,7 +1467,7 @@ CPDF_RichTextDocument CPDF_RichTextParser::FromAnnotation(
     return FromPlainText(WideString(), defaults, paragraph_defaults);
   }
   DefaultsFromAnnotation(annot_dict, acroform_dict, &defaults,
-                         &paragraph_defaults, &diagnostics);
+                         &paragraph_defaults, &diagnostics, doc);
 
   const bool is_widget = annot_dict->GetNameFor("Subtype") == "Widget";
   WideString rich = annot_dict->GetUnicodeTextFor(is_widget ? "RV" : "RC");
