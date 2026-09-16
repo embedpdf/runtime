@@ -12,6 +12,7 @@
 #include "core/fpdfapi/edit/cpdf_contentstream_write_utils.h"
 #include "core/fpdfapi/edit/cpdf_pagecontentgenerator.h"
 #include "core/fpdfapi/edit/cpdf_pagecontentmanager.h"
+#include "core/fpdfapi/edit/cpdf_redaction_mark_sanitizer.h"
 #include "core/fpdfapi/font/cpdf_cidfont.h"
 #include "core/fpdfapi/font/cpdf_font.h"
 #include "core/fpdfapi/page/cpdf_form.h"
@@ -774,8 +775,11 @@ bool RedactHolder(CPDF_Page* page_for_cache,
                   pdfium::span<const CFX_FloatRect> page_rects,
                   const CFX_Matrix& to_page,
                   bool recurse_forms,
-                  bool fill_black) {
+                  bool fill_black,
+                  CPDF_RedactionMarkSanitizer::SanitizedProperties*
+                      sanitized_properties) {
   bool changed = false;
+  CPDF_RedactionMarkSanitizer mark_sanitizer(holder, sanitized_properties);
   std::vector<CPDF_PageObject*> to_remove;
 
   for (auto it = holder->begin(); it != holder->end(); ++it) {
@@ -785,6 +789,9 @@ bool RedactHolder(CPDF_Page* page_for_cache,
 
     if (CPDF_TextObject* to = po->AsText()) {
       const RedactOutcome out = RedactTextObjectMulti(to, page_rects, to_page);
+      if (out != RedactOutcome::kUnchanged) {
+        mark_sanitizer.Record(po);
+      }
       if (out == RedactOutcome::kRemovedAll) {
         to_remove.push_back(po);
         changed = true;
@@ -796,6 +803,7 @@ bool RedactHolder(CPDF_Page* page_for_cache,
 
     if (CPDF_ImageObject* io = po->AsImage()) {
       if (RedactImageObject(page_for_cache, io, page_rects, to_page, fill_black)) {
+        mark_sanitizer.Record(po);
         changed = true;
       }
       continue;
@@ -832,6 +840,7 @@ bool RedactHolder(CPDF_Page* page_for_cache,
       }
       
       if (any_removed) {
+        mark_sanitizer.Record(po);
         if (remaining_subpaths.empty()) {
           // All subpaths were redacted - remove the entire path object
           to_remove.push_back(path);
@@ -860,6 +869,7 @@ bool RedactHolder(CPDF_Page* page_for_cache,
             bbox_page.right <= redact_rect.right &&
             bbox_page.bottom >= redact_rect.bottom &&
             bbox_page.top <= redact_rect.top) {
+          mark_sanitizer.Record(po);
           to_remove.push_back(shading);
           changed = true;
           break;
@@ -875,12 +885,16 @@ bool RedactHolder(CPDF_Page* page_for_cache,
           continue;
 
         const CFX_Matrix placement = fo->form_matrix();
-        const CFX_Matrix next_to_page = to_page * placement;
-        const bool form_changed = RedactHolder(page_for_cache, form, page_rects, next_to_page, true, fill_black);
+        const CFX_Matrix next_to_page = placement * to_page;
+        const bool form_changed =
+            RedactHolder(page_for_cache, form, page_rects, next_to_page, true,
+                         fill_black, sanitized_properties);
 
         if (form_changed) {
+          mark_sanitizer.Record(po);
           CPDF_PageContentGenerator form_gen(form);
           form_gen.GenerateContent();
+          fo->SetDirty(true);
           changed = true;
         }
       }
@@ -893,6 +907,15 @@ bool RedactHolder(CPDF_Page* page_for_cache,
       holder->RemovePageObject(obj);
     }
     changed = true;
+  }
+
+  if (changed) {
+    // Form placements may share the original stream and its dictionaries.
+    // Detach before sanitizing properties or regenerating the form content.
+    if (!holder->IsPage()) {
+      static_cast<CPDF_Form*>(holder)->CloneBackingStreamForWrite();
+    }
+    mark_sanitizer.Apply();
   }
 
   return changed;
@@ -912,9 +935,10 @@ bool RedactTextInRect(CPDF_Page* page,
   const CFX_Matrix identity;
 
   const CFX_FloatRect rects[] = {r};
+  CPDF_RedactionMarkSanitizer::SanitizedProperties sanitized_properties;
   const bool changed =
       RedactHolder(page, page, pdfium::span(rects), identity, recurse_forms,
-                   /*fill_black=*/draw_black_boxes);
+                   /*fill_black=*/draw_black_boxes, &sanitized_properties);
 
   if (draw_black_boxes) {
     AddBlackOverlayPaths(page, pdfium::span(rects));  // paint on top
@@ -941,9 +965,10 @@ bool RedactTextInRects(CPDF_Page* page,
   }
 
   const CFX_Matrix identity;
+  CPDF_RedactionMarkSanitizer::SanitizedProperties sanitized_properties;
   const bool changed =
       RedactHolder(page, page, pdfium::span(rects), identity, recurse_forms,
-                   /*fill_black=*/draw_black_boxes);
+                   /*fill_black=*/draw_black_boxes, &sanitized_properties);
 
   if (draw_black_boxes) {
     AddBlackOverlayPaths(page, pdfium::span(rects));  // paint on top

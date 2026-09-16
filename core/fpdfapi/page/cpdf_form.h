@@ -55,6 +55,9 @@ class CPDF_Form final : public CPDF_PageObjectHolder,
   // CPDF_PageObjectHolder:
   RetainPtr<CPDF_Stream> GetMutableFormStream() override;
 
+  // Detach this placement before redaction mutates its stream/resources.
+  void CloneBackingStreamForWrite();
+
   void ParseContent();
   void ParseContent(const CPDF_AllStates* pGraphicStates,
                     const CFX_Matrix* pParentMatrix,
@@ -70,7 +73,7 @@ class CPDF_Form final : public CPDF_PageObjectHolder,
                             RecursionState* recursion_state);
 
   RecursionState recursion_state_;
-  RetainPtr<CPDF_Stream> const form_stream_;
+  RetainPtr<CPDF_Stream> form_stream_;
 };
 
 #endif  // CORE_FPDFAPI_PAGE_CPDF_FORM_H_

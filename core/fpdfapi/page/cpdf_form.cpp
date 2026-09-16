@@ -14,6 +14,7 @@
 #include "core/fpdfapi/page/cpdf_pageobject.h"
 #include "core/fpdfapi/page/cpdf_pageobjectholder.h"
 #include "core/fpdfapi/parser/cpdf_dictionary.h"
+#include "core/fpdfapi/parser/cpdf_document.h"
 #include "core/fpdfapi/parser/cpdf_stream.h"
 #include "core/fxcrt/check_op.h"
 #include "core/fxge/dib/cfx_dibitmap.h"
@@ -119,6 +120,19 @@ CFX_FloatRect CPDF_Form::CalcBoundingBox() const {
 
 RetainPtr<CPDF_Stream> CPDF_Form::GetMutableFormStream() {
   return form_stream_;
+}
+
+void CPDF_Form::CloneBackingStreamForWrite() {
+  auto clone = ToStream(form_stream_->Clone());
+  // The stream clone retains indirect references. Give content generation
+  // private effective resources, including resources inherited from a parent.
+  if (resources_) {
+    clone->GetMutableDict()->SetFor("Resources", resources_->Clone());
+  }
+  GetDocument()->AddIndirectObject(clone);
+  form_stream_ = std::move(clone);
+  SetDictForWrite(form_stream_->GetMutableDict());
+  resources_ = GetMutableDict()->GetMutableDictFor("Resources");
 }
 
 RetainPtr<const CPDF_Stream> CPDF_Form::GetStream() const {
