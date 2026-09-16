@@ -710,7 +710,7 @@ class ReferrerIndexBuilder {
       size_t index = 0;
       for (const auto& item : locker) {
         VisitDirect(item.Get(), owner,
-                    Join(prefix, "[" + ByteString::FormatInteger(index) + "]"),
+                    Join(prefix, ByteString::Format("[%zu]", index)),
                     queue, seen);
         ++index;
       }
