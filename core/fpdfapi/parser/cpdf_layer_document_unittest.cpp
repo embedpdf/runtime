@@ -787,3 +787,208 @@ TEST_F(CPDFLayerDocumentTest, LazyBaseParseIsSharedAndNeverLeaksPromotions) {
     }
   }
 }
+
+// ---------------------------------------------------------------------------
+// EmbedPDF: the two twins of an overlay object. "Differs from base" decides
+// what a cumulative save writes; "differs from loaded" decides whether a save
+// is a no-op. They agree on a fresh layer and disagree on a reopened one.
+// ---------------------------------------------------------------------------
+
+namespace {
+
+// Object 4 (the annotation) rewritten with a wider /Rect, as one revision
+// appended to |base_pdf|: what a saved layer delta looks like.
+std::string BuildAnnotationRectDelta(const std::string& base_pdf) {
+  std::ostringstream delta;
+  delta << "4 0 obj\n"
+        << "<< /Type /Annot /Subtype /Polygon /Rect [10 10 40 40]\n"
+        << "   /Vertices [10 10 30 10 20 30] >>\n"
+        << "endobj\n";
+  const size_t xref_offset = base_pdf.size() + delta.tellp();
+  delta << "xref\n4 1\n"
+        << std::setw(10) << std::setfill('0') << base_pdf.size()
+        << " 00000 n \n"
+        << "trailer\n<< /Size 5 /Root 1 0 R /Prev "
+        << GetStartXrefOffsetFromPdf(base_pdf) << " >>\nstartxref\n"
+        << xref_offset << "\n%%EOF\n";
+  return delta.str();
+}
+
+RetainPtr<CPDF_Dictionary> MutableAnnot(CPDF_LayerDocument* layer) {
+  RetainPtr<CPDF_Object> object = layer->GetMutableIndirectObject(4);
+  return object ? pdfium::WrapRetain(object->AsMutableDictionary()) : nullptr;
+}
+
+}  // namespace
+
+TEST_F(CPDFLayerDocumentTest, TwinsAgreeOnAFreshLayer) {
+  const std::string pdf = BuildPdfWithIndirectAnnotation();
+  RetainPtr<CPDF_BaseDocument> base = LoadBaseDocumentFromString(pdf);
+  ASSERT_TRUE(base);
+  auto layer = std::make_unique<CPDF_LayerDocument>(base, nullptr);
+  ASSERT_EQ(CPDF_LayerDocument::OpenStatus::kSuccess, layer->ingest_status());
+
+  // Not in the overlay: neither differs, and the loaded twin is the base's.
+  EXPECT_FALSE(layer->DiffersFromBase(4));
+  EXPECT_FALSE(layer->DiffersFromLoaded(4));
+  EXPECT_EQ(base->GetFrozenObjectForLayer(3).Get(),
+            layer->GetLoadedTwin(3).Get());
+
+  // Touched, not changed.
+  RetainPtr<CPDF_Dictionary> annot = MutableAnnot(layer.get());
+  ASSERT_TRUE(annot);
+  EXPECT_TRUE(layer->IsObjectPromoted(4));
+  EXPECT_FALSE(layer->DiffersFromBase(4));
+  EXPECT_FALSE(layer->DiffersFromLoaded(4));
+
+  // Changed.
+  annot->SetRectFor("Rect", CFX_FloatRect(10, 10, 40, 40));
+  EXPECT_TRUE(layer->DiffersFromBase(4));
+  EXPECT_TRUE(layer->DiffersFromLoaded(4));
+
+  // Restored: both sides go through the same writer, so the base's
+  // integers and our floats compare as the bytes the creator would write.
+  annot->SetRectFor("Rect", CFX_FloatRect(10, 10, 30, 30));
+  EXPECT_FALSE(layer->DiffersFromBase(4));
+  EXPECT_FALSE(layer->DiffersFromLoaded(4));
+
+  // New here: no twin at all.
+  RetainPtr<CPDF_Dictionary> fresh = layer->NewIndirect<CPDF_Dictionary>();
+  ASSERT_TRUE(fresh);
+  EXPECT_TRUE(layer->DiffersFromBase(fresh->GetObjNum()));
+  EXPECT_TRUE(layer->DiffersFromLoaded(fresh->GetObjNum()));
+}
+
+TEST_F(CPDFLayerDocumentTest, TwinsDisagreeOnAReopenedLayer) {
+  const std::string pdf = BuildPdfWithIndirectAnnotation();
+  RetainPtr<CPDF_BaseDocument> base = LoadBaseDocumentFromString(pdf);
+  ASSERT_TRUE(base);
+  auto layer = std::make_unique<CPDF_LayerDocument>(
+      base, MakeStreamForString(BuildAnnotationRectDelta(pdf)));
+  ASSERT_EQ(CPDF_LayerDocument::OpenStatus::kSuccess, layer->ingest_status());
+  ASSERT_EQ(1u, layer->GetPromotedObjectCount());
+
+  // Ingested and untouched: differs from the base, not from the loaded file.
+  EXPECT_TRUE(layer->DiffersFromBase(4));
+  EXPECT_FALSE(layer->DiffersFromLoaded(4));
+  RetainPtr<const CPDF_Object> twin = layer->GetLoadedTwin(4);
+  ASSERT_TRUE(twin);
+  EXPECT_NE(base->GetFrozenObjectForLayer(4).Get(), twin.Get());
+  EXPECT_EQ(40, twin->AsDictionary()->GetRectFor("Rect").right);
+
+  // Reverted to the base value: nothing to write, yet changed since load.
+  RetainPtr<CPDF_Dictionary> annot = MutableAnnot(layer.get());
+  ASSERT_TRUE(annot);
+  annot->SetRectFor("Rect", CFX_FloatRect(10, 10, 30, 30));
+  EXPECT_FALSE(layer->DiffersFromBase(4));
+  EXPECT_TRUE(layer->DiffersFromLoaded(4));
+
+  // Back to the loaded value.
+  annot->SetRectFor("Rect", CFX_FloatRect(10, 10, 40, 40));
+  EXPECT_TRUE(layer->DiffersFromBase(4));
+  EXPECT_FALSE(layer->DiffersFromLoaded(4));
+
+  // The loaded twin itself never moved.
+  EXPECT_EQ(40, layer->GetLoadedTwin(4)->AsDictionary()->GetRectFor("Rect").right);
+
+  // Deleted: the delta carried it, it is gone - changed since load; the
+  // base's copy stands, so it does not differ from the base.
+  annot.Reset();
+  layer->DeleteIndirectObject(4);
+  EXPECT_FALSE(layer->IsObjectPromoted(4));
+  EXPECT_TRUE(layer->DiffersFromLoaded(4));
+  EXPECT_FALSE(layer->DiffersFromBase(4));
+}
+
+// ---------------------------------------------------------------------------
+// EmbedPDF M1: streams share file-backed bytes within a lineage.
+// ---------------------------------------------------------------------------
+
+namespace {
+
+// Object 4 (the form XObject stream) rewritten with other content, as one
+// revision appended to |base_pdf|.
+std::string BuildStreamDelta(const std::string& base_pdf) {
+  const std::string content = "0 0 20 20 re f\n";
+  std::ostringstream delta;
+  delta << "4 0 obj\n"
+        << "<< /Type /XObject /Subtype /Form /BBox [0 0 100 100]\n"
+        << "   /Resources << /BaseMarker 1 >> /Length " << content.size()
+        << " >>\nstream\n"
+        << content << "endstream\nendobj\n";
+  const size_t xref_offset = base_pdf.size() + delta.tellp();
+  delta << "xref\n4 1\n"
+        << std::setw(10) << std::setfill('0') << base_pdf.size()
+        << " 00000 n \n"
+        << "trailer\n<< /Size 6 /Root 1 0 R /Prev "
+        << GetStartXrefOffsetFromPdf(base_pdf) << " >>\nstartxref\n"
+        << xref_offset << "\n%%EOF\n";
+  return delta.str();
+}
+
+}  // namespace
+
+TEST_F(CPDFLayerDocumentTest, PromotedStreamSharesTheBaseView) {
+  const std::string pdf = BuildPdfWithFormXObject();
+  RetainPtr<CPDF_BaseDocument> base = LoadBaseDocumentFromString(pdf);
+  ASSERT_TRUE(base);
+  auto layer = std::make_unique<CPDF_LayerDocument>(base, nullptr);
+  ASSERT_EQ(CPDF_LayerDocument::OpenStatus::kSuccess, layer->ingest_status());
+
+  RetainPtr<const CPDF_Stream> twin = ToStream(base->GetFrozenObjectForLayer(4));
+  ASSERT_TRUE(twin);
+  ASSERT_TRUE(twin->IsFileBased());
+
+  // Promotion clones for the layer: the bytes stay where they are.
+  RetainPtr<CPDF_Stream> promoted =
+      ToStream(layer->GetMutableIndirectObject(4));
+  ASSERT_TRUE(promoted);
+  EXPECT_TRUE(promoted->IsFileBased());
+  EXPECT_EQ(twin->BackingView(), promoted->BackingView());
+  EXPECT_FALSE(layer->DiffersFromBase(4));   // identity: O(1)
+  EXPECT_FALSE(layer->DiffersFromLoaded(4));
+
+  // A write gives the clone its own buffer; the base keeps its view.
+  const uint8_t bytes[] = "1 0 0 rg 0 0 5 5 re f\n";
+  promoted->SetData(pdfium::span(bytes).first(sizeof(bytes) - 1));
+  EXPECT_TRUE(promoted->IsMemoryBased());
+  EXPECT_TRUE(twin->IsFileBased());
+  EXPECT_TRUE(layer->DiffersFromBase(4));
+
+  // A plain clone (the cross-document path) copies, as it always did.
+  RetainPtr<CPDF_Object> copy = twin->Clone();
+  ASSERT_TRUE(copy && copy->IsStream());
+  EXPECT_TRUE(copy->AsStream()->IsMemoryBased());
+}
+
+TEST_F(CPDFLayerDocumentTest, IngestedStreamAndItsTwinShareOneView) {
+  const std::string pdf = BuildPdfWithFormXObject();
+  RetainPtr<CPDF_BaseDocument> base = LoadBaseDocumentFromString(pdf);
+  ASSERT_TRUE(base);
+  auto layer = std::make_unique<CPDF_LayerDocument>(
+      base, MakeStreamForString(BuildStreamDelta(pdf)));
+  ASSERT_EQ(CPDF_LayerDocument::OpenStatus::kSuccess, layer->ingest_status());
+  ASSERT_EQ(1u, layer->GetPromotedObjectCount());
+
+  RetainPtr<const CPDF_Stream> overlay = ToStream(layer->GetIndirectObject(4));
+  RetainPtr<const CPDF_Stream> loaded = ToStream(layer->GetLoadedTwin(4));
+  ASSERT_TRUE(overlay && loaded);
+  EXPECT_TRUE(overlay->IsFileBased());
+  EXPECT_TRUE(loaded->IsFileBased());
+  EXPECT_EQ(overlay->BackingView(), loaded->BackingView());  // no second copy
+  EXPECT_FALSE(layer->DiffersFromLoaded(4));                  // identity
+  EXPECT_TRUE(layer->DiffersFromBase(4));                     // exact compare: content differs
+
+  // Replace the data, then restore the loaded bytes: a different view, the
+  // same bytes - the exact fallback says unchanged.
+  RetainPtr<CPDF_Stream> mutable_overlay =
+      ToStream(layer->GetMutableIndirectObject(4));
+  const uint8_t other[] = "0 0 1 1 re f\n";
+  mutable_overlay->SetData(pdfium::span(other).first(sizeof(other) - 1));
+  EXPECT_TRUE(layer->DiffersFromLoaded(4));
+  const std::string restored = "0 0 20 20 re f\n";
+  mutable_overlay->SetData(pdfium::as_bytes(pdfium::span(restored)));
+  EXPECT_TRUE(mutable_overlay->IsMemoryBased());
+  EXPECT_NE(mutable_overlay->BackingView(), loaded->BackingView());
+  EXPECT_FALSE(layer->DiffersFromLoaded(4));
+}

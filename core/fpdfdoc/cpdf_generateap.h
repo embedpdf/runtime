@@ -7,16 +7,21 @@
 #ifndef CORE_FPDFDOC_CPDF_GENERATEAP_H_
 #define CORE_FPDFDOC_CPDF_GENERATEAP_H_
 
+#include <memory>
 #include <optional>
 
 #include "core/fpdfdoc/cpdf_annot.h"
+#include "core/fpdfdoc/cpdf_annotfontmap.h"
+#include "core/fxcrt/bytestring.h"
+#include "core/fxcrt/fx_coordinates.h"
 #include "core/fxcrt/widestring.h"
+#include "core/fxge/cfx_color.h"
 #include "core/fxge/cfx_fontregistry.h"
 
 class CPDF_Dictionary;
 class CPDF_Document;
 class CPDF_Stream;
-struct CFX_Color;
+struct CPDF_RichTextDocument;
 enum class BlendMode;
 
 class CPDF_GenerateAP {
@@ -102,6 +107,45 @@ class CPDF_GenerateAP {
       CFX_FontRegistry::FontId font_id,
       float font_size,
       const CFX_Color& color);
+
+  // EmbedPDF (Phase D): a FreeText appearance laid out from a rich text
+  // document, in the two halves of the Phase C note §6. Prepare lays out
+  // and builds the stream and its font resources off to the side: no
+  // object number, no /DR change, no alias reserved. Publish adds them and
+  // sets /AP /N. Dropping a prepared appearance costs the document nothing.
+  struct PreparedRichFreeTextAP {
+    PreparedRichFreeTextAP();
+    PreparedRichFreeTextAP(PreparedRichFreeTextAP&& that) noexcept;
+    PreparedRichFreeTextAP& operator=(PreparedRichFreeTextAP&& that) noexcept;
+    ~PreparedRichFreeTextAP();
+
+    std::unique_ptr<CPDF_AnnotFontMap> fonts;
+    std::optional<CPDF_AnnotFontMap::PreparedFontResources> resources;
+    ByteString content;                         // the whole stream
+    RetainPtr<CPDF_Dictionary> graphics_state;  // direct
+    CFX_Matrix matrix;
+    CFX_FloatRect bbox;
+    bool use_transform = false;
+    ByteString da_alias;  // the /DR key the DA string should name
+    float body_size = 0;  // the size laid out with (auto size resolved)
+    bool degraded = false;
+    bool auto_size_fell_back = false;
+  };
+  struct RichFreeTextRequest {
+    const CPDF_RichTextDocument* document = nullptr;
+    CFX_Color da_color;  // border stroke and DA colour
+  };
+  // The body face becomes the /DA font: its alias is chosen (not reserved)
+  // and returned in |da_alias|. nullptr when the rect is empty, no face
+  // resolves at all, or a font resource cannot be staged.
+  static std::unique_ptr<PreparedRichFreeTextAP> PrepareRichFreeTextAP(
+      CPDF_Document* doc,
+      const CPDF_Dictionary* annot_dict,
+      const RichFreeTextRequest& request);
+  static bool PublishRichFreeTextAP(
+      CPDF_Document* doc,
+      CPDF_Dictionary* annot_dict,
+      std::unique_ptr<PreparedRichFreeTextAP> prepared);
 
   CPDF_GenerateAP() = delete;
   CPDF_GenerateAP(const CPDF_GenerateAP&) = delete;

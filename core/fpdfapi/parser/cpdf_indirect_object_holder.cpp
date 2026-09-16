@@ -51,6 +51,11 @@ const CPDF_Object* CPDF_IndirectObjectHolder::GetIndirectObjectInternal(
   return FilterInvalidObjNum(it->second.Get());
 }
 
+bool CPDF_IndirectObjectHolder::SharesBackingStorageWith(
+    const CPDF_Stream* stream) const {
+  return false;
+}
+
 RetainPtr<CPDF_Object> CPDF_IndirectObjectHolder::FindLocalIndirectObject(
     uint32_t objnum) const {
   auto it = indirect_objs_.find(objnum);

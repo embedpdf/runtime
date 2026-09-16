@@ -88,7 +88,10 @@ std::vector<RedactRegion> GetRedactRegionsFromAnnotDict(
 struct RemovedAnnotCandidate {
   size_t index = 0;
   uint32_t object_number = 0;
-  RetainPtr<CPDF_Dictionary> dict;
+  // A const view: collecting candidates is a read (reads never promote); the
+  // removal itself takes the mutable page, and a widget is taken mutable
+  // only when it is detached from its field.
+  RetainPtr<const CPDF_Dictionary> dict;
 };
 
 uint32_t GetAnnotObjectNumber(const CPDF_Object* entry,
@@ -132,13 +135,13 @@ bool AddRemovalCandidate(CPDF_Page* page,
   if (!page || !candidates || CandidateExistsAtIndex(*candidates, index)) {
     return false;
   }
-  RetainPtr<CPDF_Array> annots = page->GetMutableAnnotsArray();
+  RetainPtr<const CPDF_Array> annots = page->GetAnnotsArray();
   if (!annots || index >= annots->size()) {
     return false;
   }
-  RetainPtr<CPDF_Object> entry = annots->GetMutableObjectAt(index);
-  RetainPtr<CPDF_Dictionary> dict =
-      ToDictionary(entry ? entry->GetMutableDirect() : nullptr);
+  RetainPtr<const CPDF_Object> entry = annots->GetObjectAt(index);
+  RetainPtr<const CPDF_Dictionary> dict =
+      ToDictionary(annots->GetDirectObjectAt(index));
   if (!dict) {
     return false;
   }
@@ -283,10 +286,20 @@ void DetachWidgetsFromAcroForm(
   }
   bool changed = false;
   for (const RemovedAnnotCandidate& candidate : candidates) {
-    if (candidate.dict &&
-        candidate.dict->GetNameFor(pdfium::annotation::kSubtype) == "Widget") {
-      changed |= DetachWidgetFromAcroForm(doc, candidate.dict.Get());
+    if (!candidate.dict ||
+        candidate.dict->GetNameFor(pdfium::annotation::kSubtype) != "Widget") {
+      continue;
     }
+    // Detaching edits the field tree through the widget's /Parent. The
+    // widget is about to be removed, so taking it mutable promotes nothing
+    // that survives the removal.
+    RetainPtr<CPDF_Dictionary> widget =
+        candidate.object_number
+            ? ToDictionary(
+                  doc->GetMutableIndirectObject(candidate.object_number))
+            : pdfium::WrapRetain(
+                  const_cast<CPDF_Dictionary*>(candidate.dict.Get()));
+    changed |= DetachWidgetFromAcroForm(doc, widget.Get());
   }
   if (changed) {
     CPDF_InteractiveForm form(doc);
@@ -372,12 +385,11 @@ bool ApplySingleRedactionCore(CPDF_Page* page,
   }
 
   std::vector<RemovedAnnotCandidate> removals;
-  RetainPtr<CPDF_Array> annots = page->GetMutableAnnotsArray();
+  RetainPtr<const CPDF_Array> annots = page->GetAnnotsArray();
   if (annots) {
     for (size_t i = 0; i < annots->size(); ++i) {
-      RetainPtr<CPDF_Object> entry = annots->GetMutableObjectAt(i);
-      RetainPtr<CPDF_Dictionary> annot_dict =
-          ToDictionary(entry ? entry->GetMutableDirect() : nullptr);
+      RetainPtr<const CPDF_Dictionary> annot_dict =
+          ToDictionary(annots->GetDirectObjectAt(i));
       if (!annot_dict) {
         continue;
       }
@@ -435,7 +447,7 @@ bool ApplyAllRedactionsCore(CPDF_Page* page,
   // object model.
   page->ParseContent();
 
-  RetainPtr<CPDF_Array> annots = page->GetMutableAnnotsArray();
+  RetainPtr<const CPDF_Array> annots = page->GetAnnotsArray();
   if (!annots || annots->IsEmpty()) {
     return false;
   }
@@ -446,9 +458,8 @@ bool ApplyAllRedactionsCore(CPDF_Page* page,
   std::vector<RemovedAnnotCandidate> removals;
 
   for (size_t i = 0; i < annots->size(); ++i) {
-    RetainPtr<CPDF_Object> entry = annots->GetMutableObjectAt(i);
-    RetainPtr<CPDF_Dictionary> annot_dict =
-        ToDictionary(entry ? entry->GetMutableDirect() : nullptr);
+    RetainPtr<const CPDF_Dictionary> annot_dict =
+        ToDictionary(annots->GetDirectObjectAt(i));
     if (!annot_dict ||
         annot_dict->GetNameFor(pdfium::annotation::kSubtype) != "Redact") {
       continue;
@@ -477,9 +488,8 @@ bool ApplyAllRedactionsCore(CPDF_Page* page,
   }
 
   for (size_t i = 0; i < annots->size(); ++i) {
-    RetainPtr<CPDF_Object> entry = annots->GetMutableObjectAt(i);
-    RetainPtr<CPDF_Dictionary> annot_dict =
-        ToDictionary(entry ? entry->GetMutableDirect() : nullptr);
+    RetainPtr<const CPDF_Dictionary> annot_dict =
+        ToDictionary(annots->GetDirectObjectAt(i));
     if (!annot_dict) {
       continue;
     }

@@ -16,6 +16,7 @@
 #include "core/fpdfapi/parser/cpdf_dictionary.h"
 #include "core/fpdfapi/parser/cpdf_encryptor.h"
 #include "core/fpdfapi/parser/cpdf_flateencoder.h"
+#include "core/fpdfapi/parser/cpdf_indirect_object_holder.h"
 #include "core/fpdfapi/parser/cpdf_number.h"
 #include "core/fpdfapi/parser/cpdf_read_only_graph_guard.h"
 #include "core/fpdfapi/parser/cpdf_stream_acc.h"
@@ -127,8 +128,6 @@ RetainPtr<CPDF_Object> CPDF_Stream::CloneForHolderNonCyclic(
     CPDF_IndirectObjectHolder* holder,
     std::set<const CPDF_Object*>* pVisited) const {
   pVisited->insert(this);
-  auto pAcc = pdfium::MakeRetain<CPDF_StreamAcc>(pdfium::WrapRetain(this));
-  pAcc->LoadAllDataRaw();
 
   RetainPtr<const CPDF_Dictionary> dict = GetDict();
   RetainPtr<CPDF_Dictionary> pNewDict;
@@ -136,8 +135,50 @@ RetainPtr<CPDF_Object> CPDF_Stream::CloneForHolderNonCyclic(
     pNewDict = ToDictionary(static_cast<const CPDF_Object*>(dict.Get())
                                 ->CloneForHolderNonCyclic(holder, pVisited));
   }
+  // EmbedPDF: a clone FOR A HOLDER shares its source's read-only view
+  // instead of loading the bytes when that view outlives the clone: either
+  // the view is self-contained (the parser copies every stream's bytes
+  // into an owned container at parse, so this is the common case), or its
+  // bytes belong to storage the holder retains for its whole life (a
+  // layer's base or loaded delta). The view is immutable; SetData() gives
+  // the clone its own buffer the moment it is written. Anything else - a
+  // view over a caller's callbacks in a document that may close first - is
+  // copied, as CloneNonCyclic always does.
+  RetainPtr<IFX_SeekableReadStream> view = BackingView();
+  if (view && (view->IsSelfContained() ||
+               (holder && holder->SharesBackingStorageWith(this)))) {
+    return pdfium::MakeRetain<CPDF_Stream>(
+        std::get<RetainPtr<IFX_SeekableReadStream>>(data_),
+        std::move(pNewDict));
+  }
+  auto pAcc = pdfium::MakeRetain<CPDF_StreamAcc>(pdfium::WrapRetain(this));
+  pAcc->LoadAllDataRaw();
   return pdfium::MakeRetain<CPDF_Stream>(pAcc->DetachData(),
                                          std::move(pNewDict));
+}
+
+RetainPtr<IFX_SeekableReadStream> CPDF_Stream::BackingView() const {
+  return IsFileBased() ? std::get<RetainPtr<IFX_SeekableReadStream>>(data_)
+                       : nullptr;
+}
+
+bool CPDF_Stream::ReadRawBlock(pdfium::span<uint8_t> buffer,
+                               FX_FILESIZE offset) const {
+  if (offset < 0) {
+    return false;
+  }
+  if (IsFileBased()) {
+    return std::get<RetainPtr<IFX_SeekableReadStream>>(data_)
+        ->ReadBlockAtOffset(buffer, offset);
+  }
+  pdfium::span<const uint8_t> data = GetInMemoryRawData();
+  if (static_cast<size_t>(offset) > data.size() ||
+      buffer.size() > data.size() - static_cast<size_t>(offset)) {
+    return false;
+  }
+  fxcrt::spancpy(buffer,
+                 data.subspan(static_cast<size_t>(offset), buffer.size()));
+  return true;
 }
 
 void CPDF_Stream::FreezeChildren(std::set<const CPDF_Object*>* visited) {

@@ -77,6 +77,19 @@ EPDFDoc_OpenRevision(FPDF_DOCUMENT document, unsigned long long end);
 // for a plain document (its bytes are not a frozen base), for an empty
 // delta, or when the composition does not parse. Close with
 // FPDF_CloseDocument(), independently of the layer, but not after it.
+// Function: EPDFDoc_OpenBaseOverlayFromPath
+//          Open, read-only, the document a layer's cumulative delta describes:
+//          the immutable base followed by the delta read from |delta_path| (a
+//          UTF-8 file system path the runtime opens itself and keeps open for
+//          the life of the returned document). No copy of the base, no copy
+//          of the delta. Close with FPDF_CloseDocument.
+FPDF_EXPORT FPDF_DOCUMENT FPDF_CALLCONV
+EPDFDoc_OpenBaseOverlayFromPath(FPDF_DOCUMENT layer, FPDF_STRING delta_path);
+
+// Function: EPDFDoc_OpenBaseOverlay
+//          See EPDFDoc_OpenBaseOverlayFromPath; this variant takes the delta
+//          bytes from memory (copied). The path variant reads the delta in
+//          place from a file the runtime opens itself.
 FPDF_EXPORT FPDF_DOCUMENT FPDF_CALLCONV
 EPDFDoc_OpenBaseOverlay(FPDF_DOCUMENT layer,
                         const void* delta,
@@ -374,6 +387,11 @@ typedef const struct epdf_object_diff_t__* EPDF_OBJECT_DIFF;
 #define EPDF_DIFF_OLD 0
 #define EPDF_DIFF_NEW 1
 
+// What reading an entry's object from one revision's bytes came to.
+#define EPDF_DIFF_READ_OK 0      // parsed; the value is evidence
+#define EPDF_DIFF_READ_FAILED 1  // the mapping is live but the bytes do not parse (or a stream's data cannot be read): no evidence, never "null"
+#define EPDF_DIFF_READ_ABSENT 2  // the object does not exist in that revision (added / freed)
+
 // Experimental EmbedPDF Extension API.
 // Compare two revisions. Returns NULL when either document is NULL, has no
 // parser, or when |older| is not a revision of |newer| (its chain does not
@@ -443,6 +461,34 @@ EPDFObjectDiff_GetReferrer(EPDF_OBJECT_DIFF diff,
                            unsigned int* out_parent_obj_num,
                            char* buffer,
                            unsigned long buflen);
+
+// Experimental EmbedPDF Extension API.
+// How the entry's object read from revision |which| (EPDF_DIFF_READ_*). A
+// present side that did not parse is READ_FAILED, and its value is not
+// evidence of anything - in particular not of being equal to the other
+// side's. -1 for bad arguments.
+FPDF_EXPORT int FPDF_CALLCONV EPDFObjectDiff_GetReadStatus(EPDF_OBJECT_DIFF diff,
+                                                           int index,
+                                                           int which);
+
+// Experimental EmbedPDF Extension API.
+// Facts about revision |which| as a whole that decide whether a validator
+// can judge later changes to it at all. |out_sparse_xref|: the document's
+// original cross-reference section leaves some object number below the
+// highest it lists without an entry of any kind (not even free); holes in
+// later update sections and an overstated /Size are tolerated.
+// |out_bare_reference_count|: reachable indirect objects whose
+// entire body is an indirect reference. Acrobat treats a document with either
+// as corrupted as soon as any revision follows the signed one. |out_referrers_
+// complete|: FALSE when the reachability walk hit its budget, in which case
+// referrer counts for that side are lower bounds. Every out-param may be
+// NULL. FALSE for bad arguments.
+FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV
+EPDFObjectDiff_GetRevisionHealth(EPDF_OBJECT_DIFF diff,
+                                 int which,
+                                 FPDF_BOOL* out_sparse_xref,
+                                 unsigned int* out_bare_reference_count,
+                                 FPDF_BOOL* out_referrers_complete);
 
 // ---------------------------------------------------------------------------
 // Digests.

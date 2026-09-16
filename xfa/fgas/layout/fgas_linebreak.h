@@ -7,21 +7,8 @@
 #ifndef XFA_FGAS_LAYOUT_FGAS_LINEBREAK_H_
 #define XFA_FGAS_LAYOUT_FGAS_LINEBREAK_H_
 
-#include <stdint.h>
-
-#include "core/fxcrt/fx_unicode.h"
-
-enum class FX_LINEBREAKTYPE : uint8_t {
-  kUNKNOWN = 0x00,
-  kDIRECT_BRK = 0x1A,
-  kINDIRECT_BRK = 0x2B,
-  kCOM_INDIRECT_BRK = 0x3C,
-  kCOM_PROHIBITED_BRK = 0x4D,
-  kPROHIBITED_BRK = 0x5E,
-  kHANGUL_SPACE_BRK = 0x6F,
-};
-
-FX_LINEBREAKTYPE GetLineBreakTypeFromPair(FX_BREAKPROPERTY curr_char,
-                                          FX_BREAKPROPERTY next_char);
+// EmbedPDF: the pair table moved to core/fxcrt/fx_linebreak.h so core code can
+// use it without XFA; this header keeps the XFA includers compiling.
+#include "core/fxcrt/fx_linebreak.h"
 
 #endif  // XFA_FGAS_LAYOUT_FGAS_LINEBREAK_H_

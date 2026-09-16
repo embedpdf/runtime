@@ -676,6 +676,24 @@ int CPDF_CIDFont::GetVerticalGlyph(int index, bool* pVertGlyph) {
   return index;
 }
 
+int CPDF_CIDFont::GlyphIndexFromCffCid(uint16_t cid) {
+  if (!cff_cid_to_gid_.has_value()) {
+    cff_cid_to_gid_.emplace();
+    RetainPtr<CFX_Face> face = font_.GetFace();
+    if (face) {
+      const int glyph_count = face->GetGlyphCount();
+      for (uint32_t gid = 0; static_cast<int>(gid) < glyph_count; ++gid) {
+        std::optional<uint32_t> mapped = face->GetCidFromGlyphIndex(gid);
+        if (mapped.has_value() && *mapped <= 0xFFFF) {
+          cff_cid_to_gid_->emplace(static_cast<uint16_t>(*mapped), gid);
+        }
+      }
+    }
+  }
+  auto it = cff_cid_to_gid_->find(cid);
+  return it != cff_cid_to_gid_->end() ? static_cast<int>(it->second) : -1;
+}
+
 int CPDF_CIDFont::GlyphFromCharCode(uint32_t charcode, bool* pVertGlyph) {
   if (pVertGlyph) {
     *pVertGlyph = false;
@@ -807,6 +825,14 @@ int CPDF_CIDFont::GlyphFromCharCode(uint32_t charcode, bool* pVertGlyph) {
   uint16_t cid = CIDFromCharCode(charcode);
   if (!stream_acc_) {
     if (font_type_ == CIDFontType::kType1) {
+      // EmbedPDF: a CID-keyed CFF wrapped in an sfnt (FontFile3 /OpenType)
+      // selects glyphs through its charset (ISO 32000-2 9.7.4.2). FreeType
+      // exposes GIDs for such faces, so the CID has to be mapped. A bare CFF
+      // face already takes CIDs as glyph indices, and a CFF without CIDFont
+      // operators uses CID = GID.
+      if (face->IsTtOt() && face->IsCidKeyed()) {
+        return GlyphIndexFromCffCid(cid);
+      }
       return cid;
     }
     if (font_file_ && cmap_->IsDirectCharcodeToCIDTableIsEmpty()) {

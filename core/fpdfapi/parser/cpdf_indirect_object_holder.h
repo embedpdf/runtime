@@ -18,6 +18,8 @@
 #include "core/fxcrt/string_pool_template.h"
 #include "core/fxcrt/weak_ptr.h"
 
+class CPDF_Stream;
+
 class CPDF_IndirectObjectHolder {
  public:
   using const_iterator =
@@ -78,6 +80,12 @@ class CPDF_IndirectObjectHolder {
 
   const_iterator begin() const { return indirect_objs_.begin(); }
   const_iterator end() const { return indirect_objs_.end(); }
+
+  // EmbedPDF: whether a file-backed stream's bytes are owned by storage this
+  // holder retains for its whole life, so a clone made for this holder may
+  // share the view (see CPDF_Stream::CloneForHolderNonCyclic). A bare
+  // holder owns no storage.
+  virtual bool SharesBackingStorageWith(const CPDF_Stream* stream) const;
 
  protected:
   virtual RetainPtr<CPDF_Object> ParseIndirectObject(uint32_t objnum);

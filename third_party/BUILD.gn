@@ -169,6 +169,8 @@ if (pdf_bundle_freetype) {
       "//third_party/freetype/src/include/freetype/tttags.h",
       "//third_party/freetype/src/include/ft2build.h",
       "//third_party/freetype/src/src/base/ftbase.c",
+      # EmbedPDF: FT_Get_CID_* for CID-keyed CFF programs (glyph identities).
+      "//third_party/freetype/src/src/base/ftcid.c",
       "//third_party/freetype/src/src/base/ftbase.h",
       "//third_party/freetype/src/src/base/ftbitmap.c",
       "//third_party/freetype/src/src/base/ftdebug.c",

@@ -18,6 +18,7 @@ class CFX_MemoryStream final : public IFX_SeekableStream {
 
   // IFX_SeekableStream
   FX_FILESIZE GetSize() override;
+  bool IsSelfContained() const override { return true; }  // owns its buffer
   FX_FILESIZE GetPosition() override;
   bool IsEOF() override;
   bool ReadBlockAtOffset(pdfium::span<uint8_t> buffer,

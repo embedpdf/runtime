@@ -29,7 +29,6 @@ source_set("layout") {
     "cfgas_txtbreak.h",
     "fgas_arabic.cpp",
     "fgas_arabic.h",
-    "fgas_linebreak.cpp",
     "fgas_linebreak.h",
   ]
   deps = [

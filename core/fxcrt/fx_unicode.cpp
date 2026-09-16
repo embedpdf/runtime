@@ -48,7 +48,8 @@ uint16_t GetUnicodeProperties(wchar_t wch) {
   return 0;
 }
 
-#ifdef PDF_ENABLE_XFA
+// EmbedPDF: the extended table is compiled unconditionally (rich text line
+// breaking in core/fpdfdoc reads the break property); it used to be XFA-only.
 // Format of uint16_t values in kExtendedTextLayoutCodeProperties[].
 constexpr uint16_t kBreakTypeBitPos = 0;
 constexpr uint16_t kBreakTypeBitCount = 6;
@@ -81,8 +82,6 @@ uint16_t GetExtendedUnicodeProperties(wchar_t wch) {
   }
   return 0;
 }
-
-#endif  // PDF_ENABLE_XFA
 
 constexpr uint16_t kFXTextLayoutBidiMirror[] = {
     0x0029, 0x0028, 0x003E, 0x003C, 0x005D, 0x005B, 0x007D, 0x007B, 0x00BB,
@@ -160,7 +159,6 @@ FX_BIDICLASS GetBidiClass(wchar_t wch) {
   return static_cast<FX_BIDICLASS>(result);
 }
 
-#ifdef PDF_ENABLE_XFA
 FX_CHARTYPE GetCharType(wchar_t wch) {
   uint16_t prop = GetExtendedUnicodeProperties(wch);
   uint16_t result = (prop & kCharTypeBitMask) >> kCharTypeBitPos;
@@ -174,6 +172,5 @@ FX_BREAKPROPERTY GetBreakProperty(wchar_t wch) {
   DCHECK(result <= static_cast<uint16_t>(FX_BREAKPROPERTY::kTB));
   return static_cast<FX_BREAKPROPERTY>(result);
 }
-#endif  // PDF_ENABLE_XFA
 
 }  // namespace pdfium::unicode

@@ -28,6 +28,7 @@
 #include "core/fpdfapi/parser/cpdf_dictionary.h"
 #include "core/fpdfapi/parser/cpdf_document.h"
 #include "core/fpdfapi/parser/cpdf_concat_read_stream.h"
+#include "core/fxcrt/cfx_fileaccess_stream.h"
 #include "core/fpdfapi/parser/cpdf_layer_document.h"
 #include "fpdfsdk/cpdfsdk_customaccess.h"
 #include "fpdfsdk/cpdfsdk_filewriteadapter.h"
@@ -240,6 +241,7 @@ class ClampedReadStream final : public IFX_SeekableReadStream {
   IFX_SeekableReadStream* GetUnderlyingStream() override {
     return inner_->GetUnderlyingStream();
   }
+  bool IsSelfContained() const override { return inner_->IsSelfContained(); }
 
  private:
   ClampedReadStream(RetainPtr<IFX_SeekableReadStream> inner, FX_FILESIZE size)
@@ -258,6 +260,7 @@ class OwnedBytesReadStream final : public IFX_SeekableReadStream {
   FX_FILESIZE GetSize() override {
     return static_cast<FX_FILESIZE>(bytes_.size());
   }
+  bool IsSelfContained() const override { return true; }  // owns |bytes_|
 
   bool ReadBlockAtOffset(pdfium::span<uint8_t> buffer,
                          FX_FILESIZE offset) override {
@@ -1304,31 +1307,22 @@ EPDFDoc_OpenRevision(FPDF_DOCUMENT document, unsigned long long end) {
   return FPDFDocumentFromCPDFDocument(prefix.release());
 }
 
-FPDF_EXPORT FPDF_DOCUMENT FPDF_CALLCONV
-EPDFDoc_OpenBaseOverlay(FPDF_DOCUMENT document,
-                        const void* delta,
-                        unsigned long delta_len) {
-  CPDF_Document* doc = CPDFDocumentFromFPDFDocument(document);
-  const CPDF_LayerDocument* layer =
-      doc ? CPDF_LayerDocument::FromDocument(doc) : nullptr;
-  if (!layer || !delta || delta_len == 0) {
-    return nullptr;
-  }
-  // A layer's own parser is the BASE parser: its file access is the frozen
-  // base alone, which is exactly what a cumulative delta is relative to
-  // (never the base plus the loaded delta - that would misplace every offset
-  // the delta's cross-reference section declares).
+namespace {
+
+// The document a layer's cumulative delta describes: its immutable base
+// followed by |extra|, opened read-only. A layer's own parser is the BASE
+// parser: its file access is the frozen base alone, which is exactly what a
+// cumulative delta is relative to (never the base plus the loaded delta -
+// that would misplace every offset the delta's cross-reference section
+// declares).
+FPDF_DOCUMENT OpenBaseOverlayWith(CPDF_Document* doc,
+                                  RetainPtr<IFX_SeekableReadStream> extra) {
   CPDF_Parser* base_parser = doc->GetParser();
   RetainPtr<IFX_SeekableReadStream> base =
       base_parser ? base_parser->GetFileAccess() : nullptr;
-  if (!base) {
+  if (!base || !extra) {
     return nullptr;
   }
-  // SAFETY: |delta_len| bytes at |delta|, required from the caller.
-  auto delta_span = UNSAFE_BUFFERS(
-      pdfium::span(static_cast<const uint8_t*>(delta), delta_len));
-  auto extra = pdfium::MakeRetain<OwnedBytesReadStream>(
-      DataVector<uint8_t>(delta_span.begin(), delta_span.end()));
   auto bytes = pdfium::MakeRetain<CPDF_ConcatReadStream>(std::move(base),
                                                          std::move(extra));
   auto overlay = std::make_unique<CPDF_Document>(
@@ -1340,6 +1334,42 @@ EPDFDoc_OpenBaseOverlay(FPDF_DOCUMENT document,
     return nullptr;
   }
   return FPDFDocumentFromCPDFDocument(overlay.release());
+}
+
+}  // namespace
+
+FPDF_EXPORT FPDF_DOCUMENT FPDF_CALLCONV
+EPDFDoc_OpenBaseOverlayFromPath(FPDF_DOCUMENT document, FPDF_STRING delta_path) {
+  CPDF_Document* doc = CPDFDocumentFromFPDFDocument(document);
+  const CPDF_LayerDocument* layer =
+      doc ? CPDF_LayerDocument::FromDocument(doc) : nullptr;
+  if (!layer || !delta_path || !*delta_path) {
+    return nullptr;
+  }
+  RetainPtr<IFX_SeekableReadStream> delta =
+      CFX_FileAccessStream::CreateFromFilename(delta_path);
+  if (!delta || delta->GetSize() <= 0) {
+    return nullptr;
+  }
+  return OpenBaseOverlayWith(doc, std::move(delta));
+}
+
+FPDF_EXPORT FPDF_DOCUMENT FPDF_CALLCONV
+EPDFDoc_OpenBaseOverlay(FPDF_DOCUMENT document,
+                        const void* delta,
+                        unsigned long delta_len) {
+  CPDF_Document* doc = CPDFDocumentFromFPDFDocument(document);
+  const CPDF_LayerDocument* layer =
+      doc ? CPDF_LayerDocument::FromDocument(doc) : nullptr;
+  if (!layer || !delta || delta_len == 0) {
+    return nullptr;
+  }
+  // SAFETY: |delta_len| bytes at |delta|, required from the caller.
+  auto delta_span = UNSAFE_BUFFERS(
+      pdfium::span(static_cast<const uint8_t*>(delta), delta_len));
+  return OpenBaseOverlayWith(
+      doc, pdfium::MakeRetain<OwnedBytesReadStream>(
+               DataVector<uint8_t>(delta_span.begin(), delta_span.end())));
 }
 
 // ---------------------------------------------------------------------------

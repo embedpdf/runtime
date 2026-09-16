@@ -7,6 +7,7 @@
 #include <stddef.h>
 #include <stdint.h>
 
+#include <map>
 #include <vector>
 
 #include "core/fpdfapi/parser/cpdf_document.h"
@@ -50,6 +51,28 @@ class CPDF_LayerDocument final : public CPDF_Document {
     return loaded_delta_;
   }
 
+  // The two twins of an overlay object, both compared through the creator's
+  // own writer (dictionary text; raw stream bytes), never through the file's
+  // original text:
+  //
+  //   base twin   - the frozen base object. "Differs from base" decides what
+  //                 a cumulative save WRITES: the delta replaces the delta
+  //                 this layer was opened with, so everything that differs
+  //                 from the base must be in it.
+  //   loaded twin - the object as this layer was OPENED with it: the
+  //                 ingested delta's version when the delta carried it, else
+  //                 the base twin. "Differs from loaded" decides whether a
+  //                 save is a NO-OP (the loaded bytes are the document). The
+  //                 two agree on a fresh layer and can disagree on a reopened
+  //                 one (base 10, saved delta 20, set back to 10: nothing
+  //                 differs from the base, everything from the loaded file).
+  //
+  // Both answer false for an object that is not in the overlay; a deleted
+  // object the delta carried differs from loaded. New objects (no base twin)
+  // differ from both. Cost: one comparison against a twin already in memory.
+  bool DiffersFromBase(uint32_t objnum) const;
+  bool DiffersFromLoaded(uint32_t objnum) const;
+
   // CPDF_Document:
   CPDF_Parser* GetParser() const override;
   const CPDF_Dictionary* GetRoot() const override;
@@ -59,6 +82,9 @@ class CPDF_LayerDocument final : public CPDF_Document {
   RetainPtr<CPDF_Dictionary> GetMutablePageDictionary(int iPage) override;
   uint32_t GetUserPermissions(bool get_owner_perms) const override;
   RetainPtr<CPDF_Object> FindPromotedObject(uint32_t objnum) const override;
+  RetainPtr<const CPDF_Object> GetLoadedTwin(uint32_t objnum) const override;
+  RetainPtr<const CPDF_Object> GetBaseTwin(uint32_t objnum) const override;
+  bool SharesBackingStorageWith(const CPDF_Stream* stream) const override;
   uint64_t GetOverlayEpoch() const override;
   bool IsLayerDocument() const override;
   FX_FILESIZE GetLayerAppendBaseOffset() const override;
@@ -91,7 +117,15 @@ class CPDF_LayerDocument final : public CPDF_Document {
   RetainPtr<CPDF_BaseDocument> const base_;
   RetainPtr<IFX_SeekableReadStream> file_access_;
   RetainPtr<IFX_SeekableReadStream> loaded_delta_;
+  // The reader the delta was ingested through (base bytes followed by the
+  // delta). Every file-backed stream the delta carried is a view into it;
+  // retaining it here is what lets those views be shared, never copied.
+  RetainPtr<IFX_SeekableReadStream> ingest_reader_;
   std::vector<uint32_t> layer_page_list_;
+  // Pristine clones of what the loaded delta carried, keyed by object number,
+  // made at ingest next to the overlay clone and never mutated: the loaded
+  // twins. O(delta) memory; a delta is small by construction.
+  std::map<uint32_t, RetainPtr<const CPDF_Object>> loaded_twins_;
   // Generation for caches that retain effective-object pointers.
   uint64_t overlay_epoch_ = 0;
   OpenStatus ingest_status_ = OpenStatus::kSuccess;

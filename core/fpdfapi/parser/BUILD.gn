@@ -41,6 +41,8 @@ source_set("parser") {
     "cpdf_indirect_object_holder.h",
     "cpdf_layer_document.cpp",
     "cpdf_layer_document.h",
+    "cpdf_object_equality.cpp",
+    "cpdf_object_equality.h",
     "cpdf_linearized_header.cpp",
     "cpdf_linearized_header.h",
     "cpdf_name.cpp",

@@ -102,9 +102,15 @@ TEST_F(FPDFSaveEmbedderTest, SaveSimpleDocIncremental) {
   EXPECT_TRUE(FPDF_SaveWithVersion(document(), this, FPDF_INCREMENTAL, 14));
   // Version gets taken as-is from input document.
   EXPECT_THAT(GetString(), StartsWith("%PDF-1.7\n%\xa0\xf2\xa4\xf4"));
-  // Additional output produced vs. non incremental.
-  // Check that the size is larger than the old, broken incremental save size.
-  EXPECT_GT(GetString().size(), 985u);
+  // EmbedPDF: an incremental save writes what changed. Nothing changed, so
+  // no revision is appended - not the objects the parser happened to load
+  // (upstream rewrote every one of them), not an empty cross-reference
+  // section. The output is the loaded file, byte for byte.
+  std::string file_path = PathService::GetTestFilePath("hello_world.pdf");
+  ASSERT_FALSE(file_path.empty());
+  std::vector<uint8_t> original = GetFileContents(file_path.c_str());
+  ASSERT_FALSE(original.empty());
+  EXPECT_EQ(std::string(original.begin(), original.end()), GetString());
 }
 
 TEST_F(FPDFSaveEmbedderTest, SaveAsCopyPrunesUnlinkedNewAnnotation) {
