@@ -938,6 +938,29 @@ int CFX_Face::GetNumFaces() const {
 }
 #endif
 
+uint16_t CFX_Face::GetFsTypeFlags() const {
+  return FT_Get_FSType_Flags(const_cast<FXFT_FaceRec*>(GetRec()));
+}
+
+bool CFX_Face::IsCidKeyed() const {
+  FT_Bool is_cid = 0;
+  if (FT_Get_CID_Is_Internally_CID_Keyed(const_cast<FXFT_FaceRec*>(GetRec()),
+                                         &is_cid) != 0) {
+    return false;  // not a CFF-based face
+  }
+  return is_cid != 0;
+}
+
+std::optional<uint32_t> CFX_Face::GetCidFromGlyphIndex(
+    uint32_t glyph_index) const {
+  FT_UInt cid = 0;
+  if (FT_Get_CID_From_Glyph_Index(const_cast<FXFT_FaceRec*>(GetRec()),
+                                  glyph_index, &cid) != 0) {
+    return std::nullopt;
+  }
+  return cid;
+}
+
 #if BUILDFLAG(IS_WIN)
 bool CFX_Face::CanEmbed() {
   FT_UShort fstype = FT_Get_FSType_Flags(GetRec());

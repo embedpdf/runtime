@@ -43,6 +43,9 @@
 #include "core/fpdfdoc/cpdf_formfield.h"
 #include "core/fpdfdoc/cpdf_generateap.h"
 #include "core/fpdfdoc/cpdf_interactiveform.h"
+#include "core/fpdfdoc/cpdf_richtextjson.h"
+#include "core/fpdfdoc/cpdf_richtextparser.h"
+#include "core/fpdfdoc/cpdf_richtextwriter.h"
 #include "core/fxcrt/check.h"
 #include "core/fxcrt/containers/contains.h"
 #include "core/fxcrt/containers/unique_ptr_adapters.h"
@@ -55,8 +58,8 @@
 #include "core/fxge/cfx_fontregistry.h"
 #include "fpdfsdk/cpdfsdk_formfillenvironment.h"
 #include "fpdfsdk/cpdfsdk_helpers.h"
-#include "fpdfsdk/epdf_appearance_exporter.h"
 #include "fpdfsdk/cpdfsdk_interactiveform.h"
+#include "fpdfsdk/epdf_appearance_exporter.h"
 
 namespace {
 
@@ -3292,6 +3295,139 @@ EPDFAnnot_GetRichContent(FPDF_ANNOTATION annot,
   // SAFETY: same pattern as other getters.
   return Utf16EncodeMaybeCopyAndReturnLength(
       ws, UNSAFE_BUFFERS(SpanFromFPDFApiArgs(buffer, buflen)));
+}
+
+namespace {
+
+const CPDF_Document* DocOf(FPDF_ANNOTATION annot) {
+  CPDF_AnnotContext* context = CPDFAnnotContextFromFPDFAnnotation(annot);
+  return context ? context->GetPage()->GetDocument() : nullptr;
+}
+
+}  // namespace
+
+FPDF_EXPORT unsigned long FPDF_CALLCONV
+EPDFAnnot_GetRichTextJSON(FPDF_ANNOTATION annot,
+                          char* buffer,
+                          unsigned long buflen) {
+  CPDF_AnnotContext* context = CPDFAnnotContextFromFPDFAnnotation(annot);
+  if (!context) {
+    return 0;
+  }
+  const CPDF_Dictionary* annot_dict = context->GetAnnotDict();
+  if (!annot_dict) {
+    return 0;
+  }
+  CPDF_Document* doc = context->GetPage()->GetDocument();
+  const CPDF_Dictionary* root = doc ? doc->GetRoot() : nullptr;
+  RetainPtr<const CPDF_Dictionary> acroform =
+      root ? root->GetDictFor("AcroForm") : nullptr;
+  const ByteString json = CPDF_RichTextParser::ToJSON(
+      CPDF_RichTextParser::FromAnnotation(annot_dict, acroform.Get(),
+                                          DocOf(annot)));
+  // SAFETY: same pattern as other getters.
+  return NulTerminateMaybeCopyAndReturnLength(
+      json, UNSAFE_BUFFERS(SpanFromFPDFApiArgs(buffer, buflen)));
+}
+
+namespace {
+
+// The rich text setters share one path: build the document, then write
+// all four forms and the appearance through CPDF_RichTextWriter, or nothing.
+bool ApplyRichTextDocument(FPDF_ANNOTATION annot,
+                           const CPDF_RichTextDocument& document) {
+  CPDF_AnnotContext* context = CPDFAnnotContextFromFPDFAnnotation(annot);
+  if (!context) {
+    return false;
+  }
+  RetainPtr<CPDF_Dictionary> annot_dict = context->GetMutableAnnotDict();
+  if (!annot_dict || annot_dict->GetNameFor("Subtype") != "FreeText") {
+    return false;
+  }
+  CPDF_Document* doc = context->GetPage()->GetDocument();
+  if (!doc) {
+    return false;
+  }
+  return CPDF_RichTextWriter::Apply(doc, annot_dict.Get(), document, nullptr);
+}
+
+RetainPtr<const CPDF_Dictionary> AcroFormDictOf(FPDF_ANNOTATION annot) {
+  CPDF_AnnotContext* context = CPDFAnnotContextFromFPDFAnnotation(annot);
+  CPDF_Document* doc = context ? context->GetPage()->GetDocument() : nullptr;
+  const CPDF_Dictionary* root = doc ? doc->GetRoot() : nullptr;
+  return root ? root->GetDictFor("AcroForm") : nullptr;
+}
+
+}  // namespace
+
+FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV
+EPDFAnnot_SetRichTextJSON(FPDF_ANNOTATION annot, FPDF_BYTESTRING json_utf8) {
+  CPDF_AnnotContext* context = CPDFAnnotContextFromFPDFAnnotation(annot);
+  if (!context || !json_utf8) {
+    return false;
+  }
+  // The annotation's current paragraph defaults (/Q, /DS, the /RC body) are
+  // the base for everything the JSON leaves unsaid — a body without an
+  // alignment, a paragraph without one — so a centred box stays centred
+  // when its paragraphs are replaced or its body restyled. (The STYLE of a
+  // given body stays engine defaults under the given keys, as documented.)
+  RetainPtr<const CPDF_Dictionary> acroform = AcroFormDictOf(annot);
+  const CPDF_RichTextDocument current = CPDF_RichTextParser::FromAnnotation(
+      context->GetAnnotDict(), acroform.Get(), DocOf(annot));
+  CPDF_RichTextDocument document;
+  bool has_body = false;
+  if (!CPDF_RichTextJson::Parse(ByteString(json_utf8), &document, &has_body,
+                                &current.body_paragraph)) {
+    return false;
+  }
+  if (!has_body) {
+    // The annotation's current body style (DA ∪ DS ∪ RC body) stays.
+    document.body = current.body;
+  }
+  return ApplyRichTextDocument(annot, document);
+}
+
+FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV
+EPDFAnnot_SetRichTextXHTML(FPDF_ANNOTATION annot, FPDF_WIDESTRING xhtml) {
+  CPDF_AnnotContext* context = CPDFAnnotContextFromFPDFAnnotation(annot);
+  if (!context || !xhtml) {
+    return false;
+  }
+  const WideString xml = WideStringFromFPDFWideString(xhtml);
+  if (xml.IsEmpty()) {
+    return false;
+  }
+  RetainPtr<const CPDF_Dictionary> acroform = AcroFormDictOf(annot);
+  CPDF_RichTextStyle defaults;
+  CPDF_RichTextParagraphProps paragraph_defaults;
+  std::vector<CPDF_RichTextDiagnostic> diagnostics;
+  CPDF_RichTextParser::DefaultsFromAnnotation(
+      context->GetAnnotDict(), acroform.Get(), &defaults, &paragraph_defaults,
+      &diagnostics, DocOf(annot));
+  const CPDF_RichTextDocument document = CPDF_RichTextParser::ParseRichContent(
+      xml, defaults, paragraph_defaults, WideString());
+  for (const CPDF_RichTextDiagnostic& diagnostic : document.diagnostics) {
+    if (diagnostic.code == CPDF_RichTextDiagnostic::Code::kMalformedRC) {
+      return false;
+    }
+  }
+  return ApplyRichTextDocument(annot, document);
+}
+
+FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV
+EPDFDoc_SetTypographicFeatures(FPDF_DOCUMENT document, FPDF_BOOL enabled) {
+  CPDF_Document* doc = CPDFDocumentFromFPDFDocument(document);
+  if (!doc) {
+    return false;
+  }
+  doc->SetTypographicFeaturesEnabled(!!enabled);
+  return true;
+}
+
+FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV
+EPDFDoc_GetTypographicFeatures(FPDF_DOCUMENT document) {
+  const CPDF_Document* doc = CPDFDocumentFromFPDFDocument(document);
+  return doc && doc->GetTypographicFeaturesEnabled();
 }
 
 FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV

@@ -118,6 +118,10 @@ source_set("fxge") {
 
   deps = [
     "../../third_party:fx_agg",
+    # EmbedPDF: CFX_FontRegistry instances variable fonts at registration
+    # (HarfBuzz subset instancer) and records a SHA-256 source hash.
+    "../../third_party/harfbuzz-ng",
+    "../fdrm",
     "../fxcrt",
   ]
 

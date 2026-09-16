@@ -9,6 +9,7 @@
 
 #include <stdint.h>
 
+#include <map>
 #include <memory>
 #include <optional>
 #include <set>
@@ -119,6 +120,47 @@ class CPDF_Document : public Observable,
     epdf_attachment_ = std::move(attachment);
   }
 
+  // EmbedPDF: session-scoped provenance for a resource name this document
+  // instance handed out for a registered runtime font (a /DA font alias
+  // reserved before its /DR entry exists). Never written to the file; a
+  // reopened document starts empty, so an alias that merely looks reserved
+  // resolves to nothing.
+  void ReserveSessionFontAlias(const ByteString& alias, uint32_t font_id) {
+    session_font_aliases_[alias] = font_id;
+  }
+  std::optional<uint32_t> LookupSessionFontAlias(
+      const ByteString& alias) const {
+    auto it = session_font_aliases_.find(alias);
+    if (it == session_font_aliases_.end()) {
+      return std::nullopt;
+    }
+    return it->second;
+  }
+
+  // EmbedPDF: how much of a registered font's program the resources built
+  // for this document instance carry (§2 of the rich text Phase C note).
+  // kDefault subsets annotation text and embeds form field text whole;
+  // kSubset and kFull apply to both. Session state, never written to the
+  // file; applies to resources built after the call. A font whose fsType
+  // forbids subsetting is embedded whole under every policy.
+  enum class FontEmbeddingPolicy : uint8_t { kDefault, kSubset, kFull };
+  FontEmbeddingPolicy GetFontEmbeddingPolicy() const {
+    return font_embedding_policy_;
+  }
+  void SetFontEmbeddingPolicy(FontEmbeddingPolicy policy) {
+    font_embedding_policy_ = policy;
+  }
+
+  // EmbedPDF (rich text, Phase D): session switches for appearances laid
+  // out by CPDF_RichTextLayout. Latin typographic features (kern, liga…)
+  // are off for Acrobat parity unless turned on here. Plain FreeText (no
+  // /RC) keeps the CPVT layout unless the rich engine is selected; an
+  // annotation with /RC always uses the rich engine.
+  bool GetTypographicFeaturesEnabled() const { return typographic_features_; }
+  void SetTypographicFeaturesEnabled(bool enabled) {
+    typographic_features_ = enabled;
+  }
+
   virtual CPDF_Parser* GetParser() const;
   virtual const CPDF_Dictionary* GetRoot() const;
   virtual RetainPtr<CPDF_Dictionary> GetMutableRoot();
@@ -194,7 +236,7 @@ class CPDF_Document : public Observable,
   // this document retains for its whole life (its own parser's file, a
   // layer's base or loaded delta). Only then may a clone made for this
   // holder share the view instead of copying the bytes.
-  virtual bool SharesBackingStorageWith(const CPDF_Stream* stream) const;
+  bool SharesBackingStorageWith(const CPDF_Stream* stream) const override;
   // Changes whenever the effective identity of an indirect object can change.
   // Ordinary documents have no overlay and always return 0.
   virtual uint64_t GetOverlayEpoch() const;
@@ -310,6 +352,10 @@ class CPDF_Document : public Observable,
   std::set<uint32_t> modified_apstream_ids_;
   std::optional<PendingSecurity> pending_security_;
   std::vector<uint32_t> page_list_;  // Page number to page's dict objnum.
+  std::map<ByteString, uint32_t> session_font_aliases_;  // EmbedPDF, see above.
+  FontEmbeddingPolicy font_embedding_policy_ =
+      FontEmbeddingPolicy::kDefault;  // EmbedPDF, see above.
+  bool typographic_features_ = false;  // EmbedPDF, see above.
 
   // EmbedPDF: destroyed before everything declared above it (the parser
   // included), after the extension and the stock font clearer.

@@ -84,6 +84,8 @@ source_set("fxcrt") {
     "fx_system.cpp",
     "fx_system.h",
     "fx_types.h",
+    "fx_linebreak.cpp",
+    "fx_linebreak.h",
     "fx_unicode.cpp",
     "fx_unicode.h",
     "immediate_crash.h",
