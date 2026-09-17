@@ -43,6 +43,7 @@
 #include "core/fpdfapi/parser/cpdf_stream.h"
 #include "core/fpdfapi/parser/cpdf_stream_acc.h"
 #include "core/fpdfapi/parser/cpdf_string.h"
+#include "core/fpdfdoc/cpdf_annot.h"
 #include "core/fpdfdoc/cpdf_annotfontmap.h"
 #include "core/fpdfdoc/cpdf_annotfontsubset.h"
 #include "core/fpdfdoc/cpdf_richtextwriter.h"
@@ -10151,4 +10152,210 @@ TEST_F(FPDFAnnotEmbedderTest, BaseOverlayOpensFromPath) {
   FPDF_CloseDocument(overlay);
   EXPECT_FALSE(EPDFDoc_OpenBaseOverlayFromPath(doc.layer, "/nonexistent/epdf-delta"));
   std::filesystem::remove(path);
+}
+
+class EPDFStampResizeEmbedderTest : public EmbedderTest {
+ protected:
+  void SetUp() override {
+    EmbedderTest::SetUp();
+    doc_.reset(FPDF_CreateNewDocument());
+    ASSERT_TRUE(doc_);
+    page_.reset(FPDFPage_New(doc_.get(), 0, 600, 600));
+    ASSERT_TRUE(page_);
+    annot_.reset(FPDFPage_CreateAnnot(page_.get(), FPDF_ANNOT_STAMP));
+    ASSERT_TRUE(annot_);
+    const FS_RECTF rect{10, 110, 110, 10};
+    ASSERT_TRUE(EPDFAnnot_SetRect(annot_.get(), &rect));
+  }
+
+  void TearDown() override {
+    annot_.reset();
+    page_.reset();
+    doc_.reset();
+    EmbedderTest::TearDown();
+  }
+
+  CPDF_Document* pdf() { return CPDFDocumentFromFPDFDocument(doc_.get()); }
+  RetainPtr<CPDF_Dictionary> annot_dict() {
+    return CPDFAnnotContextFromFPDFAnnotation(annot_.get())
+        ->GetMutableAnnotDict();
+  }
+  RetainPtr<CPDF_Stream> appearance() {
+    return GetAnnotAP(annot_dict().Get(), CPDF_Annot::AppearanceMode::kNormal);
+  }
+  RetainPtr<CPDF_Stream> InstallArtwork(
+      CFX_FloatRect bbox = CFX_FloatRect(0, 0, 200, 100)) {
+    const ByteStringView kArtwork = "1 0 0 rg 0 0 200 100 re f";
+    auto stream = pdf()->NewIndirect<CPDF_Stream>(kArtwork.unsigned_span());
+    auto dict = stream->GetMutableDict();
+    dict->SetNewFor<CPDF_Name>("Type", "XObject");
+    dict->SetNewFor<CPDF_Name>("Subtype", "Form");
+    dict->SetRectFor("BBox", bbox);
+    dict->SetNewFor<CPDF_Dictionary>("Resources");
+    annot_dict()->SetNewFor<CPDF_Dictionary>("AP")->SetNewFor<CPDF_Reference>(
+        "N", pdf(), stream->GetObjNum());
+    return stream;
+  }
+
+  ScopedFPDFDocument doc_;
+  ScopedFPDFPage page_;
+  ScopedFPDFAnnotation annot_;
+};
+
+TEST_F(EPDFStampResizeEmbedderTest, CoverCentersBothAxes) {
+  InstallArtwork();
+  ASSERT_TRUE(
+      EPDFAnnot_UpdateAppearanceToRect(annot_.get(), EPDF_STAMP_FIT_COVER));
+  EXPECT_EQ("q 1 0 0 1 -50 0 cm /EPDFWRAP Do Q",
+            GetNormalAppearanceStreamBytes(annot_.get()));
+
+  InstallArtwork(CFX_FloatRect(0, 0, 100, 200));
+  ASSERT_TRUE(
+      EPDFAnnot_UpdateAppearanceToRect(annot_.get(), EPDF_STAMP_FIT_COVER));
+  EXPECT_EQ("q 1 0 0 1 0 -50 cm /EPDFWRAP Do Q",
+            GetNormalAppearanceStreamBytes(annot_.get()));
+}
+
+TEST_F(EPDFStampResizeEmbedderTest,
+       DetachesSharedDictionariesAndSelectedState) {
+  auto original = InstallArtwork();
+  auto states = pdf()->NewIndirect<CPDF_Dictionary>();
+  states->SetNewFor<CPDF_Reference>("On", pdf(), original->GetObjNum());
+  states->SetNewFor<CPDF_Reference>("Off", pdf(), original->GetObjNum());
+  auto shared_ap = pdf()->NewIndirect<CPDF_Dictionary>();
+  shared_ap->SetNewFor<CPDF_Reference>("N", pdf(), states->GetObjNum());
+  shared_ap->SetNewFor<CPDF_Reference>("R", pdf(), original->GetObjNum());
+  annot_dict()->SetNewFor<CPDF_Reference>("AP", pdf(), shared_ap->GetObjNum());
+  annot_dict()->SetNewFor<CPDF_Name>("AS", "On");
+
+  ScopedFPDFAnnotation sibling(
+      FPDFPage_CreateAnnot(page_.get(), FPDF_ANNOT_STAMP));
+  auto sibling_dict =
+      CPDFAnnotContextFromFPDFAnnotation(sibling.get())->GetMutableAnnotDict();
+  sibling_dict->SetNewFor<CPDF_Reference>("AP", pdf(), shared_ap->GetObjNum());
+  sibling_dict->SetNewFor<CPDF_Name>("AS", "On");
+
+  ASSERT_TRUE(
+      EPDFAnnot_UpdateAppearanceToRect(annot_.get(), EPDF_STAMP_FIT_CONTAIN));
+  auto updated_ap = annot_dict()->GetDictFor("AP");
+  EXPECT_NE(shared_ap.Get(), updated_ap.Get());
+  EXPECT_NE(states.Get(), updated_ap->GetDictFor("N").Get());
+  EXPECT_NE(original.Get(), appearance().Get());
+  EXPECT_EQ(original.Get(),
+            updated_ap->GetDictFor("N")->GetStreamFor("Off").Get());
+  EXPECT_EQ(original.Get(), updated_ap->GetStreamFor("R").Get());
+  EXPECT_EQ(shared_ap.Get(), sibling_dict->GetDictFor("AP").Get());
+  EXPECT_EQ(original.Get(), states->GetStreamFor("On").Get());
+  EXPECT_EQ(CFX_FloatRect(0, 0, 200, 100),
+            original->GetDict()->GetRectFor("BBox"));
+  EXPECT_FALSE(original->GetDict()->KeyExist("EPDFOrigContentRect"));
+}
+
+TEST_F(EPDFStampResizeEmbedderTest, StateSelectionWithoutASMatchesRendering) {
+  for (int selection = 0; selection < 3; ++selection) {
+    auto original = InstallArtwork();
+    auto states = pdf()->NewIndirect<CPDF_Dictionary>();
+    states->SetNewFor<CPDF_Reference>("On", pdf(), original->GetObjNum());
+    states->SetNewFor<CPDF_Reference>("Off", pdf(), original->GetObjNum());
+    annot_dict()->GetMutableDictFor("AP")->SetNewFor<CPDF_Reference>(
+        "N", pdf(), states->GetObjNum());
+    annot_dict()->RemoveFor("V");
+    annot_dict()->RemoveFor("Parent");
+    if (selection == 0) {
+      annot_dict()->SetNewFor<CPDF_Name>("V", "On");
+    } else if (selection == 1) {
+      annot_dict()->SetNewFor<CPDF_Dictionary>("Parent")->SetNewFor<CPDF_Name>(
+          "V", "On");
+    }
+    ASSERT_TRUE(
+        EPDFAnnot_UpdateAppearanceToRect(annot_.get(), EPDF_STAMP_FIT_CONTAIN));
+    auto updated = annot_dict()->GetDictFor("AP")->GetDictFor("N");
+    EXPECT_NE(original.Get(),
+              updated->GetStreamFor(selection == 2 ? "Off" : "On").Get());
+    EXPECT_EQ(original.Get(),
+              updated->GetStreamFor(selection == 2 ? "On" : "Off").Get());
+  }
+}
+
+TEST_F(EPDFStampResizeEmbedderTest,
+       StaleMarkerDoesNotReplaceArtworkWithMissingDo) {
+  auto original = InstallArtwork();
+  original->GetMutableDict()->SetRectFor("EPDFOrigContentRect",
+                                         CFX_FloatRect(0, 0, 1, 1));
+  ASSERT_TRUE(
+      EPDFAnnot_UpdateAppearanceToRect(annot_.get(), EPDF_STAMP_FIT_CONTAIN));
+  auto ap = appearance();
+  auto child = ap->GetDict()
+                   ->GetDictFor("Resources")
+                   ->GetDictFor("XObject")
+                   ->GetStreamFor("EPDFWRAP");
+  ASSERT_TRUE(child);
+  EXPECT_EQ(CFX_FloatRect(0, 0, 200, 100),
+            child->GetDict()->GetRectFor("BBox"));
+  EXPECT_EQ(CFX_FloatRect(0, 0, 200, 100),
+            ap->GetDict()->GetRectFor("EPDFOrigContentRect"));
+  EXPECT_EQ("q .5 0 0 .5 0 25 cm /EPDFWRAP Do Q",
+            GetNormalAppearanceStreamBytes(annot_.get()));
+}
+
+TEST_F(EPDFStampResizeEmbedderTest,
+       RepeatedResizesReuseChildDespiteMissingOrStaleMarker) {
+  auto original = InstallArtwork(CFX_FloatRect(20, 30, 220, 130));
+  original->GetMutableDict()->SetMatrixFor("Matrix",
+                                           CFX_Matrix(0, 1, -1, 0, 130, -20));
+  ASSERT_TRUE(
+      EPDFAnnot_UpdateAppearanceToRect(annot_.get(), EPDF_STAMP_FIT_CONTAIN));
+  auto child = appearance()
+                   ->GetDict()
+                   ->GetDictFor("Resources")
+                   ->GetDictFor("XObject")
+                   ->GetStreamFor("EPDFWRAP");
+  ASSERT_TRUE(child);
+  EXPECT_EQ("q .5 0 0 .5 25 0 cm /EPDFWRAP Do Q",
+            GetNormalAppearanceStreamBytes(annot_.get()));
+  for (int i = 0; i < 20; ++i) {
+    auto dict = appearance()->GetMutableDict();
+    if (i % 2) {
+      dict->SetRectFor("EPDFOrigContentRect", CFX_FloatRect(0, 0, 1, 1));
+    } else {
+      dict->RemoveFor("EPDFOrigContentRect");
+    }
+    const FS_RECTF rect{10, 110, i % 2 ? 210.0f : 110.0f, 10};
+    ASSERT_TRUE(EPDFAnnot_SetRect(annot_.get(), &rect));
+    ASSERT_TRUE(
+        EPDFAnnot_UpdateAppearanceToRect(annot_.get(), EPDF_STAMP_FIT_CONTAIN));
+    auto next_child = appearance()
+                          ->GetDict()
+                          ->GetDictFor("Resources")
+                          ->GetDictFor("XObject")
+                          ->GetStreamFor("EPDFWRAP");
+    EXPECT_EQ(child.Get(), next_child.Get());
+  }
+  EXPECT_EQ(CFX_FloatRect(20, 30, 220, 130),
+            child->GetDict()->GetRectFor("BBox"));
+  EXPECT_EQ(CFX_Matrix(0, 1, -1, 0, 130, -20),
+            child->GetDict()->GetMatrixFor("Matrix"));
+}
+
+TEST_F(EPDFStampResizeEmbedderTest, RefreshesAlreadyParsedAnnotationObjects) {
+  InstallArtwork();
+  ASSERT_EQ(1, FPDFAnnot_GetObjectCount(annot_.get()));
+  EXPECT_EQ(FPDF_PAGEOBJ_PATH,
+            FPDFPageObj_GetType(FPDFAnnot_GetObject(annot_.get(), 0)));
+  ASSERT_TRUE(
+      EPDFAnnot_UpdateAppearanceToRect(annot_.get(), EPDF_STAMP_FIT_CONTAIN));
+  ASSERT_EQ(1, FPDFAnnot_GetObjectCount(annot_.get()));
+  EXPECT_EQ(FPDF_PAGEOBJ_FORM,
+            FPDFPageObj_GetType(FPDFAnnot_GetObject(annot_.get(), 0)));
+}
+
+TEST_F(EPDFStampResizeEmbedderTest,
+       FailedWrappingLeavesOriginalAppearanceUnchanged) {
+  auto original = InstallArtwork(CFX_FloatRect());
+  EXPECT_FALSE(
+      EPDFAnnot_UpdateAppearanceToRect(annot_.get(), EPDF_STAMP_FIT_CONTAIN));
+  EXPECT_EQ(original.Get(), appearance().Get());
+  EXPECT_FALSE(original->GetDict()->KeyExist("EPDFOrigContentRect"));
+  EXPECT_EQ("1 0 0 rg 0 0 200 100 re f",
+            GetNormalAppearanceStreamBytes(annot_.get()));
 }
