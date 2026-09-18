@@ -7,6 +7,7 @@
 #include "public/fpdf_save.h"
 
 #include <stdint.h>
+#include <algorithm>
 #include <cstdlib>
 #include <cstring>
 #include <limits>
@@ -257,17 +258,60 @@ bool DoDocSave(FPDF_DOCUMENT document,
 }
 
 struct MemoryFileWriter : public FPDF_FILEWRITE {
-  std::string data;
-
   MemoryFileWriter() {
     version = 1;
     WriteBlock = [](FPDF_FILEWRITE* self, const void* buf,
                     unsigned long size) -> int {
-      static_cast<MemoryFileWriter*>(self)->data.append(
-          static_cast<const char*>(buf), size);
+      auto* writer = static_cast<MemoryFileWriter*>(self);
+      if (writer->failed_ || !writer->Append(buf, size)) {
+        writer->failed_ = true;
+        return 0;
+      }
       return 1;
     };
   }
+
+  ~MemoryFileWriter() { free(data_); }
+
+  MemoryFileWriter(const MemoryFileWriter&) = delete;
+  MemoryFileWriter& operator=(const MemoryFileWriter&) = delete;
+
+  size_t size() const { return size_; }
+  bool failed() const { return failed_; }
+
+  // The returned allocation is released by EPDF_FreeBuffer(). No final
+  // output-sized copy is needed to transfer ownership to the caller.
+  void* Release() { return std::exchange(data_, nullptr); }
+
+ private:
+  bool Append(const void* data, size_t size) {
+    if (size > std::numeric_limits<size_t>::max() - size_) {
+      return false;
+    }
+    const size_t required = size_ + size;
+    if (required > capacity_) {
+      const size_t growth = std::min(
+          capacity_ / 2, std::numeric_limits<size_t>::max() - capacity_);
+      const size_t capacity =
+          std::max(required, std::max(size_t{32768}, capacity_ + growth));
+      void* allocation = realloc(data_, capacity);
+      if (!allocation) {
+        return false;
+      }
+      data_ = static_cast<uint8_t*>(allocation);
+      capacity_ = capacity;
+    }
+    if (size != 0) {
+      memcpy(data_ + size_, data, size);
+    }
+    size_ = required;
+    return true;
+  }
+
+  uint8_t* data_ = nullptr;
+  size_t size_ = 0;
+  size_t capacity_ = 0;
+  bool failed_ = false;
 };
 
 void* SaveToOwnedBuffer(FPDF_DOCUMENT document,
@@ -286,27 +330,23 @@ void* SaveToOwnedBuffer(FPDF_DOCUMENT document,
   EPDFSaveStatus status = EPDFSaveStatus_kFailed;
   const bool ok = DoDocSaveImpl(document, &writer, flags, version,
                                 skip_if_unchanged, &status);
-  if (!ok) {
+  // The archive flushes its final block during destruction in DoDocSaveImpl().
+  // Include that callback's result before handing a complete PDF to the caller.
+  if (!ok || writer.failed()) {
     return nullptr;
   }
   SetSaveStatus(out_status, status);
   if (status == EPDFSaveStatus_kUnchangedSinceLoad) {
     return nullptr;  // nothing written, by design: the loaded bytes stand
   }
-  if (writer.data.empty() ||
-      writer.data.size() > std::numeric_limits<unsigned long>::max()) {
+  if (writer.size() == 0 ||
+      writer.size() > std::numeric_limits<unsigned long>::max()) {
     SetSaveStatus(out_status, EPDFSaveStatus_kFailed);
     return nullptr;
   }
 
-  void* buffer = malloc(writer.data.size());
-  if (!buffer) {
-    return nullptr;
-  }
-
-  memcpy(buffer, writer.data.data(), writer.data.size());
-  *out_size = static_cast<unsigned long>(writer.data.size());
-  return buffer;
+  *out_size = static_cast<unsigned long>(writer.size());
+  return writer.Release();
 }
 
 }  // namespace

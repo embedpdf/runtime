@@ -95,7 +95,6 @@ class CPDF_Creator {
     kWriteHeader10 = 10,
     kWriteIncremental15 = 15,
     kInitWriteObjs20 = 20,
-    kWriteOldObjs21 = 21,
     kInitWriteNewObjs25 = 25,
     kWriteNewObjs26 = 26,
     kWriteEncryptDict27 = 27,
@@ -117,8 +116,7 @@ class CPDF_Creator {
   CPDF_Creator::Stage WriteDoc_Stage3();
   CPDF_Creator::Stage WriteDoc_Stage4();
 
-  bool WriteOldIndirectObject(uint32_t objnum);
-  bool WriteOldObjs();
+  bool WriteFullDocument();
   bool WriteNewObjs();
   bool WriteIndirectObj(uint32_t objnum, const CPDF_Object* pObj);
   bool CheckEmittedOffset(FX_FILESIZE offset);

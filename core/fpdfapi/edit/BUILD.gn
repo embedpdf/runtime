@@ -23,6 +23,8 @@ source_set("edit") {
     "cpdf_path_redactor.h",
     "cpdf_redaction_mark_sanitizer.cpp",
     "cpdf_redaction_mark_sanitizer.h",
+    "cpdf_save_object_reader.cpp",
+    "cpdf_save_object_reader.h",
     "cpdf_stringarchivestream.cpp",
     "cpdf_stringarchivestream.h",
     "cpdf_text_redactor.cpp",

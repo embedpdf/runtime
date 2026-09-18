@@ -11,20 +11,25 @@
 #include <inttypes.h>
 #include <algorithm>
 #include <array>
+#include <deque>
 #include <set>
 #include <utility>
 #include <vector>
 
+#include "core/fpdfapi/edit/cpdf_save_object_reader.h"
 #include "core/fpdfapi/parser/cpdf_array.h"
 #include "core/fpdfapi/parser/cpdf_crypto_handler.h"
 #include "core/fpdfapi/parser/cpdf_dictionary.h"
 #include "core/fpdfapi/parser/cpdf_document.h"
+#include "core/fpdfapi/parser/cpdf_document_view_scope.h"
 #include "core/fpdfapi/parser/cpdf_encryptor.h"
 #include "core/fpdfapi/parser/cpdf_flateencoder.h"
 #include "core/fpdfapi/parser/cpdf_layer_document.h"
-#include "core/fpdfapi/parser/cpdf_object_equality.h"
 #include "core/fpdfapi/parser/cpdf_number.h"
+#include "core/fpdfapi/parser/cpdf_object_equality.h"
+#include "core/fpdfapi/parser/cpdf_object_walker.h"
 #include "core/fpdfapi/parser/cpdf_parser.h"
+#include "core/fpdfapi/parser/cpdf_reference.h"
 #include "core/fpdfapi/parser/cpdf_security_handler.h"
 #include "core/fpdfapi/parser/cpdf_string.h"
 #include "core/fpdfapi/parser/fpdf_parser_utility.h"
@@ -140,6 +145,57 @@ ByteString FormatXrefOffset10(FX_FILESIZE offset) {
   return ByteString::Format("%010" PRId64, static_cast<int64_t>(offset));
 }
 
+// Only numbered objects enter the work queue. Inline containers are visited
+// within one object; primitive values need no persistent traversal state.
+class SaveObjectWorklist {
+ public:
+  void Add(uint32_t object_number) {
+    if (object_number == 0 || object_number == CPDF_Object::kInvalidObjNum) {
+      return;
+    }
+
+    // Sparse bitmap pages avoid allocating by an untrusted maximum object
+    // number, while keeping dense documents to one bit per object.
+    constexpr uint32_t kObjectsPerPage = 4096;
+    auto& page = visited_[object_number / kObjectsPerPage];
+    const uint32_t index = object_number % kObjectsPerPage;
+    uint64_t& word = page[index / 64];
+    const uint64_t mask = uint64_t{1} << (index % 64);
+    if ((word & mask) != 0) {
+      return;
+    }
+    word |= mask;
+    pending_.push_back(object_number);
+  }
+
+  void AddReferences(RetainPtr<const CPDF_Object> object) {
+    CPDF_ObjectWalker walker(std::move(object));
+    std::set<const CPDF_Object*> containers;
+    while (auto current = walker.GetNext()) {
+      if (current->IsReference()) {
+        Add(current->AsReference()->GetRefObjNum());
+      } else if (current->IsArray() || current->IsDictionary() ||
+                 current->IsStream()) {
+        if (!containers.insert(current.Get()).second) {
+          walker.SkipWalkIntoCurrentObject();
+        }
+      }
+    }
+  }
+
+  bool empty() const { return pending_.empty(); }
+
+  uint32_t TakeNext() {
+    const uint32_t object_number = pending_.front();
+    pending_.pop_front();
+    return object_number;
+  }
+
+ private:
+  std::map<uint32_t, std::array<uint64_t, 64>> visited_;
+  std::deque<uint32_t> pending_;
+};
+
 std::set<uint32_t> CollectSaveReachableObjects(
     CPDF_Document* document,
     const CPDF_Dictionary* encrypt_dict) {
@@ -205,51 +261,46 @@ bool CPDF_Creator::WriteIndirectObj(uint32_t objnum, const CPDF_Object* pObj) {
   return archive_->WriteString("\r\nendobj\r\n");
 }
 
-bool CPDF_Creator::WriteOldIndirectObject(uint32_t objnum) {
-  if (parser_->IsObjectFree(objnum)) {
-    return true;
+bool CPDF_Creator::WriteFullDocument() {
+  CPDF_DocumentViewScope view(document_);
+  CPDF_SaveObjectReader reader(document_);
+  SaveObjectWorklist pending;
+
+  if (parser_) {
+    pending.AddReferences(parser_->GetCombinedTrailer());
+    pending.Add(parser_->GetTrailerObjectNumber());
+  } else {
+    pending.Add(document_->GetRoot()->GetObjNum());
   }
 
-  object_offsets_[objnum] = archive_->CurrentOffset();
-
-  bool bExistInMap = !!document_->GetIndirectObject(objnum);
-  RetainPtr<CPDF_Object> pObj = document_->GetOrParseIndirectObject(objnum);
-  if (!pObj) {
-    object_offsets_.erase(objnum);
-    return true;
+  if (auto info = document_->GetInfo()) {
+    pending.Add(info->GetObjNum());
   }
-  if (!WriteIndirectObj(pObj->GetObjNum(), pObj.Get())) {
-    return false;
-  }
-  if (!bExistInMap) {
-    document_->DeleteIndirectObject(objnum);
-  }
-  return true;
-}
-
-bool CPDF_Creator::WriteOldObjs() {
-  const uint32_t nLastObjNum = parser_->GetLastObjNum();
-  if (!parser_->IsValidObjectNumber(nLastObjNum)) {
-    return true;
-  }
-  if (cur_obj_num_ > nLastObjNum) {
-    return true;
+  if (encrypt_dict_) {
+    pending.Add(encrypt_dict_->GetObjNum());
+    pending.AddReferences(encrypt_dict_);
   }
 
-  uint32_t last_object_number_written = 0;
-  for (uint32_t objnum = cur_obj_num_; objnum <= nLastObjNum; ++objnum) {
-    if (!pdfium::Contains(objects_with_refs_, objnum)) {
+  while (!pending.empty()) {
+    const uint32_t object_number = pending.TakeNext();
+    auto object = reader.Read(object_number);
+    if (!object) {
+      // Match the existing writer's treatment of unresolved references.
       continue;
     }
-    if (!WriteOldIndirectObject(objnum)) {
+
+    pending.AddReferences(object);
+    object_offsets_[object_number] = archive_->CurrentOffset();
+    if (!WriteIndirectObj(object_number, object.Get())) {
       return false;
     }
-    last_object_number_written = objnum;
   }
-  // If there are no new objects to write, then adjust `last_obj_num_` if
-  // needed to reflect the actual last object number.
-  if (new_obj_num_array_.empty()) {
-    last_obj_num_ = last_object_number_written;
+
+  // An inline encryption dictionary is assigned document_->GetLastObjNum() + 1
+  // by the trailer writer. Preserve that allocation point when it is present.
+  if ((!encrypt_dict_ || !encrypt_dict_->IsInline()) &&
+      !object_offsets_.empty()) {
+    last_obj_num_ = object_offsets_.rbegin()->first;
   }
   return true;
 }
@@ -357,7 +408,9 @@ CPDF_Creator::Stage CPDF_Creator::WriteDoc_Stage1() {
     }
     stage_ = Stage::kInitWriteObjs20;
   }
-  InitNewObjNumOffsets();
+  if (is_incremental_) {
+    InitNewObjNumOffsets();
+  }
   return stage_;
 }
 
@@ -365,19 +418,14 @@ CPDF_Creator::Stage CPDF_Creator::WriteDoc_Stage2() {
   DCHECK(stage_ >= Stage::kInitWriteObjs20 ||
          stage_ < Stage::kInitWriteXRefs80);
   if (stage_ == Stage::kInitWriteObjs20) {
-    if (!is_incremental_ && parser_) {
-      cur_obj_num_ = 0;
-      stage_ = Stage::kWriteOldObjs21;
+    if (!is_incremental_) {
+      if (!WriteFullDocument()) {
+        return Stage::kInvalid;
+      }
+      stage_ = Stage::kWriteEncryptDict27;
     } else {
       stage_ = Stage::kInitWriteNewObjs25;
     }
-  }
-  if (stage_ == Stage::kWriteOldObjs21) {
-    if (!WriteOldObjs()) {
-      return Stage::kInvalid;
-    }
-
-    stage_ = Stage::kInitWriteNewObjs25;
   }
   if (stage_ == Stage::kInitWriteNewObjs25) {
     cur_obj_num_ = 0;
@@ -745,8 +793,13 @@ bool CPDF_Creator::Create(Mask<CreateFlags> flags, int32_t file_version) {
   skip_empty_revision_ = false;
 
   InitID();
-  objects_with_refs_ =
-      CollectSaveReachableObjects(document_, encrypt_dict_.Get());
+  if (!parser_ || (security_changed_ && is_original_)) {
+    is_incremental_ = false;
+  }
+  if (is_incremental_) {
+    objects_with_refs_ =
+        CollectSaveReachableObjects(document_, encrypt_dict_.Get());
+  }
 
   // EmbedPDF L2: an incremental save writes what changed. One pass over the
   // objects in memory, restricted to what the save can reach (an orphan is

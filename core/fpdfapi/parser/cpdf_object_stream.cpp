@@ -73,6 +73,11 @@ CPDF_ObjectStream::CPDF_ObjectStream(RetainPtr<const CPDF_Stream> obj_stream)
 
 CPDF_ObjectStream::~CPDF_ObjectStream() = default;
 
+size_t CPDF_ObjectStream::GetRetainedSize() const {
+  return stream_acc_->GetSize() + stream_acc_->GetStream()->GetRawSize() +
+         object_info_.capacity() * sizeof(ObjectInfo);
+}
+
 RetainPtr<CPDF_Object> CPDF_ObjectStream::ParseObject(
     CPDF_IndirectObjectHolder* pObjList,
     uint32_t obj_number,

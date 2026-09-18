@@ -3,11 +3,14 @@
 // found in the LICENSE file.
 
 #include <array>
+#include <iterator>
 #include <string>
 #include <vector>
 
+#include "core/fpdfapi/parser/cpdf_base_document.h"
 #include "core/fpdfapi/parser/cpdf_cross_ref_table.h"
 #include "core/fpdfapi/parser/cpdf_document.h"
+#include "core/fpdfapi/parser/cpdf_layer_document.h"
 #include "core/fpdfapi/parser/cpdf_parser.h"
 #include "core/fxcrt/fx_string.h"
 #include "fpdfsdk/cpdfsdk_helpers.h"
@@ -47,6 +50,104 @@ bool HasSavedXRefEntryForObject(FPDF_DOCUMENT document, uint32_t objnum) {
 }  // namespace
 
 class FPDFSaveEmbedderTest : public EmbedderTest {};
+
+TEST_F(FPDFSaveEmbedderTest, FullRewriteDoesNotPopulateDocumentCaches) {
+  ASSERT_TRUE(OpenDocument("annotation_stamp_with_ap.pdf"));
+  CPDF_Document* doc = CPDFDocumentFromFPDFDocument(document());
+  doc->GetInfo();
+  const auto object_count = std::distance(doc->begin(), doc->end());
+  const size_t stream_count =
+      doc->GetParser()->GetCachedObjectStreamCountForTesting();
+
+  for (int pass = 0; pass < 2; ++pass) {
+    ClearString();
+    ASSERT_TRUE(FPDF_SaveAsCopy(document(), this, FPDF_NO_INCREMENTAL));
+    EXPECT_EQ(object_count, std::distance(doc->begin(), doc->end()));
+    EXPECT_EQ(stream_count,
+              doc->GetParser()->GetCachedObjectStreamCountForTesting());
+
+    ScopedSavedDoc saved = OpenScopedSavedDocument();
+    ASSERT_TRUE(saved);
+    EXPECT_EQ(FPDF_GetPageCount(document()), FPDF_GetPageCount(saved.get()));
+    ScopedSavedPage page = LoadScopedSavedPage(0);
+    ASSERT_TRUE(page);
+    EXPECT_TRUE(RenderSavedPageWithFlags(page.get(), FPDF_ANNOT));
+  }
+}
+
+TEST_F(FPDFSaveEmbedderTest, FullRewriteDoesNotPopulateSharedBaseCaches) {
+  FileAccessForTesting access("annotation_stamp_with_ap.pdf");
+  EPDF_BASE_DOCUMENT base = EPDF_LoadBaseDocument(&access, nullptr);
+  ASSERT_TRUE(base);
+  ScopedFPDFDocument layer(
+      EPDFLayer_OpenLayer(base, nullptr, nullptr, nullptr));
+  // The layer retains the base, including on an assertion failure below.
+  EPDF_ReleaseBaseDocument(base);
+  ASSERT_TRUE(layer);
+
+  auto* doc = CPDF_LayerDocument::FromDocument(
+      CPDFDocumentFromFPDFDocument(layer.get()));
+  ASSERT_TRUE(doc);
+  doc->GetInfo();
+  auto* base_doc = doc->GetBaseDocument();
+  const auto object_count = std::distance(base_doc->begin(), base_doc->end());
+  const size_t stream_count =
+      base_doc->GetParser()->GetCachedObjectStreamCountForTesting();
+  const size_t promoted_count = doc->GetPromotedObjectCount();
+
+  ASSERT_TRUE(FPDF_SaveAsCopy(layer.get(), this, FPDF_NO_INCREMENTAL));
+  EXPECT_EQ(object_count, std::distance(base_doc->begin(), base_doc->end()));
+  EXPECT_EQ(stream_count,
+            base_doc->GetParser()->GetCachedObjectStreamCountForTesting());
+  EXPECT_EQ(promoted_count, doc->GetPromotedObjectCount());
+
+  ScopedSavedDoc saved = OpenScopedSavedDocument();
+  ASSERT_TRUE(saved);
+  EXPECT_EQ(FPDF_GetPageCount(layer.get()), FPDF_GetPageCount(saved.get()));
+}
+
+TEST_F(FPDFSaveEmbedderTest, FullRewritePreservesLiveAnnotationAcrossSaves) {
+  ASSERT_TRUE(OpenDocument("rectangles.pdf"));
+  ScopedPage page = LoadScopedPage(0);
+  ASSERT_TRUE(page);
+  ScopedFPDFAnnotation annotation(
+      EPDFPage_CreateAnnot(page.get(), FPDF_ANNOT_SQUARE));
+  ASSERT_TRUE(annotation);
+
+  for (int pass = 0; pass < 2; ++pass) {
+    const FS_RECTF rect = {20.0f + pass * 10, 120.0f, 120.0f, 20.0f};
+    ASSERT_TRUE(FPDFAnnot_SetRect(annotation.get(), &rect));
+    const std::string expected_render =
+        HashBitmap(RenderLoadedPageWithFlags(page.get(), FPDF_ANNOT).get());
+    ClearString();
+    ASSERT_TRUE(FPDF_SaveAsCopy(document(), this, FPDF_NO_INCREMENTAL));
+
+    FS_RECTF live_rect;
+    ASSERT_TRUE(FPDFAnnot_GetRect(annotation.get(), &live_rect));
+    EXPECT_EQ(rect.left, live_rect.left);
+    EXPECT_EQ(
+        expected_render,
+        HashBitmap(RenderLoadedPageWithFlags(page.get(), FPDF_ANNOT).get()));
+
+    ScopedSavedDoc saved = OpenScopedSavedDocument();
+    ASSERT_TRUE(saved);
+    ScopedSavedPage saved_page = LoadScopedSavedPage(0);
+    ASSERT_TRUE(saved_page);
+    EXPECT_EQ(
+        expected_render,
+        HashBitmap(
+            RenderSavedPageWithFlags(saved_page.get(), FPDF_ANNOT).get()));
+    ASSERT_EQ(1, FPDFPage_GetAnnotCount(saved_page.get()));
+    ScopedFPDFAnnotation saved_annotation(
+        FPDFPage_GetAnnot(saved_page.get(), 0));
+    FS_RECTF saved_rect;
+    ASSERT_TRUE(FPDFAnnot_GetRect(saved_annotation.get(), &saved_rect));
+    EXPECT_EQ(rect.left, saved_rect.left);
+    EXPECT_EQ(rect.top, saved_rect.top);
+    EXPECT_EQ(rect.right, saved_rect.right);
+    EXPECT_EQ(rect.bottom, saved_rect.bottom);
+  }
+}
 
 TEST_F(FPDFSaveEmbedderTest, SaveSimpleDoc) {
   ASSERT_TRUE(OpenDocument("hello_world.pdf"));
