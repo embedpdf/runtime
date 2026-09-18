@@ -17,7 +17,9 @@ class CPDF_CryptoHandler;
 
 class CPDF_Encryptor {
  public:
-  CPDF_Encryptor(const CPDF_CryptoHandler* pHandler, int objnum);
+  CPDF_Encryptor(const CPDF_CryptoHandler* pHandler,
+                 int objnum,
+                 uint32_t generation = 0);
   ~CPDF_Encryptor();
 
   DataVector<uint8_t> Encrypt(pdfium::span<const uint8_t> src_data) const;
@@ -25,6 +27,7 @@ class CPDF_Encryptor {
  private:
   UnownedPtr<const CPDF_CryptoHandler> const handler_;
   const int obj_num_;
+  const uint32_t generation_;
 };
 
 #endif  // CORE_FPDFAPI_PARSER_CPDF_ENCRYPTOR_H_

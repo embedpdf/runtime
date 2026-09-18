@@ -21,12 +21,21 @@ class CPDF_Parser;
 // their parsing dependencies belong to this reader.
 class CPDF_SaveObjectReader final : public CPDF_IndirectObjectHolder {
  public:
-  explicit CPDF_SaveObjectReader(CPDF_Document* document);
+  enum class Version {
+    kEffective,
+    // Loaded bytes for a plain document, frozen base for a layer. Never reads
+    // edited objects; a layer's loaded delta twins are compared separately.
+    kOriginal,
+  };
+
+  explicit CPDF_SaveObjectReader(CPDF_Document* document,
+                                 Version version = Version::kEffective);
   ~CPDF_SaveObjectReader() override;
 
   // Finish using the previous object before calling this again. Indirect
   // dependencies (for example /Length) are retained until the next call.
   RetainPtr<const CPDF_Object> Read(uint32_t object_number);
+  bool IsCached(uint32_t object_number) const;
 
  protected:
   CPDF_Object* GetOrParseIndirectObjectInternal(
@@ -34,9 +43,11 @@ class CPDF_SaveObjectReader final : public CPDF_IndirectObjectHolder {
 
  private:
   RetainPtr<const CPDF_Object> ReadObject(uint32_t object_number);
+  RetainPtr<const CPDF_Object> ReadCachedObject(uint32_t object_number) const;
 
   UnownedPtr<CPDF_Document> const document_;
   UnownedPtr<CPDF_Parser> const parser_;
+  const Version version_;
   CPDF_ObjectStreamCache stream_cache_;
   std::map<uint32_t, RetainPtr<const CPDF_Object>> dependencies_;
 };

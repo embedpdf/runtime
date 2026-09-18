@@ -73,6 +73,10 @@ class CPDF_LayerDocument final : public CPDF_Document {
   bool DiffersFromBase(uint32_t objnum) const;
   bool DiffersFromLoaded(uint32_t objnum) const;
 
+  // Cache-only access to the pristine version carried by the loaded delta.
+  // A missing entry means the loaded version is the base version.
+  RetainPtr<const CPDF_Object> FindLoadedDeltaTwin(uint32_t objnum) const;
+
   // CPDF_Document:
   CPDF_Parser* GetParser() const override;
   const CPDF_Dictionary* GetRoot() const override;

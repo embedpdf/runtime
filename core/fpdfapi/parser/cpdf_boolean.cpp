@@ -41,7 +41,8 @@ CPDF_Boolean* CPDF_Boolean::AsMutableBoolean() {
 }
 
 bool CPDF_Boolean::WriteTo(IFX_ArchiveStream* archive,
-                           const CPDF_Encryptor* encryptor) const {
+                           const CPDF_Encryptor* encryptor,
+                           const CPDF_WriteContext* context) const {
   return archive->WriteString(" ") &&
          archive->WriteString(GetString().AsStringView());
 }

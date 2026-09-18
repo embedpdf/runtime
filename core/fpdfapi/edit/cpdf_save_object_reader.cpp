@@ -16,9 +16,11 @@ constexpr size_t kSaveObjectStreamCacheBytes = 8 * 1024 * 1024;
 
 }  // namespace
 
-CPDF_SaveObjectReader::CPDF_SaveObjectReader(CPDF_Document* document)
+CPDF_SaveObjectReader::CPDF_SaveObjectReader(CPDF_Document* document,
+                                             Version version)
     : document_(document),
       parser_(document->GetParser()),
+      version_(version),
       stream_cache_(kSaveObjectStreamCacheBytes) {}
 
 CPDF_SaveObjectReader::~CPDF_SaveObjectReader() = default;
@@ -32,9 +34,25 @@ RetainPtr<const CPDF_Object> CPDF_SaveObjectReader::Read(
 
 RetainPtr<const CPDF_Object> CPDF_SaveObjectReader::ReadObject(
     uint32_t object_number) {
+  if (auto cached = ReadCachedObject(object_number)) {
+    return cached;
+  }
+  return parser_ ? parser_->ParseIndirectObjectForSave(object_number, this,
+                                                       &stream_cache_)
+                 : nullptr;
+}
+
+bool CPDF_SaveObjectReader::IsCached(uint32_t object_number) const {
+  return !!ReadCachedObject(object_number);
+}
+
+RetainPtr<const CPDF_Object> CPDF_SaveObjectReader::ReadCachedObject(
+    uint32_t object_number) const {
   if (const auto* layer = CPDF_LayerDocument::FromDocument(document_)) {
-    if (auto promoted = layer->FindPromotedObject(object_number)) {
-      return promoted;
+    if (version_ == Version::kEffective) {
+      if (auto promoted = layer->FindPromotedObject(object_number)) {
+        return promoted;
+      }
     }
     // The base lookup is cache-only. The layer's GetIndirectObject() would
     // lazily populate the shared base cache on a miss.
@@ -42,13 +60,13 @@ RetainPtr<const CPDF_Object> CPDF_SaveObjectReader::ReadObject(
             layer->GetBaseDocument()->GetIndirectObject(object_number)) {
       return cached;
     }
-  } else if (auto cached = document_->GetIndirectObject(object_number)) {
-    return cached;
+  } else if (version_ == Version::kEffective) {
+    if (auto cached = document_->GetIndirectObject(object_number)) {
+      return cached;
+    }
   }
 
-  return parser_ ? parser_->ParseIndirectObjectForSave(object_number, this,
-                                                       &stream_cache_)
-                 : nullptr;
+  return nullptr;
 }
 
 CPDF_Object* CPDF_SaveObjectReader::GetOrParseIndirectObjectInternal(

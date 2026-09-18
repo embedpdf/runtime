@@ -8,6 +8,7 @@
 
 #include "core/fpdfapi/parser/cpdf_dictionary.h"
 #include "core/fpdfapi/parser/cpdf_indirect_object_holder.h"
+#include "core/fpdfapi/parser/cpdf_write_context.h"
 #include "core/fxcrt/check_op.h"
 #include "core/fxcrt/containers/contains.h"
 #include "core/fxcrt/fx_stream.h"
@@ -99,9 +100,13 @@ const CPDF_Object* CPDF_Reference::GetDirectInternal() const {
 }
 
 bool CPDF_Reference::WriteTo(IFX_ArchiveStream* archive,
-                             const CPDF_Encryptor* encryptor) const {
+                             const CPDF_Encryptor* encryptor,
+                             const CPDF_WriteContext* context) const {
+  const uint32_t generation =
+      context ? context->GetObjectGeneration(GetRefObjNum()) : 0;
   return archive->WriteString(" ") && archive->WriteDWord(GetRefObjNum()) &&
-         archive->WriteString(" 0 R ");
+         archive->WriteString(" ") && archive->WriteDWord(generation) &&
+         archive->WriteString(" R ");
 }
 
 RetainPtr<CPDF_Reference> CPDF_Reference::MakeReference(

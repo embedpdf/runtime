@@ -37,7 +37,8 @@ class CPDF_Array final : public CPDF_Object {
       CPDF_IndirectObjectHolder* holder) const override;
   CPDF_Array* AsMutableArray() override;
   bool WriteTo(IFX_ArchiveStream* archive,
-               const CPDF_Encryptor* encryptor) const override;
+               const CPDF_Encryptor* encryptor,
+               const CPDF_WriteContext* context = nullptr) const override;
 
   bool IsEmpty() const { return objects_.empty(); }
   size_t size() const { return objects_.size(); }

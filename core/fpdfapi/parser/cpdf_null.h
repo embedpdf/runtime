@@ -19,7 +19,8 @@ class CPDF_Null final : public CPDF_Object {
   RetainPtr<CPDF_Object> Clone() const override;
   CPDF_Null* AsMutableNull() override;
   bool WriteTo(IFX_ArchiveStream* archive,
-               const CPDF_Encryptor* encryptor) const override;
+               const CPDF_Encryptor* encryptor,
+               const CPDF_WriteContext* context = nullptr) const override;
 
  private:
   CPDF_Null();

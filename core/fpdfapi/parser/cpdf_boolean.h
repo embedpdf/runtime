@@ -23,7 +23,8 @@ class CPDF_Boolean final : public CPDF_Object {
   void SetString(const ByteString& str) override;
   CPDF_Boolean* AsMutableBoolean() override;
   bool WriteTo(IFX_ArchiveStream* archive,
-               const CPDF_Encryptor* encryptor) const override;
+               const CPDF_Encryptor* encryptor,
+               const CPDF_WriteContext* context = nullptr) const override;
 
  private:
   CPDF_Boolean();

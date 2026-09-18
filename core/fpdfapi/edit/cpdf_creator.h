@@ -11,9 +11,9 @@
 
 #include <map>
 #include <memory>
-#include <set>
 #include <vector>
 
+#include "core/fpdfapi/parser/cpdf_write_context.h"
 #include "core/fxcrt/fx_stream.h"
 #include "core/fxcrt/fx_string.h"
 #include "core/fxcrt/mask.h"
@@ -28,7 +28,7 @@ class CPDF_Document;
 class CPDF_Object;
 class CPDF_Parser;
 
-class CPDF_Creator {
+class CPDF_Creator final : public CPDF_WriteContext {
  public:
   enum CreateFlags : uint32_t {
     kNone = 0,
@@ -55,7 +55,7 @@ class CPDF_Creator {
 
   CPDF_Creator(CPDF_Document* doc,
                RetainPtr<IFX_RetainableWriteStream> archive);
-  ~CPDF_Creator();
+  ~CPDF_Creator() override;
 
   bool Create(Mask<CreateFlags> flags, int32_t file_version);
   FailureReason GetFailureReason() const { return failure_reason_; }
@@ -108,7 +108,7 @@ class CPDF_Creator {
   bool Continue();
   void Clear();
 
-  void InitNewObjNumOffsets();
+  void PrepareIncrementalObjects();
   void InitID();
 
   CPDF_Creator::Stage WriteDoc_Stage1();
@@ -120,6 +120,8 @@ class CPDF_Creator {
   bool WriteNewObjs();
   bool WriteIndirectObj(uint32_t objnum, const CPDF_Object* pObj);
   bool CheckEmittedOffset(FX_FILESIZE offset);
+  uint32_t GetObjectGeneration(uint32_t object_number) const override;
+  bool WriteReference(uint32_t object_number);
 
   void RemoveSecurity();
 
@@ -138,9 +140,6 @@ class CPDF_Creator {
   FX_FILESIZE xref_start_ = 0;
   std::map<uint32_t, FX_FILESIZE> object_offsets_;
   std::vector<uint32_t> new_obj_num_array_;  // Sorted, ascending.
-  std::set<uint32_t> objects_with_refs_;
-  // EmbedPDF L2: overlay objects equal to their base twin (not written).
-  std::set<uint32_t> elided_;
   bool changed_since_load_ = false;
   bool decided_unchanged_ = false;
   // A layer save with nothing to write appends no revision at all.

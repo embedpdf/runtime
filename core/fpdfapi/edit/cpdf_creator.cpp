@@ -33,7 +33,6 @@
 #include "core/fpdfapi/parser/cpdf_security_handler.h"
 #include "core/fpdfapi/parser/cpdf_string.h"
 #include "core/fpdfapi/parser/fpdf_parser_utility.h"
-#include "core/fpdfapi/parser/object_tree_traversal_util.h"
 #include "core/fxcrt/check.h"
 #include "core/fxcrt/containers/contains.h"
 #include "core/fxcrt/fixed_size_data_vector.h"
@@ -133,22 +132,59 @@ std::array<uint32_t, 4> GenerateFileID(uint32_t dwSeed1, uint32_t dwSeed2) {
   return buffer;
 }
 
-bool OutputIndex(IFX_ArchiveStream* archive, FX_FILESIZE offset) {
+bool OutputIndex(IFX_ArchiveStream* archive,
+                 FX_FILESIZE offset,
+                 uint32_t generation) {
   return archive->WriteByte(static_cast<uint8_t>(offset >> 24)) &&
          archive->WriteByte(static_cast<uint8_t>(offset >> 16)) &&
          archive->WriteByte(static_cast<uint8_t>(offset >> 8)) &&
          archive->WriteByte(static_cast<uint8_t>(offset)) &&
-         archive->WriteByte(0);
+         archive->WriteByte(static_cast<uint8_t>(generation >> 8)) &&
+         archive->WriteByte(static_cast<uint8_t>(generation));
 }
 
 ByteString FormatXrefOffset10(FX_FILESIZE offset) {
   return ByteString::Format("%010" PRId64, static_cast<int64_t>(offset));
 }
 
+bool ShouldCopyTrailerEntry(const ByteString& key, bool replace_info) {
+  return key != "Encrypt" && key != "Size" && key != "Filter" &&
+         key != "Index" && key != "Length" && key != "Prev" && key != "W" &&
+         key != "XRefStm" && key != "ID" && key != "DecodeParms" &&
+         key != "Type" && !(key == "Info" && replace_info);
+}
+
+class InputWriteContext final : public CPDF_WriteContext {
+ public:
+  explicit InputWriteContext(const CPDF_Parser* parser,
+                             const CPDF_LayerDocument* layer = nullptr)
+      : parser_(parser), layer_(layer) {}
+
+  uint32_t GetObjectGeneration(uint32_t object_number) const override {
+    if (layer_) {
+      if (auto twin = layer_->FindLoadedDeltaTwin(object_number)) {
+        return twin->GetGenNum();
+      }
+    }
+    const auto* info =
+        parser_->GetCrossRefTable()->GetObjectInfo(object_number);
+    return info && info->type == CPDF_CrossRefTable::ObjectType::kNormal
+               ? info->gennum
+               : 0;
+  }
+
+ private:
+  UnownedPtr<const CPDF_Parser> const parser_;
+  UnownedPtr<const CPDF_LayerDocument> const layer_;
+};
+
 // Only numbered objects enter the work queue. Inline containers are visited
 // within one object; primitive values need no persistent traversal state.
 class SaveObjectWorklist {
  public:
+  explicit SaveObjectWorklist(CPDF_SaveObjectReader* preferred_reader = nullptr)
+      : preferred_reader_(preferred_reader) {}
+
   void Add(uint32_t object_number) {
     if (object_number == 0 || object_number == CPDF_Object::kInvalidObjNum) {
       return;
@@ -165,7 +201,11 @@ class SaveObjectWorklist {
       return;
     }
     word |= mask;
-    pending_.push_back(object_number);
+    if (preferred_reader_ && preferred_reader_->IsCached(object_number)) {
+      preferred_.push_back(object_number);
+    } else {
+      pending_.push_back(object_number);
+    }
   }
 
   void AddReferences(RetainPtr<const CPDF_Object> object) {
@@ -183,48 +223,21 @@ class SaveObjectWorklist {
     }
   }
 
-  bool empty() const { return pending_.empty(); }
+  bool empty() const { return preferred_.empty() && pending_.empty(); }
 
   uint32_t TakeNext() {
-    const uint32_t object_number = pending_.front();
-    pending_.pop_front();
+    auto& queue = preferred_.empty() ? pending_ : preferred_;
+    const uint32_t object_number = queue.front();
+    queue.pop_front();
     return object_number;
   }
 
  private:
   std::map<uint32_t, std::array<uint64_t, 64>> visited_;
+  UnownedPtr<CPDF_SaveObjectReader> const preferred_reader_;
+  std::deque<uint32_t> preferred_;
   std::deque<uint32_t> pending_;
 };
-
-std::set<uint32_t> CollectSaveReachableObjects(
-    CPDF_Document* document,
-    const CPDF_Dictionary* encrypt_dict) {
-  // CPDF_LayerDocument overlays new/promoted objects on a frozen base.
-  // References inherited from the base graph can still point through base
-  // holders, so resolving through the holder would skip overlay replacements.
-  // Walk through the layer document instead so the effective graph is what gets
-  // saved.
-  std::set<uint32_t> objects = GetObjectsWithReferences(
-      document, document->IsLayerDocument()
-                    ? ObjectTreeReferenceResolveMode::kEffectiveDocument
-                    : ObjectTreeReferenceResolveMode::kReferenceHolder);
-
-  // `GetObjectsWithReferences()` covers the normal document graph rooted at
-  // /Root. The save trailer may also reference dictionaries outside that graph.
-  // Keep those roots in sync with the trailer entries emitted in
-  // WriteDoc_Stage4().
-  RetainPtr<CPDF_Dictionary> info = document->GetInfo();
-  if (info && info->GetObjNum() != 0) {
-    objects.insert(info->GetObjNum());
-  }
-
-  if (encrypt_dict && !encrypt_dict->IsInline() &&
-      encrypt_dict->GetObjNum() != 0) {
-    objects.insert(encrypt_dict->GetObjNum());
-  }
-
-  return objects;
-}
 
 }  // namespace
 
@@ -245,20 +258,47 @@ ByteString CPDF_Creator::FormatXrefOffset10ForTesting(FX_FILESIZE offset) {
 }
 
 bool CPDF_Creator::WriteIndirectObj(uint32_t objnum, const CPDF_Object* pObj) {
-  if (!archive_->WriteDWord(objnum) || !archive_->WriteString(" 0 obj\r\n")) {
+  const uint32_t generation = GetObjectGeneration(objnum);
+  if (!archive_->WriteDWord(objnum) || !archive_->WriteString(" ") ||
+      !archive_->WriteDWord(generation) || !archive_->WriteString(" obj\r\n")) {
     return false;
   }
 
   std::unique_ptr<CPDF_Encryptor> encryptor;
   if (GetCryptoHandler() && pObj != encrypt_dict_) {
-    encryptor = std::make_unique<CPDF_Encryptor>(GetCryptoHandler(), objnum);
+    encryptor = std::make_unique<CPDF_Encryptor>(GetCryptoHandler(), objnum,
+                                                 generation);
   }
 
-  if (!pObj->WriteTo(archive_.get(), encryptor.get())) {
+  if (!pObj->WriteTo(archive_.get(), encryptor.get(), this)) {
     return false;
   }
 
   return archive_->WriteString("\r\nendobj\r\n");
+}
+
+uint32_t CPDF_Creator::GetObjectGeneration(uint32_t object_number) const {
+  if (!is_incremental_) {
+    return 0;
+  }
+
+  // A loaded layer delta may carry an identity newer than the base's xref.
+  // This lookup is cache-only and never promotes or parses an object.
+  if (auto local = document_->FindPromotedObject(object_number)) {
+    return local->GetGenNum();
+  }
+  if (parser_) {
+    return InputWriteContext(parser_).GetObjectGeneration(object_number);
+  }
+  // New objects and objects originally stored in object streams use zero.
+  return 0;
+}
+
+bool CPDF_Creator::WriteReference(uint32_t object_number) {
+  return archive_->WriteString(" ") && archive_->WriteDWord(object_number) &&
+         archive_->WriteString(" ") &&
+         archive_->WriteDWord(GetObjectGeneration(object_number)) &&
+         archive_->WriteString(" R");
 }
 
 bool CPDF_Creator::WriteFullDocument() {
@@ -273,9 +313,7 @@ bool CPDF_Creator::WriteFullDocument() {
     pending.Add(document_->GetRoot()->GetObjNum());
   }
 
-  if (auto info = document_->GetInfo()) {
-    pending.Add(info->GetObjNum());
-  }
+  pending.Add(document_->GetInfoObjectNumber());
   if (encrypt_dict_) {
     pending.Add(encrypt_dict_->GetObjNum());
     pending.AddReferences(encrypt_dict_);
@@ -306,13 +344,10 @@ bool CPDF_Creator::WriteFullDocument() {
 }
 
 bool CPDF_Creator::WriteNewObjs() {
+  CPDF_DocumentViewScope view(document_);
   std::vector<uint32_t> written_new_obj_nums;
   for (size_t i = cur_obj_num_; i < new_obj_num_array_.size(); ++i) {
     uint32_t objnum = new_obj_num_array_[i];
-    if (!pdfium::Contains(objects_with_refs_, objnum)) {
-      continue;
-    }
-
     RetainPtr<const CPDF_Object> pObj = document_->GetIndirectObject(objnum);
     if (!pObj) {
       continue;
@@ -336,24 +371,94 @@ bool CPDF_Creator::CheckEmittedOffset(FX_FILESIZE offset) {
   return false;
 }
 
-void CPDF_Creator::InitNewObjNumOffsets() {
-  for (const auto& pair : *document_) {
-    const uint32_t objnum = pair.first;
-    if (pair.second->GetObjNum() == CPDF_Object::kInvalidObjNum) {
-      continue;
-    }
+void CPDF_Creator::PrepareIncrementalObjects() {
+  struct Change {
+    bool differs_from_base;
+    bool differs_from_loaded;
+  };
 
-    if (!is_incremental_ && parser_ && parser_->IsValidObjectNumber(objnum) &&
-        !parser_->IsObjectFree(objnum)) {
+  std::map<uint32_t, Change> candidates;
+  const auto* layer = CPDF_LayerDocument::FromDocument(document_);
+  const InputWriteContext original_context(parser_);
+  const InputWriteContext loaded_context(parser_, layer);
+  CPDF_SaveObjectReader original_reader(
+      document_, CPDF_SaveObjectReader::Version::kOriginal);
+
+  // Compare only objects already in the document/overlay. Parsing a twin uses
+  // the original bytes and a private bounded cache, never the edited object
+  // or the shared base's lazy-loading path.
+  for (const auto& [object_number, object] : *document_) {
+    if (object->GetObjNum() == CPDF_Object::kInvalidObjNum) {
       continue;
     }
-    // EmbedPDF L2: touched, not changed - the base's copy stands.
-    if (pdfium::Contains(elided_, objnum)) {
-      continue;
+    auto base_twin = original_reader.Read(object_number);
+    const bool differs_from_base =
+        !base_twin ||
+        GetObjectGeneration(object_number) !=
+            original_context.GetObjectGeneration(object_number) ||
+        !CPDF_SameEffectiveValue(object.Get(), base_twin.Get(), this,
+                                 &original_context);
+    auto loaded_twin =
+        layer ? layer->FindLoadedDeltaTwin(object_number) : nullptr;
+    bool differs_from_loaded = differs_from_base;
+    if (loaded_twin) {
+      differs_from_loaded =
+          GetObjectGeneration(object_number) !=
+              loaded_context.GetObjectGeneration(object_number) ||
+          !CPDF_SameEffectiveValue(object.Get(), loaded_twin.Get(), this,
+                                   &loaded_context);
     }
-    new_obj_num_array_.insert(
-        std::ranges::lower_bound(new_obj_num_array_, objnum), objnum);
+    if (differs_from_base || differs_from_loaded) {
+      candidates.emplace(object_number,
+                         Change{differs_from_base, differs_from_loaded});
+    }
   }
+
+  if (candidates.empty()) {
+    return;
+  }
+
+  // An unchanged document needs neither a graph walk nor an empty revision.
+  // Changed candidates still need a path from a saved root: detached objects
+  // must not resurrect an edit or prevent an otherwise unchanged save.
+  CPDF_SaveObjectReader effective_reader(document_);
+  // Editing a page usually loads its path through the page tree. Follow those
+  // already-loaded edges first, before opening unrelated resource graphs.
+  // Every visited object still needs a proven path from a saved root.
+  SaveObjectWorklist pending(&effective_reader);
+  const uint32_t info_number = document_->GetInfoObjectNumber();
+  {
+    CPDF_DictionaryLocker trailer(parser_->GetCombinedTrailer());
+    for (const auto& [key, value] : trailer) {
+      if (ShouldCopyTrailerEntry(key,
+                                 info_number != parser_->GetInfoObjNum())) {
+        pending.AddReferences(value);
+      }
+    }
+  }
+  pending.Add(info_number);
+  if (encrypt_dict_) {
+    pending.Add(encrypt_dict_->GetObjNum());
+  }
+
+  while (!candidates.empty() && !pending.empty()) {
+    const uint32_t object_number = pending.TakeNext();
+    auto candidate = candidates.find(object_number);
+    if (candidate != candidates.end()) {
+      if (candidate->second.differs_from_base) {
+        new_obj_num_array_.push_back(object_number);
+      }
+      changed_since_load_ |= candidate->second.differs_from_loaded;
+      candidates.erase(candidate);
+      if (candidates.empty()) {
+        break;
+      }
+    }
+    if (auto object = effective_reader.Read(object_number)) {
+      pending.AddReferences(std::move(object));
+    }
+  }
+  std::ranges::sort(new_obj_num_array_);
 }
 
 CPDF_Creator::Stage CPDF_Creator::WriteDoc_Stage1() {
@@ -407,9 +512,6 @@ CPDF_Creator::Stage CPDF_Creator::WriteDoc_Stage1() {
       }
     }
     stage_ = Stage::kInitWriteObjs20;
-  }
-  if (is_incremental_) {
-    InitNewObjNumOffsets();
   }
   return stage_;
 }
@@ -526,11 +628,13 @@ CPDF_Creator::Stage CPDF_Creator::WriteDoc_Stage3() {
       }
 
       while (i < j) {
-        const FX_FILESIZE offset = object_offsets_[i++];
+        const uint32_t objnum = i++;
+        const FX_FILESIZE offset = object_offsets_[objnum];
         if (!CheckEmittedOffset(offset)) {
           return Stage::kInvalid;
         }
-        str = FormatXrefOffset10(offset) + " 00000 n\r\n";
+        str = FormatXrefOffset10(offset) +
+              ByteString::Format(" %05u n\r\n", GetObjectGeneration(objnum));
         if (!archive_->WriteString(str.AsStringView())) {
           return Stage::kInvalid;
         }
@@ -575,7 +679,8 @@ CPDF_Creator::Stage CPDF_Creator::WriteDoc_Stage3() {
         if (!CheckEmittedOffset(offset)) {
           return Stage::kInvalid;
         }
-        str = FormatXrefOffset10(offset) + " 00000 n\r\n";
+        str = FormatXrefOffset10(offset) +
+              ByteString::Format(" %05u n\r\n", GetObjectGeneration(objnum));
         if (!archive_->WriteString(str.AsStringView())) {
           return Stage::kInvalid;
         }
@@ -596,15 +701,13 @@ CPDF_Creator::Stage CPDF_Creator::WriteDoc_Stage4() {
       return Stage::kInvalid;
     }
   } else {
-    if (!archive_->WriteDWord(document_->GetLastObjNum() + 1) ||
+    if (!archive_->WriteDWord(last_obj_num_ + 1) ||
         !archive_->WriteString(" 0 obj <<")) {
       return Stage::kInvalid;
     }
   }
 
-  RetainPtr<CPDF_Dictionary> current_info = document_->GetInfo();
-  const uint32_t current_info_objnum =
-      current_info ? current_info->GetObjNum() : 0;
+  const uint32_t current_info_objnum = document_->GetInfoObjectNumber();
   const uint32_t parser_info_objnum = parser_ ? parser_->GetInfoObjNum() : 0;
   const bool should_write_current_info =
       current_info_objnum != 0 && current_info_objnum != parser_info_objnum;
@@ -613,31 +716,28 @@ CPDF_Creator::Stage CPDF_Creator::WriteDoc_Stage4() {
     for (const auto& it : locker) {
       const ByteString& key = it.first;
       const RetainPtr<CPDF_Object>& pValue = it.second;
-      if (key == "Encrypt" || key == "Size" || key == "Filter" ||
-          key == "Index" || key == "Length" || key == "Prev" || key == "W" ||
-          key == "XRefStm" || key == "ID" || key == "DecodeParms" ||
-          key == "Type" || (key == "Info" && should_write_current_info)) {
+      if (!ShouldCopyTrailerEntry(key, should_write_current_info)) {
         continue;
       }
       if (!archive_->WriteString(("/")) ||
           !archive_->WriteString(PDF_NameEncode(key).AsStringView())) {
         return Stage::kInvalid;
       }
-      if (!pValue->WriteTo(archive_.get(), nullptr)) {
+      if (!pValue->WriteTo(archive_.get(), nullptr, this)) {
         return Stage::kInvalid;
       }
     }
   } else {
-    if (!archive_->WriteString("\r\n/Root ") ||
-        !archive_->WriteDWord(document_->GetRoot()->GetObjNum()) ||
-        !archive_->WriteString(" 0 R\r\n")) {
+    if (!archive_->WriteString("\r\n/Root") ||
+        !WriteReference(document_->GetRoot()->GetObjNum()) ||
+        !archive_->WriteString("\r\n")) {
       return Stage::kInvalid;
     }
   }
   if (should_write_current_info) {
-    if (!archive_->WriteString("/Info ") ||
-        !archive_->WriteDWord(current_info_objnum) ||
-        !archive_->WriteString(" 0 R\r\n")) {
+    if (!archive_->WriteString("/Info") ||
+        !WriteReference(current_info_objnum) ||
+        !archive_->WriteString("\r\n")) {
       return Stage::kInvalid;
     }
   }
@@ -650,14 +750,25 @@ CPDF_Creator::Stage CPDF_Creator::WriteDoc_Stage4() {
     if (dwObjNum == 0) {
       dwObjNum = document_->GetLastObjNum() + 1;
     }
-    if (!archive_->WriteString(" ") || !archive_->WriteDWord(dwObjNum) ||
-        !archive_->WriteString(" 0 R ")) {
+    if (!WriteReference(dwObjNum) || !archive_->WriteString(" ")) {
       return Stage::kInvalid;
     }
   }
 
-  if (!archive_->WriteString("/Size ") ||
-      !archive_->WriteDWord(last_obj_num_ + (bXRefStream ? 2 : 1))) {
+  FX_SAFE_UINT32 trailer_size = last_obj_num_;
+  trailer_size += bXRefStream ? 2 : 1;
+  if (!trailer_size.IsValid()) {
+    return Stage::kInvalid;
+  }
+  uint32_t size = trailer_size.ValueOrDie();
+  if (is_incremental_) {
+    const int original_size =
+        parser_->GetCombinedTrailer()->GetIntegerFor("Size");
+    if (original_size > 0) {
+      size = std::max(size, static_cast<uint32_t>(original_size));
+    }
+  }
+  if (!archive_->WriteString("/Size ") || !archive_->WriteDWord(size)) {
     return Stage::kInvalid;
   }
   if (is_incremental_) {
@@ -670,7 +781,7 @@ CPDF_Creator::Stage CPDF_Creator::WriteDoc_Stage4() {
   }
   if (id_array_) {
     if (!archive_->WriteString(("/ID")) ||
-        !id_array_->WriteTo(archive_.get(), nullptr)) {
+        !id_array_->WriteTo(archive_.get(), nullptr, this)) {
       return Stage::kInvalid;
     }
   }
@@ -682,58 +793,33 @@ CPDF_Creator::Stage CPDF_Creator::WriteDoc_Stage4() {
     // EmbedPDF: a cross-reference stream is a stream object with a /Type,
     // closed by endobj like any other (ISO 32000-2 7.5.8); readers that
     // walk objects (the trailer-end scanner, pyHanko) stop at a missing one.
-    if (!archive_->WriteString("/Type/XRef/W[0 4 1]/Index[")) {
+    // Include the xref stream's own entry. Two bytes cover every generation
+    // allowed by PDF, including generations above 255.
+    const uint32_t xref_object_number = last_obj_num_ + 1;
+    object_offsets_[xref_object_number] = xref_start_;
+    if (!archive_->WriteString("/Type/XRef/W[0 4 2]/Index[")) {
       return Stage::kInvalid;
     }
-    if (is_incremental_ && parser_ && parser_->GetLastXRefOffset() == 0) {
-      uint32_t i = 0;
-      for (i = 0; i < last_obj_num_; i++) {
-        if (!pdfium::Contains(object_offsets_, i)) {
-          continue;
-        }
-        if (!archive_->WriteDWord(i) || !archive_->WriteString(" 1 ")) {
-          return Stage::kInvalid;
-        }
-      }
-      if (!archive_->WriteString("]/Length ") ||
-          !archive_->WriteDWord(last_obj_num_ * 5) ||
-          !archive_->WriteString(">>stream\r\n")) {
+    for (const auto& [object_number, offset] : object_offsets_) {
+      if (!archive_->WriteDWord(object_number) ||
+          !archive_->WriteString(" 1 ")) {
         return Stage::kInvalid;
       }
-      for (i = 0; i < last_obj_num_; i++) {
-        auto it = object_offsets_.find(i);
-        if (it == object_offsets_.end()) {
-          continue;
-        }
-        if (!CheckEmittedOffset(it->second)) {
-          return Stage::kInvalid;
-        }
-        if (!OutputIndex(archive_.get(), it->second)) {
-          return Stage::kInvalid;
-        }
-      }
-    } else {
-      int count = fxcrt::CollectionSize<int>(new_obj_num_array_);
-      int i = 0;
-      for (i = 0; i < count; i++) {
-        if (!archive_->WriteDWord(new_obj_num_array_[i]) ||
-            !archive_->WriteString(" 1 ")) {
-          return Stage::kInvalid;
-        }
-      }
-      if (!archive_->WriteString("]/Length ") ||
-          !archive_->WriteDWord(count * 5) ||
-          !archive_->WriteString(">>stream\r\n")) {
+    }
+    FX_SAFE_UINT32 length = object_offsets_.size();
+    length *= 6;
+    if (!length.IsValid() || !archive_->WriteString("]/Length ") ||
+        !archive_->WriteDWord(length.ValueOrDie()) ||
+        !archive_->WriteString(">>stream\r\n")) {
+      return Stage::kInvalid;
+    }
+    for (const auto& [object_number, offset] : object_offsets_) {
+      const uint32_t generation = object_number == xref_object_number
+                                      ? 0
+                                      : GetObjectGeneration(object_number);
+      if (!CheckEmittedOffset(offset) ||
+          !OutputIndex(archive_.get(), offset, generation)) {
         return Stage::kInvalid;
-      }
-      for (i = 0; i < count; ++i) {
-        const FX_FILESIZE offset = object_offsets_[new_obj_num_array_[i]];
-        if (!CheckEmittedOffset(offset)) {
-          return Stage::kInvalid;
-        }
-        if (!OutputIndex(archive_.get(), offset)) {
-          return Stage::kInvalid;
-        }
       }
     }
     if (!archive_->WriteString("\r\nendstream\r\nendobj")) {
@@ -786,8 +872,6 @@ bool CPDF_Creator::Create(Mask<CreateFlags> flags, int32_t file_version) {
   last_obj_num_ = document_->GetLastObjNum();
   object_offsets_.clear();
   new_obj_num_array_.clear();
-  objects_with_refs_.clear();
-  elided_.clear();
   changed_since_load_ = false;
   decided_unchanged_ = false;
   skip_empty_revision_ = false;
@@ -797,61 +881,12 @@ bool CPDF_Creator::Create(Mask<CreateFlags> flags, int32_t file_version) {
     is_incremental_ = false;
   }
   if (is_incremental_) {
-    objects_with_refs_ =
-        CollectSaveReachableObjects(document_, encrypt_dict_.Get());
-  }
-
-  // EmbedPDF L2: an incremental save writes what changed. One pass over the
-  // objects in memory, restricted to what the save can reach (an orphan is
-  // never a change). An object that still equals its base twin is elided -
-  // touched, not changed - and the pass notes whether any reachable object
-  // differs from the document it was LOADED with.
-  //
-  //   Layer document: the base twin is the frozen base object, the loaded
-  //   twin the delta's version when the delta carried it (they disagree on
-  //   a reopened layer); both are in memory, so the pass is O(overlay).
-  //   Plain document: the in-memory objects are the loaded ones edited in
-  //   place, so the twin for both questions is a fresh parse of the object
-  //   from the loaded bytes; every parsed object is a candidate (upstream
-  //   would have rewritten each of them), so the pass is O(parsed).
-  //
-  // An elided object is reached, in a layer reopened over this delta,
-  // through whatever refers to it - possibly a frozen base object whose
-  // references resolve through the base. That is fine by the fork's law:
-  // readers resolve through the effective view (CPDF_DocumentViewScope),
-  // and the ambient-view DCHECK in CPDF_BaseDocument flags any that does
-  // not. WriteDoc_Stage1 turns a security change into a full rewrite, so
-  // the pass runs only for a save that stays incremental.
-  if (is_incremental_ && parser_ && !(security_changed_ && is_original_)) {
-    const CPDF_LayerDocument* layer =
-        CPDF_LayerDocument::FromDocument(document_.get());
     skip_empty_revision_ = true;
-    for (const auto& pair : *document_) {
-      const uint32_t objnum = pair.first;
-      if (pair.second->GetObjNum() == CPDF_Object::kInvalidObjNum ||
-          !pdfium::Contains(objects_with_refs_, objnum)) {
-        continue;
-      }
-      bool differs_from_base = true;
-      bool differs_from_loaded = true;
-      if (layer) {
-        differs_from_base = layer->DiffersFromBase(objnum);
-        differs_from_loaded = layer->DiffersFromLoaded(objnum);
-      } else {
-        RetainPtr<const CPDF_Object> twin = document_->GetLoadedTwin(objnum);
-        differs_from_base = differs_from_loaded =
-            !twin || !CPDF_SameEffectiveValue(pair.second.Get(), twin.Get());
-      }
-      if (!differs_from_base) {
-        elided_.insert(objnum);
-      }
-      if (differs_from_loaded) {
-        changed_since_load_ = true;
-      }
-    }
+    PrepareIncrementalObjects();
     if (!changed_since_load_ &&
         !!(flags & CreateFlags::kSkipIfUnchangedSinceLoad)) {
-      // The loaded bytes ARE the document: write nothing, say so.
+      // A reopened layer may differ from the base but equal its loaded delta.
+      // Let the caller retain those loaded bytes verbatim.
       decided_unchanged_ = true;
       stage_ = Stage::kInvalid;
       return true;

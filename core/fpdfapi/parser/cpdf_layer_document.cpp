@@ -198,11 +198,16 @@ RetainPtr<const CPDF_Object> CPDF_LayerDocument::GetBaseTwin(
 
 RetainPtr<const CPDF_Object> CPDF_LayerDocument::GetLoadedTwin(
     uint32_t objnum) const {
-  auto it = loaded_twins_.find(objnum);
-  if (it != loaded_twins_.end()) {
-    return it->second;
+  if (auto twin = FindLoadedDeltaTwin(objnum)) {
+    return twin;
   }
   return GetBaseTwin(objnum);
+}
+
+RetainPtr<const CPDF_Object> CPDF_LayerDocument::FindLoadedDeltaTwin(
+    uint32_t objnum) const {
+  auto it = loaded_twins_.find(objnum);
+  return it != loaded_twins_.end() ? it->second : nullptr;
 }
 
 bool CPDF_LayerDocument::SharesBackingStorageWith(

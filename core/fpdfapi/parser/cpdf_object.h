@@ -26,6 +26,7 @@ class CPDF_Number;
 class CPDF_Reference;
 class CPDF_Stream;
 class CPDF_String;
+class CPDF_WriteContext;
 class IFX_ArchiveStream;
 
 // ISO 32000-1:2008 defines PDF objects. When CPDF_Parser parses a PDF object,
@@ -108,7 +109,8 @@ class CPDF_Object : public Retainable {
   virtual CPDF_String* AsMutableString();
 
   virtual bool WriteTo(IFX_ArchiveStream* archive,
-                       const CPDF_Encryptor* encryptor) const = 0;
+                       const CPDF_Encryptor* encryptor,
+                       const CPDF_WriteContext* context = nullptr) const = 0;
 
   // Create a deep copy of the object with the option to either
   // copy a reference object or directly copy the object it refers to

@@ -165,6 +165,8 @@ class CPDF_Document : public Observable,
   virtual const CPDF_Dictionary* GetRoot() const;
   virtual RetainPtr<CPDF_Dictionary> GetMutableRoot();
   virtual RetainPtr<CPDF_Dictionary> GetInfo();
+  // The effective trailer's /Info identity, without loading or promoting it.
+  uint32_t GetInfoObjectNumber() const;
   virtual RetainPtr<CPDF_Dictionary> GetMutableInfo();
   RetainPtr<CPDF_Dictionary> GetOrCreateInfo();
   RetainPtr<const CPDF_Array> GetFileIdentifier() const;

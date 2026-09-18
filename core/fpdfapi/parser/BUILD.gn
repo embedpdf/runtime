@@ -53,6 +53,7 @@ source_set("parser") {
     "cpdf_number.h",
     "cpdf_object.cpp",
     "cpdf_object.h",
+    "cpdf_write_context.h",
     "cpdf_object_avail.cpp",
     "cpdf_object_avail.h",
     "cpdf_object_stream.cpp",

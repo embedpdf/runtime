@@ -19,6 +19,7 @@ class CPDF_Dictionary;
 class CPDF_Encryptor;
 class CPDF_Stream;
 class CPDF_StreamAcc;
+class CPDF_WriteContext;
 class IFX_ArchiveStream;
 
 class CPDF_FlateEncoder {
@@ -28,7 +29,8 @@ class CPDF_FlateEncoder {
 
   void UpdateLength(size_t size);
   bool WriteDictTo(IFX_ArchiveStream* archive,
-                   const CPDF_Encryptor* encryptor) const;
+                   const CPDF_Encryptor* encryptor,
+                   const CPDF_WriteContext* context = nullptr) const;
 
   pdfium::span<const uint8_t> GetSpan() const;
 

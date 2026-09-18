@@ -5,6 +5,7 @@
 #define CORE_FPDFAPI_PARSER_CPDF_OBJECT_EQUALITY_H_
 
 class CPDF_Object;
+class CPDF_WriteContext;
 
 // Whether two objects would be written as the same bytes by the creator:
 // the same canonical text (dictionaries, arrays, scalars, a stream's
@@ -13,6 +14,10 @@ class CPDF_Object;
 // matter; references compare by number and are never resolved. Streams are
 // compared by raw bytes, never re-encoded. This is how a save tells a
 // touched object from a changed one.
-bool CPDF_SameEffectiveValue(const CPDF_Object* a, const CPDF_Object* b);
+// Save contexts additionally compare the referenced objects' generations.
+bool CPDF_SameEffectiveValue(const CPDF_Object* a,
+                             const CPDF_Object* b,
+                             const CPDF_WriteContext* a_context = nullptr,
+                             const CPDF_WriteContext* b_context = nullptr);
 
 #endif  // CORE_FPDFAPI_PARSER_CPDF_OBJECT_EQUALITY_H_

@@ -29,7 +29,8 @@ class CPDF_String final : public CPDF_Object {
   void SetString(const ByteString& str) override;
   CPDF_String* AsMutableString() override;
   bool WriteTo(IFX_ArchiveStream* archive,
-               const CPDF_Encryptor* encryptor) const override;
+               const CPDF_Encryptor* encryptor,
+               const CPDF_WriteContext* context = nullptr) const override;
 
   bool IsHex() const { return output_is_hex_; }
   ByteString EncodeString() const;
