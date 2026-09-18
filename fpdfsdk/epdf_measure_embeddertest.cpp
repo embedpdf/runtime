@@ -545,6 +545,50 @@ TEST_F(EPDFMeasureEmbedderTest, LineAppearanceLeadersInlineGapAndStableBounds) {
   EXPECT_NE(std::wstring::npos, Appearance(a.get()).find(L"1 0 0 rg"));
 }
 
+TEST_F(EPDFMeasureEmbedderTest, ShortDistanceOmitsShaftAndBoundsCanShrink) {
+  CreateEmptyDocument();
+  ScopedFPDFPage page(FPDFPage_New(document(), 0, 612, 792));
+  ScopedFPDFAnnotation annot(EPDFPage_CreateAnnot(page.get(), FPDF_ANNOT_LINE));
+  MakeLine(annot.get());
+  const FS_POINTF start{100, 100};
+  const FS_POINTF end{130, 100};
+  ASSERT_TRUE(EPDFAnnot_SetLine(annot.get(), &start, &end));
+  ASSERT_TRUE(EPDFAnnot_SetLineLeader(annot.get(), -15, 5, 0));
+  ASSERT_TRUE(EPDFAnnot_SetLineEndings(annot.get(), FPDF_ANNOT_LE_ClosedArrow,
+                                    FPDF_ANNOT_LE_ClosedArrow));
+  ASSERT_TRUE(EPDFAnnot_SetLineCaption(annot.get(), true, EPDF_CAPTION_INLINE,
+                                    nullptr));
+  ASSERT_TRUE(EPDFAnnot_GenerateAppearance(annot.get()));
+
+  const auto appearance = Appearance(annot.get());
+  EXPECT_EQ(std::wstring::npos, appearance.find(L"100 85 m 130 85 l S"));
+  EXPECT_NE(std::wstring::npos, appearance.find(L"80 85 m 100 85 l S"));
+  EXPECT_NE(std::wstring::npos, appearance.find(L"130 85 m 150 85 l S"));
+  FS_RECTF original;
+  ASSERT_TRUE(FPDFAnnot_GetRect(annot.get(), &original));
+  EXPECT_LT(original.left, 80);
+  EXPECT_GT(original.right, 150);
+
+  EPDF_CAPTION_OFFSET offset{100, -150};
+  ASSERT_TRUE(EPDFAnnot_SetLineCaption(annot.get(), true, EPDF_CAPTION_INLINE,
+                                    &offset));
+  ASSERT_TRUE(EPDFAnnot_GenerateAppearance(annot.get()));
+  FS_RECTF expanded;
+  ASSERT_TRUE(FPDFAnnot_GetRect(annot.get(), &expanded));
+  EXPECT_GT(expanded.right, original.right);
+  EXPECT_LT(expanded.bottom, original.bottom);
+
+  ASSERT_TRUE(EPDFAnnot_SetLineCaption(annot.get(), true, EPDF_CAPTION_INLINE,
+                                    nullptr));
+  ASSERT_TRUE(EPDFAnnot_GenerateAppearance(annot.get()));
+  FS_RECTF restored;
+  ASSERT_TRUE(FPDFAnnot_GetRect(annot.get(), &restored));
+  EXPECT_FLOAT_EQ(original.left, restored.left);
+  EXPECT_FLOAT_EQ(original.right, restored.right);
+  EXPECT_FLOAT_EQ(original.bottom, restored.bottom);
+  EXPECT_FLOAT_EQ(original.top, restored.top);
+}
+
 TEST_F(EPDFMeasureEmbedderTest,
        ShapeCaptionCenterRoundTripsAndOnlyChangesVisualBounds) {
   CreateEmptyDocument();
@@ -585,6 +629,30 @@ TEST_F(EPDFMeasureEmbedderTest,
   EXPECT_TRUE(present);
   EXPECT_FLOAT_EQ(340, out.x);
   EXPECT_FLOAT_EQ(450, out.y);
+}
+
+TEST_F(EPDFMeasureEmbedderTest, ShapeCaptionBoundsShrinkWhenMovedInward) {
+  CreateEmptyDocument();
+  ScopedFPDFPage page(FPDFPage_New(document(), 0, 612, 792));
+  ScopedFPDFAnnotation annot(
+      EPDFPage_CreateAnnot(page.get(), FPDF_ANNOT_POLYGON));
+  FS_POINTF points[] = {{100, 100}, {200, 100}, {200, 200}, {100, 200}};
+  FS_RECTF rect{99, 201, 201, 99};
+  ASSERT_TRUE(FPDFAnnot_SetRect(annot.get(), &rect));
+  ASSERT_TRUE(EPDFAnnot_SetVertices(annot.get(), points, 4));
+  SetText(annot.get(), "Contents", L"42 m²");
+  FS_POINTF center{340, 450};
+  ASSERT_TRUE(EPDFAnnot_SetShapeCaption(annot.get(), true, &center));
+  ASSERT_TRUE(EPDFAnnot_GenerateAppearance(annot.get()));
+  ASSERT_TRUE(FPDFAnnot_GetRect(annot.get(), &rect));
+  EXPECT_GT(rect.top, 450);
+
+  ASSERT_TRUE(EPDFAnnot_SetShapeCaption(annot.get(), true, nullptr));
+  ASSERT_TRUE(EPDFAnnot_GenerateAppearance(annot.get()));
+  ASSERT_TRUE(FPDFAnnot_GetRect(annot.get(), &rect));
+  EXPECT_LT(rect.top, 210);
+  EXPECT_LT(rect.right, 210);
+  EXPECT_NE(std::wstring::npos, Appearance(annot.get()).find(L"150 150 cm"));
 }
 
 TEST_F(EPDFMeasureEmbedderTest, LayerAppearanceAndEphemeralRead) {

@@ -11,10 +11,14 @@ class CPDF_Dictionary;
 // All coordinates are default PDF user space. Page rotation/zoom are absent.
 namespace pdfium::dimension {
 struct Segment {
-  CFX_PointF from, to;
+  CFX_PointF from;
+  CFX_PointF to;
 };
 struct LineLayout {
-  CFX_PointF start, end, along, normal;
+  CFX_PointF start;
+  CFX_PointF end;
+  CFX_PointF along;
+  CFX_PointF normal;
   float length = 0;
   std::vector<Segment> leaders;
   CFX_FloatRect bounds;
@@ -25,6 +29,7 @@ struct CaptionLayout {
   float gap_start = 0;
   float gap_end = 0;
   bool outside_arrows = false;
+  std::vector<Segment> connector;
 };
 LineLayout LayoutLine(CFX_PointF start,
                       CFX_PointF end,
@@ -41,6 +46,10 @@ CFX_PointF ShapeCaptionCenter(const CPDF_Dictionary* annot,
                               pdfium::span<const CFX_PointF> vertices,
                               bool closed,
                               float height);
-CaptionLayout LayoutShapeCaption(CFX_PointF center, float width, float height);
+CFX_Matrix ShapeCaptionRotation(const CPDF_Dictionary* annot);
+CaptionLayout LayoutShapeCaption(const CPDF_Dictionary* annot,
+                                 CFX_PointF center,
+                                 float width,
+                                 float height);
 }  // namespace pdfium::dimension
 #endif  // CORE_FPDFDOC_CPDF_GENERATEAP_DIMENSION_H_

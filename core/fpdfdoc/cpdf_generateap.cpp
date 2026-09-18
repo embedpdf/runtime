@@ -2859,6 +2859,11 @@ std::optional<DimensionCaption> PrepareDimensionCaption(
   fonts.PinRichFace(document.body.family, 400, false, 0);
   CPDF_RichTextParagraph paragraph;
   paragraph.runs.push_back({text, {}});
+  // A line caption's box is one font size high, matching the live dimension
+  // layout. Shape captions keep their existing rich-text line metrics.
+  if (annot->GetNameFor("Subtype") == "Line") {
+    paragraph.props.line_height = size;
+  }
   document.paragraphs.push_back(std::move(paragraph));
   CPDF_RichTextLayout layout(&fonts, {});
   auto arranged = layout.Arrange(document, {0, 0, 1000000, 1000000},
@@ -2898,18 +2903,6 @@ void AppendDimensionCaption(fxcrt::ostringstream& ap,
   ap << text.text_ops << "Q\n";
 }
 
-void GrowDimensionRect(APGenerationTarget* target,
-                       CPDF_Dictionary* annot,
-                       const CFX_FloatRect& bounds) {
-  if (!target->IsPersistent()) {
-    return;
-  }
-  CFX_FloatRect rect = annot->GetRectFor("Rect");
-  rect.Normalize();
-  rect.Union(bounds);
-  annot->SetRectFor("Rect", rect);
-}
-
 bool ShapeCaptionEnabled(const CPDF_Dictionary* annot) {
   auto metadata = annot->GetDictFor("EMBD_Metadata");
   return metadata && metadata->GetBooleanFor("MeasurementCaption", false);
@@ -2927,16 +2920,37 @@ bool FinishShapeDimensionAP(APGenerationTarget* target,
   }
   auto center = pdfium::dimension::ShapeCaptionCenter(annot, points, closed,
                                                       caption->height);
-  auto layout = pdfium::dimension::LayoutShapeCaption(center, caption->width,
-                                                      caption->height);
+  auto layout = pdfium::dimension::LayoutShapeCaption(
+      annot, center, caption->width, caption->height);
   AppendDimensionCaption(*ap, *caption, layout);
-  CFX_FloatRect bounds = annot->GetRectFor("Rect");
-  bounds.Normalize();
+  // Start from the current path, never the previous /Rect: moving a caption
+  // inward must shrink the appearance frame again. Include the PDF default
+  // miter limit and, for open paths, the supported line-ending envelope.
+  CFX_FloatRect bounds(points.front().x, points.front().y, points.front().x,
+                       points.front().y);
+  for (const auto& point : points) {
+    bounds.UpdateRect(point);
+  }
+  const float stroke = std::max(0.0f, GetBorderWidth(annot));
+  float padding = 5 * stroke;
+  const auto cloudy = GetCloudyBorderInfo(annot);
+  if (closed && cloudy.is_cloudy) {
+    padding = 4 * cloudy.intensity + stroke;
+  } else if (!closed) {
+    auto endings = annot->GetArrayFor("LE");
+    if (endings && (endings->GetByteStringAt(0) != "None" ||
+                    endings->GetByteStringAt(1) != "None")) {
+      padding = 8 * stroke;
+    }
+  }
+  bounds.Inflate(padding, padding);
   if (!caption->text_ops.IsEmpty()) {
     layout.bounds.Inflate(1, 1);
     bounds.Union(layout.bounds);
   }
-  GrowDimensionRect(target, annot, bounds);
+  if (target->IsPersistent()) {
+    annot->SetRectFor("Rect", bounds);
+  }
   auto resources = GenerateResourcesDict(
       target->doc, GenerateExtGStateDict(*annot, blend_name),
       std::move(caption->fonts));
@@ -2949,8 +2963,9 @@ bool GenerateDimensionLineAP(APGenerationTarget* target,
                              const ByteString& blend_name,
                              const std::vector<CFX_PointF>& points) {
   const float border = GetBorderWidth(annot);
-  float ll = annot->GetFloatFor("LL"), lle = annot->GetFloatFor("LLE"),
-        llo = annot->GetFloatFor("LLO");
+  const float ll = annot->GetFloatFor("LL");
+  const float lle = annot->GetFloatFor("LLE");
+  const float llo = annot->GetFloatFor("LLO");
   if (!IsFinitePoint(points[0]) || !IsFinitePoint(points[1]) ||
       !std::isfinite(ll) || !std::isfinite(lle) || !std::isfinite(llo) ||
       lle < 0 || llo < 0) {
@@ -2987,7 +3002,11 @@ bool GenerateDimensionLineAP(APGenerationTarget* target,
   };
   if (border > 0) {
     WriteFloat(ap, border) << " w " << GetDashPatternString(annot);
-    if (label.gap_end > label.gap_start) {
+    if (label.outside_arrows) {
+      const float stub = 20 * border;
+      segment(line.start - stub * line.along, line.start);
+      segment(line.end, line.end + stub * line.along);
+    } else if (label.gap_end > label.gap_start) {
       if (label.gap_start > 0) {
         segment(line.start, line.start + label.gap_start * line.along);
       }
@@ -3000,22 +3019,31 @@ bool GenerateDimensionLineAP(APGenerationTarget* target,
     for (const auto& leader : line.leaders) {
       segment(leader.from, leader.to);
     }
-    if (label.outside_arrows) {
-      const float stub = 8 * border;
-      segment(line.start - stub * line.along, line.start);
-      segment(line.end, line.end + stub * line.along);
+    for (const auto& connector : label.connector) {
+      segment(connector.from, connector.to);
     }
     GenerateLineEndings(ap, {line.start, line.end}, annot,
                         label.outside_arrows);
   }
   AppendDimensionCaption(ap, caption, label);
   CFX_FloatRect bounds = line.bounds;
+  if (label.outside_arrows) {
+    const CFX_PointF start = line.start - 20 * border * line.along;
+    const CFX_PointF end = line.end + 20 * border * line.along;
+    CFX_FloatRect stubs(start.x, start.y, end.x, end.y);
+    stubs.Normalize();
+    stubs.Inflate(border / 2, border / 2);
+    bounds.Union(stubs);
+  }
   if (!caption.text_ops.IsEmpty()) {
     bounds.Union(label.bounds);
   }
   bounds.Inflate(1, 1);
-  bounds.Union(annot->GetRectFor("Rect"));
-  GrowDimensionRect(target, annot, bounds);
+  // A regenerated distance owns its full appearance. Derive a fresh rectangle
+  // so moving a caption or leader back inward also shrinks the saved bounds.
+  if (target->IsPersistent()) {
+    annot->SetRectFor("Rect", bounds);
+  }
   auto resources = GenerateResourcesDict(
       target->doc, GenerateExtGStateDict(*annot, blend_name),
       std::move(caption.fonts));

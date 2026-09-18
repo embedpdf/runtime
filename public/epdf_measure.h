@@ -308,6 +308,7 @@ EPDFAnnot_GetLineCaption(FPDF_ANNOTATION annot,
 // /EMBD_Metadata: /MeasurementCaption (boolean), /MeasurementCaptionCenter
 // ([x y], optional). Center is the label center in default PDF user space,
 // y-up, with the page origin preserved. NULL clears the center (auto layout).
+// Captions follow /EMBD_Metadata/Rotation; vertices are already rotated.
 // No standard /Cap, /CP or /CO entries are written on these subtypes.
 FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV
 EPDFAnnot_SetShapeCaption(FPDF_ANNOTATION annot,
