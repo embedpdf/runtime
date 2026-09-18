@@ -4,10 +4,12 @@
 
 #include "core/fpdfapi/parser/cpdf_object_walker.h"
 
+#include <set>
 #include <utility>
 
 #include "core/fpdfapi/parser/cpdf_array.h"
 #include "core/fpdfapi/parser/cpdf_dictionary.h"
+#include "core/fpdfapi/parser/cpdf_reference.h"
 #include "core/fpdfapi/parser/cpdf_stream.h"
 #include "core/fxcrt/check.h"
 
@@ -180,4 +182,22 @@ CPDF_NonConstObjectWalker::CPDF_NonConstObjectWalker(
 RetainPtr<CPDF_Object> CPDF_NonConstObjectWalker::GetNext() {
   return pdfium::WrapRetain(
       const_cast<CPDF_Object*>(CPDF_ObjectWalker::GetNext().Get()));
+}
+
+std::vector<uint32_t> CPDF_CollectReferences(
+    RetainPtr<const CPDF_Object> root) {
+  std::vector<uint32_t> references;
+  std::set<const CPDF_Object*> containers;
+  CPDF_ObjectWalker walker(std::move(root));
+  while (auto current = walker.GetNext()) {
+    if (current->IsReference()) {
+      references.push_back(current->AsReference()->GetRefObjNum());
+    } else if (current->IsArray() || current->IsDictionary() ||
+               current->IsStream()) {
+      if (!containers.insert(current.Get()).second) {
+        walker.SkipWalkIntoCurrentObject();
+      }
+    }
+  }
+  return references;
 }

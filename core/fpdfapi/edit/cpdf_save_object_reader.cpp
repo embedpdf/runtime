@@ -8,6 +8,7 @@
 #include "core/fpdfapi/parser/cpdf_base_document.h"
 #include "core/fpdfapi/parser/cpdf_document.h"
 #include "core/fpdfapi/parser/cpdf_layer_document.h"
+#include "core/fpdfapi/parser/cpdf_object_walker.h"
 #include "core/fpdfapi/parser/cpdf_parser.h"
 
 namespace {
@@ -83,4 +84,25 @@ CPDF_Object* CPDF_SaveObjectReader::GetOrParseIndirectObjectInternal(
   auto* result = const_cast<CPDF_Object*>(object.Get());
   dependencies_.emplace(object_number, std::move(object));
   return result;
+}
+
+pdfium::span<const uint32_t> CPDF_SaveObjectReader::ReferencesFor(
+    uint32_t object_number) {
+  if (auto live = ReadCachedObject(object_number)) {
+    references_ = CPDF_CollectReferences(std::move(live));
+    return references_;
+  }
+  auto* index = parser_ ? parser_->GetSaveReferenceIndex() : nullptr;
+  if (index) {
+    if (auto references = index->Find(object_number)) {
+      return *references;
+    }
+  }
+  auto object = Read(object_number);
+  references_ = CPDF_CollectReferences(object);
+  // A failed read is not evidence that an object has no outgoing references.
+  if (object && index) {
+    index->Insert(object_number, references_);
+  }
+  return references_;
 }

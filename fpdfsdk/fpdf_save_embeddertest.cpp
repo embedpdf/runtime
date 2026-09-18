@@ -3,10 +3,18 @@
 // found in the LICENSE file.
 
 #include <array>
+#include <charconv>
+#include <cstdlib>
+#include <deque>
+#include <fstream>
 #include <iterator>
+#include <set>
 #include <string>
 #include <vector>
 
+#include "core/fpdfapi/edit/cpdf_save_object_reader.h"
+#include "core/fpdfapi/page/cpdf_docpagedata.h"
+#include "core/fpdfapi/render/cpdf_docrenderdata.h"
 #include "core/fpdfapi/edit/cpdf_stringarchivestream.h"
 #include "core/fpdfapi/parser/cpdf_array.h"
 #include "core/fpdfapi/parser/cpdf_base_document.h"
@@ -16,10 +24,14 @@
 #include "core/fpdfapi/parser/cpdf_document.h"
 #include "core/fpdfapi/parser/cpdf_layer_document.h"
 #include "core/fpdfapi/parser/cpdf_number.h"
+#include "core/fpdfapi/parser/cpdf_object_walker.h"
 #include "core/fpdfapi/parser/cpdf_parser.h"
+#include "core/fpdfapi/parser/cpdf_reference.h"
 #include "core/fpdfapi/parser/cpdf_security_handler.h"
 #include "core/fpdfapi/parser/cpdf_stream.h"
 #include "core/fpdfapi/parser/cpdf_string.h"
+#include "core/fpdfapi/parser/cpdf_syntax_parser.h"
+#include "core/fxcrt/cfx_read_only_span_stream.h"
 #include "core/fxcrt/fx_string.h"
 #include "fpdfsdk/cpdfsdk_helpers.h"
 #include "public/cpp/fpdf_scopers.h"
@@ -88,7 +100,8 @@ std::string MakeGenerationDocument(uint16_t generation,
       "<</Type /Catalog /Pages 2 " + gen + " R>>",
       "<</Type /Pages /Count 1 /Kids [3 " + gen + " R]>>",
       "<</Type /Page /Parent 2 " + gen +
-          " R /MediaBox [0 0 200 200] /Contents 4 " + gen + " R>>",
+          " R /MediaBox [0 0 200 200] /Resources <<>> /Contents 4 " + gen +
+          " R>>",
       "<</Length 0>>stream\n\nendstream", "<</Title (original)>>"};
   std::string trailer = "/Root 1 " + gen + " R /Info 5 " + gen + " R";
   if (encryption_source) {
@@ -157,9 +170,479 @@ bool HasSavedXRefEntryForObject(FPDF_DOCUMENT document, uint32_t objnum) {
                   info->type == CPDF_CrossRefTable::ObjectType::kCompressed);
 }
 
+// Preserve the on-disk reference generations: CPDF_Reference stores only the
+// object number, so walking already parsed objects cannot verify these tokens.
+void ExpectRawGenerationsConsistent(CPDF_Parser* parser) {
+  CPDF_SyntaxParser syntax(parser->GetFileAccess());
+  auto check_references = [&]() {
+    std::vector<uint32_t> numbers;
+    while (true) {
+      const auto token = syntax.GetNextWord();
+      if (token.word.IsEmpty() || token.word == "endobj" ||
+          token.word == "stream" || token.word == "startxref") {
+        break;
+      }
+      if (token.word == "(") {
+        syntax.ReadString();
+      } else if (token.word == "<") {
+        syntax.ReadHexString();
+      } else if (token.word == "R" && numbers.size() >= 2) {
+        const uint32_t target = numbers[numbers.size() - 2];
+        const uint32_t generation = numbers.back();
+        const auto* info = parser->GetCrossRefTable()->GetObjectInfo(target);
+        ASSERT_TRUE(info) << target;
+        ASSERT_NE(CPDF_CrossRefTable::ObjectType::kFree, info->type);
+        EXPECT_EQ(info->type == CPDF_CrossRefTable::ObjectType::kCompressed
+                      ? 0u
+                      : info->gennum,
+                  generation)
+            << target;
+      }
+      if (token.is_number) {
+        uint32_t value = 0;
+        const char* begin = token.word.c_str();
+        const char* end = begin + token.word.GetLength();
+        const auto result = std::from_chars(begin, end, value);
+        if (result.ec == std::errc() && result.ptr == end) {
+          numbers.push_back(value);
+        } else {
+          numbers.clear();
+        }
+      } else {
+        numbers.clear();
+      }
+    }
+  };
+  for (const auto& [number, info] :
+       parser->GetCrossRefTable()->objects_info()) {
+    if (info.type != CPDF_CrossRefTable::ObjectType::kNormal) {
+      continue;
+    }
+    syntax.SetPos(info.pos + parser->GetFileHeaderOffset());
+    EXPECT_EQ(ByteString::Format("%u", number), syntax.GetNextWord().word);
+    EXPECT_EQ(ByteString::Format("%u", info.gennum), syntax.GetNextWord().word);
+    EXPECT_EQ("obj", syntax.GetNextWord().word);
+    check_references();
+  }
+  if (!parser->IsXRefStream()) {
+    syntax.SetPos(parser->GetLastXRefOffset() + parser->GetFileHeaderOffset());
+    while (true) {
+      const auto word = syntax.GetNextWord().word;
+      ASSERT_FALSE(word.IsEmpty());
+      if (word == "trailer") {
+        break;
+      }
+    }
+    check_references();
+  }
+}
+
+void DumpSavedPdf(const std::string& bytes,
+                  const char* password,
+                  size_t original_size) {
+  const char* directory = std::getenv("EPDF_SAVE_DUMP_DIR");
+  if (!directory || !*directory) {
+    return;
+  }
+  static size_t sequence = 0;
+  const auto* test = testing::UnitTest::GetInstance()->current_test_info();
+  const std::string path = std::string(directory) + "/" + test->name() + "-" +
+                           std::to_string(++sequence);
+  std::ofstream pdf(path + ".pdf", std::ios::binary);
+  pdf.write(bytes.data(), bytes.size());
+  ASSERT_TRUE(pdf.good());
+  std::ofstream metadata(path + ".size");
+  metadata << original_size;
+  ASSERT_TRUE(metadata.good());
+  if (password) {
+    std::ofstream credentials(path + ".pw", std::ios::binary);
+    credentials << password;
+    ASSERT_TRUE(credentials.good());
+  }
+}
+
+// Inspect the saved file independently of the creator's traversal. In-use
+// entries and reachable objects are separate sets: reopening alone cannot
+// detect an extra orphan written into the output.
+struct SavedPdfModel {
+  std::set<uint32_t> in_use;
+  std::set<uint32_t> reachable;
+  std::set<uint32_t> written;
+  size_t encryption_dictionaries = 0;
+  size_t stale_xref_streams = 0;
+};
+
+SavedPdfModel AnalyzeSavedPdf(const std::string& bytes,
+                              const char* password = nullptr,
+                              size_t original_size = 0) {
+  SavedPdfModel model;
+  ScopedFPDFDocument saved(
+      FPDF_LoadMemDocument(bytes.data(), bytes.size(), password));
+  EXPECT_TRUE(saved);
+  if (!saved) {
+    return model;
+  }
+  auto* doc = CPDFDocumentFromFPDFDocument(saved.get());
+  auto* parser = doc->GetParser();
+  EXPECT_FALSE(parser->xref_table_rebuilt());
+  ExpectRawGenerationsConsistent(parser);
+  DumpSavedPdf(bytes, password, original_size);
+  for (const auto& [number, info] :
+       parser->GetCrossRefTable()->objects_info()) {
+    if (info.type == CPDF_CrossRefTable::ObjectType::kFree) {
+      continue;
+    }
+    model.in_use.insert(number);
+    if (info.type == CPDF_CrossRefTable::ObjectType::kNormal &&
+        info.pos >= static_cast<FX_FILESIZE>(original_size)) {
+      model.written.insert(number);
+    }
+    auto object = doc->GetOrParseIndirectObject(number);
+    EXPECT_TRUE(object);
+    if (!object) {
+      continue;
+    }
+    const auto dict = object->GetDict();
+    if (dict && dict->GetByteStringFor("Filter") == "Standard" &&
+        (dict->KeyExist("O") || dict->KeyExist("U"))) {
+      ++model.encryption_dictionaries;
+    }
+    if (dict && dict->GetByteStringFor("Type") == "XRef" &&
+        number != parser->GetTrailerObjectNumber()) {
+      ++model.stale_xref_streams;
+    }
+  }
+
+  std::deque<uint32_t> pending;
+  auto add_references = [&](RetainPtr<const CPDF_Object> object) {
+    CPDF_ObjectWalker walker(std::move(object));
+    while (auto current = walker.GetNext()) {
+      if (current->IsReference()) {
+        const uint32_t number = current->AsReference()->GetRefObjNum();
+        if (model.reachable.insert(number).second) {
+          pending.push_back(number);
+        }
+      }
+    }
+  };
+  add_references(parser->GetCombinedTrailer());
+  if (const uint32_t xref = parser->GetTrailerObjectNumber()) {
+    model.reachable.insert(xref);
+  }
+  while (!pending.empty()) {
+    const uint32_t number = pending.front();
+    pending.pop_front();
+    if (auto object = doc->GetOrParseIndirectObject(number)) {
+      add_references(std::move(object));
+    }
+  }
+  return model;
+}
+
 }  // namespace
 
 class FPDFSaveEmbedderTest : public EmbedderTest {};
+
+TEST_F(FPDFSaveEmbedderTest, FullRewriteWritesOnlyReachableObjects) {
+  for (bool xref_stream : {false, true}) {
+    for (bool use_layer : {false, true}) {
+      SCOPED_TRACE(testing::Message() << xref_stream << ":" << use_layer);
+      const std::string input = MakeGenerationDocument(256, xref_stream);
+      ScopedFPDFDocument source;
+      if (use_layer) {
+        EPDF_BASE_DOCUMENT base =
+            EPDF_LoadMemBaseDocument(input.data(), input.size(), nullptr);
+        ASSERT_TRUE(base);
+        source.reset(EPDFLayer_OpenLayer(base, nullptr, nullptr, nullptr));
+        EPDF_ReleaseBaseDocument(base);
+      } else {
+        source.reset(FPDF_LoadMemDocument(input.data(), input.size(), nullptr));
+      }
+      ASSERT_TRUE(source);
+      ClearString();
+      ASSERT_TRUE(FPDF_SaveAsCopy(source.get(), this, FPDF_NO_INCREMENTAL));
+      const auto model = AnalyzeSavedPdf(GetString());
+      EXPECT_EQ(model.reachable, model.in_use);
+      EXPECT_EQ(0u, model.stale_xref_streams);
+      EXPECT_EQ((std::set<uint32_t>{1, 2, 3, 4, 5}), model.in_use);
+    }
+  }
+}
+
+TEST_F(FPDFSaveEmbedderTest, RemoveSecurityLeavesNoEncryptionDictionary) {
+  const std::pair<const char*, const char*> fixtures[] = {
+      {"encrypted_hello_world_r3.pdf", "\xc3\xa2ge"},
+      {"encrypted.pdf", "1234"},
+      {"encrypted_hello_world_r6.pdf", "\xc3\xa2ge"}};
+  for (const auto& [filename, password] : fixtures) {
+    for (bool use_layer : {false, true}) {
+      SCOPED_TRACE(testing::Message() << filename << ":" << use_layer);
+      const std::string path = PathService::GetTestFilePath(filename);
+      const auto input = GetFileContents(path.c_str());
+      ScopedFPDFDocument source;
+      if (use_layer) {
+        EPDF_BASE_DOCUMENT base =
+            EPDF_LoadMemBaseDocument(input.data(), input.size(), password);
+        ASSERT_TRUE(base);
+        source.reset(EPDFLayer_OpenLayer(base, nullptr, nullptr, nullptr));
+        EPDF_ReleaseBaseDocument(base);
+      } else {
+        source.reset(FPDF_LoadDocument(path.c_str(), password));
+      }
+      ASSERT_TRUE(source);
+      ClearString();
+      ASSERT_TRUE(FPDF_SaveAsCopy(source.get(), this, FPDF_REMOVE_SECURITY));
+      const auto model = AnalyzeSavedPdf(GetString());
+      EXPECT_EQ(model.reachable, model.in_use);
+      EXPECT_EQ(0u, model.encryption_dictionaries);
+      EXPECT_EQ(0u, model.stale_xref_streams);
+    }
+  }
+}
+
+TEST_F(FPDFSaveEmbedderTest, ReplacingEncryptionDropsOldDictionary) {
+  ASSERT_TRUE(
+      OpenDocumentWithPassword("encrypted_hello_world_r3.pdf", "\xc3\xa2ge"));
+  ASSERT_TRUE(EPDF_SetEncryption(document(), "new-user", "new-owner",
+                                 EPDF_PERM_PRINT | EPDF_PERM_COPY));
+  ASSERT_TRUE(FPDF_SaveAsCopy(document(), this, FPDF_NO_INCREMENTAL));
+  const auto model = AnalyzeSavedPdf(GetString(), "new-user");
+  EXPECT_EQ(model.reachable, model.in_use);
+  EXPECT_EQ(1u, model.encryption_dictionaries);
+}
+
+TEST_F(FPDFSaveEmbedderTest, FullRewriteDropsReplacedInfoAndKeepsCustomRoots) {
+  class DocumentWithReplaceableInfo : public CPDF_Document {
+   public:
+    DocumentWithReplaceableInfo()
+        : CPDF_Document(std::make_unique<CPDF_DocRenderData>(),
+                        std::make_unique<CPDF_DocPageData>()) {}
+    using CPDF_Document::SetCachedInfoDict;
+  };
+  const std::string input = MakeGenerationDocument(0, false);
+  DocumentWithReplaceableInfo doc;
+  ASSERT_EQ(CPDF_Parser::SUCCESS,
+            doc.LoadDoc(pdfium::MakeRetain<CFX_ReadOnlySpanStream>(
+                            pdfium::as_byte_span(input)),
+                        ""));
+  auto replacement = doc.NewIndirect<CPDF_Dictionary>();
+  replacement->SetNewFor<CPDF_String>("Title", "replacement");
+  doc.SetCachedInfoDict(replacement);
+  auto custom = doc.NewIndirect<CPDF_Dictionary>();
+  custom->SetNewFor<CPDF_String>("Marker", "retained trailer root");
+  doc.GetParser()->GetMutableTrailerForTesting()->SetNewFor<CPDF_Reference>(
+      "Custom", &doc, custom->GetObjNum());
+  ASSERT_TRUE(FPDF_SaveAsCopy(FPDFDocumentFromCPDFDocument(&doc), this,
+                              FPDF_NO_INCREMENTAL));
+  const auto model = AnalyzeSavedPdf(GetString());
+  EXPECT_EQ(model.reachable, model.in_use);
+  EXPECT_FALSE(model.in_use.contains(5));
+  EXPECT_TRUE(model.in_use.contains(replacement->GetObjNum()));
+  EXPECT_TRUE(model.in_use.contains(custom->GetObjNum()));
+}
+
+TEST_F(FPDFSaveEmbedderTest, ReferenceIndexMatchesFileEdges) {
+  const auto bytes = GetFileContents(
+      PathService::GetTestFilePath("annotation_stamp_with_ap.pdf").c_str());
+  const std::string input(bytes.begin(), bytes.end());
+  CountingFileAccess access(input);
+  ScopedFPDFDocument source(FPDF_LoadCustomDocument(&access, nullptr));
+  ASSERT_TRUE(source);
+  auto* doc = CPDFDocumentFromFPDFDocument(source.get());
+  CPDF_SaveObjectReader reader(doc);
+  CPDF_SaveObjectReader original(doc,
+                                 CPDF_SaveObjectReader::Version::kOriginal);
+  for (const auto& [number, info] :
+       doc->GetParser()->GetCrossRefTable()->objects_info()) {
+    if (info.type == CPDF_CrossRefTable::ObjectType::kFree) {
+      continue;
+    }
+    auto object = original.Read(number);
+    ASSERT_TRUE(object);
+    const auto expected = CPDF_CollectReferences(object);
+    EXPECT_EQ(pdfium::span(expected), reader.ReferencesFor(number));
+    const size_t reads = access.read_count();
+    EXPECT_EQ(pdfium::span(expected), reader.ReferencesFor(number));
+    EXPECT_EQ(reads, access.read_count());
+  }
+  const uint32_t missing = doc->GetParser()->GetLastObjNum() + 1;
+  EXPECT_TRUE(reader.ReferencesFor(missing).empty());
+  EXPECT_FALSE(doc->GetParser()->GetSaveReferenceIndex()->Find(missing));
+}
+
+TEST_F(FPDFSaveEmbedderTest, CachedFileReferencesDoNotOverrideLayerEdits) {
+  const std::string input = MakeGenerationDocument(256, false);
+  EPDF_BASE_DOCUMENT base =
+      EPDF_LoadMemBaseDocument(input.data(), input.size(), nullptr);
+  ASSERT_TRUE(base);
+  ScopedFPDFDocument first(
+      EPDFLayer_OpenLayer(base, nullptr, nullptr, nullptr));
+  ScopedFPDFDocument sibling(
+      EPDFLayer_OpenLayer(base, nullptr, nullptr, nullptr));
+  EPDF_ReleaseBaseDocument(base);
+  ASSERT_TRUE(first);
+  ASSERT_TRUE(sibling);
+  auto* doc = CPDFDocumentFromFPDFDocument(first.get());
+  CPDF_SaveObjectReader original(doc,
+                                 CPDF_SaveObjectReader::Version::kOriginal);
+  const auto references = CPDF_CollectReferences(original.Read(3));
+  ASSERT_TRUE(doc->GetParser()->GetSaveReferenceIndex()->Insert(3, references));
+
+  auto page = doc->GetMutablePageDictionary(0);
+  page->RemoveFor("Contents");
+  auto stream = ToStream(doc->GetMutableIndirectObject(4));
+  stream->GetMutableDict()->SetNewFor<CPDF_Number>("Probe", 1);
+  ASSERT_TRUE(EPDFLayer_SaveDelta(first.get(), this, nullptr));
+  auto model = AnalyzeSavedPdf(input + GetString(), nullptr, input.size());
+  EXPECT_EQ((std::set<uint32_t>{3}), model.written);
+
+  page->SetNewFor<CPDF_Reference>("Contents", doc, 4);
+  ClearString();
+  ASSERT_TRUE(EPDFLayer_SaveDelta(first.get(), this, nullptr));
+  model = AnalyzeSavedPdf(input + GetString(), nullptr, input.size());
+  EXPECT_EQ((std::set<uint32_t>{4}), model.written);
+
+  ClearString();
+  ASSERT_TRUE(EPDFLayer_SaveDelta(sibling.get(), this, nullptr));
+  EXPECT_TRUE(GetString().empty());
+  auto* other = CPDFDocumentFromFPDFDocument(sibling.get());
+  EXPECT_TRUE(other->GetPageDictionary(0)->KeyExist("Contents"));
+  EXPECT_FALSE(
+      other->GetOrParseIndirectObject(4)->GetDict()->KeyExist("Probe"));
+}
+
+TEST_F(FPDFSaveEmbedderTest, DetachedObjectDoesNotInflateWarmSaveReads) {
+  const auto bytes = GetFileContents(
+      PathService::GetTestFilePath("annotation_stamp_with_ap.pdf").c_str());
+  const std::string input(bytes.begin(), bytes.end());
+  for (bool use_layer : {false, true}) {
+    SCOPED_TRACE(use_layer);
+    CountingFileAccess access(input);
+    ScopedFPDFDocument source;
+    if (use_layer) {
+      EPDF_BASE_DOCUMENT base = EPDF_LoadBaseDocument(&access, nullptr);
+      ASSERT_TRUE(base);
+      source.reset(EPDFLayer_OpenLayer(base, nullptr, nullptr, nullptr));
+      EPDF_ReleaseBaseDocument(base);
+    } else {
+      source.reset(FPDF_LoadCustomDocument(&access, nullptr));
+    }
+    ASSERT_TRUE(source);
+    auto* doc = CPDFDocumentFromFPDFDocument(source.get());
+    auto page = doc->GetMutablePageDictionary(0);
+    page->SetNewFor<CPDF_Number>("Rotate", 90);
+    const size_t before = access.read_count();
+    ClearString();
+    ASSERT_TRUE(FPDF_SaveAsCopy(source.get(), this, FPDF_INCREMENTAL));
+    const size_t baseline_reads = access.read_count() - before;
+    doc->NewIndirect<CPDF_Dictionary>();
+    const auto count = std::distance(doc->begin(), doc->end());
+    const size_t streams =
+        doc->GetParser()->GetCachedObjectStreamCountForTesting();
+    const uint64_t epoch = doc->GetOverlayEpoch();
+    // The first detached save learns file edges. Without the index the original
+    // probe read 177 blocks on every save, versus 31 for the ordinary edit.
+    for (int pass = 0; pass < 2; ++pass) {
+      const size_t reads = access.read_count();
+      ClearString();
+      ASSERT_TRUE(FPDF_SaveAsCopy(source.get(), this, FPDF_INCREMENTAL));
+      if (pass == 1) {
+        EXPECT_LE(access.read_count() - reads, baseline_reads);
+      }
+      EXPECT_EQ(count, std::distance(doc->begin(), doc->end()));
+      EXPECT_EQ(streams,
+                doc->GetParser()->GetCachedObjectStreamCountForTesting());
+      EXPECT_EQ(epoch, doc->GetOverlayEpoch());
+    }
+    auto* index = doc->GetParser()->GetSaveReferenceIndex();
+    ASSERT_TRUE(index);
+    EXPECT_GT(index->row_count(), 0u);
+    EXPECT_LE(index->accounted_bytes(), CPDF_ReferenceIndex::kDefaultByteLimit);
+  }
+}
+
+TEST_F(FPDFSaveEmbedderTest, IncrementalRevisionWritesExactlyChangedObjects) {
+  for (bool xref_stream : {false, true}) {
+    const std::string input = MakeGenerationDocument(256, xref_stream);
+    ScopedFPDFDocument source(
+        FPDF_LoadMemDocument(input.data(), input.size(), nullptr));
+    ASSERT_TRUE(source);
+    auto* doc = CPDFDocumentFromFPDFDocument(source.get());
+    auto page = doc->GetMutablePageDictionary(0);
+    for (int pass = 0; pass < 2; ++pass) {
+      page->SetNewFor<CPDF_Number>("Rotate", 90);
+      ClearString();
+      ASSERT_TRUE(FPDF_SaveAsCopy(source.get(), this, FPDF_INCREMENTAL));
+      EXPECT_EQ(input, GetString().substr(0, input.size()));
+      const auto model = AnalyzeSavedPdf(GetString(), nullptr, input.size());
+      // Saving again retains the same cumulative edit against the loaded input.
+      EXPECT_EQ(
+          xref_stream ? (std::set<uint32_t>{3, 7}) : (std::set<uint32_t>{3}),
+          model.written);
+    }
+    page->RemoveFor("Rotate");
+    ClearString();
+    ASSERT_TRUE(FPDF_SaveAsCopy(source.get(), this, FPDF_INCREMENTAL));
+    EXPECT_EQ(input, GetString());
+    doc->NewIndirect<CPDF_Dictionary>();
+    ClearString();
+    ASSERT_TRUE(FPDF_SaveAsCopy(source.get(), this, FPDF_INCREMENTAL));
+    EXPECT_EQ(input, GetString());
+
+    ScopedFPDFPage loaded_page(FPDF_LoadPage(source.get(), 0));
+    ASSERT_TRUE(loaded_page);
+    ScopedFPDFAnnotation annotation(
+        EPDFPage_CreateAnnot(loaded_page.get(), FPDF_ANNOT_SQUARE));
+    ASSERT_TRUE(annotation);
+    const FS_RECTF rect{20, 80, 80, 20};
+    ASSERT_TRUE(FPDFAnnot_SetRect(annotation.get(), &rect));
+    std::set<uint32_t> expected{3, EPDFAnnot_GetObjectNumber(annotation.get())};
+    if (xref_stream) {
+      expected.insert(doc->GetLastObjNum() + 1);
+    }
+    ClearString();
+    ASSERT_TRUE(FPDF_SaveAsCopy(source.get(), this, FPDF_INCREMENTAL));
+    EXPECT_EQ(input, GetString().substr(0, input.size()));
+    const auto attached = AnalyzeSavedPdf(GetString(), nullptr, input.size());
+    EXPECT_EQ(expected, attached.written);
+  }
+}
+
+TEST_F(FPDFSaveEmbedderTest, LayerRevisionKeepsBaseAndLoadedBaselinesSeparate) {
+  const std::string input = MakeGenerationDocument(256, true);
+  EPDF_BASE_DOCUMENT base =
+      EPDF_LoadMemBaseDocument(input.data(), input.size(), nullptr);
+  ASSERT_TRUE(base);
+  ScopedFPDFDocument first(
+      EPDFLayer_OpenLayer(base, nullptr, nullptr, nullptr));
+  ASSERT_TRUE(first);
+  auto* first_doc = CPDFDocumentFromFPDFDocument(first.get());
+  first_doc->GetMutablePageDictionary(0)->SetNewFor<CPDF_Number>("Rotate", 90);
+  ASSERT_TRUE(EPDFLayer_SaveDelta(first.get(), this, nullptr));
+  const std::string loaded_delta = GetString();
+  CountingFileAccess delta_access(loaded_delta);
+  ScopedFPDFDocument reopened(
+      EPDFLayer_OpenLayer(base, &delta_access, nullptr, nullptr));
+  EPDF_ReleaseBaseDocument(base);
+  ASSERT_TRUE(reopened);
+
+  FPDF_BOOL changed = true;
+  ClearString();
+  ASSERT_TRUE(EPDFLayer_SaveDeltaEx(reopened.get(), this, nullptr, &changed));
+  EXPECT_FALSE(changed);
+  EXPECT_TRUE(GetString().empty());
+  ASSERT_TRUE(EPDFLayer_SaveDelta(reopened.get(), this, nullptr));
+  const auto model =
+      AnalyzeSavedPdf(input + GetString(), nullptr, input.size());
+  EXPECT_EQ((std::set<uint32_t>{3}), model.written);
+
+  auto* doc = CPDFDocumentFromFPDFDocument(reopened.get());
+  doc->GetMutablePageDictionary(0)->RemoveFor("Rotate");
+  ClearString();
+  ASSERT_TRUE(EPDFLayer_SaveDeltaEx(reopened.get(), this, nullptr, &changed));
+  EXPECT_TRUE(changed);
+  EXPECT_TRUE(GetString().empty());
+}
 
 TEST_F(FPDFSaveEmbedderTest, SavePreservesConsistentObjectGenerations) {
   for (uint16_t generation : {0, 1, 256, 65534}) {
@@ -183,6 +666,7 @@ TEST_F(FPDFSaveEmbedderTest, SavePreservesConsistentObjectGenerations) {
         ASSERT_TRUE(FPDF_SaveAsCopy(source.get(), this, flags));
         EXPECT_EQ(live_generation, page->GetGenNum());
         const bool incremental = flags == FPDF_INCREMENTAL;
+        AnalyzeSavedPdf(GetString(), nullptr, incremental ? input.size() : 0);
         const uint16_t saved_generation = incremental ? generation : 0;
         const std::string revision =
             incremental ? GetString().substr(input.size()) : GetString();
@@ -305,6 +789,13 @@ TEST_F(FPDFSaveEmbedderTest,
 
         ClearString();
         ASSERT_TRUE(FPDF_SaveAsCopy(source.get(), this, flags));
+        const auto model =
+            AnalyzeSavedPdf(GetString(), password,
+                            flags == FPDF_INCREMENTAL ? input.size() : 0);
+        if (flags != FPDF_INCREMENTAL) {
+          EXPECT_EQ(model.reachable, model.in_use);
+          EXPECT_EQ(1u, model.encryption_dictionaries);
+        }
         ScopedFPDFDocument saved(FPDF_LoadMemDocument(
             GetString().data(), GetString().size(), password));
         ASSERT_TRUE(saved);

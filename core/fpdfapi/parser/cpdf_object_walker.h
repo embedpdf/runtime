@@ -5,13 +5,20 @@
 #ifndef CORE_FPDFAPI_PARSER_CPDF_OBJECT_WALKER_H_
 #define CORE_FPDFAPI_PARSER_CPDF_OBJECT_WALKER_H_
 
+#include <stdint.h>
+
 #include <memory>
 #include <stack>
+#include <vector>
 
 #include "core/fxcrt/bytestring.h"
 #include "core/fxcrt/retain_ptr.h"
 
 class CPDF_Object;
+
+// Collect outgoing indirect references without resolving them. Inline
+// containers are visited once, including when a live object contains a cycle.
+std::vector<uint32_t> CPDF_CollectReferences(RetainPtr<const CPDF_Object> root);
 
 // Walk on all non-null sub-objects in an object in depth, include itself,
 // like in flat list.

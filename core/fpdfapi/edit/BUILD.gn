@@ -25,6 +25,8 @@ source_set("edit") {
     "cpdf_redaction_mark_sanitizer.h",
     "cpdf_save_object_reader.cpp",
     "cpdf_save_object_reader.h",
+    "cpdf_save_trailer.cpp",
+    "cpdf_save_trailer.h",
     "cpdf_stringarchivestream.cpp",
     "cpdf_stringarchivestream.h",
     "cpdf_text_redactor.cpp",
@@ -65,6 +67,7 @@ source_set("contentstream_write_utils") {
 pdfium_unittest_source_set("unittests") {
   sources = [
     "cpdf_creator_unittest.cpp",
+    "cpdf_save_trailer_unittest.cpp",
     "cpdf_npagetooneexporter_unittest.cpp",
     "cpdf_pagecontentgenerator_unittest.cpp",
     "cpdf_path_redactor_unittest.cpp",

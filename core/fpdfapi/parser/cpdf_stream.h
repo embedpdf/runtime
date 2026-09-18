@@ -33,9 +33,10 @@ class CPDF_Stream final : public CPDF_Object {
       CPDF_IndirectObjectHolder* holder) const override;
   WideString GetUnicodeText() const override;
   CPDF_Stream* AsMutableStream() override;
+  using CPDF_Object::WriteTo;
   bool WriteTo(IFX_ArchiveStream* archive,
                const CPDF_Encryptor* encryptor,
-               const CPDF_WriteContext* context = nullptr) const override;
+               const CPDF_WriteContext* context) const override;
 
   size_t GetRawSize() const;
   // Can only be called when stream is memory-based.

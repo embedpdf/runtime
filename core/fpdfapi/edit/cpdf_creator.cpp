@@ -17,6 +17,7 @@
 #include <vector>
 
 #include "core/fpdfapi/edit/cpdf_save_object_reader.h"
+#include "core/fpdfapi/edit/cpdf_save_trailer.h"
 #include "core/fpdfapi/parser/cpdf_array.h"
 #include "core/fpdfapi/parser/cpdf_crypto_handler.h"
 #include "core/fpdfapi/parser/cpdf_dictionary.h"
@@ -147,13 +148,6 @@ ByteString FormatXrefOffset10(FX_FILESIZE offset) {
   return ByteString::Format("%010" PRId64, static_cast<int64_t>(offset));
 }
 
-bool ShouldCopyTrailerEntry(const ByteString& key, bool replace_info) {
-  return key != "Encrypt" && key != "Size" && key != "Filter" &&
-         key != "Index" && key != "Length" && key != "Prev" && key != "W" &&
-         key != "XRefStm" && key != "ID" && key != "DecodeParms" &&
-         key != "Type" && !(key == "Info" && replace_info);
-}
-
 class InputWriteContext final : public CPDF_WriteContext {
  public:
   explicit InputWriteContext(const CPDF_Parser* parser,
@@ -209,17 +203,8 @@ class SaveObjectWorklist {
   }
 
   void AddReferences(RetainPtr<const CPDF_Object> object) {
-    CPDF_ObjectWalker walker(std::move(object));
-    std::set<const CPDF_Object*> containers;
-    while (auto current = walker.GetNext()) {
-      if (current->IsReference()) {
-        Add(current->AsReference()->GetRefObjNum());
-      } else if (current->IsArray() || current->IsDictionary() ||
-                 current->IsStream()) {
-        if (!containers.insert(current.Get()).second) {
-          walker.SkipWalkIntoCurrentObject();
-        }
-      }
+    for (uint32_t number : CPDF_CollectReferences(std::move(object))) {
+      Add(number);
     }
   }
 
@@ -306,17 +291,8 @@ bool CPDF_Creator::WriteFullDocument() {
   CPDF_SaveObjectReader reader(document_);
   SaveObjectWorklist pending;
 
-  if (parser_) {
-    pending.AddReferences(parser_->GetCombinedTrailer());
-    pending.Add(parser_->GetTrailerObjectNumber());
-  } else {
-    pending.Add(document_->GetRoot()->GetObjNum());
-  }
-
-  pending.Add(document_->GetInfoObjectNumber());
-  if (encrypt_dict_) {
-    pending.Add(encrypt_dict_->GetObjNum());
-    pending.AddReferences(encrypt_dict_);
+  for (uint32_t number : trailer_->roots()) {
+    pending.Add(number);
   }
 
   while (!pending.empty()) {
@@ -334,12 +310,10 @@ bool CPDF_Creator::WriteFullDocument() {
     }
   }
 
-  // An inline encryption dictionary is assigned document_->GetLastObjNum() + 1
-  // by the trailer writer. Preserve that allocation point when it is present.
-  if ((!encrypt_dict_ || !encrypt_dict_->IsInline()) &&
-      !object_offsets_.empty()) {
+  if (!object_offsets_.empty()) {
     last_obj_num_ = object_offsets_.rbegin()->first;
   }
+
   return true;
 }
 
@@ -426,19 +400,8 @@ void CPDF_Creator::PrepareIncrementalObjects() {
   // already-loaded edges first, before opening unrelated resource graphs.
   // Every visited object still needs a proven path from a saved root.
   SaveObjectWorklist pending(&effective_reader);
-  const uint32_t info_number = document_->GetInfoObjectNumber();
-  {
-    CPDF_DictionaryLocker trailer(parser_->GetCombinedTrailer());
-    for (const auto& [key, value] : trailer) {
-      if (ShouldCopyTrailerEntry(key,
-                                 info_number != parser_->GetInfoObjNum())) {
-        pending.AddReferences(value);
-      }
-    }
-  }
-  pending.Add(info_number);
-  if (encrypt_dict_) {
-    pending.Add(encrypt_dict_->GetObjNum());
+  for (uint32_t number : trailer_->roots()) {
+    pending.Add(number);
   }
 
   while (!candidates.empty() && !pending.empty()) {
@@ -454,8 +417,8 @@ void CPDF_Creator::PrepareIncrementalObjects() {
         break;
       }
     }
-    if (auto object = effective_reader.Read(object_number)) {
-      pending.AddReferences(std::move(object));
+    for (uint32_t reference : effective_reader.ReferencesFor(object_number)) {
+      pending.Add(reference);
     }
   }
   std::ranges::sort(new_obj_num_array_);
@@ -542,15 +505,16 @@ CPDF_Creator::Stage CPDF_Creator::WriteDoc_Stage2() {
   }
   if (stage_ == Stage::kWriteEncryptDict27) {
     if (encrypt_dict_ && encrypt_dict_->IsInline()) {
-      last_obj_num_ += 1;
+      const uint32_t encryption_number = trailer_->encryption_number();
+      last_obj_num_ = std::max(last_obj_num_, encryption_number);
       FX_FILESIZE saveOffset = archive_->CurrentOffset();
-      if (!WriteIndirectObj(last_obj_num_, encrypt_dict_.Get())) {
+      if (!WriteIndirectObj(encryption_number, encrypt_dict_.Get())) {
         return Stage::kInvalid;
       }
 
-      object_offsets_[last_obj_num_] = saveOffset;
+      object_offsets_[encryption_number] = saveOffset;
       if (is_incremental_) {
-        new_obj_num_array_.push_back(last_obj_num_);
+        new_obj_num_array_.push_back(encryption_number);
       }
     }
     stage_ = Stage::kInitWriteXRefs80;
@@ -707,50 +671,31 @@ CPDF_Creator::Stage CPDF_Creator::WriteDoc_Stage4() {
     }
   }
 
-  const uint32_t current_info_objnum = document_->GetInfoObjectNumber();
-  const uint32_t parser_info_objnum = parser_ ? parser_->GetInfoObjNum() : 0;
-  const bool should_write_current_info =
-      current_info_objnum != 0 && current_info_objnum != parser_info_objnum;
-  if (parser_) {
-    CPDF_DictionaryLocker locker(parser_->GetCombinedTrailer());
-    for (const auto& it : locker) {
-      const ByteString& key = it.first;
-      const RetainPtr<CPDF_Object>& pValue = it.second;
-      if (!ShouldCopyTrailerEntry(key, should_write_current_info)) {
-        continue;
-      }
-      if (!archive_->WriteString(("/")) ||
-          !archive_->WriteString(PDF_NameEncode(key).AsStringView())) {
-        return Stage::kInvalid;
-      }
-      if (!pValue->WriteTo(archive_.get(), nullptr, this)) {
-        return Stage::kInvalid;
-      }
+  for (const auto& [key, value] : trailer_->copied_entries()) {
+    if (!archive_->WriteString("/") ||
+        !archive_->WriteString(PDF_NameEncode(key).AsStringView()) ||
+        !value->WriteTo(archive_.get(), nullptr, this)) {
+      return Stage::kInvalid;
     }
-  } else {
+  }
+  if (trailer_->root_number()) {
     if (!archive_->WriteString("\r\n/Root") ||
-        !WriteReference(document_->GetRoot()->GetObjNum()) ||
+        !WriteReference(trailer_->root_number()) ||
         !archive_->WriteString("\r\n")) {
       return Stage::kInvalid;
     }
   }
-  if (should_write_current_info) {
+  if (trailer_->info_number()) {
     if (!archive_->WriteString("/Info") ||
-        !WriteReference(current_info_objnum) ||
+        !WriteReference(trailer_->info_number()) ||
         !archive_->WriteString("\r\n")) {
       return Stage::kInvalid;
     }
   }
-  if (encrypt_dict_) {
-    if (!archive_->WriteString("/Encrypt")) {
-      return Stage::kInvalid;
-    }
-
-    uint32_t dwObjNum = encrypt_dict_->GetObjNum();
-    if (dwObjNum == 0) {
-      dwObjNum = document_->GetLastObjNum() + 1;
-    }
-    if (!WriteReference(dwObjNum) || !archive_->WriteString(" ")) {
+  if (trailer_->encryption_number()) {
+    if (!archive_->WriteString("/Encrypt") ||
+        !WriteReference(trailer_->encryption_number()) ||
+        !archive_->WriteString(" ")) {
       return Stage::kInvalid;
     }
   }
@@ -877,6 +822,10 @@ bool CPDF_Creator::Create(Mask<CreateFlags> flags, int32_t file_version) {
   skip_empty_revision_ = false;
 
   InitID();
+  if (!BuildTrailer()) {
+    failure_reason_ = FailureReason::kOther;
+    return false;
+  }
   if (!parser_ || (security_changed_ && is_original_)) {
     is_incremental_ = false;
   }
@@ -897,6 +846,24 @@ bool CPDF_Creator::Create(Mask<CreateFlags> flags, int32_t file_version) {
     failure_reason_ = FailureReason::kOther;
   }
   return result;
+}
+
+bool CPDF_Creator::BuildTrailer() {
+  uint32_t encryption_number = encrypt_dict_ ? encrypt_dict_->GetObjNum() : 0;
+  if (encrypt_dict_ && encrypt_dict_->IsInline()) {
+    FX_SAFE_UINT32 next_number = document_->GetLastObjNum();
+    next_number += 1;
+    if (!next_number.IsValid()) {
+      return false;
+    }
+    encryption_number = next_number.ValueOrDie();
+  }
+  trailer_ = std::make_unique<CPDF_SaveTrailer>(
+      parser_ ? parser_->GetCombinedTrailer() : nullptr,
+      document_->GetRoot()->GetObjNum(), document_->GetInfoObjectNumber(),
+      parser_ ? parser_->GetInfoObjNum() : 0, encrypt_dict_, encryption_number,
+      id_array_);
+  return true;
 }
 
 void CPDF_Creator::InitID() {

@@ -197,6 +197,7 @@ bool CPDF_Parser::IsObjectFree(uint32_t objnum) const {
 }
 
 bool CPDF_Parser::InitSyntaxParser(RetainPtr<CPDF_ReadValidator> validator) {
+  save_reference_index_.Clear();
   const std::optional<FX_FILESIZE> header_offset = GetHeaderOffset(validator);
   if (!header_offset.has_value()) {
     return false;
@@ -771,6 +772,7 @@ bool CPDF_Parser::FindAllCrossReferenceTablesAndStream(
 }
 
 bool CPDF_Parser::RebuildCrossRef() {
+  save_reference_index_.Clear();
   // EmbedPDF: a scanned table has no chain.
   cross_ref_sections_.clear();
   auto cross_ref_table = std::make_unique<CPDF_CrossRefTable>();

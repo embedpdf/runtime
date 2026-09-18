@@ -51,28 +51,10 @@ class CPDF_LayerDocument final : public CPDF_Document {
     return loaded_delta_;
   }
 
-  // The two twins of an overlay object, both compared through the creator's
-  // own writer (dictionary text; raw stream bytes), never through the file's
-  // original text:
-  //
-  //   base twin   - the frozen base object. "Differs from base" decides what
-  //                 a cumulative save WRITES: the delta replaces the delta
-  //                 this layer was opened with, so everything that differs
-  //                 from the base must be in it.
-  //   loaded twin - the object as this layer was OPENED with it: the
-  //                 ingested delta's version when the delta carried it, else
-  //                 the base twin. "Differs from loaded" decides whether a
-  //                 save is a NO-OP (the loaded bytes are the document). The
-  //                 two agree on a fresh layer and can disagree on a reopened
-  //                 one (base 10, saved delta 20, set back to 10: nothing
-  //                 differs from the base, everything from the loaded file).
-  //
-  // Both answer false for an object that is not in the overlay; a deleted
-  // object the delta carried differs from loaded. New objects (no base twin)
-  // differ from both. Cost: one comparison against a twin already in memory.
-  bool DiffersFromBase(uint32_t objnum) const;
-  bool DiffersFromLoaded(uint32_t objnum) const;
-
+  // The creator compares effective values using separate generation contexts:
+  // the frozen base determines the cumulative delta, while the loaded delta
+  // twin (falling back to that base) determines changed-since-load. Saving does
+  // not advance either baseline. GetBaseTwin() is inherited from CPDF_Document.
   // Cache-only access to the pristine version carried by the loaded delta.
   // A missing entry means the loaded version is the base version.
   RetainPtr<const CPDF_Object> FindLoadedDeltaTwin(uint32_t objnum) const;

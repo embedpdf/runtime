@@ -38,6 +38,8 @@ def main():
     parser.add_argument("input", type=Path)
     parser.add_argument("--repeat", type=int, default=3)
     parser.add_argument("--output", type=Path)
+    parser.add_argument("--detached", action="store_true",
+                        help="Leave an orphaned annotation appearance in memory")
     args = parser.parse_args()
     if args.repeat < 1:
         parser.error("--repeat must be positive")
@@ -87,6 +89,28 @@ def main():
                     raise RuntimeError("Could not set annotation rectangle")
             finally:
                 close_annotation(annotation)
+            if args.detached:
+                create_layer_annotation = bind("EPDFPage_CreateAnnot", pointer,
+                                               [pointer, ctypes.c_int])
+                generate = bind("EPDFAnnot_GenerateAppearance", ctypes.c_int,
+                                [pointer])
+                remove = bind("FPDFPage_RemoveAnnot", ctypes.c_int,
+                              [pointer, ctypes.c_int])
+                count = bind("FPDFPage_GetAnnotCount", ctypes.c_int, [pointer])
+                index = count(page)
+                temporary = create_layer_annotation(page, 5)
+                if not temporary:
+                    raise RuntimeError("Could not create temporary annotation")
+                try:
+                    if not set_rect(temporary,
+                                    ctypes.byref(Rect(30, 130, 130, 30))):
+                        raise RuntimeError("Could not set temporary rectangle")
+                    if not generate(temporary):
+                        raise RuntimeError("Could not generate appearance")
+                finally:
+                    close_annotation(temporary)
+                if not remove(page, index):
+                    raise RuntimeError("Could not detach temporary annotation")
         finally:
             close_page(page)
 
@@ -126,6 +150,7 @@ def main():
                     "output_bytes": written,
                     "peak_process_mib": round(peak_bytes / 1024**2, 2),
                     "sink": "file" if output else "counting",
+                    "detached": args.detached,
                 }), flush=True)
             finally:
                 if output:

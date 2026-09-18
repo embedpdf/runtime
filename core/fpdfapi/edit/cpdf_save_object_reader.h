@@ -7,6 +7,7 @@
 #include <stdint.h>
 
 #include <map>
+#include <vector>
 
 #include "core/fpdfapi/parser/cpdf_indirect_object_holder.h"
 #include "core/fpdfapi/parser/cpdf_object_stream_cache.h"
@@ -37,6 +38,10 @@ class CPDF_SaveObjectReader final : public CPDF_IndirectObjectHolder {
   RetainPtr<const CPDF_Object> Read(uint32_t object_number);
   bool IsCached(uint32_t object_number) const;
 
+  // Valid until the next call. Live objects always override file-index rows.
+  // Successful file reads may populate the parser's bounded reference index.
+  pdfium::span<const uint32_t> ReferencesFor(uint32_t object_number);
+
  protected:
   CPDF_Object* GetOrParseIndirectObjectInternal(
       uint32_t object_number) override;
@@ -49,6 +54,7 @@ class CPDF_SaveObjectReader final : public CPDF_IndirectObjectHolder {
   UnownedPtr<CPDF_Parser> const parser_;
   const Version version_;
   CPDF_ObjectStreamCache stream_cache_;
+  std::vector<uint32_t> references_;
   std::map<uint32_t, RetainPtr<const CPDF_Object>> dependencies_;
 };
 

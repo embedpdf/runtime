@@ -12,9 +12,8 @@
 #include <utility>
 #include <vector>
 
-#include "core/fpdfapi/page/cpdf_form.h"
 #include "core/fpdfapi/page/cpdf_docpagedata.h"
-#include "core/fpdfapi/render/cpdf_docrenderdata.h"
+#include "core/fpdfapi/page/cpdf_form.h"
 #include "core/fpdfapi/page/cpdf_page.h"
 #include "core/fpdfapi/page/cpdf_pagemodule.h"
 #include "core/fpdfapi/parser/cpdf_array.h"
@@ -24,10 +23,13 @@
 #include "core/fpdfapi/parser/cpdf_document_view_scope.h"
 #include "core/fpdfapi/parser/cpdf_number.h"
 #include "core/fpdfapi/parser/cpdf_object.h"
+#include "core/fpdfapi/parser/cpdf_object_equality.h"
 #include "core/fpdfapi/parser/cpdf_parser.h"
 #include "core/fpdfapi/parser/cpdf_reference.h"
 #include "core/fpdfapi/parser/cpdf_stream.h"
 #include "core/fpdfapi/parser/cpdf_string.h"
+#include "core/fpdfapi/parser/cpdf_write_context.h"
+#include "core/fpdfapi/render/cpdf_docrenderdata.h"
 #include "core/fxcrt/cfx_read_only_container_stream.h"
 #include "core/fxcrt/fx_stream.h"
 #include "core/fxcrt/retain_ptr.h"
@@ -35,6 +37,57 @@
 #include "testing/gtest/include/gtest/gtest.h"
 
 namespace {
+
+enum class TwinView { kCurrent, kBase, kLoaded };
+
+class TwinWriteContext final : public CPDF_WriteContext {
+ public:
+  TwinWriteContext(CPDF_LayerDocument* layer, TwinView view)
+      : layer_(layer), view_(view) {}
+
+  uint32_t GetObjectGeneration(uint32_t number) const override {
+    if (view_ == TwinView::kCurrent) {
+      if (auto object = layer_->FindPromotedObject(number)) {
+        return object->GetGenNum();
+      }
+    } else if (view_ == TwinView::kLoaded) {
+      if (auto object = layer_->FindLoadedDeltaTwin(number)) {
+        return object->GetGenNum();
+      }
+    }
+    const auto* info =
+        layer_->GetParser()->GetCrossRefTable()->GetObjectInfo(number);
+    return info && info->type == CPDF_CrossRefTable::ObjectType::kNormal
+               ? info->gennum
+               : 0;
+  }
+
+ private:
+  CPDF_LayerDocument* const layer_;
+  const TwinView view_;
+};
+
+bool SameAsTwin(CPDF_LayerDocument* layer, uint32_t number, TwinView view) {
+  RetainPtr<const CPDF_Object> current = layer->FindPromotedObject(number);
+  if (!current) {
+    current = layer->GetBaseTwin(number);
+  }
+  RetainPtr<const CPDF_Object> twin;
+  if (view == TwinView::kLoaded) {
+    twin = layer->FindLoadedDeltaTwin(number);
+  }
+  if (!twin) {
+    twin = layer->GetBaseTwin(number);
+  }
+  if (!current || !twin) {
+    return current == twin;
+  }
+  const TwinWriteContext current_context(layer, TwinView::kCurrent);
+  const TwinWriteContext twin_context(layer, view);
+  return current->GetGenNum() == twin->GetGenNum() &&
+         CPDF_SameEffectiveValue(current.Get(), twin.Get(), &current_context,
+                                 &twin_context);
+}
 
 class CPDFLayerDocumentTest : public testing::Test {
  protected:
@@ -829,8 +882,8 @@ TEST_F(CPDFLayerDocumentTest, TwinsAgreeOnAFreshLayer) {
   ASSERT_EQ(CPDF_LayerDocument::OpenStatus::kSuccess, layer->ingest_status());
 
   // Not in the overlay: neither differs, and the loaded twin is the base's.
-  EXPECT_FALSE(layer->DiffersFromBase(4));
-  EXPECT_FALSE(layer->DiffersFromLoaded(4));
+  EXPECT_TRUE(SameAsTwin(layer.get(), 4, TwinView::kBase));
+  EXPECT_TRUE(SameAsTwin(layer.get(), 4, TwinView::kLoaded));
   EXPECT_EQ(base->GetFrozenObjectForLayer(3).Get(),
             layer->GetLoadedTwin(3).Get());
 
@@ -838,25 +891,25 @@ TEST_F(CPDFLayerDocumentTest, TwinsAgreeOnAFreshLayer) {
   RetainPtr<CPDF_Dictionary> annot = MutableAnnot(layer.get());
   ASSERT_TRUE(annot);
   EXPECT_TRUE(layer->IsObjectPromoted(4));
-  EXPECT_FALSE(layer->DiffersFromBase(4));
-  EXPECT_FALSE(layer->DiffersFromLoaded(4));
+  EXPECT_TRUE(SameAsTwin(layer.get(), 4, TwinView::kBase));
+  EXPECT_TRUE(SameAsTwin(layer.get(), 4, TwinView::kLoaded));
 
   // Changed.
   annot->SetRectFor("Rect", CFX_FloatRect(10, 10, 40, 40));
-  EXPECT_TRUE(layer->DiffersFromBase(4));
-  EXPECT_TRUE(layer->DiffersFromLoaded(4));
+  EXPECT_FALSE(SameAsTwin(layer.get(), 4, TwinView::kBase));
+  EXPECT_FALSE(SameAsTwin(layer.get(), 4, TwinView::kLoaded));
 
   // Restored: both sides go through the same writer, so the base's
   // integers and our floats compare as the bytes the creator would write.
   annot->SetRectFor("Rect", CFX_FloatRect(10, 10, 30, 30));
-  EXPECT_FALSE(layer->DiffersFromBase(4));
-  EXPECT_FALSE(layer->DiffersFromLoaded(4));
+  EXPECT_TRUE(SameAsTwin(layer.get(), 4, TwinView::kBase));
+  EXPECT_TRUE(SameAsTwin(layer.get(), 4, TwinView::kLoaded));
 
   // New here: no twin at all.
   RetainPtr<CPDF_Dictionary> fresh = layer->NewIndirect<CPDF_Dictionary>();
   ASSERT_TRUE(fresh);
-  EXPECT_TRUE(layer->DiffersFromBase(fresh->GetObjNum()));
-  EXPECT_TRUE(layer->DiffersFromLoaded(fresh->GetObjNum()));
+  EXPECT_FALSE(SameAsTwin(layer.get(), fresh->GetObjNum(), TwinView::kBase));
+  EXPECT_FALSE(SameAsTwin(layer.get(), fresh->GetObjNum(), TwinView::kLoaded));
 }
 
 TEST_F(CPDFLayerDocumentTest, TwinsDisagreeOnAReopenedLayer) {
@@ -869,8 +922,8 @@ TEST_F(CPDFLayerDocumentTest, TwinsDisagreeOnAReopenedLayer) {
   ASSERT_EQ(1u, layer->GetPromotedObjectCount());
 
   // Ingested and untouched: differs from the base, not from the loaded file.
-  EXPECT_TRUE(layer->DiffersFromBase(4));
-  EXPECT_FALSE(layer->DiffersFromLoaded(4));
+  EXPECT_FALSE(SameAsTwin(layer.get(), 4, TwinView::kBase));
+  EXPECT_TRUE(SameAsTwin(layer.get(), 4, TwinView::kLoaded));
   RetainPtr<const CPDF_Object> twin = layer->GetLoadedTwin(4);
   ASSERT_TRUE(twin);
   EXPECT_NE(base->GetFrozenObjectForLayer(4).Get(), twin.Get());
@@ -880,13 +933,13 @@ TEST_F(CPDFLayerDocumentTest, TwinsDisagreeOnAReopenedLayer) {
   RetainPtr<CPDF_Dictionary> annot = MutableAnnot(layer.get());
   ASSERT_TRUE(annot);
   annot->SetRectFor("Rect", CFX_FloatRect(10, 10, 30, 30));
-  EXPECT_FALSE(layer->DiffersFromBase(4));
-  EXPECT_TRUE(layer->DiffersFromLoaded(4));
+  EXPECT_TRUE(SameAsTwin(layer.get(), 4, TwinView::kBase));
+  EXPECT_FALSE(SameAsTwin(layer.get(), 4, TwinView::kLoaded));
 
   // Back to the loaded value.
   annot->SetRectFor("Rect", CFX_FloatRect(10, 10, 40, 40));
-  EXPECT_TRUE(layer->DiffersFromBase(4));
-  EXPECT_FALSE(layer->DiffersFromLoaded(4));
+  EXPECT_FALSE(SameAsTwin(layer.get(), 4, TwinView::kBase));
+  EXPECT_TRUE(SameAsTwin(layer.get(), 4, TwinView::kLoaded));
 
   // The loaded twin itself never moved.
   EXPECT_EQ(40, layer->GetLoadedTwin(4)->AsDictionary()->GetRectFor("Rect").right);
@@ -896,8 +949,8 @@ TEST_F(CPDFLayerDocumentTest, TwinsDisagreeOnAReopenedLayer) {
   annot.Reset();
   layer->DeleteIndirectObject(4);
   EXPECT_FALSE(layer->IsObjectPromoted(4));
-  EXPECT_TRUE(layer->DiffersFromLoaded(4));
-  EXPECT_FALSE(layer->DiffersFromBase(4));
+  EXPECT_FALSE(SameAsTwin(layer.get(), 4, TwinView::kLoaded));
+  EXPECT_TRUE(SameAsTwin(layer.get(), 4, TwinView::kBase));
 }
 
 // ---------------------------------------------------------------------------
@@ -945,15 +998,15 @@ TEST_F(CPDFLayerDocumentTest, PromotedStreamSharesTheBaseView) {
   ASSERT_TRUE(promoted);
   EXPECT_TRUE(promoted->IsFileBased());
   EXPECT_EQ(twin->BackingView(), promoted->BackingView());
-  EXPECT_FALSE(layer->DiffersFromBase(4));   // identity: O(1)
-  EXPECT_FALSE(layer->DiffersFromLoaded(4));
+  EXPECT_TRUE(SameAsTwin(layer.get(), 4, TwinView::kBase));  // identity: O(1)
+  EXPECT_TRUE(SameAsTwin(layer.get(), 4, TwinView::kLoaded));
 
   // A write gives the clone its own buffer; the base keeps its view.
   const uint8_t bytes[] = "1 0 0 rg 0 0 5 5 re f\n";
   promoted->SetData(pdfium::span(bytes).first(sizeof(bytes) - 1));
   EXPECT_TRUE(promoted->IsMemoryBased());
   EXPECT_TRUE(twin->IsFileBased());
-  EXPECT_TRUE(layer->DiffersFromBase(4));
+  EXPECT_FALSE(SameAsTwin(layer.get(), 4, TwinView::kBase));
 
   // A plain clone (the cross-document path) copies, as it always did.
   RetainPtr<CPDF_Object> copy = twin->Clone();
@@ -976,8 +1029,9 @@ TEST_F(CPDFLayerDocumentTest, IngestedStreamAndItsTwinShareOneView) {
   EXPECT_TRUE(overlay->IsFileBased());
   EXPECT_TRUE(loaded->IsFileBased());
   EXPECT_EQ(overlay->BackingView(), loaded->BackingView());  // no second copy
-  EXPECT_FALSE(layer->DiffersFromLoaded(4));                  // identity
-  EXPECT_TRUE(layer->DiffersFromBase(4));                     // exact compare: content differs
+  EXPECT_TRUE(SameAsTwin(layer.get(), 4, TwinView::kLoaded));  // identity
+  EXPECT_FALSE(SameAsTwin(layer.get(), 4,
+                          TwinView::kBase));  // exact compare: content differs
 
   // Replace the data, then restore the loaded bytes: a different view, the
   // same bytes - the exact fallback says unchanged.
@@ -985,10 +1039,10 @@ TEST_F(CPDFLayerDocumentTest, IngestedStreamAndItsTwinShareOneView) {
       ToStream(layer->GetMutableIndirectObject(4));
   const uint8_t other[] = "0 0 1 1 re f\n";
   mutable_overlay->SetData(pdfium::span(other).first(sizeof(other) - 1));
-  EXPECT_TRUE(layer->DiffersFromLoaded(4));
+  EXPECT_FALSE(SameAsTwin(layer.get(), 4, TwinView::kLoaded));
   const std::string restored = "0 0 20 20 re f\n";
   mutable_overlay->SetData(pdfium::as_bytes(pdfium::span(restored)));
   EXPECT_TRUE(mutable_overlay->IsMemoryBased());
   EXPECT_NE(mutable_overlay->BackingView(), loaded->BackingView());
-  EXPECT_FALSE(layer->DiffersFromLoaded(4));
+  EXPECT_TRUE(SameAsTwin(layer.get(), 4, TwinView::kLoaded));
 }

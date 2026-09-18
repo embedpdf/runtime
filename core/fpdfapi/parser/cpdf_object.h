@@ -108,9 +108,13 @@ class CPDF_Object : public Retainable {
   virtual CPDF_Stream* AsMutableStream();
   virtual CPDF_String* AsMutableString();
 
+  bool WriteTo(IFX_ArchiveStream* archive,
+               const CPDF_Encryptor* encryptor) const {
+    return WriteTo(archive, encryptor, nullptr);
+  }
   virtual bool WriteTo(IFX_ArchiveStream* archive,
                        const CPDF_Encryptor* encryptor,
-                       const CPDF_WriteContext* context = nullptr) const = 0;
+                       const CPDF_WriteContext* context) const = 0;
 
   // Create a deep copy of the object with the option to either
   // copy a reference object or directly copy the object it refers to

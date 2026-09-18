@@ -14,7 +14,6 @@
 #include "core/fpdfapi/parser/cpdf_document_view_scope.h"
 #include "core/fpdfapi/parser/cpdf_object.h"
 #include "core/fpdfapi/parser/cpdf_parse_only_holder.h"
-#include "core/fpdfapi/parser/cpdf_object_equality.h"
 #include "core/fpdfapi/parser/cpdf_parser.h"
 #include "core/fpdfapi/parser/cpdf_stream.h"
 #include "core/fpdfapi/render/cpdf_docrenderdata.h"
@@ -224,24 +223,6 @@ bool CPDF_LayerDocument::SharesBackingStorageWith(
     return true;
   }
   return CPDF_Document::SharesBackingStorageWith(stream);  // the base parser's file
-}
-
-bool CPDF_LayerDocument::DiffersFromBase(uint32_t objnum) const {
-  RetainPtr<const CPDF_Object> local = FindLocalIndirectObject(objnum);
-  if (!local) {
-    return false;  // not an overlay object: the base's copy is the object
-  }
-  RetainPtr<const CPDF_Object> twin = GetBaseTwin(objnum);
-  return !twin || !CPDF_SameEffectiveValue(local.Get(), twin.Get());
-}
-
-bool CPDF_LayerDocument::DiffersFromLoaded(uint32_t objnum) const {
-  RetainPtr<const CPDF_Object> local = FindLocalIndirectObject(objnum);
-  if (!local) {
-    return loaded_twins_.count(objnum) > 0;  // the delta carried it; gone
-  }
-  RetainPtr<const CPDF_Object> twin = GetLoadedTwin(objnum);
-  return !twin || !CPDF_SameEffectiveValue(local.Get(), twin.Get());
 }
 
 uint64_t CPDF_LayerDocument::GetOverlayEpoch() const {

@@ -27,6 +27,7 @@ class CPDF_Dictionary;
 class CPDF_Document;
 class CPDF_Object;
 class CPDF_Parser;
+class CPDF_SaveTrailer;
 
 class CPDF_Creator final : public CPDF_WriteContext {
  public:
@@ -110,6 +111,7 @@ class CPDF_Creator final : public CPDF_WriteContext {
 
   void PrepareIncrementalObjects();
   void InitID();
+  bool BuildTrailer();
 
   CPDF_Creator::Stage WriteDoc_Stage1();
   CPDF_Creator::Stage WriteDoc_Stage2();
@@ -145,6 +147,7 @@ class CPDF_Creator final : public CPDF_WriteContext {
   // A layer save with nothing to write appends no revision at all.
   bool skip_empty_revision_ = false;
   RetainPtr<CPDF_Array> id_array_;
+  std::unique_ptr<CPDF_SaveTrailer> trailer_;
   int32_t file_version_ = 0;
   bool security_changed_ = false;
   bool is_incremental_ = false;

@@ -67,6 +67,21 @@ OUT="$SOURCE_DIR/out/embedpdf-runtime-tests-$TARGET"
 RESULTS="$SOURCE_DIR/out/embedpdf-runtime-test-results/$TARGET"
 mkdir -p "$OUT" "$RESULTS"
 
+SAVE_CHECK_PYTHON="${EPDF_SAVE_CHECK_PYTHON:-python3}"
+SAVE_CHECK_ENABLED=false
+if [[ "$TEST_SUITE" != unit ]]; then
+  if "$SAVE_CHECK_PYTHON" -c 'import pikepdf' >/dev/null 2>&1; then
+    SAVE_CHECK_ENABLED=true
+    export EPDF_SAVE_DUMP_DIR="${EPDF_SAVE_DUMP_DIR:-$(mktemp -d "$RESULTS/save-pdfs.XXXXXX")}"
+    mkdir -p "$EPDF_SAVE_DUMP_DIR"
+  elif [[ "${CI:-}" == true || "${EPDF_REQUIRE_SAVE_CHECK:-0}" == 1 ]]; then
+    echo "Install testing/tools/requirements-save-check.txt for the required save checker" >&2
+    exit 1
+  else
+    echo "Independent save checker skipped: pikepdf is not installed"
+  fi
+fi
+
 cat > "$OUT/args.gn" <<EOF
 is_debug=true
 treat_warnings_as_errors=false
@@ -139,5 +154,16 @@ case "$TEST_SUITE" in
     run_gtest pdfium_embeddertests "${PDFIUM_EMBEDDER_FILTER:-}"
     ;;
 esac
+
+if [[ "$SAVE_CHECK_ENABLED" == true ]]; then
+  "$SAVE_CHECK_PYTHON" "$SOURCE_DIR/testing/tools/check_saved_pdfs_test.py"
+  # A user-supplied gtest filter may intentionally select no save-model tests.
+  if compgen -G "$EPDF_SAVE_DUMP_DIR/*.pdf" >/dev/null; then
+    "$SAVE_CHECK_PYTHON" "$SOURCE_DIR/testing/tools/check_saved_pdfs.py" "$EPDF_SAVE_DUMP_DIR"
+  elif [[ -z "${PDFIUM_EMBEDDER_FILTER:-}" ]]; then
+    echo "Save tests emitted no PDFs for independent validation" >&2
+    exit 1
+  fi
+fi
 
 echo "$RESULTS"

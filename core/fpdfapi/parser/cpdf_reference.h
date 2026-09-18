@@ -29,9 +29,10 @@ class CPDF_Reference final : public CPDF_Object {
   float GetNumber() const override;
   int GetInteger() const override;
   CPDF_Reference* AsMutableReference() override;
+  using CPDF_Object::WriteTo;
   bool WriteTo(IFX_ArchiveStream* archive,
                const CPDF_Encryptor* encryptor,
-               const CPDF_WriteContext* context = nullptr) const override;
+               const CPDF_WriteContext* context) const override;
   RetainPtr<CPDF_Reference> MakeReference(
       CPDF_IndirectObjectHolder* holder) const override;
 

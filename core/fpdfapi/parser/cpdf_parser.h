@@ -19,6 +19,7 @@
 
 #include "core/fpdfapi/parser/cpdf_cross_ref_table.h"
 #include "core/fpdfapi/parser/cpdf_indirect_object_holder.h"
+#include "core/fpdfapi/parser/cpdf_reference_index.h"
 #include "core/fxcrt/bytestring.h"
 #include "core/fxcrt/fx_types.h"
 #include "core/fxcrt/retain_ptr.h"
@@ -105,6 +106,12 @@ class CPDF_Parser {
       uint32_t objnum,
       CPDF_IndirectObjectHolder* holder,
       CPDF_ObjectStreamCache* stream_cache);
+
+  // Progressive loads can still change xref interpretation. They deliberately
+  // bypass this optimization; ordinary completed parses have immutable bytes.
+  CPDF_ReferenceIndex* GetSaveReferenceIndex() {
+    return linearized_ ? nullptr : &save_reference_index_;
+  }
 
   uint32_t GetLastObjNum() const;
   bool IsValidObjectNumber(uint32_t objnum) const;
@@ -247,6 +254,8 @@ class CPDF_Parser {
   std::unique_ptr<CPDF_SyntaxParser> syntax_;
   std::unique_ptr<ParsedObjectsHolder> owned_objects_holder_;
   UnownedPtr<ParsedObjectsHolder> objects_holder_;
+
+  CPDF_ReferenceIndex save_reference_index_;
 
   bool has_parsed_ = false;
   bool xref_stream_ = false;
