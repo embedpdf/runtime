@@ -10,7 +10,9 @@
 #include <stdint.h>
 
 #include <memory>
+#include <utility>
 
+#include "core/fpdfapi/parser/cpdf_measure_storage.h"
 #include "core/fxcrt/retain_ptr.h"
 #include "core/fxcrt/unowned_ptr.h"
 
@@ -21,6 +23,14 @@ class IPDF_Page;
 
 class CPDF_AnnotContext {
  public:
+  // EmbedPDF: owned SDK measurement state; never part of the PDF graph.
+  CPDF_MeasureStorage* GetMeasureStorage() const {
+    return measure_storage_.get();
+  }
+  void SetMeasureStorage(std::unique_ptr<CPDF_MeasureStorage> storage) {
+    measure_storage_ = std::move(storage);
+  }
+
   CPDF_AnnotContext(RetainPtr<CPDF_Dictionary> pAnnotDict,
                     IPDF_Page* pPage,
                     int annot_index = -1);
@@ -42,6 +52,7 @@ class CPDF_AnnotContext {
   int GetAnnotIndex() const { return annot_index_; }
 
  private:
+  std::unique_ptr<CPDF_MeasureStorage> measure_storage_;
   void RefreshAnnotDictIfNeeded() const;
   void EnsureMutableBackingForAnnotDict();
 

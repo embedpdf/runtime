@@ -11,6 +11,8 @@ source_set("test_support") {
   sources = [
     "command_line_helpers.cpp",
     "command_line_helpers.h",
+    # EmbedPDF: shared base/fresh/reopened-layer test fixture.
+    "embedpdf_layer_fixture.h",
     "font_renamer.cpp",
     "font_renamer.h",
     "fx_string_testhelpers.cpp",

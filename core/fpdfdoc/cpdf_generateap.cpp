@@ -6,6 +6,8 @@
 
 #include "core/fpdfdoc/cpdf_generateap.h"
 
+#include "core/fpdfdoc/cpdf_generateap_dimension.h"
+
 #include <algorithm>
 #include <array>
 #include <cmath>
@@ -1527,6 +1529,7 @@ RetainPtr<CPDF_Dictionary> GenerateResourcesDict(
 struct APGenerationTarget {
   CPDF_Document* const doc;
   CPDF_Dictionary* const persistent_annot_dict;
+  std::unique_ptr<CPDF_AnnotFontMap> ephemeral_fonts;
   RetainPtr<CPDF_Stream> normal_stream;
 
   bool IsPersistent() const { return !!persistent_annot_dict; }
@@ -1629,7 +1632,8 @@ bool GenerateAndSetAPDict(CPDF_Document* doc,
 // This helper encapsulates all logic for drawing the start and end caps.
 void GenerateLineEndings(fxcrt::ostringstream& ap,
                          const std::vector<CFX_PointF>& points,
-                         const CPDF_Dictionary* annot_dict) {
+                         const CPDF_Dictionary* annot_dict,
+                         bool reverse_arrows = false) {
   if (points.size() < 2) {
     return;
   }
@@ -1683,6 +1687,13 @@ void GenerateLineEndings(fxcrt::ostringstream& ap,
         break;
       default:
         break;
+    }
+
+    if (reverse_arrows && (ending == CPDF_Annot::LineEnding::kOpenArrow ||
+                           ending == CPDF_Annot::LineEnding::kClosedArrow ||
+                           ending == CPDF_Annot::LineEnding::kROpenArrow ||
+                           ending == CPDF_Annot::LineEnding::kRClosedArrow)) {
+      final_angle += FXSYS_PI;
     }
 
     EmitEndingWithAngle(ap, tip, final_angle, [&]() {
@@ -2788,6 +2799,230 @@ bool GenerateHighlightAP(APGenerationTarget* target,
   return true;
 }
 
+// EmbedPDF: measurement captions are plain /Contents. Neither the scale nor
+// /RC participates in deriving or painting their value here.
+struct DimensionCaption {
+  ByteString text_ops;
+  RetainPtr<CPDF_Dictionary> fonts;
+  float width = 0;
+  float height = 0;
+};
+
+std::optional<DimensionCaption> PrepareDimensionCaption(
+    APGenerationTarget* target,
+    const CPDF_Dictionary* annot) {
+  DimensionCaption result;
+  const WideString text = annot->GetUnicodeTextFor("Contents");
+  if (text.IsEmpty()) {
+    return result;
+  }
+  CPDF_DefaultAppearance da(annot->GetByteStringFor("DA"));
+  auto font_info = da.GetFont();
+  const ByteString alias = font_info ? font_info->name : ByteString("Helv");
+  float size = font_info ? font_info->size : 9.0f;
+  if (!std::isfinite(size) || size <= 0) {
+    size = 9;
+  }
+  // Resolve from the existing AP first (Acrobat keeps its caption fonts here),
+  // then /DR. Both are read-only; captions never create an AcroForm.
+  auto ap = annot->GetDictFor("AP");
+  auto normal = ap ? ap->GetStreamFor("N") : nullptr;
+  auto resources =
+      normal ? normal->GetDict()->GetDictFor("Resources") : nullptr;
+  auto font_dict = resources ? resources->GetDictFor("Font") : nullptr;
+  if (!font_dict || !font_dict->KeyExist(alias.AsStringView())) {
+    const auto* root = target->doc->GetRoot();
+    auto form = root ? root->GetDictFor("AcroForm") : nullptr;
+    auto dr = form ? form->GetDictFor("DR") : nullptr;
+    font_dict = dr ? dr->GetDictFor("Font") : nullptr;
+  }
+  const DaFontResolution resolved =
+      ResolveDaFontForEphemeralTarget(target->doc, font_dict.Get(), alias);
+  auto* page_data = CPDF_DocPageData::FromDocument(target->doc);
+  auto font =
+      resolved.font_dict ? page_data->GetFont(resolved.font_dict) : nullptr;
+  auto owned_fonts = std::make_unique<CPDF_AnnotFontMap>(
+      target->doc, std::move(font), alias,
+      /*allow_registered_fallbacks=*/true, resolved.registered_font_id,
+      /*install_dr_entry=*/false);
+  CPDF_AnnotFontMap& fonts = *owned_fonts;
+  if (!fonts.HasDefaultFont()) {
+    return std::nullopt;
+  }
+  CPDF_RichTextDocument document;
+  document.source = CPDF_RichTextDocument::Source::kContents;
+  document.body.family = L"Helvetica";
+  document.body.size = size;
+  document.body.color =
+      da.GetColorARGB().has_value() ? da.GetColorARGB()->argb : 0xFF000000;
+  // Keep the actual /DA font/encoding, including Acrobat's Differences table.
+  fonts.PinRichFace(document.body.family, 400, false, 0);
+  CPDF_RichTextParagraph paragraph;
+  paragraph.runs.push_back({text, {}});
+  document.paragraphs.push_back(std::move(paragraph));
+  CPDF_RichTextLayout layout(&fonts, {});
+  auto arranged = layout.Arrange(document, {0, 0, 1000000, 1000000},
+                                 CPDF_Annot::VerticalAlignment::kTop);
+  for (const auto& line : arranged.lines) {
+    result.width = std::max(result.width, line.width);
+  }
+  result.height = arranged.content_height;
+  if (!std::isfinite(result.width) || !std::isfinite(result.height)) {
+    return std::nullopt;
+  }
+  fxcrt::ostringstream text_stream;
+  EmitRichTextBody(text_stream, arranged, fonts,
+                   {-result.width / 2, -result.height / 2, result.width / 2,
+                    result.height / 2});
+  result.text_ops = ByteString(text_stream);
+  if (target->IsPersistent()) {
+    result.fonts = fonts.CreateFontResourceDict();
+  } else {
+    result.fonts = fonts.CreateEphemeralFontResourceDict();
+    target->ephemeral_fonts = std::move(owned_fonts);
+  }
+  if (!result.fonts) {
+    return std::nullopt;
+  }
+  return result;
+}
+
+void AppendDimensionCaption(fxcrt::ostringstream& ap,
+                            const DimensionCaption& text,
+                            const pdfium::dimension::CaptionLayout& layout) {
+  if (text.text_ops.IsEmpty()) {
+    return;
+  }
+  ap << "q ";
+  WriteMatrix(ap, layout.matrix) << " cm\n";
+  ap << text.text_ops << "Q\n";
+}
+
+void GrowDimensionRect(APGenerationTarget* target,
+                       CPDF_Dictionary* annot,
+                       const CFX_FloatRect& bounds) {
+  if (!target->IsPersistent()) {
+    return;
+  }
+  CFX_FloatRect rect = annot->GetRectFor("Rect");
+  rect.Normalize();
+  rect.Union(bounds);
+  annot->SetRectFor("Rect", rect);
+}
+
+bool ShapeCaptionEnabled(const CPDF_Dictionary* annot) {
+  auto metadata = annot->GetDictFor("EMBD_Metadata");
+  return metadata && metadata->GetBooleanFor("MeasurementCaption", false);
+}
+
+bool FinishShapeDimensionAP(APGenerationTarget* target,
+                            CPDF_Dictionary* annot,
+                            const ByteString& blend_name,
+                            pdfium::span<const CFX_PointF> points,
+                            bool closed,
+                            fxcrt::ostringstream* ap) {
+  auto caption = PrepareDimensionCaption(target, annot);
+  if (!caption) {
+    return false;
+  }
+  auto center = pdfium::dimension::ShapeCaptionCenter(annot, points, closed,
+                                                      caption->height);
+  auto layout = pdfium::dimension::LayoutShapeCaption(center, caption->width,
+                                                      caption->height);
+  AppendDimensionCaption(*ap, *caption, layout);
+  CFX_FloatRect bounds = annot->GetRectFor("Rect");
+  bounds.Normalize();
+  if (!caption->text_ops.IsEmpty()) {
+    layout.bounds.Inflate(1, 1);
+    bounds.Union(layout.bounds);
+  }
+  GrowDimensionRect(target, annot, bounds);
+  auto resources = GenerateResourcesDict(
+      target->doc, GenerateExtGStateDict(*annot, blend_name),
+      std::move(caption->fonts));
+  return GenerateAndSetAPDictWithBBox(target, annot, ap, std::move(resources),
+                                      bounds);
+}
+
+bool GenerateDimensionLineAP(APGenerationTarget* target,
+                             CPDF_Dictionary* annot,
+                             const ByteString& blend_name,
+                             const std::vector<CFX_PointF>& points) {
+  const float border = GetBorderWidth(annot);
+  float ll = annot->GetFloatFor("LL"), lle = annot->GetFloatFor("LLE"),
+        llo = annot->GetFloatFor("LLO");
+  if (!IsFinitePoint(points[0]) || !IsFinitePoint(points[1]) ||
+      !std::isfinite(ll) || !std::isfinite(lle) || !std::isfinite(llo) ||
+      lle < 0 || llo < 0) {
+    return false;
+  }
+  auto line =
+      pdfium::dimension::LayoutLine(points[0], points[1], ll, lle, llo, border);
+  DimensionCaption caption;
+  pdfium::dimension::CaptionLayout label;
+  if (annot->GetBooleanFor("Cap", false)) {
+    auto prepared = PrepareDimensionCaption(target, annot);
+    if (!prepared) {
+      return false;
+    }
+    caption = std::move(*prepared);
+    if (!caption.text_ops.IsEmpty()) {
+      label = pdfium::dimension::LayoutLineCaption(annot, line, caption.width,
+                                                   caption.height, border);
+    }
+  }
+  fxcrt::ostringstream ap;
+  ap << "/" << kGSDictName << " gs\n";
+  auto color = annot->GetArrayFor("C");
+  auto interior = annot->GetArrayFor("IC");
+  ap << GetColorStringWithDefault(color.Get(),
+                                  CFX_Color(CFX_Color::Type::kRGB, 0, 0, 0),
+                                  PaintOperation::kStroke);
+  if (interior && !interior->IsEmpty()) {
+    ap << GetColorStringWithDefault(interior.Get(), {}, PaintOperation::kFill);
+  }
+  auto segment = [&](CFX_PointF from, CFX_PointF to) {
+    WritePoint(ap, from) << " m ";
+    WritePoint(ap, to) << " l S\n";
+  };
+  if (border > 0) {
+    WriteFloat(ap, border) << " w " << GetDashPatternString(annot);
+    if (label.gap_end > label.gap_start) {
+      if (label.gap_start > 0) {
+        segment(line.start, line.start + label.gap_start * line.along);
+      }
+      if (label.gap_end < line.length) {
+        segment(line.start + label.gap_end * line.along, line.end);
+      }
+    } else {
+      segment(line.start, line.end);
+    }
+    for (const auto& leader : line.leaders) {
+      segment(leader.from, leader.to);
+    }
+    if (label.outside_arrows) {
+      const float stub = 8 * border;
+      segment(line.start - stub * line.along, line.start);
+      segment(line.end, line.end + stub * line.along);
+    }
+    GenerateLineEndings(ap, {line.start, line.end}, annot,
+                        label.outside_arrows);
+  }
+  AppendDimensionCaption(ap, caption, label);
+  CFX_FloatRect bounds = line.bounds;
+  if (!caption.text_ops.IsEmpty()) {
+    bounds.Union(label.bounds);
+  }
+  bounds.Inflate(1, 1);
+  bounds.Union(annot->GetRectFor("Rect"));
+  GrowDimensionRect(target, annot, bounds);
+  auto resources = GenerateResourcesDict(
+      target->doc, GenerateExtGStateDict(*annot, blend_name),
+      std::move(caption.fonts));
+  return GenerateAndSetAPDictWithBBox(target, annot, &ap, std::move(resources),
+                                      bounds);
+}
+
 bool GeneratePolygonAP(APGenerationTarget* target,
                        CPDF_Dictionary* annot_dict,
                        const ByteString& blend_name) {
@@ -2840,6 +3075,19 @@ bool GeneratePolygonAP(APGenerationTarget* target,
   const bool do_fill = interior_color && !interior_color->IsEmpty();
   app << GetPaintOperatorString(do_stroke, do_fill) << "\n";
 
+  if (ShapeCaptionEnabled(annot_dict)) {
+    std::vector<CFX_PointF> points;
+    for (size_t i = 0; i + 1 < verts->size(); i += 2) {
+      CFX_PointF point(verts->GetFloatAt(i), verts->GetFloatAt(i + 1));
+      if (!IsFinitePoint(point)) {
+        return false;
+      }
+      points.push_back(point);
+    }
+    return FinishShapeDimensionAP(target, annot_dict, blend_name, points, true,
+                                  &app);
+  }
+
   auto gs_dict = GenerateExtGStateDict(*annot_dict, blend_name);
   auto res_dict =
       GenerateResourcesDict(target->doc, std::move(gs_dict), nullptr);
@@ -2860,6 +3108,11 @@ bool GenerateLineAP(APGenerationTarget* target,
   std::vector<CFX_PointF> points;
   points.push_back({L->GetFloatAt(0), L->GetFloatAt(1)});
   points.push_back({L->GetFloatAt(2), L->GetFloatAt(3)});
+
+  if (annot_dict->GetBooleanFor("Cap", false) || annot_dict->KeyExist("LL") ||
+      annot_dict->KeyExist("LLE") || annot_dict->KeyExist("LLO")) {
+    return GenerateDimensionLineAP(target, annot_dict, blend_name, points);
+  }
 
   fxcrt::ostringstream ap;
   ap << "/" << kGSDictName << " gs\n";
@@ -2938,6 +3191,16 @@ bool GeneratePolyLineAP(APGenerationTarget* target,
   GenerateLineEndings(ap, points, annot_dict);
 
   // Finalize and set the Appearance Stream.
+  if (ShapeCaptionEnabled(annot_dict)) {
+    for (const auto& point : points) {
+      if (!IsFinitePoint(point)) {
+        return false;
+      }
+    }
+    return FinishShapeDimensionAP(target, annot_dict, blend_name, points, false,
+                                  &ap);
+  }
+
   auto gs_dict = GenerateExtGStateDict(*annot_dict, blend_name);
   auto res_dict =
       GenerateResourcesDict(target->doc, std::move(gs_dict), nullptr);
@@ -4204,7 +4467,8 @@ CPDF_GenerateAP::GenerateEphemeralFormAP(CPDF_Document* doc,
                               type, nullptr)) {
     return std::nullopt;
   }
-  return GeneratedAP{std::move(target.normal_stream)};
+  return GeneratedAP{std::move(target.ephemeral_fonts),
+                     std::move(target.normal_stream)};
 }
 
 // static
@@ -4609,7 +4873,8 @@ CPDF_GenerateAP::GenerateEphemeralAnnotAP(CPDF_Document* doc,
                             BlendModeToPDFName(blend_mode))) {
       return std::nullopt;
     }
-    return GeneratedAP{std::move(target.normal_stream)};
+    return GeneratedAP{std::move(target.ephemeral_fonts),
+                       std::move(target.normal_stream)};
   }
 
   if (!GenerateAnnotAPToTarget(&target, mutable_annot_dict, subtype,
@@ -4617,7 +4882,8 @@ CPDF_GenerateAP::GenerateEphemeralAnnotAP(CPDF_Document* doc,
     return std::nullopt;
   }
 
-  return GeneratedAP{std::move(target.normal_stream)};
+  return GeneratedAP{std::move(target.ephemeral_fonts),
+                     std::move(target.normal_stream)};
 }
 
 // static

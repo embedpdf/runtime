@@ -36,6 +36,8 @@ source_set("fpdfsdk") {
     "epdf_form_helpers.h",
     # EmbedPDF: generic namespace-scoped document/page /PieceInfo metadata.
     "epdf_pieceinfo.cpp",
+    # EmbedPDF: measurement dictionaries and dimension appearance controls.
+    "epdf_measure.cpp",
     "epdf_page_content_helpers.cpp",
     "epdf_page_content_helpers.h",
     "epdf_png_shim.cpp",
@@ -174,6 +176,7 @@ pdfium_embeddertest_source_set("embeddertests") {
     "epdf_signature_embeddertest.cpp",
     # EmbedPDF: covers generic document/page /PieceInfo metadata APIs.
     "epdf_pieceinfo_embeddertest.cpp",
+    "epdf_measure_embeddertest.cpp",
     "fpdf_annot_embeddertest.cpp",
     "fpdf_attachment_embeddertest.cpp",
     "fpdf_catalog_embeddertest.cpp",

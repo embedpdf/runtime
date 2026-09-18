@@ -595,6 +595,26 @@ CPDF_AnnotFontSubset::StagedFontResource::operator=(
 CPDF_AnnotFontSubset::StagedFontResource::~StagedFontResource() = default;
 
 // static
+CPDF_AnnotFontSubset::EphemeralFontResource
+CPDF_AnnotFontSubset::BuildEphemeralFontResource(StagedFontResource staged) {
+  EphemeralFontResource result;
+  result.scratch = std::make_unique<CPDF_IndirectObjectHolder>();
+  // Imported document programs already have object numbers. Copy them into
+  // the scratch namespace instead of pointing a scratch reference at a file
+  // object number (which can collide with a completely different stream).
+  if (staged.program->GetObjNum() != 0) {
+    staged.program = ToStream(staged.program->CloneDirectObject());
+  }
+  result.scratch->AddIndirectObject(staged.program);
+  if (staged.to_unicode) {
+    result.scratch->AddIndirectObject(staged.to_unicode);
+  }
+  LinkCompositeFont(&staged, result.scratch.get());
+  result.font_dict = std::move(staged.font_dict);
+  return result;
+}
+
+// static
 CPDF_AnnotFontSubset::LayoutFont CPDF_AnnotFontSubset::CreateLayoutFont(
     CPDF_Document* doc,
     CFX_FontRegistry::FontId font_id) {

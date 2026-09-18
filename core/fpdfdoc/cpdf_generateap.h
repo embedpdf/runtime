@@ -57,6 +57,9 @@ class CPDF_GenerateAP {
                               BlendMode blend_mode);
 
   struct GeneratedAP {
+    // Declared first so scratch font holders outlive the stream that names
+    // them. Consumers must retain this alongside normal_stream.
+    std::unique_ptr<CPDF_AnnotFontMap> font_lifetime;
     RetainPtr<CPDF_Stream> normal_stream;
   };
 
