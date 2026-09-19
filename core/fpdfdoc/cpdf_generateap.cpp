@@ -48,6 +48,7 @@
 #include "core/fpdfdoc/cpvt_variabletext.h"
 #include "core/fpdfdoc/cpvt_word.h"
 #include "core/fxcrt/fx_string_wrappers.h"
+#include "core/fxcrt/utf16.h"
 #include "core/fxcrt/fx_system.h"
 #include "core/fxcrt/notreached.h"
 #include "core/fxge/cfx_fontregistry.h"
@@ -2216,6 +2217,27 @@ ByteString RichColorOperator(FX_ARGB argb, bool fill) {
          RichNumber(FXARGB_B(argb) / 255.0f) + (fill ? " rg\n" : " RG\n");
 }
 
+// The scalar whose first code unit is at |index|: on a 16-bit wchar_t
+// platform a supplementary character is a surrogate pair, and its glyph's
+// ToUnicode entry needs the character, not the high half.
+uint32_t ScalarAt(const WideString& text, size_t index) {
+  if (index >= text.GetLength()) {
+    return 0;
+  }
+  const uint32_t unit = static_cast<uint32_t>(text[index]);
+  if constexpr (sizeof(wchar_t) == 2) {
+    if (pdfium::IsHighSurrogate(unit) && index + 1 < text.GetLength()) {
+      const uint32_t low = static_cast<uint32_t>(text[index + 1]);
+      if (pdfium::IsLowSurrogate(low)) {
+        return pdfium::SurrogatePair(static_cast<char16_t>(unit),
+                                     static_cast<char16_t>(low))
+            .ToCodePoint();
+      }
+    }
+  }
+  return unit;
+}
+
 ByteString HexUtf16(const WideString& text) {
   ByteString hex("<FEFF");
   for (wchar_t wch : text) {
@@ -2301,10 +2323,7 @@ void EmitRichTextBody(fxcrt::ostringstream& s,
       codes.reserve(run.glyphs.size());
       bool actual_text = run.needs_actual_text;
       for (const ShapedGlyph& glyph : run.glyphs) {
-        const uint32_t unicode =
-            glyph.cluster < run.text.GetLength()
-                ? static_cast<uint32_t>(run.text[glyph.cluster])
-                : 0;
+        const uint32_t unicode = ScalarAt(run.text, glyph.cluster);
         bool shared = false;
         codes.push_back(
             map.EncodeRichGlyph(run.font_entry, glyph.gid, unicode, &shared));
@@ -2521,20 +2540,9 @@ PrepareRichFreeTextAPInternal(CPDF_Document* doc,
       /*install_dr_entry=*/in.persistent,
       CPDF_AnnotFontMap::Owner::kAnnotation);
   CPDF_AnnotFontMap& map = *prepared->fonts;
-  if (in.author_default_appearance) {
-    const CPDF_RichTextStyle& body = in.document->body;
-    const int body_entry =
-        map.ResolveRichFace(body.family, body.weight, body.italic);
-    if (body_entry < 0) {
-      return nullptr;
-    }
-    prepared->da_alias = map.ChooseDefaultAppearanceAlias(body_entry);
-    if (prepared->da_alias.IsEmpty()) {
-      return nullptr;
-    }
-    map.SetDefaultAppearanceEntry(body_entry, prepared->da_alias);
-  } else if (in.document->source == CPDF_RichTextDocument::Source::kContents &&
-             map.HasDefaultFont() && !map.DefaultFontIsStandard()) {
+  if (!in.author_default_appearance &&
+      in.document->source == CPDF_RichTextDocument::Source::kContents &&
+      map.HasDefaultFont() && !map.DefaultFontIsStandard()) {
     // Regenerating a PLAIN box: the parser derived the body face from the
     // /DA font, so that entry IS the body face and the layout keeps naming
     // the /DA alias — the contract every reader of a plain box, and CPVT
@@ -2596,19 +2604,39 @@ PrepareRichFreeTextAPInternal(CPDF_Document* doc,
   if (box.Width() <= 0 || box.Height() <= 0) {
     return nullptr;
   }
+  std::optional<CPDF_RichTextLayout::Result> arranged;
   if (text_area.Width() > 0 && text_area.Height() > 0) {
     CPDF_RichTextLayout::Options options;
     options.typographic_features = doc->GetTypographicFeaturesEnabled();
     CPDF_RichTextLayout layout(&map, options);
-    const CPDF_RichTextLayout::Result result =
+    arranged =
         layout.Arrange(*in.document, text_area, GetVerticalAlign(annot_dict));
-    prepared->body_size = result.body_size;
-    prepared->degraded = result.degraded;
-    prepared->auto_size_fell_back = result.auto_size_fell_back;
-
+    prepared->body_size = arranged->body_size;
+    prepared->degraded = arranged->degraded;
+    prepared->auto_size_fell_back = arranged->auto_size_fell_back;
+  }
+  if (in.author_default_appearance) {
+    // The /DA font is the body's face as the layout resolved it over the
+    // body's own text (cached by request), so /DA and the appearance never
+    // disagree when coverage substitutes; with no plate to lay out, the
+    // request resolves here without text. Aliases are settled before the
+    // content names them.
+    const CPDF_RichTextStyle& body = in.document->body;
+    const int body_entry =
+        map.ResolveRichFace(body.family, body.weight, body.italic);
+    if (body_entry < 0) {
+      return nullptr;
+    }
+    prepared->da_alias = map.ChooseDefaultAppearanceAlias(body_entry);
+    if (prepared->da_alias.IsEmpty()) {
+      return nullptr;
+    }
+    map.SetDefaultAppearanceEntry(body_entry, prepared->da_alias);
+  }
+  if (arranged.has_value()) {
     stream << "/Tx BMC\nq\n";
     WriteRect(stream, text_area) << " re W n\n";
-    EmitRichTextBody(stream, result, map, text_area);
+    EmitRichTextBody(stream, *arranged, map, text_area);
     stream << "Q\nEMC\n";
   }
   if (inline_rotation) {

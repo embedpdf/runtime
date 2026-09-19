@@ -13,6 +13,7 @@
 
 #include "core/fpdfapi/font/cpdf_font.h"
 #include "core/fpdfdoc/cpdf_annotfontmap.h"
+#include "core/fxcrt/code_point_view.h"
 #include "core/fxcrt/fx_linebreak.h"
 #include "core/fxcrt/fx_unicode.h"
 #include "core/fxcrt/numerics/safe_conversions.h"
@@ -320,12 +321,14 @@ struct CPDF_RichTextLayout::Impl {
   // Does |entry| have a glyph for every character of the grapheme at
   // [begin, end)? Joiners and variation selectors may be missing.
   bool Covers(int entry, const WideString& text, size_t begin, size_t end) {
-    for (size_t i = begin; i < end; ++i) {
-      const wchar_t ch = text[i];
-      if (IsZeroWidthJoiner(ch) || IsVariationSelector(ch)) {
+    // Scalars, not code units: a supplementary character is one grapheme
+    // of two units on a 16-bit wchar_t platform.
+    for (char32_t cp : pdfium::CodePointView(
+             text.AsStringView().Substr(begin, end - begin))) {
+      if (cp == 0x200D || IsVariationSelector(cp)) {
         continue;
       }
-      if (GlyphFor(entry, ch) == 0) {
+      if (fonts->RichGlyphFor(entry, static_cast<uint32_t>(cp)) == 0) {
         return false;
       }
     }
@@ -555,15 +558,19 @@ struct CPDF_RichTextLayout::Impl {
       int entry = fonts->ResolveRichFace(resolved.family, resolved.weight,
                                          resolved.italic);
       if (entry >= 0 && !Covers(entry, text, begin, end)) {
-        wchar_t base = text[begin];
-        for (size_t i = begin; i < end; ++i) {
-          if (!IsMark(static_cast<uint32_t>(text[i]))) {
-            base = text[i];
-            break;
+        // The grapheme's base scalar picks the fallback font.
+        uint32_t base = 0;
+        for (char32_t cp : pdfium::CodePointView(
+                 text.AsStringView().Substr(begin, end - begin))) {
+          if (base == 0 || !IsMark(static_cast<uint32_t>(cp))) {
+            base = static_cast<uint32_t>(cp);
+            if (!IsMark(base)) {
+              break;
+            }
           }
         }
-        const int fallback = fonts->FindRichFallback(
-            static_cast<uint32_t>(base), resolved.weight, resolved.italic);
+        const int fallback =
+            fonts->FindRichFallback(base, resolved.weight, resolved.italic);
         if (fallback >= 0 && Covers(fallback, text, begin, end)) {
           entry = fallback;
         }
@@ -697,6 +704,46 @@ CPDF_RichTextLayout::Result CPDF_RichTextLayout::Arrange(
     }
   } else {
     candidate_sizes.push_back(document.body.size);
+  }
+
+  // Faces resolve once per request (family, weight, italic) over every
+  // character styled with it, whatever the size attempt (C note §1.3): a
+  // document face that cannot draw all of that text is not the request's
+  // face, the /DA answers the same, and the itemiser below only ever hits
+  // the map's cache.
+  {
+    struct RequestText {
+      ByteString key;
+      CPDF_RichTextStyle style;
+      WideString text;
+    };
+    std::vector<RequestText> requests;
+    auto note = [&](const CPDF_RichTextStyle& style, const WideString& text) {
+      const ByteString key = CPDF_AnnotFontMap::FaceRequestKey(
+          style.family, style.weight, style.italic);
+      auto it = std::ranges::find_if(
+          requests, [&](const RequestText& r) { return r.key == key; });
+      if (it == requests.end()) {
+        requests.push_back({key, style, WideString()});
+        it = requests.end() - 1;
+      }
+      for (wchar_t ch : text) {
+        if (ch != L'\r') {
+          it->text += ch;
+        }
+      }
+    };
+    note(document.body, WideString());  // the /DA face, and empty lines
+    for (const CPDF_RichTextParagraph& paragraph : document.paragraphs) {
+      for (const CPDF_RichTextRun& run : paragraph.runs) {
+        note(ApplyRichTextStyleDelta(document.body, run.style), run.text);
+      }
+    }
+    for (const RequestText& request : requests) {
+      fonts_->ResolveRichFace(request.style.family, request.style.weight,
+                              request.style.italic,
+                              request.text.AsStringView());
+    }
   }
 
   for (size_t attempt = 0; attempt < candidate_sizes.size(); ++attempt) {

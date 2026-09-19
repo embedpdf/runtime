@@ -132,19 +132,20 @@ class CPDF_AnnotFontSubset final {
   //
   // Stage decides everything and builds the parts, touching no document. With
   // used glyphs the resource is the usual embedded subset (or the whole
-  // program under Embedding::kFull). With none, but
-  // |required_by_default_appearance| (the /DA font of an empty annotation, or
-  // of text drawn entirely by fallback fonts), it is a minimal valid embedded
-  // resource (glyph 0 only) that still carries the persistent identity, so
-  // the /DA font survives a save. With none and not required, kUnused (an
-  // unused fallback, nothing to embed). kFailed means a resource was needed
-  // and could not be built; callers must then fail rather than leave a font
-  // name dangling in an appearance or in /DA.
+  // program under Embedding::kFull). With none, but |required| (the /DA
+  // font of an empty annotation or of text drawn entirely by fallback
+  // fonts, or a font the content names for glyph 0 alone), it is a minimal
+  // valid embedded resource (glyph 0 only) that still carries the
+  // persistent identity, so the /DA font survives a save and the appearance
+  // never names a font that is not there. With none and not required,
+  // kUnused (an unused fallback, nothing to embed). kFailed means a
+  // resource was needed and could not be built; callers must then fail
+  // rather than leave a font name dangling in an appearance or in /DA.
   enum class StageStatus { kStaged, kUnused, kFailed };
   static StageStatus StageRegisteredFontResource(
       CFX_FontRegistry::FontId font_id,
       const GlyphUnicodeMap& glyph_to_unicode,
-      bool required_by_default_appearance,
+      bool required,
       Embedding embedding,
       StagedFontResource* out);
 
@@ -160,7 +161,7 @@ class CPDF_AnnotFontSubset final {
       const ByteString& base_font_name,
       const FaceIdentity& identity,
       const GlyphUnicodeMap& glyph_to_unicode,
-      bool required_by_default_appearance,
+      bool required,
       StagedFontResource* out);
 
   // Publish adds every part of |staged| to |doc| as an indirect object
@@ -179,7 +180,7 @@ class CPDF_AnnotFontSubset final {
       CPDF_Document* doc,
       CFX_FontRegistry::FontId font_id,
       const GlyphUnicodeMap& glyph_to_unicode,
-      bool required_by_default_appearance,
+      bool required,
       Embedding embedding = Embedding::kSubset);
 
   // True when |font_dict| was written by EmbedPDF for a registered font: a
