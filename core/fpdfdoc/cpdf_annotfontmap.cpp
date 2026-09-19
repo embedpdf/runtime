@@ -11,7 +11,9 @@
 #include <cctype>
 #include <cstdlib>
 #include <optional>
+#include <set>
 #include <utility>
+#include <vector>
 
 #include "core/fpdfapi/font/cpdf_font.h"
 #include "core/fpdfapi/page/cpdf_docpagedata.h"
@@ -26,6 +28,7 @@
 #include "core/fpdfdoc/cpdf_annotfontsubset.h"
 #include "core/fpdfdoc/cpdf_interactiveform.h"
 #include "core/fxcrt/check.h"
+#include "core/fxcrt/code_point_view.h"
 #include "core/fxcrt/fx_codepage.h"
 #include "core/fxcrt/fx_safe_types.h"
 #include "core/fxcrt/numerics/safe_conversions.h"
@@ -33,6 +36,7 @@
 #include "core/fxge/cfx_face.h"
 #include "core/fxge/cfx_font.h"
 #include "core/fxge/fx_font.h"
+#include "core/fxge/fx_fontencoding.h"
 
 namespace {
 
@@ -251,6 +255,11 @@ RetainPtr<const CPDF_Dictionary> DescriptorOfFontDict(
   RetainPtr<const CPDF_Dictionary> cid_font =
       descendants ? descendants->GetDictAt(0) : nullptr;
   return cid_font ? cid_font->GetDictFor("FontDescriptor") : nullptr;
+}
+
+// "ABCDEF+NotoSans": a producer's subset, cut for the text it was used for.
+bool HasSubsetTag(const ByteString& base_font) {
+  return base_font.GetLength() > 7 && base_font[6] == '+';
 }
 
 // "ABCDEF+NotoSans-Bold" -> "NotoSans"; "Arial,Bold" -> "Arial".
@@ -618,9 +627,12 @@ CPDF_AnnotFontMap::PrepareFontResources() {
         entry.source == Source::kDocumentProgram) {
       // The /DA font's alias is what /DA names in /DR, so it needs a
       // resource even when no glyph of it was drawn (empty text, or text
-      // drawn entirely by fallback fonts).
-      const bool required =
+      // drawn entirely by fallback fonts). So does any font the content
+      // names, even for glyph 0 alone: an appearance never names a font
+      // that is not there. Only the /DA font is installed in /DR.
+      const bool is_da_font =
           static_cast<int>(i) == da_entry_ && install_dr_entry_;
+      const bool required = is_da_font || entry.named;
       if (g_fail_after_staged_fonts_for_testing > 0 &&
           staged_count >= g_fail_after_staged_fonts_for_testing) {
         return std::nullopt;  // the injected failure of the next resource
@@ -646,7 +658,7 @@ CPDF_AnnotFontMap::PrepareFontResources() {
           break;
       }
       staged.alias = entry.alias;
-      staged.install_in_dr = required;
+      staged.install_in_dr = is_da_font;
       prepared.registered.push_back(std::move(staged));
       ++staged_count;
       continue;
@@ -757,8 +769,13 @@ RetainPtr<CPDF_Font> CPDF_AnnotFontMap::GetPDFFont(int32_t font_index) {
 }
 
 ByteString CPDF_AnnotFontMap::GetPDFFontAlias(int32_t font_index) {
-  return fxcrt::IndexInBounds(fonts_, font_index) ? fonts_[font_index].alias
-                                                  : ByteString();
+  if (!fxcrt::IndexInBounds(fonts_, font_index)) {
+    return ByteString();
+  }
+  // The appearance names this alias, so its resource must exist (C note
+  // §6) even when every glyph it drew was glyph 0.
+  fonts_[font_index].named = true;
+  return fonts_[font_index].alias;
 }
 
 int32_t CPDF_AnnotFontMap::GetWordFontIndex(uint16_t word,
@@ -902,19 +919,66 @@ void CPDF_AnnotFontMap::PinRichFace(const WideString& family,
       {family, std::clamp(weight, 100, 900), italic, entry});
 }
 
+// static
+ByteString CPDF_AnnotFontMap::FaceRequestKey(const WideString& family,
+                                             int weight,
+                                             bool italic) {
+  return ByteString::Format("%s|%d|%d", FamilyKey(family).c_str(),
+                            std::clamp(weight, 100, 900), italic ? 1 : 0);
+}
+
+bool CPDF_AnnotFontMap::CoversText(int entry, WideStringView text) {
+  if (!fxcrt::IndexInBounds(fonts_, entry)) {
+    return false;
+  }
+  // Scalars, not code units: on a 16-bit wchar_t platform a supplementary
+  // character is a surrogate pair, and neither half has a glyph anywhere.
+  for (char32_t cp : pdfium::CodePointView(text)) {
+    if (cp == 0x200D || (cp >= 0xFE00 && cp <= 0xFE0F) ||
+        (cp >= 0xE0100 && cp <= 0xE01EF)) {
+      continue;  // joiners and variation selectors, as the layout skips them
+    }
+    if (RichGlyphFor(entry, static_cast<uint32_t>(cp)) == 0) {
+      return false;
+    }
+  }
+  return true;
+}
+
 int CPDF_AnnotFontMap::ResolveRichFace(const WideString& family,
                                        int weight,
-                                       bool italic) {
+                                       bool italic,
+                                       WideStringView text) {
+  const ByteString request = FaceRequestKey(family, weight, italic);
+  auto cached = resolved_faces_.find(request);
+  if (cached != resolved_faces_.end()) {
+    return cached->second;
+  }
+  const int entry = ResolveRichFaceUncached(family, weight, italic, text);
+  if (entry >= 0) {
+    resolved_faces_[request] = entry;
+  }
+  return entry;
+}
+
+int CPDF_AnnotFontMap::ResolveRichFaceUncached(const WideString& family,
+                                               int weight,
+                                               bool italic,
+                                               WideStringView text) {
   weight = std::clamp(weight, 100, 900);
   bool degraded = false;
 
   // 0. A face the caller pinned to an entry (the /DA font of a regenerated
-  // box).
+  // plain box), if it can draw the text; a box's own font that lacks a
+  // glyph the edit needs is not the edit's face.
   const ByteString wanted_key = FamilyKey(family);
   for (const PinnedFace& pinned : pinned_faces_) {
     if (pinned.weight == weight && pinned.italic == italic &&
         FamilyKey(pinned.family) == wanted_key) {
-      return pinned.entry;
+      if (CoversText(pinned.entry, text)) {
+        return pinned.entry;
+      }
+      break;
     }
   }
 
@@ -935,8 +999,10 @@ int CPDF_AnnotFontMap::ResolveRichFace(const WideString& family,
     degraded = true;  // preview-and-print, or the program failed to load
   }
 
-  // 2. A program already embedded in the document under that family.
-  const int document_program = FindDocumentProgram(family, weight, italic);
+  // 2. A program already embedded in the document under that family, when
+  //    it maps every character of the request.
+  const int document_program =
+      FindDocumentProgram(family, weight, italic, text);
   if (document_program >= 0) {
     fonts_[document_program].degraded = degraded;
     return document_program;
@@ -1143,7 +1209,8 @@ void CPDF_AnnotFontMap::SetDefaultAppearanceEntry(int entry,
 
 int CPDF_AnnotFontMap::FindDocumentProgram(const WideString& family,
                                            int weight,
-                                           bool italic) {
+                                           bool italic,
+                                           WideStringView text) {
   if (!doc_) {
     return -1;
   }
@@ -1151,31 +1218,52 @@ int CPDF_AnnotFontMap::FindDocumentProgram(const WideString& family,
   if (wanted.IsEmpty()) {
     return -1;
   }
-  std::optional<DocumentProgramCandidate> best;
+  std::vector<DocumentProgramCandidate> candidates;
+  std::set<const CPDF_Stream*> seen;
   for (const RetainPtr<const CPDF_Dictionary>& dict : DocumentFontDicts(doc_)) {
     std::optional<DocumentProgramCandidate> candidate =
         CandidateFromFontDict(dict.Get());
     if (!candidate.has_value() ||
-        FamilyKey(candidate->identity.family) != wanted) {
+        FamilyKey(candidate->identity.family) != wanted ||
+        !seen.insert(candidate->stream.Get()).second) {
       continue;
     }
     candidate->score = std::abs(candidate->identity.weight - weight) +
                        (candidate->identity.italic == italic ? 0 : 1000);
-    if (!best.has_value() || candidate->score < best->score) {
-      best = std::move(candidate);
+    candidates.push_back(std::move(*candidate));
+  }
+  // The best style match first; among equals a whole program before a
+  // subset, which was cut for someone else's text.
+  std::stable_sort(candidates.begin(), candidates.end(),
+                   [](const DocumentProgramCandidate& a,
+                      const DocumentProgramCandidate& b) {
+                     if (a.score != b.score) {
+                       return a.score < b.score;
+                     }
+                     return !HasSubsetTag(a.base_font_name) &&
+                            HasSubsetTag(b.base_font_name);
+                   });
+  for (DocumentProgramCandidate& candidate : candidates) {
+    int entry = -1;
+    for (size_t i = 0; i < fonts_.size(); ++i) {
+      if (fonts_[i].source == Source::kDocumentProgram &&
+          fonts_[i].program_stream == candidate.stream) {
+        entry = static_cast<int>(i);
+        break;
+      }
+    }
+    if (entry < 0) {
+      entry = AddDocumentProgram(std::move(candidate.stream),
+                                 candidate.base_font_name, candidate.identity);
+    }
+    // Eligible on its bytes, and covering the request (C note §1.3): a
+    // program that cannot draw the text is not its face; the next
+    // candidate is, or the next rung.
+    if (entry >= 0 && CoversText(entry, text)) {
+      return entry;
     }
   }
-  if (!best.has_value()) {
-    return -1;
-  }
-  for (size_t i = 0; i < fonts_.size(); ++i) {
-    if (fonts_[i].source == Source::kDocumentProgram &&
-        fonts_[i].program_stream == best->stream) {
-      return static_cast<int>(i);
-    }
-  }
-  return AddDocumentProgram(std::move(best->stream), best->base_font_name,
-                            best->identity);
+  return -1;
 }
 
 int CPDF_AnnotFontMap::AddDocumentProgram(
@@ -1197,7 +1285,13 @@ int CPDF_AnnotFontMap::AddDocumentProgram(
   auto program = std::make_unique<CFX_Font>();
   if (!program->LoadEmbedded(data->GetSpan(), /*force_vertical=*/false,
                              stream->KeyForCache()) ||
-      !program->HasAnyGlyphs()) {
+      !program->HasAnyGlyphs() ||
+      // A program that cannot map a character (a renumbered subset
+      // carrying glyf/loca/hmtx and no cmap, as producers emit for
+      // Identity-H) renders what it was made for and authors nothing. The
+      // layout looks glyphs up by scalar, so the charmap must be Unicode;
+      // asked for explicitly, a Mac Roman-only cmap is refused too.
+      !program->GetFace()->SelectCharMap(fxge::FontEncoding::kUnicode)) {
     page_data->MaybePurgeFontFileStreamAcc(std::move(data));
     return -1;
   }

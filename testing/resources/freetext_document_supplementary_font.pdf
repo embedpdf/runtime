@@ -1,0 +1,113 @@
+%PDF-1.7
+% ò¤ô
+% A page whose only font is a whole (untagged) TrueType program, EmojiTest:
+% the Roboto test font cut to one letter, whose cmap also maps U+1F600 to
+% that glyph (a format 12 subtable). Rich text asking for the family with a
+% supplementary character must resolve to this program on every platform,
+% including one whose wchar_t is 16 bits and sees the character as a
+% surrogate pair. Built with fontTools; the recipe is in the plan.
+1 0 obj <<
+  /Type /Catalog
+  /Pages 2 0 R
+>>
+endobj
+2 0 obj <<
+  /Type /Pages
+  /Count 1
+  /Kids [3 0 R]
+>>
+endobj
+3 0 obj <<
+  /Type /Page
+  /Parent 2 0 R
+  /Contents 4 0 R
+  /MediaBox [0 0 300 300]
+  /Resources <<
+    /ProcSet [/PDF /Text]
+    /Font <<
+      /F1 5 0 R
+    >>
+  >>
+>>
+endobj
+4 0 obj <<
+  /Length 35
+>>
+stream
+BT
+/F1 24 Tf
+20 260 Td
+<0001> Tj
+ET
+endstream
+endobj
+5 0 obj <<
+  /Type /Font
+  /Subtype /Type0
+  /BaseFont /EmojiTest
+  /Encoding /Identity-H
+  /DescendantFonts [6 0 R]
+>>
+endobj
+6 0 obj <<
+  /Type /Font
+  /Subtype /CIDFontType2
+  /BaseFont /EmojiTest
+  /CIDSystemInfo << /Registry (Adobe) /Ordering (Identity) /Supplement 0 >>
+  /FontDescriptor 7 0 R
+  /CIDToGIDMap /Identity
+  /DW 1000
+  /W [0 [443 652]]
+>>
+endobj
+7 0 obj <<
+  /Type /FontDescriptor
+  /FontName /EmojiTest
+  /FontFamily (EmojiTest)
+  /Flags 32
+  /FontBBox [49 -10 516 750]
+  /ItalicAngle 0
+  /Ascent 928
+  /Descent -244
+  /CapHeight 711
+  /StemV 0
+  /FontFile2 8 0 R
+>>
+endobj
+8 0 obj <<
+  /Filter [/ASCII85Decode /FlateDecode]
+  /Length1 1008
+  /Length 785
+>>
+stream
+GhQ_,9ktD.(k-'DRjKGgN?/44CI1HV93Z7j/[YhA8F7i=`Ig_Hk+dbZBnD>-MPB*!Ws?J)]dR3o+
+OXU>*eJ#hs$7A3e;I='\+,mB9h=:qn%@Q(4S-ib!9h@D."pV.7n,#t;?MH*13tQY1s>+[qLJQ.qO
+(SsH2c"MYlt$?oN1Td1Xe.S?I4-j3L"/!Ybk+J)jGdH@\r@ji<JUddJ"AJBbSO[nUJp[(<pS34p:
+-Ik_Bu!@WpAVd9/`??5tVbQ7DPO14X\Qo?^`Rs/ElCd/CNCWD/%f)c6FGfqnA>pQ(o@(GP]EFh3#
+m3/`2*Krk>2'?oo'qJ;tY,opgo^h@hs/W]'QVnfC=C;a5Yf?rjmk,$nfZF4o%`8`X5K'@U;Qa/eo
+$n43hW:<R89Z']l/i#=H6FsIX]5Vm?ob9NiA.q0J-_ds!?b.Thloj(8'=4hILnCoj3I-/D^oQ+oN
+KSpGQh(QW)i+YB6,-ACBEX$HLlAE<X$R0`;=(NYMSOsG>BOHSpBflcoiNQCUijZG"oe/8Wg/f?I;
+7dG3]-/iLl$Qq;*-#&<t;CTTiZH>LFY7Pm?bg(=1<(iOF1O/mD'Tf@um7*d[l#u"^*-W>G;K5Y,s
+C4WbZrbC(0Ilhrr^!cL*9EU4b:fE<56b6QQt;E>/XsOC&h\ba')!+A6VgMb%?FeheTTl9qsoanE$
+i=^k[rSmc2^h'ksMU9cjbA=pu$<ohA>FlBdO8XIa_:>=Do4L7F&RccBb0hgMEPP+]/XJ%O'jZJ!?
+6,2gelQ=9nS4<~>
+endstream
+endobj
+xref
+0 9
+0000000000 65535 f 
+0000000451 00000 n 
+0000000504 00000 n 
+0000000567 00000 n 
+0000000745 00000 n 
+0000000832 00000 n 
+0000000959 00000 n 
+0000001197 00000 n 
+0000001426 00000 n 
+trailer <<
+  /Root 1 0 R
+  /Size 9
+>>
+startxref
+2320
+%%EOF

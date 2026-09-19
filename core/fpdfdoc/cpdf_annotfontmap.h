@@ -138,11 +138,33 @@ class CPDF_AnnotFontMap final : public IPVT_FontMap {
     bool degraded = false;              // substitutes what was asked for
   };
 
-  // Resolve a face through the precedence list of plan §3.3: a registered
-  // font by family, weight and italic (authoring-authorised); a program
-  // already embedded in the document under that family; a standard-14 face
-  // when the family is one; else Helvetica, marked degraded. Never fails.
-  int ResolveRichFace(const WideString& family, int weight, bool italic);
+  // Resolve a face for |text| through the precedence list of plan §3.3: a
+  // registered font by family, weight and italic (authoring-authorised); a
+  // program already embedded in the document under that family; a
+  // standard-14 face when the family is one; else Helvetica, marked
+  // degraded. Never fails.
+  //
+  // One request (family, weight, italic) resolves ONCE per map, the first
+  // time, over |text|: the layout primes every request with all the
+  // characters styled with it (C note §1.3), so every later call for the
+  // same request — per grapheme, at a break, for the /DA font — answers the
+  // same entry. A face the document supplies (the pinned /DA font of a
+  // plain box, or a program embedded under that family) is the request's
+  // face only when it maps every base character of |text|; otherwise the
+  // next rung takes over for the whole request, so a subset never draws
+  // glyph 0 for the characters it lacks. Registered and standard faces keep
+  // the layout's per-glyph fallback (rung 4) for their own gaps.
+  int ResolveRichFace(const WideString& family,
+                      int weight,
+                      bool italic,
+                      WideStringView text = WideStringView());
+  // The key ResolveRichFace caches by: what the layout groups text with.
+  static ByteString FaceRequestKey(const WideString& family,
+                                   int weight,
+                                   bool italic);
+  // Does |entry| map every base character of |text|? Joiners and variation
+  // selectors are exempt, as in the layout. Empty text is covered.
+  bool CoversText(int entry, WideStringView text);
   // Regenerating a box whose /DA already names its body font: that entry IS
   // the body face. Resolution must not re-derive it from the family (a
   // registered font's family round-trips through /DR as a PostScript or
@@ -192,6 +214,7 @@ class CPDF_AnnotFontMap final : public IPVT_FontMap {
 
     RetainPtr<CPDF_Font> font;
     ByteString alias;
+    bool named = false;  // the appearance names this alias (GetPDFFontAlias)
     Source source = Source::kDocumentFontDict;
     CFX_FontRegistry::FontId registered_font_id =
         CFX_FontRegistry::kInvalidFontId;
@@ -220,7 +243,16 @@ class CPDF_AnnotFontMap final : public IPVT_FontMap {
       CFX_FontRegistry::FontId font_id);
   int32_t FindExistingRegisteredFont(CFX_FontRegistry::FontId font_id) const;
   int32_t AddRegisteredFallbackFont(CFX_FontRegistry::FontId font_id);
-  int FindDocumentProgram(const WideString& family, int weight, bool italic);
+  int ResolveRichFaceUncached(const WideString& family,
+                              int weight,
+                              bool italic,
+                              WideStringView text);
+  // The best-styled document program under |family| that is eligible and
+  // covers |text|; -1 when none is.
+  int FindDocumentProgram(const WideString& family,
+                          int weight,
+                          bool italic,
+                          WideStringView text);
   int AddDocumentProgram(RetainPtr<CPDF_Stream> stream,
                          const ByteString& base_font_name,
                          const CPDF_AnnotFontSubset::FaceIdentity& identity);
@@ -243,6 +275,7 @@ class CPDF_AnnotFontMap final : public IPVT_FontMap {
     int entry;
   };
   std::vector<PinnedFace> pinned_faces_;
+  std::map<ByteString, int> resolved_faces_;  // FaceRequestKey -> entry
   std::vector<FontEntry> fonts_;
 };
 

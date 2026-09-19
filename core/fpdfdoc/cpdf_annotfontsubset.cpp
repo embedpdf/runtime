@@ -660,7 +660,7 @@ CPDF_AnnotFontSubset::StageStatus
 CPDF_AnnotFontSubset::StageRegisteredFontResource(
     CFX_FontRegistry::FontId font_id,
     const GlyphUnicodeMap& glyph_to_unicode,
-    bool required_by_default_appearance,
+    bool required,
     Embedding embedding,
     StagedFontResource* out) {
   if (!out || !CFX_FontRegistry::IsValidFont(font_id)) {
@@ -694,7 +694,7 @@ CPDF_AnnotFontSubset::StageRegisteredFontResource(
     to_unicode.emplace(charcode, unicode);
   }
   if (filtered_glyph_to_unicode.empty()) {
-    if (!required_by_default_appearance) {
+    if (!required) {
       return StageStatus::kUnused;  // an unused fallback: nothing to embed
     }
     // Minimal resource: the subsetter always keeps glyph 0, so an empty
@@ -744,7 +744,7 @@ CPDF_AnnotFontSubset::StageDocumentProgramResource(
     const ByteString& base_font_name,
     const FaceIdentity& identity,
     const GlyphUnicodeMap& glyph_to_unicode,
-    bool required_by_default_appearance,
+    bool required,
     StagedFontResource* out) {
   if (!out || !font || !program_stream || program_stream->GetObjNum() == 0) {
     return StageStatus::kFailed;
@@ -765,7 +765,7 @@ CPDF_AnnotFontSubset::StageDocumentProgramResource(
     to_unicode.emplace(charcode, unicode);
   }
   if (widths.empty()) {
-    if (!required_by_default_appearance) {
+    if (!required) {
       return StageStatus::kUnused;
     }
     widths[0] = font->GetGlyphWidth(0);
@@ -816,14 +816,14 @@ RetainPtr<CPDF_Dictionary> CPDF_AnnotFontSubset::BuildRegisteredFontResource(
     CPDF_Document* doc,
     CFX_FontRegistry::FontId font_id,
     const GlyphUnicodeMap& glyph_to_unicode,
-    bool required_by_default_appearance,
+    bool required,
     Embedding embedding) {
   if (!doc) {
     return nullptr;
   }
   StagedFontResource staged;
   if (StageRegisteredFontResource(font_id, glyph_to_unicode,
-                                  required_by_default_appearance, embedding,
+                                  required, embedding,
                                   &staged) != StageStatus::kStaged) {
     return nullptr;
   }
