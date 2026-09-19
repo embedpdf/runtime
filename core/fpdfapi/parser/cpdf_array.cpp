@@ -332,13 +332,14 @@ CPDF_Object* CPDF_Array::AppendInternal(RetainPtr<CPDF_Object> pObj) {
 }
 
 bool CPDF_Array::WriteTo(IFX_ArchiveStream* archive,
-                         const CPDF_Encryptor* encryptor) const {
+                         const CPDF_Encryptor* encryptor,
+                         const CPDF_WriteContext* context) const {
   if (!archive->WriteString("[")) {
     return false;
   }
 
   for (size_t i = 0; i < size(); ++i) {
-    if (!GetObjectAt(i)->WriteTo(archive, encryptor)) {
+    if (!GetObjectAt(i)->WriteTo(archive, encryptor, context)) {
       return false;
     }
   }

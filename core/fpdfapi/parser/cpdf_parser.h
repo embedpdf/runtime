@@ -19,6 +19,7 @@
 
 #include "core/fpdfapi/parser/cpdf_cross_ref_table.h"
 #include "core/fpdfapi/parser/cpdf_indirect_object_holder.h"
+#include "core/fpdfapi/parser/cpdf_reference_index.h"
 #include "core/fxcrt/bytestring.h"
 #include "core/fxcrt/fx_types.h"
 #include "core/fxcrt/retain_ptr.h"
@@ -29,6 +30,7 @@ class CPDF_Dictionary;
 class CPDF_LinearizedHeader;
 class CPDF_Object;
 class CPDF_ObjectStream;
+class CPDF_ObjectStreamCache;
 class CPDF_ReadValidator;
 class CPDF_SecurityHandler;
 class CPDF_SyntaxParser;
@@ -98,6 +100,19 @@ class CPDF_Parser {
 
   RetainPtr<CPDF_Object> ParseIndirectObject(uint32_t objnum);
 
+  // Parse from the loaded bytes without populating the document's caches.
+  // References, including indirect stream lengths, resolve through `holder`.
+  RetainPtr<CPDF_Object> ParseIndirectObjectForSave(
+      uint32_t objnum,
+      CPDF_IndirectObjectHolder* holder,
+      CPDF_ObjectStreamCache* stream_cache);
+
+  // Progressive loads can still change xref interpretation. They deliberately
+  // bypass this optimization; ordinary completed parses have immutable bytes.
+  CPDF_ReferenceIndex* GetSaveReferenceIndex() {
+    return linearized_ ? nullptr : &save_reference_index_;
+  }
+
   uint32_t GetLastObjNum() const;
   bool IsValidObjectNumber(uint32_t objnum) const;
   FX_FILESIZE GetObjectPositionOrZero(uint32_t objnum) const;
@@ -157,6 +172,10 @@ class CPDF_Parser {
 
   CPDF_Dictionary* GetMutableTrailerForTesting();
 
+  size_t GetCachedObjectStreamCountForTesting() const {
+    return object_stream_map_.size();
+  }
+
   RetainPtr<CPDF_Object> ParseIndirectObjectAtForTesting(FX_FILESIZE pos) {
     return ParseIndirectObjectAt(pos, 0);
   }
@@ -198,6 +217,14 @@ class CPDF_Parser {
   Error LoadLinearizedMainXRefTable();
 
   const CPDF_ObjectStream* GetObjectStream(uint32_t object_number);
+  RetainPtr<CPDF_Object> ParseIndirectObjectInternal(
+      uint32_t objnum,
+      CPDF_IndirectObjectHolder* holder,
+      CPDF_ObjectStreamCache* stream_cache);
+  std::shared_ptr<const CPDF_ObjectStream> GetObjectStreamForSave(
+      uint32_t object_number,
+      CPDF_IndirectObjectHolder* holder,
+      CPDF_ObjectStreamCache* stream_cache);
   RetainPtr<const CPDF_Dictionary> GetRoot() const;
 
   // A simple check whether the cross reference table matches with
@@ -206,6 +233,10 @@ class CPDF_Parser {
 
   RetainPtr<CPDF_Object> ParseIndirectObjectAt(FX_FILESIZE pos,
                                                uint32_t objnum);
+  RetainPtr<CPDF_Object> ParseIndirectObjectAtWithHolder(
+      FX_FILESIZE pos,
+      uint32_t objnum,
+      CPDF_IndirectObjectHolder* holder);
 
   // If out_objects is null, the parser position will be moved to end subsection
   // without additional validation.
@@ -223,6 +254,8 @@ class CPDF_Parser {
   std::unique_ptr<CPDF_SyntaxParser> syntax_;
   std::unique_ptr<ParsedObjectsHolder> owned_objects_holder_;
   UnownedPtr<ParsedObjectsHolder> objects_holder_;
+
+  CPDF_ReferenceIndex save_reference_index_;
 
   bool has_parsed_ = false;
   bool xref_stream_ = false;

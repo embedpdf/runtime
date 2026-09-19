@@ -12,8 +12,10 @@
 #include "core/fxcrt/check.h"
 #include "core/fxcrt/data_vector.h"
 
-CPDF_Encryptor::CPDF_Encryptor(const CPDF_CryptoHandler* pHandler, int objnum)
-    : handler_(pHandler), obj_num_(objnum) {
+CPDF_Encryptor::CPDF_Encryptor(const CPDF_CryptoHandler* pHandler,
+                               int objnum,
+                               uint32_t generation)
+    : handler_(pHandler), obj_num_(objnum), generation_(generation) {
   DCHECK(handler_);
 }
 
@@ -22,7 +24,7 @@ DataVector<uint8_t> CPDF_Encryptor::Encrypt(
   if (src_data.empty()) {
     return DataVector<uint8_t>();
   }
-  return handler_->EncryptContent(obj_num_, 0, src_data);
+  return handler_->EncryptContent(obj_num_, generation_, src_data);
 }
 
 CPDF_Encryptor::~CPDF_Encryptor() = default;

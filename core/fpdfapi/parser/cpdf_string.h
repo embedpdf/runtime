@@ -28,8 +28,10 @@ class CPDF_String final : public CPDF_Object {
   WideString GetUnicodeText() const override;
   void SetString(const ByteString& str) override;
   CPDF_String* AsMutableString() override;
+  using CPDF_Object::WriteTo;
   bool WriteTo(IFX_ArchiveStream* archive,
-               const CPDF_Encryptor* encryptor) const override;
+               const CPDF_Encryptor* encryptor,
+               const CPDF_WriteContext* context) const override;
 
   bool IsHex() const { return output_is_hex_; }
   ByteString EncodeString() const;

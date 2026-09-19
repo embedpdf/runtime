@@ -545,9 +545,9 @@ bool CPDF_Document::SharesBackingStorageWith(const CPDF_Stream* stream) const {
 RetainPtr<const CPDF_Object> CPDF_Document::GetLoadedTwin(
     uint32_t objnum) const {
   // The object as it is in the loaded bytes, parsed afresh: the parser
-  // hands out a new copy each time and caches nothing, so an in-place edit
-  // of the live object never reaches it. Null for an object the file does
-  // not carry (created in memory).
+  // hands out a fresh root object, while retaining decoded object streams in
+  // its normal cache. An in-place edit never reaches the twin. Null if the file
+  // does not carry the object (created in memory).
   CPDF_Parser* parser = GetParser();
   if (!parser || objnum == 0 || !parser->IsValidObjectNumber(objnum) ||
       parser->IsObjectFree(objnum)) {
@@ -793,6 +793,14 @@ RetainPtr<CPDF_Dictionary> CPDF_Document::GetInfo() {
 
 RetainPtr<CPDF_Dictionary> CPDF_Document::GetMutableInfo() {
   return GetInfo();
+}
+
+uint32_t CPDF_Document::GetInfoObjectNumber() const {
+  if (info_dict_) {
+    return info_dict_->GetObjNum();
+  }
+  CPDF_Parser* parser = GetParser();
+  return parser ? parser->GetInfoObjNum() : 0;
 }
 
 RetainPtr<CPDF_Dictionary> CPDF_Document::GetOrCreateInfo() {

@@ -46,7 +46,8 @@ WideString CPDF_Name::GetUnicodeText() const {
 }
 
 bool CPDF_Name::WriteTo(IFX_ArchiveStream* archive,
-                        const CPDF_Encryptor* encryptor) const {
+                        const CPDF_Encryptor* encryptor,
+                        const CPDF_WriteContext* context) const {
   if (!archive->WriteString("/")) {
     return false;
   }

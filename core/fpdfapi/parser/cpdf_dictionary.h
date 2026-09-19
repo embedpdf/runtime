@@ -39,8 +39,10 @@ class CPDF_Dictionary final : public CPDF_Object {
   RetainPtr<CPDF_Object> CloneForHolder(
       CPDF_IndirectObjectHolder* holder) const override;
   CPDF_Dictionary* AsMutableDictionary() override;
+  using CPDF_Object::WriteTo;
   bool WriteTo(IFX_ArchiveStream* archive,
-               const CPDF_Encryptor* encryptor) const override;
+               const CPDF_Encryptor* encryptor,
+               const CPDF_WriteContext* context) const override;
 
   bool IsLocked() const { return !!lock_count_; }
 

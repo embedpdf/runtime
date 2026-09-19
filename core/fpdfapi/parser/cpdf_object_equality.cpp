@@ -36,13 +36,14 @@ class ByteSinkArchive final : public IFX_ArchiveStream {
 
 // No encryptor: both sides are in-memory plaintext (the parser decrypted
 // them on load).
-DataVector<uint8_t> CanonicalBytes(const CPDF_Object* object) {
+DataVector<uint8_t> CanonicalBytes(const CPDF_Object* object,
+                                   const CPDF_WriteContext* context) {
   DataVector<uint8_t> out;
   ByteSinkArchive archive(&out);
   if (const CPDF_Stream* stream = object->AsStream()) {
-    stream->GetDict()->WriteTo(&archive, /*encryptor=*/nullptr);
+    stream->GetDict()->WriteTo(&archive, /*encryptor=*/nullptr, context);
   } else {
-    object->WriteTo(&archive, /*encryptor=*/nullptr);
+    object->WriteTo(&archive, /*encryptor=*/nullptr, context);
   }
   return out;
 }
@@ -80,11 +81,14 @@ bool SameRawData(const CPDF_Stream* a, const CPDF_Stream* b) {
 
 }  // namespace
 
-bool CPDF_SameEffectiveValue(const CPDF_Object* a, const CPDF_Object* b) {
+bool CPDF_SameEffectiveValue(const CPDF_Object* a,
+                             const CPDF_Object* b,
+                             const CPDF_WriteContext* a_context,
+                             const CPDF_WriteContext* b_context) {
   if (!a || !b || a->GetType() != b->GetType()) {
     return false;
   }
-  if (CanonicalBytes(a) != CanonicalBytes(b)) {
+  if (CanonicalBytes(a, a_context) != CanonicalBytes(b, b_context)) {
     return false;
   }
   const CPDF_Stream* stream = a->AsStream();

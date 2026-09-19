@@ -69,8 +69,9 @@ void CPDF_FlateEncoder::UpdateLength(size_t size) {
 }
 
 bool CPDF_FlateEncoder::WriteDictTo(IFX_ArchiveStream* archive,
-                                    const CPDF_Encryptor* encryptor) const {
-  return GetDict()->WriteTo(archive, encryptor);
+                                    const CPDF_Encryptor* encryptor,
+                                    const CPDF_WriteContext* context) const {
+  return GetDict()->WriteTo(archive, encryptor, context);
 }
 
 const CPDF_Dictionary* CPDF_FlateEncoder::GetDict() const {
