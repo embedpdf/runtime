@@ -40,6 +40,13 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y cmake clang lld curl g++ pkg-config tar
 
+      - name: Install independent save checker
+        shell: bash
+        run: |
+          python3 -m venv "$RUNNER_TEMP/save-check"
+          "$RUNNER_TEMP/save-check/bin/python" -m pip install -r testing/tools/requirements-save-check.txt
+          echo "EPDF_SAVE_CHECK_PYTHON=$RUNNER_TEMP/save-check/bin/python" >> "$GITHUB_ENV"
+
       - name: Run PDFium unit and embedder tests
         shell: bash
         run: scripts/embedpdf-runtime/test-target.sh linux-x64
