@@ -29,6 +29,8 @@ source_set("parser") {
     "cpdf_dictionary.h",
     "cpdf_document.cpp",
     "cpdf_document.h",
+    # EmbedPDF: SDK-owned measurement state lifetime.
+    "cpdf_measure_storage.h",
     "cpdf_document_view_scope.cpp",
     "cpdf_document_view_scope.h",
     "cpdf_encryptor.cpp",

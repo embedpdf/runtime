@@ -8,8 +8,10 @@
 #define CORE_FPDFAPI_PAGE_CPDF_PAGE_H_
 
 #include <memory>
+
 #include <optional>
 #include <utility>
+#include "core/fpdfapi/parser/cpdf_measure_storage.h"
 
 #include "core/fpdfapi/page/cpdf_pageobjectholder.h"
 #include "core/fpdfapi/page/ipdf_page.h"
@@ -27,6 +29,14 @@ class CPDF_PageImageCache;
 
 class CPDF_Page final : public IPDF_Page, public CPDF_PageObjectHolder {
  public:
+  // EmbedPDF: owned SDK measurement state; never part of the PDF graph.
+  CPDF_MeasureStorage* GetMeasureStorage() const {
+    return measure_storage_.get();
+  }
+  void SetMeasureStorage(std::unique_ptr<CPDF_MeasureStorage> storage) {
+    measure_storage_ = std::move(storage);
+  }
+
   // Caller implements as desired, exists here due to layering.
   class View : public Observable {
    public:
@@ -105,6 +115,7 @@ class CPDF_Page final : public IPDF_Page, public CPDF_PageObjectHolder {
   void UpdateDimensions();
 
  private:
+  std::unique_ptr<CPDF_MeasureStorage> measure_storage_;
   CPDF_Page(CPDF_Document* document, RetainPtr<CPDF_Dictionary> pPageDict);
   ~CPDF_Page() override;
 

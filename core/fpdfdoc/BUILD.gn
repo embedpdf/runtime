@@ -54,6 +54,9 @@ source_set("fpdfdoc") {
     "cpdf_formfield.h",
     "cpdf_generateap.cpp",
     "cpdf_generateap.h",
+    # EmbedPDF: dimension geometry in default user space.
+    "cpdf_generateap_dimension.cpp",
+    "cpdf_generateap_dimension.h",
     "cpdf_icon.cpp",
     "cpdf_icon.h",
     "cpdf_iconfit.cpp",
@@ -65,6 +68,9 @@ source_set("fpdfdoc") {
     "cpdf_linklist.cpp",
     "cpdf_linklist.h",
     "cpdf_metadata.cpp",
+    # EmbedPDF: measurement dictionary grammar.
+    "cpdf_measure.cpp",
+    "cpdf_measure.h",
     "cpdf_metadata.h",
     "cpdf_nametree.cpp",
     "cpdf_nametree.h",
@@ -127,6 +133,7 @@ pdfium_unittest_source_set("unittests") {
     "cpdf_generateap_unittest.cpp",
     "cpdf_interactiveform_unittest.cpp",
     "cpdf_metadata_unittest.cpp",
+    "cpdf_measure_unittest.cpp",
     "cpdf_richtextlayout_unittest.cpp",
     "cpdf_richtextparser_unittest.cpp",
     "cpdf_nametree_unittest.cpp",

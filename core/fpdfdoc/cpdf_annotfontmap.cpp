@@ -706,6 +706,23 @@ RetainPtr<CPDF_Dictionary> CPDF_AnnotFontMap::PublishFontResources(
   return prepared.font_resources;
 }
 
+RetainPtr<CPDF_Dictionary>
+CPDF_AnnotFontMap::CreateEphemeralFontResourceDict() {
+  auto prepared = PrepareFontResources();
+  if (!prepared) {
+    return nullptr;
+  }
+  for (auto& staged : prepared->registered) {
+    auto resource = CPDF_AnnotFontSubset::BuildEphemeralFontResource(
+        std::move(staged.resource));
+    ephemeral_font_dicts_.push_back(resource.font_dict);
+    prepared->font_resources->SetFor(staged.alias,
+                                     std::move(resource.font_dict));
+    layout_scratch_.push_back(std::move(resource.scratch));
+  }
+  return std::move(prepared->font_resources);
+}
+
 void CPDF_AnnotFontMap::InstallDefaultAppearanceDrEntry(
     const CPDF_Dictionary* published) {
   if (!fxcrt::IndexInBounds(fonts_, da_entry_)) {
@@ -862,6 +879,12 @@ bool CPDF_AnnotFontMap::SupportsWord(int32_t font_index, uint16_t word) const {
 }
 
 void CPDF_AnnotFontMap::ReleaseLayoutFonts() {
+  // Rendering caches fonts in the document's page data. Release those cache
+  // references before the scratch streams that their dictionaries reference.
+  for (const auto& dict : ephemeral_font_dicts_) {
+    CPDF_DocPageData::FromDocument(doc_)->ForgetEphemeralFont(dict.Get());
+  }
+  ephemeral_font_dicts_.clear();
   // The fonts first: their dictionaries reference streams in the scratch
   // holders, which go second.
   fonts_.clear();

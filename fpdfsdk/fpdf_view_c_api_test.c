@@ -10,6 +10,7 @@
 #include "fpdfsdk/fpdf_view_c_api_test.h"
 
 #include "public/epdf_font.h"
+#include "public/epdf_measure.h"
 #include "public/epdf_text.h"
 #include "public/fpdf_annot.h"
 #include "public/fpdf_attachment.h"
@@ -614,6 +615,54 @@ int CheckPDFiumCApi() {
   CHK(FPDF_VIEWERREF_GetPrintPageRangeCount);
   CHK(FPDF_VIEWERREF_GetPrintPageRangeElement);
   CHK(FPDF_VIEWERREF_GetPrintScaling);
+
+  // EmbedPDF: link every measurement entry point from C.
+  CHK(EPDFAnnot_GetMeasure);
+  CHK(EPDFAnnot_AddMeasure);
+  CHK(EPDFAnnot_RemoveMeasure);
+  CHK(EPDFPage_CountViewports);
+  CHK(EPDFPage_GetViewport);
+  CHK(EPDFPage_AddViewport);
+  CHK(EPDFPage_RemoveViewport);
+  CHK(EPDFPage_FindViewport);
+  CHK(EPDFViewport_GetBBox);
+  CHK(EPDFViewport_SetBBox);
+  CHK(EPDFViewport_GetName);
+  CHK(EPDFViewport_SetName);
+  CHK(EPDFViewport_GetMeasure);
+  CHK(EPDFViewport_AddMeasure);
+  CHK(EPDFViewport_RemoveMeasure);
+  CHK(EPDFMeasure_GetSubtype);
+  CHK(EPDFMeasure_GetRatio);
+  CHK(EPDFMeasure_SetRatio);
+  CHK(EPDFMeasure_GetOrigin);
+  CHK(EPDFMeasure_SetOrigin);
+  CHK(EPDFMeasure_GetCYX);
+  CHK(EPDFMeasure_SetCYX);
+  CHK(EPDFMeasure_CountFormats);
+  CHK(EPDFMeasure_GetFormat);
+  CHK(EPDFMeasure_AddFormat);
+  CHK(EPDFMeasure_RemoveFormats);
+  CHK(EPDFNumberFormat_GetUnit);
+  CHK(EPDFNumberFormat_SetUnit);
+  CHK(EPDFNumberFormat_GetConversion);
+  CHK(EPDFNumberFormat_SetConversion);
+  CHK(EPDFNumberFormat_GetFraction);
+  CHK(EPDFNumberFormat_SetFraction);
+  CHK(EPDFNumberFormat_GetPrecision);
+  CHK(EPDFNumberFormat_SetPrecision);
+  CHK(EPDFNumberFormat_GetFixedDenominator);
+  CHK(EPDFNumberFormat_SetFixedDenominator);
+  CHK(EPDFNumberFormat_GetLabelPosition);
+  CHK(EPDFNumberFormat_SetLabelPosition);
+  CHK(EPDFNumberFormat_GetText);
+  CHK(EPDFNumberFormat_SetText);
+  CHK(EPDFAnnot_SetLineLeader);
+  CHK(EPDFAnnot_GetLineLeader);
+  CHK(EPDFAnnot_SetLineCaption);
+  CHK(EPDFAnnot_GetLineCaption);
+  CHK(EPDFAnnot_SetShapeCaption);
+  CHK(EPDFAnnot_GetShapeCaption);
 
   return 1;
 }

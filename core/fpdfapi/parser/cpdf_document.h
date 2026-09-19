@@ -11,10 +11,12 @@
 
 #include <map>
 #include <memory>
+
 #include <optional>
 #include <set>
 #include <utility>
 #include <vector>
+#include "core/fpdfapi/parser/cpdf_measure_storage.h"
 
 #include "core/fpdfapi/parser/cpdf_dictionary.h"
 #include "core/fpdfapi/parser/cpdf_parser.h"
@@ -34,6 +36,14 @@ class JBig2_DocumentContext;
 class CPDF_Document : public Observable,
                       public CPDF_Parser::ParsedObjectsHolder {
  public:
+  // EmbedPDF: owned SDK measurement state; never part of the PDF graph.
+  CPDF_MeasureStorage* GetMeasureStorage() const {
+    return measure_storage_.get();
+  }
+  void SetMeasureStorage(std::unique_ptr<CPDF_MeasureStorage> storage) {
+    measure_storage_ = std::move(storage);
+  }
+
   // Type from which the XFA extension can subclass itself.
   class Extension {
    public:
@@ -295,6 +305,7 @@ class CPDF_Document : public Observable,
   virtual bool ShouldReplaceDeletedPageWithNull(uint32_t page_obj_num) const;
 
  private:
+  std::unique_ptr<CPDF_MeasureStorage> measure_storage_;
   class StockFontClearer {
    public:
     FX_STACK_ALLOCATED();

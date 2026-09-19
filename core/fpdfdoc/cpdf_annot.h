@@ -23,6 +23,7 @@
 
 class CFX_RenderDevice;
 class CPDF_Array;
+class CPDF_AnnotFontMap;
 class CPDF_Dictionary;
 class CPDF_Document;
 class CPDF_Form;
@@ -232,6 +233,9 @@ class CPDF_Annot {
 
   RetainPtr<CPDF_Dictionary> const annot_dict_;
   UnownedPtr<CPDF_Document> const document_;
+  // Render-only caption fonts may refer to scratch streams. Destroy them
+  // after both the parsed AP forms and the ephemeral stream.
+  std::unique_ptr<CPDF_AnnotFontMap> ephemeral_font_lifetime_;
   std::map<RetainPtr<CPDF_Stream>, std::unique_ptr<CPDF_Form>> ap_map_;
   RetainPtr<CPDF_Stream> ephemeral_normal_ap_;
   std::optional<CFX_FloatRect> ephemeral_rect_;

@@ -164,6 +164,15 @@ class CPDF_AnnotFontSubset final {
       bool required,
       StagedFontResource* out);
 
+  // A render-only font resource. Its indirect streams belong to a scratch
+  // holder, never to the document. Retain the holder while rendering the AP.
+  struct EphemeralFontResource {
+    std::unique_ptr<CPDF_IndirectObjectHolder> scratch;
+    RetainPtr<CPDF_Dictionary> font_dict;
+  };
+  static EphemeralFontResource BuildEphemeralFontResource(
+      StagedFontResource staged);
+
   // Publish adds every part of |staged| to |doc| as an indirect object
   // (program, ToUnicode, widths, descriptor, CIDFont, Type0, in that order;
   // a part that already has an object number, the existing stream of a

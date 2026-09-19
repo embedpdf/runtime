@@ -61,6 +61,9 @@ class CPDF_DocPageData final : public CPDF_Document::PageDataIface,
   RetainPtr<CPDF_Font> AddFont(std::unique_ptr<CFX_Font> font,
                                FX_Charset charset);
   RetainPtr<CPDF_Font> GetFont(RetainPtr<CPDF_Dictionary> font_dict);
+  // EmbedPDF: discard a render-only font before its scratch resource holder
+  // dies. Call only after every form using this private dictionary is gone.
+  void ForgetEphemeralFont(const CPDF_Dictionary* font_dict);
   RetainPtr<CPDF_Font> AddStandardFont(const ByteString& fontName,
                                        const CPDF_FontEncoding* pEncoding);
   RetainPtr<CPDF_Font> GetStandardFont(const ByteString& fontName,
