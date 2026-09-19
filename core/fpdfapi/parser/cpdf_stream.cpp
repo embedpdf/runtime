@@ -254,7 +254,8 @@ WideString CPDF_Stream::GetUnicodeText() const {
 }
 
 bool CPDF_Stream::WriteTo(IFX_ArchiveStream* archive,
-                          const CPDF_Encryptor* encryptor) const {
+                          const CPDF_Encryptor* encryptor,
+                          const CPDF_WriteContext* context) const {
   const bool is_metadata = IsMetaDataStreamDictionary(GetDict().Get());
   CPDF_FlateEncoder encoder(pdfium::WrapRetain(this), !is_metadata);
 
@@ -266,7 +267,7 @@ bool CPDF_Stream::WriteTo(IFX_ArchiveStream* archive,
   }
 
   encoder.UpdateLength(data.size());
-  if (!encoder.WriteDictTo(archive, encryptor)) {
+  if (!encoder.WriteDictTo(archive, encryptor, context)) {
     return false;
   }
 

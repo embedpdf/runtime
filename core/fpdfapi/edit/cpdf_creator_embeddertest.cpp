@@ -50,9 +50,11 @@ TEST_F(CPDFCreatorEmbedderTest, Bug873) {
 
   // Cannot match second part of the ID since it is randomly generated.
   std::string saved_data = GetString();
+  // The original xref stream (object 35) is not a root of the rewrite.
+  // The highest retained object is 29, so the output's /Size is 30.
   const char kTrailerBeforeSecondID[] =
       "trailer\r\n<</Info 9 0 R /Root 11 0 R /Size "
-      "36/ID[<D889EB6B9ADF88E5EDA7DC08FE85978B><";
+      "30/ID[<D889EB6B9ADF88E5EDA7DC08FE85978B><";
   ASSERT_THAT(saved_data, testing::HasSubstr(kTrailerBeforeSecondID));
   size_t trailer_start = saved_data.find(kTrailerBeforeSecondID);
   static constexpr size_t kIdLen = 32;

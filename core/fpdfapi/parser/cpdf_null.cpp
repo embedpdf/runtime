@@ -23,6 +23,7 @@ CPDF_Null* CPDF_Null::AsMutableNull() {
 }
 
 bool CPDF_Null::WriteTo(IFX_ArchiveStream* archive,
-                        const CPDF_Encryptor* encryptor) const {
+                        const CPDF_Encryptor* encryptor,
+                        const CPDF_WriteContext* context) const {
   return archive->WriteString(" null");
 }

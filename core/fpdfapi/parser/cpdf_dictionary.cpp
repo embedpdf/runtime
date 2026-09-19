@@ -400,12 +400,17 @@ ByteString CPDF_Dictionary::MaybeIntern(const ByteString& str) {
 }
 
 bool CPDF_Dictionary::WriteTo(IFX_ArchiveStream* archive,
-                              const CPDF_Encryptor* encryptor) const {
+                              const CPDF_Encryptor* encryptor,
+                              const CPDF_WriteContext* context) const {
   if (!archive->WriteString("<<")) {
     return false;
   }
 
-  const bool is_signature = CPDF_CryptoHandler::IsSignatureDictionary(this);
+  // With no encryption there is no special handling of /Contents. In
+  // particular, equality checks must not resolve an indirect /Type or /FT
+  // and populate the document's object cache merely to compare two values.
+  const bool is_signature =
+      encryptor && CPDF_CryptoHandler::IsSignatureDictionary(this);
 
   CPDF_DictionaryLocker locker(this);
   for (const auto& it : locker) {
@@ -415,9 +420,9 @@ bool CPDF_Dictionary::WriteTo(IFX_ArchiveStream* archive,
         !archive->WriteString(PDF_NameEncode(key).AsStringView())) {
       return false;
     }
-    if (!pValue->WriteTo(archive, !is_signature || key != "Contents"
-                                      ? encryptor
-                                      : nullptr)) {
+    if (!pValue->WriteTo(
+            archive, !is_signature || key != "Contents" ? encryptor : nullptr,
+            context)) {
       return false;
     }
   }

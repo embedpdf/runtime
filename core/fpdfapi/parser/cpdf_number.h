@@ -24,8 +24,10 @@ class CPDF_Number final : public CPDF_Object {
   int GetInteger() const override;
   void SetString(const ByteString& str) override;
   CPDF_Number* AsMutableNumber() override;
+  using CPDF_Object::WriteTo;
   bool WriteTo(IFX_ArchiveStream* archive,
-               const CPDF_Encryptor* encryptor) const override;
+               const CPDF_Encryptor* encryptor,
+               const CPDF_WriteContext* context) const override;
 
   bool IsInteger() const { return number_.IsInteger(); }
 

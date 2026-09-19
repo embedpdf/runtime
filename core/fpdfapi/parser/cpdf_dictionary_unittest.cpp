@@ -7,8 +7,33 @@
 #include <utility>
 
 #include "core/fpdfapi/parser/cpdf_array.h"
+#include "core/fpdfapi/parser/cpdf_indirect_object_holder.h"
 #include "core/fpdfapi/parser/cpdf_number.h"
+#include "core/fpdfapi/parser/cpdf_object_equality.h"
+#include "core/fpdfapi/parser/cpdf_reference.h"
 #include "testing/gtest/include/gtest/gtest.h"
+
+namespace {
+
+class UnreadObjectHolder final : public CPDF_IndirectObjectHolder {
+ protected:
+  RetainPtr<CPDF_Object> ParseIndirectObject(uint32_t objnum) override {
+    ADD_FAILURE() << "Comparing dictionary values parsed object " << objnum;
+    return nullptr;
+  }
+};
+
+}  // namespace
+
+TEST(DictionaryTest, EqualityDoesNotResolveIndirectSignatureTypes) {
+  UnreadObjectHolder holder;
+  for (const char* key : {"Type", "FT"}) {
+    auto dict = pdfium::MakeRetain<CPDF_Dictionary>();
+    dict->SetNewFor<CPDF_Reference>(key, &holder, 1);
+    auto twin = dict->Clone();
+    EXPECT_TRUE(CPDF_SameEffectiveValue(dict.Get(), twin.Get()));
+  }
+}
 
 TEST(DictionaryTest, Iterators) {
   auto dict = pdfium::MakeRetain<CPDF_Dictionary>();
