@@ -26,6 +26,7 @@
 #include "core/fpdfapi/page/cpdf_imageobject.h"
 #include "core/fpdfapi/page/cpdf_page.h"
 #include "core/fpdfapi/page/cpdf_pageobject.h"
+#include "core/fpdfapi/page/cpdf_streamparser.h"
 #include "core/fpdfapi/parser/cpdf_array.h"
 #include "core/fpdfapi/parser/cpdf_boolean.h"
 #include "core/fpdfapi/parser/cpdf_dictionary.h"
@@ -819,6 +820,77 @@ static CFX_FloatRect GetFormDisplayBox(const CPDF_Dictionary* stream_dict) {
     bbox.Normalize();
   }
   return bbox;
+}
+
+// Private metadata can survive an external editor replacing the appearance.
+// Only reuse our child when the stream still consists solely of its placement.
+// Derive the source bounds from the child, not a possibly stale cached rect.
+static CFX_FloatRect GetWrappedAPContentRect(const CPDF_Stream* ap) {
+  RetainPtr<const CPDF_Dictionary> resources =
+      ap->GetDict()->GetDictFor("Resources");
+  RetainPtr<const CPDF_Dictionary> xobjects =
+      resources ? resources->GetDictFor("XObject") : nullptr;
+  RetainPtr<const CPDF_Stream> child =
+      xobjects ? xobjects->GetStreamFor("EPDFWRAP") : nullptr;
+  if (!child || child.Get() == ap ||
+      child->GetDict()->GetNameFor("Subtype") != "Form") {
+    return CFX_FloatRect();
+  }
+
+  auto acc = pdfium::MakeRetain<CPDF_StreamAcc>(pdfium::WrapRetain(ap));
+  acc->LoadAllDataFiltered();
+  CPDF_StreamParser parser(acc->GetSpan());
+  auto keyword = [&parser](ByteStringView word) {
+    return parser.ParseNextElement() == CPDF_StreamParser::kKeyword &&
+           parser.GetWord() == word;
+  };
+  if (!keyword("q")) {
+    return CFX_FloatRect();
+  }
+  for (int i = 0; i < 6; ++i) {
+    if (parser.ParseNextElement() != CPDF_StreamParser::kNumber) {
+      return CFX_FloatRect();
+    }
+  }
+  if (!keyword("cm") || parser.ParseNextElement() != CPDF_StreamParser::kName ||
+      parser.GetWord() != "/EPDFWRAP" || !keyword("Do") || !keyword("Q") ||
+      parser.ParseNextElement() != CPDF_StreamParser::kEndOfData) {
+    return CFX_FloatRect();
+  }
+  return GetFormDisplayBox(child->GetDict().Get());
+}
+
+// Detach the reference path as well as the stream: /AP and /AP/N state
+// dictionaries may themselves be indirect objects shared by annotations.
+static void SetDetachedNormalAppearance(CPDF_Document* doc,
+                                        CPDF_Dictionary* annot,
+                                        RetainPtr<CPDF_Stream> stream) {
+  RetainPtr<const CPDF_Dictionary> original_ap = annot->GetDictFor("AP");
+  RetainPtr<CPDF_Dictionary> ap = ToDictionary(original_ap->Clone());
+  RetainPtr<const CPDF_Dictionary> original_states =
+      ToDictionary(original_ap->GetDirectObjectFor("N"));
+  doc->AddIndirectObject(stream);
+  if (original_states) {
+    // Match GetAnnotAPInternal's selection, including widgets without /AS.
+    ByteString state = annot->GetByteStringFor("AS");
+    if (state.IsEmpty()) {
+      ByteString value = annot->GetByteStringFor("V");
+      if (value.IsEmpty()) {
+        RetainPtr<const CPDF_Dictionary> parent = annot->GetDictFor("Parent");
+        value = parent ? parent->GetByteStringFor("V") : ByteString();
+      }
+      state =
+          !value.IsEmpty() && original_states->KeyExist(value.AsStringView())
+              ? value
+              : "Off";
+    }
+    RetainPtr<CPDF_Dictionary> states = ToDictionary(original_states->Clone());
+    states->SetNewFor<CPDF_Reference>(state, doc, stream->GetObjNum());
+    ap->SetFor("N", std::move(states));
+  } else {
+    ap->SetNewFor<CPDF_Reference>("N", doc, stream->GetObjNum());
+  }
+  annot->SetFor("AP", std::move(ap));
 }
 
 // Wraps the current AP stream content into a child Form XObject stored under
@@ -4213,7 +4285,9 @@ EPDFAnnot_UpdateAppearanceToRect(FPDF_ANNOTATION annot, EPDF_STAMP_FIT fit) {
     }
   }
 
-  // 3) Get the AP dict.
+  // 3) Edit a detached stream. Mutating a shared AP would also resize other
+  // annotations (or inactive states) that refer to it. Publish only on success.
+  ap = ToStream(ap->Clone());
   RetainPtr<CPDF_Dictionary> ap_dict = ap->GetMutableDict();
   if (!ap_dict) {
     return false;
@@ -4224,12 +4298,9 @@ EPDFAnnot_UpdateAppearanceToRect(FPDF_ANNOTATION annot, EPDF_STAMP_FIT fit) {
     return false;
   }
 
-  // 4) On first call, wrap the original AP content into a child Form XObject
-  //    and record the painted content rect in EPDFOrigContentRect.  This rect
-  //    captures where the visible content lives inside the child form's own
-  //    coordinate space; its Width()/Height() drive the scale factors and its
-  //    left/bottom drive the translation offset in the parent cm matrix.
-  CFX_FloatRect content_rect = ap_dict->GetRectFor("EPDFOrigContentRect");
+  // 4) Reuse an intact wrapper, even if an editor stripped private metadata.
+  // Otherwise preserve the current appearance as the new source artwork.
+  CFX_FloatRect content_rect = GetWrappedAPContentRect(ap.Get());
   if (content_rect.IsEmpty()) {
     content_rect = GetFormDisplayBox(ap_dict.Get());
     if (content_rect.IsEmpty()) {
@@ -4241,12 +4312,11 @@ EPDFAnnot_UpdateAppearanceToRect(FPDF_ANNOTATION annot, EPDF_STAMP_FIT fit) {
       return false;
     }
 
-    ap_dict->SetRectFor("EPDFOrigContentRect", content_rect);
-
     if (!WrapAPContentIntoFormXObject(ap.Get(), doc)) {
       return false;
     }
   }
+  ap_dict->SetRectFor("EPDFOrigContentRect", content_rect);
 
   const float orig_w = content_rect.Width();
   const float orig_h = content_rect.Height();
@@ -4269,8 +4339,8 @@ EPDFAnnot_UpdateAppearanceToRect(FPDF_ANNOTATION annot, EPDF_STAMP_FIT fit) {
   {
     const float sx = drawn_w / orig_w;
     const float sy = drawn_h / orig_h;
-    const float tx = std::max(0.f, dx) - content_rect.left * sx;
-    const float ty = std::max(0.f, dy) - content_rect.bottom * sy;
+    const float tx = dx - content_rect.left * sx;
+    const float ty = dy - content_rect.bottom * sy;
     fxcrt::ostringstream buf;
     buf << "q ";
     WriteFloat(buf, sx) << " 0 0 ";
@@ -4299,6 +4369,10 @@ EPDFAnnot_UpdateAppearanceToRect(FPDF_ANNOTATION annot, EPDF_STAMP_FIT fit) {
     ap_dict->RemoveFor("Matrix");
   }
 
+  SetDetachedNormalAppearance(doc, ad.Get(), ap);
+  if (ctx->HasForm()) {
+    ctx->SetForm(ap);
+  }
   return true;
 }
 
