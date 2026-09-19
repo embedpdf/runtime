@@ -112,6 +112,10 @@ class CPDF_AnnotFontMap final : public IPVT_FontMap {
   // Returns nullptr when Prepare fails; nothing was written then.
   RetainPtr<CPDF_Dictionary> CreateFontResourceDict();
 
+  // Render-only resources, including registered fonts. No document object
+  // numbers or catalog/DR edits. This font map must outlive the returned AP.
+  RetainPtr<CPDF_Dictionary> CreateEphemeralFontResourceDict();
+
   // Test-only. Makes PrepareFontResources() fail while staging the
   // registered font after the first |staged_count| were staged, the way an
   // unsupported program would. 0 disables.
@@ -236,6 +240,7 @@ class CPDF_AnnotFontMap final : public IPVT_FontMap {
   // |fonts_| so they are destroyed after it: the fonts' dictionaries
   // reference streams in them.
   std::vector<std::unique_ptr<CPDF_IndirectObjectHolder>> layout_scratch_;
+  std::vector<RetainPtr<CPDF_Dictionary>> ephemeral_font_dicts_;
   struct PinnedFace {
     WideString family;
     int weight;

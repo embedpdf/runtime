@@ -196,8 +196,14 @@ RetainPtr<CPDF_Stream> CPDF_Annot::GetOrBuildEphemeralAP(AppearanceMode mode) {
     return nullptr;
   }
 
+  ephemeral_font_lifetime_ = std::move(generated->font_lifetime);
   ephemeral_normal_ap_ = std::move(generated->normal_stream);
-  if (subtype_ == CPDF_Annot::Subtype::INK) {
+  // Dimension labels/leaders can extend /Rect. Use their generated envelope
+  // for drawing without persisting it, or the AP is squeezed into the old box.
+  if (subtype_ == CPDF_Annot::Subtype::INK ||
+      subtype_ == CPDF_Annot::Subtype::LINE ||
+      subtype_ == CPDF_Annot::Subtype::POLYGON ||
+      subtype_ == CPDF_Annot::Subtype::POLYLINE) {
     ephemeral_rect_ = ephemeral_normal_ap_->GetDict()->GetRectFor("BBox");
   }
   has_generated_ap_ = true;
@@ -214,6 +220,7 @@ bool CPDF_Annot::ShouldDrawAnnotation() const {
 void CPDF_Annot::ClearCachedAP() {
   ap_map_.clear();
   ephemeral_normal_ap_.Reset();
+  ephemeral_font_lifetime_.reset();
   ephemeral_rect_.reset();
   ephemeral_built_ = false;
   has_generated_ap_ =

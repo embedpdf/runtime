@@ -31,6 +31,16 @@ inline constexpr char kVertices[] = "Vertices";
 // Entries for ink annotations
 inline constexpr char kInkList[] = "InkList";
 
+// EmbedPDF: measurement and dimension entries (ISO 32000-2).
+inline constexpr char kIT[] = "IT";
+inline constexpr char kMeasure[] = "Measure";
+inline constexpr char kLL[] = "LL";
+inline constexpr char kLLE[] = "LLE";
+inline constexpr char kLLO[] = "LLO";
+inline constexpr char kCap[] = "Cap";
+inline constexpr char kCP[] = "CP";
+inline constexpr char kCO[] = "CO";
+
 // Entries for line annotations
 inline constexpr char kL[] = "L";
 

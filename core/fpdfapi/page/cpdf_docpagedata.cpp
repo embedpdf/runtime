@@ -236,6 +236,10 @@ RetainPtr<CPDF_Font> CPDF_DocPageData::GetFont(
   return font;
 }
 
+void CPDF_DocPageData::ForgetEphemeralFont(const CPDF_Dictionary* font_dict) {
+  font_map_.erase(pdfium::WrapRetain(font_dict));
+}
+
 RetainPtr<CPDF_Font> CPDF_DocPageData::GetStandardFont(
     const ByteString& fontName,
     const CPDF_FontEncoding* pEncoding) {
