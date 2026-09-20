@@ -9567,13 +9567,13 @@ struct StandaloneProbe {
   EPDFSaveStatus status = EPDFSaveStatus_kFailed;
 };
 
-// EPDF_SaveDocumentToOwnedBufferEx with FPDF_INCREMENTAL: the base bytes
-// plus one revision, or nothing when nothing changed since load.
-StandaloneProbe SaveStandaloneEx(FPDF_DOCUMENT doc) {
+// By default, the base bytes plus one revision, or nothing when unchanged.
+StandaloneProbe SaveStandaloneEx(FPDF_DOCUMENT doc,
+                                 FPDF_DWORD flags = FPDF_INCREMENTAL) {
   StandaloneProbe out;
   unsigned long size = 0;
-  void* buffer = EPDF_SaveDocumentToOwnedBufferEx(doc, FPDF_INCREMENTAL, 0,
-                                                  &size, &out.status);
+  void* buffer =
+      EPDF_SaveDocumentToOwnedBufferEx(doc, flags, 0, &size, &out.status);
   if (buffer) {
     const uint8_t* data = static_cast<const uint8_t*>(buffer);
     out.bytes.assign(data, data + size);
@@ -10359,3 +10359,150 @@ TEST_F(EPDFStampResizeEmbedderTest,
   EXPECT_EQ("1 0 0 rg 0 0 200 100 re f",
             GetNormalAppearanceStreamBytes(annot_.get()));
 }
+
+class EPDFStampSaveEmbedderTest : public EPDFStampResizeEmbedderTest,
+                                  public testing::WithParamInterface<int> {};
+
+TEST_P(EPDFStampSaveEmbedderTest,
+       LayerRotationSurvivesIncrementalSaveAndRewrite) {
+  // Model an imported stamp: existing indirect AP, no Matrix or metadata.
+  auto artwork = InstallArtwork();
+  const ByteStringView kBands =
+      "1 0 0 rg 0 0 50 100 re f 0 1 0 rg 50 0 100 100 re f "
+      "0 0 1 rg 150 0 50 100 re f";
+  artwork->SetData(kBands.unsigned_span());
+  const FS_RECTF initial_rect{10, 110, 210, 10};
+  ASSERT_TRUE(EPDFAnnot_SetRect(annot_.get(), &initial_rect));
+  if (GetParam() >= 2) {
+    auto ap = pdf()->NewIndirect<CPDF_Dictionary>();
+    if (GetParam() == 3) {
+      auto states = pdf()->NewIndirect<CPDF_Dictionary>();
+      states->SetNewFor<CPDF_Reference>("On", pdf(), artwork->GetObjNum());
+      states->SetNewFor<CPDF_Reference>("Off", pdf(), artwork->GetObjNum());
+      ap->SetNewFor<CPDF_Reference>("N", pdf(), states->GetObjNum());
+    } else {
+      ap->SetNewFor<CPDF_Reference>("N", pdf(), artwork->GetObjNum());
+    }
+    annot_dict()->SetNewFor<CPDF_Reference>("AP", pdf(), ap->GetObjNum());
+    annot_dict()->SetNewFor<CPDF_Name>("AS", "On");
+  }
+  if (GetParam() != 0) {
+    ScopedFPDFAnnotation sibling(
+        FPDFPage_CreateAnnot(page_.get(), FPDF_ANNOT_STAMP));
+    ASSERT_TRUE(sibling);
+    const FS_RECTF sibling_rect{300, 110, 500, 10};
+    ASSERT_TRUE(EPDFAnnot_SetRect(sibling.get(), &sibling_rect));
+    auto sibling_dict = CPDFAnnotContextFromFPDFAnnotation(sibling.get())
+                            ->GetMutableAnnotDict();
+    sibling_dict->SetFor("AP", annot_dict()->GetObjectFor("AP")->Clone());
+    sibling_dict->SetNewFor<CPDF_Name>("AS", "On");
+  }
+
+  ClearString();
+  ASSERT_TRUE(FPDF_SaveAsCopy(doc_.get(), this, FPDF_NO_INCREMENTAL));
+  const std::string input = GetString();
+  LayerFixture layer;
+  ASSERT_TRUE(
+      layer.OpenBytes(std::vector<uint8_t>(input.begin(), input.end())));
+  ScopedFPDFPage page(FPDF_LoadPage(layer.layer, 0));
+  ASSERT_TRUE(page);
+  ScopedFPDFAnnotation annot(FPDFPage_GetAnnot(page.get(), 0));
+  ASSERT_TRUE(annot);
+  auto normal_ap = [](FPDF_ANNOTATION handle) {
+    return GetAnnotAP(
+        CPDFAnnotContextFromFPDFAnnotation(handle)->GetAnnotDict(),
+        CPDF_Annot::AppearanceMode::kNormal);
+  };
+  ASSERT_FALSE(normal_ap(annot.get())->GetDict()->KeyExist("Matrix"));
+  ASSERT_FALSE(EPDFAnnot_HasEmbedMetadata(annot.get()));
+  EXPECT_EQ(EPDFSaveStatus_kUnchangedSinceLoad,
+            SaveStandaloneEx(layer.layer).status);
+
+  // A separate layer over the same base must not inherit the edit.
+  ScopedFPDFDocument untouched(
+      EPDFLayer_OpenLayer(layer.base, nullptr, nullptr, nullptr));
+  ASSERT_TRUE(untouched);
+  ScopedFPDFPage untouched_page(FPDF_LoadPage(untouched.get(), 0));
+  ASSERT_TRUE(untouched_page);
+  const std::string original_pixels = HashBitmap(
+      RenderPageWithFlags(untouched_page.get(), nullptr, FPDF_ANNOT).get());
+
+  const FS_RECTF rect{95, 90, 125, 30};
+  const FS_RECTF unrotated{80, 75, 140, 45};
+  ASSERT_TRUE(EPDFAnnot_SetRect(annot.get(), &rect));
+  ASSERT_TRUE(EPDFAnnot_SetEmbedMetadataNumber(annot.get(), "Rotation", 270));
+  ASSERT_TRUE(
+      EPDFAnnot_SetEmbedMetadataRect(annot.get(), "UnrotatedRect", &unrotated));
+  ASSERT_TRUE(
+      EPDFAnnot_UpdateAppearanceToRect(annot.get(), EPDF_STAMP_FIT_CONTAIN));
+  const ByteString live_content = GetNormalAppearanceStreamBytes(annot.get());
+  const std::string live_pixels =
+      HashBitmap(RenderPageWithFlags(page.get(), nullptr, FPDF_ANNOT).get());
+  EXPECT_NE(original_pixels, live_pixels);
+
+  // Repeated saves use the original baseline, even after a full rewrite.
+  for (FPDF_DWORD flags :
+       {FPDF_INCREMENTAL, FPDF_NO_INCREMENTAL, FPDF_INCREMENTAL}) {
+    SCOPED_TRACE(flags);
+    const StandaloneProbe saved = SaveStandaloneEx(layer.layer, flags);
+    ASSERT_EQ(EPDFSaveStatus_kWritten, saved.status);
+    ASSERT_FALSE(saved.bytes.empty());
+    if (flags == FPDF_INCREMENTAL) {
+      ASSERT_GT(saved.bytes.size(), layer.bytes.size());
+      EXPECT_TRUE(std::equal(layer.bytes.begin(), layer.bytes.end(),
+                             saved.bytes.begin()));
+    }
+    ScopedFPDFDocument reopened(FPDF_LoadMemDocument64(
+        saved.bytes.data(), saved.bytes.size(), nullptr));
+    ASSERT_TRUE(reopened);
+    ScopedFPDFPage reopened_page(FPDF_LoadPage(reopened.get(), 0));
+    ASSERT_TRUE(reopened_page);
+    ScopedFPDFAnnotation reopened_annot(
+        FPDFPage_GetAnnot(reopened_page.get(), 0));
+    ASSERT_TRUE(reopened_annot);
+    float rotation = 0;
+    ASSERT_TRUE(EPDFAnnot_GetEmbedMetadataNumber(reopened_annot.get(),
+                                                 "Rotation", &rotation));
+    EXPECT_FLOAT_EQ(270, rotation);
+    const auto ap = normal_ap(reopened_annot.get());
+    ASSERT_TRUE(ap);
+    const auto dict = ap->GetDict();
+    ASSERT_TRUE(dict->KeyExist("Matrix"));
+    const CFX_Matrix matrix = dict->GetMatrixFor("Matrix");
+    EXPECT_NEAR(0, matrix.a, 1e-5);
+    EXPECT_NEAR(-1, matrix.b, 1e-5);
+    EXPECT_NEAR(1, matrix.c, 1e-5);
+    EXPECT_NEAR(0, matrix.d, 1e-5);
+    EXPECT_NEAR(50, matrix.e, 1e-5);
+    EXPECT_NEAR(170, matrix.f, 1e-5);
+    EXPECT_EQ(CFX_FloatRect(0, 0, 60, 30), dict->GetRectFor("BBox"));
+    EXPECT_EQ(CFX_FloatRect(0, 0, 200, 100),
+              dict->GetRectFor("EPDFOrigContentRect"));
+    const auto resources = dict->GetDictFor("Resources");
+    ASSERT_TRUE(resources);
+    const auto xobjects = resources->GetDictFor("XObject");
+    ASSERT_TRUE(xobjects);
+    EXPECT_TRUE(xobjects->GetStreamFor("EPDFWRAP"));
+    EXPECT_EQ(live_content,
+              GetNormalAppearanceStreamBytes(reopened_annot.get()));
+    EXPECT_EQ(live_pixels, HashBitmap(RenderPageWithFlags(reopened_page.get(),
+                                                          nullptr, FPDF_ANNOT)
+                                          .get()));
+    EXPECT_EQ(original_pixels,
+              HashBitmap(
+                  RenderPageWithFlags(untouched_page.get(), nullptr, FPDF_ANNOT)
+                      .get()));
+    EXPECT_EQ(EPDFSaveStatus_kUnchangedSinceLoad,
+              SaveStandaloneEx(untouched.get()).status);
+  }
+}
+
+INSTANTIATE_TEST_SUITE_P(AppearanceSharing,
+                         EPDFStampSaveEmbedderTest,
+                         testing::Values(0, 1, 2, 3),
+                         ([](const testing::TestParamInfo<int>& info) {
+                           constexpr const char* kNames[] = {
+                               "Unshared", "SharedStream", "SharedDictionary",
+                               "SharedStates"};
+                           return kNames[info.param];
+                         }));
