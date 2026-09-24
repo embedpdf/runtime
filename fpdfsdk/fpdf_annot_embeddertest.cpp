@@ -11226,6 +11226,70 @@ TEST_F(EPDFStampResizeEmbedderTest, AStampFromAPageLeavesTheDocumentInfoAlone) {
   EXPECT_EQ("Acme Writer", pdf()->GetInfo()->GetByteStringFor("Producer"));
 }
 
+// Two stamps share a drawing. Editing the drawing's objects through one
+// stamp's appearance (the object API) edits a copy for that stamp: the other
+// stamp's drawing is what it was.
+TEST_F(EPDFStampResizeEmbedderTest,
+       EditingOneStampsDrawingLeavesAStampSharingItAlone) {
+  InstallArtwork();
+  ASSERT_TRUE(
+      EPDFAnnot_UpdateAppearanceToRect(annot_.get(), EPDF_STAMP_FIT_CONTAIN));
+  RetainPtr<const CPDF_Stream> drawing = FormNamed(appearance().Get(), "EPDFWRAP");
+  ASSERT_TRUE(drawing);
+
+  ScopedFPDFAnnotation other(FPDFPage_CreateAnnot(page_.get(), FPDF_ANNOT_STAMP));
+  const FS_RECTF other_rect{300, 400, 500, 300};
+  ASSERT_TRUE(EPDFAnnot_SetRect(other.get(), &other_rect));
+  RetainPtr<CPDF_Stream> frame = ToStream(appearance()->Clone());
+  pdf()->AddIndirectObject(frame);
+  CPDFAnnotContextFromFPDFAnnotation(other.get())
+      ->GetMutableAnnotDict()
+      ->SetNewFor<CPDF_Dictionary>("AP")
+      ->SetNewFor<CPDF_Reference>("N", pdf(), frame->GetObjNum());
+  ASSERT_TRUE(
+      EPDFAnnot_UpdateAppearanceToRect(other.get(), EPDF_STAMP_FIT_CONTAIN));
+  auto other_drawing = [&] {
+    return FormNamed(
+        GetAnnotAP(CPDFAnnotContextFromFPDFAnnotation(other.get())
+                       ->GetMutableAnnotDict()
+                       .Get(),
+                   CPDF_Annot::AppearanceMode::kNormal)
+            .Get(),
+        "EPDFWRAP");
+  };
+  ASSERT_EQ(drawing.Get(), other_drawing().Get());
+
+  FPDF_PAGEOBJECT form = FPDFAnnot_GetObject(annot_.get(), 0);
+  ASSERT_TRUE(form);
+  ASSERT_EQ(FPDF_PAGEOBJ_FORM, FPDFPageObj_GetType(form));
+  FPDF_PAGEOBJECT path = FPDFFormObj_GetObject(form, 0);
+  ASSERT_TRUE(path);
+  ASSERT_TRUE(FPDFFormObj_RemoveObject(form, path));
+  FPDFPageObj_Destroy(path);
+  ASSERT_TRUE(FPDFAnnot_UpdateObject(annot_.get(), form));
+
+  // The other stamp still places the drawing, unchanged.
+  EXPECT_EQ(drawing.Get(), other_drawing().Get());
+  EXPECT_EQ("1 0 0 rg 0 0 200 100 re f", StreamBytes(drawing.Get()));
+  // This stamp now places a copy without the path. Rewriting an appearance
+  // through the object API names what it places afresh and prunes no names
+  // (upstream behavior), so the frame still lists the drawing too.
+  RetainPtr<const CPDF_Dictionary> xobjects =
+      appearance()->GetDict()->GetDictFor("Resources")->GetDictFor("XObject");
+  ASSERT_TRUE(xobjects);
+  std::vector<RetainPtr<const CPDF_Stream>> copies;
+  for (const ByteString& name : xobjects->GetKeys()) {
+    RetainPtr<const CPDF_Stream> placed = xobjects->GetStreamFor(name.AsStringView());
+    ASSERT_TRUE(placed);
+    if (placed != drawing) {
+      copies.push_back(placed);
+    }
+  }
+  ASSERT_EQ(1u, copies.size());
+  EXPECT_EQ(std::string::npos,
+            std::string(StreamBytes(copies.front().Get()).c_str()).find("re"));
+}
+
 TEST_F(EPDFStampResizeEmbedderTest, BooleanValues) {
   FPDF_BOOL value = true;
   EXPECT_FALSE(EPDFAnnot_GetBooleanValue(annot_.get(), "Open", &value));

@@ -968,6 +968,16 @@ void CPDF_PageContentGenerator::ProcessForm(fxcrt::ostringstream* buf,
   if (form_xobject->HasDirtyStreams()) {
     // The Form XObject itself has modified content (e.g., an object was
     // removed). We need to regenerate its content stream before using it.
+    // EmbedPDF: a form placed in more than one place (a drawing several
+    // stamps share) is copied first, so the other placements keep what they
+    // draw; this placement then draws the copy.
+    RetainPtr<const CPDF_Stream> stream = form_xobject->GetStream();
+    CPDF_Document* document = form_xobject->GetDocument();
+    if (stream && stream->GetObjNum() && document &&
+        pdfium::Contains(GetObjectsWithMultipleReferences(document),
+                         stream->GetObjNum())) {
+      form_xobject->CloneBackingStreamForWrite();
+    }
     CPDF_PageContentGenerator form_content_generator(form_xobject);
     form_content_generator.GenerateContent();
   }

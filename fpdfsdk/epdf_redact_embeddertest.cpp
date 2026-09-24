@@ -8,6 +8,7 @@
 #include <tuple>
 #include <vector>
 
+#include "core/fpdfapi/page/cpdf_annotcontext.h"
 #include "core/fpdfapi/parser/cpdf_array.h"
 #include "core/fpdfapi/parser/cpdf_dictionary.h"
 #include "core/fpdfapi/parser/cpdf_document.h"
@@ -21,6 +22,7 @@
 #include "public/cpp/fpdf_scopers.h"
 #include "public/fpdf_annot.h"
 #include "public/fpdf_edit.h"
+#include "public/fpdf_flatten.h"
 #include "public/fpdf_save.h"
 #include "public/fpdf_text.h"
 #include "testing/embedder_test.h"
@@ -36,6 +38,9 @@ std::wstring ReadText(FPDF_PAGE page) {
     return {};
   }
   const int count = FPDFText_CountChars(text.get());
+  if (count <= 0) {
+    return {};
+  }
   std::vector<FPDF_WCHAR> buffer(count + 1);
   EXPECT_GT(FPDFText_GetText(text.get(), 0, count, buffer.data()), 0);
   return GetPlatformWString(buffer.data());
@@ -104,6 +109,132 @@ void ExpectNoSentinel(CPDF_Document* doc, const std::string& sentinel) {
   }
 }
 
+// How many streams reachable from the document's root carry `sentinel`.
+int CountSentinel(CPDF_Document* doc, const std::string& sentinel) {
+  int count = 0;
+  std::vector<RetainPtr<const CPDF_Object>> pending{
+      pdfium::WrapRetain(doc->GetRoot())};
+  std::set<const CPDF_Object*> visited;
+  while (!pending.empty()) {
+    auto object = pending.back()->GetDirect();
+    pending.pop_back();
+    if (!object || !visited.insert(object.Get()).second) {
+      continue;
+    }
+    if (const CPDF_Stream* stream = object->AsStream()) {
+      auto acc = pdfium::MakeRetain<CPDF_StreamAcc>(pdfium::WrapRetain(stream));
+      acc->LoadAllDataFiltered();
+      const auto bytes = acc->GetSpan();
+      if (std::string(bytes.begin(), bytes.end()).find(sentinel) !=
+          std::string::npos) {
+        ++count;
+      }
+      pending.push_back(stream->GetDict());
+    } else if (const CPDF_Dictionary* dict = object->AsDictionary()) {
+      for (const auto& key : dict->GetKeys()) {
+        pending.push_back(dict->GetObjectFor(key.AsStringView()));
+      }
+    } else if (const CPDF_Array* array = object->AsArray()) {
+      for (size_t i = 0; i < array->size(); ++i) {
+        pending.push_back(array->GetObjectAt(i));
+      }
+    }
+  }
+  return count;
+}
+
+// A one-page drawing 300 wide that writes `lines`, one every 40 points from
+// the bottom up, its font dictionary an object of its own (/Font 5 0 R), as
+// some PDF generators write it.
+std::string MakeTextDrawing(const std::vector<std::string>& lines) {
+  std::string content;
+  for (size_t i = 0; i < lines.size(); ++i) {
+    content += "BT /F1 24 Tf 10 " + std::to_string(10 + 40 * i) + " Td (" +
+               lines[i] + ") Tj ET\n";
+  }
+  const std::vector<std::string> objects = {
+      "<< /Type /Catalog /Pages 2 0 R >>",
+      "<< /Type /Pages /Kids [3 0 R] /Count 1 >>",
+      "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 300 " +
+          std::to_string(10 + 40 * lines.size()) +
+          "] /Contents 4 0 R /Resources << /Font 5 0 R >> >>",
+      "<< /Length " + std::to_string(content.size()) + " >>\nstream\n" +
+          content + "\nendstream",
+      "<< /F1 6 0 R >>",
+      "<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>",
+  };
+  std::string pdf = "%PDF-1.7\n";
+  std::vector<size_t> offsets;
+  for (size_t i = 0; i < objects.size(); ++i) {
+    offsets.push_back(pdf.size());
+    pdf += std::to_string(i + 1) + " 0 obj\n" + objects[i] + "\nendobj\n";
+  }
+  const size_t xref = pdf.size();
+  pdf += "xref\n0 " + std::to_string(objects.size() + 1) +
+         "\n0000000000 65535 f \n";
+  for (size_t offset : offsets) {
+    const std::string number = std::to_string(offset);
+    pdf += std::string(10 - number.size(), '0') + number + " 00000 n \n";
+  }
+  pdf += "trailer\n<< /Size " + std::to_string(objects.size() + 1) +
+         " /Root 1 0 R >>\nstartxref\n" + std::to_string(xref) + "\n%%EOF\n";
+  return pdf;
+}
+
+RetainPtr<CPDF_Dictionary> AnnotDict(FPDF_ANNOTATION annot) {
+  return CPDFAnnotContextFromFPDFAnnotation(annot)->GetMutableAnnotDict();
+}
+
+// A stamp at `rect` drawing the first page of `source`.
+ScopedFPDFAnnotation AddStamp(FPDF_PAGE page,
+                              FPDF_DOCUMENT source,
+                              const FS_RECTF& rect) {
+  ScopedFPDFAnnotation stamp(FPDFPage_CreateAnnot(page, FPDF_ANNOT_STAMP));
+  EXPECT_TRUE(EPDFAnnot_SetRect(stamp.get(), &rect));
+  EXPECT_TRUE(EPDFAnnot_SetAppearanceFromPage(stamp.get(), source, 0));
+  EXPECT_TRUE(
+      EPDFAnnot_UpdateAppearanceToRect(stamp.get(), EPDF_STAMP_FIT_CONTAIN));
+  return stamp;
+}
+
+// A second stamp at `rect` placing the same drawing object as `stamp`: its
+// own frame around a shared drawing.
+ScopedFPDFAnnotation AddStampSharingDrawing(FPDF_DOCUMENT doc,
+                                            FPDF_PAGE page,
+                                            FPDF_ANNOTATION stamp,
+                                            const FS_RECTF& rect) {
+  CPDF_Document* pdf = CPDFDocumentFromFPDFDocument(doc);
+  ScopedFPDFAnnotation other(FPDFPage_CreateAnnot(page, FPDF_ANNOT_STAMP));
+  EXPECT_TRUE(EPDFAnnot_SetRect(other.get(), &rect));
+  RetainPtr<CPDF_Stream> frame =
+      ToStream(AnnotDict(stamp)->GetDictFor("AP")->GetStreamFor("N")->Clone());
+  pdf->AddIndirectObject(frame);
+  AnnotDict(other.get())
+      ->SetNewFor<CPDF_Dictionary>("AP")
+      ->SetNewFor<CPDF_Reference>("N", pdf, frame->GetObjNum());
+  EXPECT_TRUE(
+      EPDFAnnot_UpdateAppearanceToRect(other.get(), EPDF_STAMP_FIT_CONTAIN));
+  return other;
+}
+
+// The drawing a stamp's frame places.
+RetainPtr<const CPDF_Stream> DrawingOf(FPDF_ANNOTATION stamp) {
+  return AnnotDict(stamp)
+      ->GetDictFor("AP")
+      ->GetStreamFor("N")
+      ->GetDict()
+      ->GetDictFor("Resources")
+      ->GetDictFor("XObject")
+      ->GetStreamFor("EPDFWRAP");
+}
+
+std::string StreamText(const CPDF_Stream* stream) {
+  auto acc = pdfium::MakeRetain<CPDF_StreamAcc>(pdfium::WrapRetain(stream));
+  acc->LoadAllDataFiltered();
+  const auto bytes = acc->GetSpan();
+  return std::string(bytes.begin(), bytes.end());
+}
+
 }  // namespace
 
 class EPDFRedactEmbedderTest : public EmbedderTest {
@@ -116,6 +247,23 @@ class EPDFRedactEmbedderTest : public EmbedderTest {
     // history.
     ASSERT_TRUE(FPDF_SaveAsCopy(document(), this, FPDF_NO_INCREMENTAL));
     ASSERT_TRUE(OpenSavedDocument());
+  }
+
+  // How many streams reachable in a full rewrite of `doc` carry `sentinel`.
+  int SentinelsInRewrite(FPDF_DOCUMENT doc, const std::string& sentinel) {
+    ClearString();
+    if (!FPDF_SaveAsCopy(doc, this, FPDF_NO_INCREMENTAL)) {
+      ADD_FAILURE() << "the rewrite failed";
+      return -1;
+    }
+    const std::string bytes = GetString();
+    ScopedFPDFDocument saved(
+        FPDF_LoadMemDocument(bytes.data(), bytes.size(), nullptr));
+    if (!saved) {
+      ADD_FAILURE() << "the rewrite does not open";
+      return -1;
+    }
+    return CountSentinel(CPDFDocumentFromFPDFDocument(saved.get()), sentinel);
   }
 };
 
@@ -440,3 +588,103 @@ TEST_P(EPDFRedactPageTreeTest,
 INSTANTIATE_TEST_SUITE_P(All,
                          EPDFRedactPageTreeTest,
                          testing::Combine(testing::Bool(), testing::Bool()));
+
+// Stamps can share one drawing. Redacting part of one of them, flattened
+// into the page, redacts a copy of the drawing for that placement: the other
+// stamp's drawing, and the font dictionary it names, are left as they were,
+// though the copy still names the font for the line it keeps.
+TEST_F(EPDFRedactEmbedderTest,
+       RedactingAFlattenedStampLeavesAStampSharingItsDrawingAlone) {
+  const std::string drawing_pdf = MakeTextDrawing({"SENTINELSHARED", "KEEP"});
+  ScopedFPDFDocument source(
+      FPDF_LoadMemDocument(drawing_pdf.data(), drawing_pdf.size(), nullptr));
+  ASSERT_TRUE(source);
+  ScopedFPDFDocument doc(FPDF_CreateNewDocument());
+  ScopedFPDFPage page(FPDFPage_New(doc.get(), 0, 600, 600));
+  ScopedFPDFAnnotation redacted =
+      AddStamp(page.get(), source.get(), FS_RECTF{50, 590, 350, 500});
+  ScopedFPDFAnnotation kept = AddStampSharingDrawing(
+      doc.get(), page.get(), redacted.get(), FS_RECTF{50, 390, 350, 300});
+  RetainPtr<const CPDF_Stream> drawing = DrawingOf(kept.get());
+  ASSERT_TRUE(drawing);
+  ASSERT_EQ(drawing.Get(), DrawingOf(redacted.get()).Get());
+  const std::string content = StreamText(drawing.Get());
+  RetainPtr<const CPDF_Dictionary> fonts =
+      drawing->GetDict()->GetDictFor("Resources")->GetDictFor("Font");
+  ASSERT_TRUE(fonts);
+  ASSERT_NE(0u, fonts->GetObjNum());
+
+  FPDF_ANNOTATION flattened[] = {redacted.get()};
+  ASSERT_EQ(FLATTEN_SUCCESS,
+            EPDFPage_FlattenAnnotations(page.get(), flattened, 1,
+                                        FLAT_NORMALDISPLAY, nullptr));
+  // Flattening writes the page dictionary, not the loaded page: load it
+  // again to see the stamp in its content.
+  redacted.reset();
+  kept.reset();
+  page.reset(FPDF_LoadPage(doc.get(), 0));
+  ASSERT_TRUE(page);
+  ASSERT_EQ(1, FPDFPage_GetAnnotCount(page.get()));
+  kept.reset(FPDFPage_GetAnnot(page.get(), 0));
+  ASSERT_EQ(drawing.Get(), DrawingOf(kept.get()).Get());
+  ASSERT_NE(std::wstring::npos, ReadText(page.get()).find(L"SENTINELSHARED"));
+  {
+    // The first line only.
+    ScopedFPDFAnnotation redact(
+        FPDFPage_CreateAnnot(page.get(), FPDF_ANNOT_REDACT));
+    const FS_RECTF area = {40, 535, 360, 490};
+    ASSERT_TRUE(FPDFAnnot_SetRect(redact.get(), &area));
+  }
+  ASSERT_TRUE(EPDFPage_ApplyRedactions(page.get(), nullptr));
+  ASSERT_TRUE(FPDFPage_GenerateContent(page.get()));
+
+  const std::wstring text = ReadText(page.get());
+  EXPECT_EQ(std::wstring::npos, text.find(L"SENTINELSHARED"));
+  EXPECT_NE(std::wstring::npos, text.find(L"KEEP"));
+  EXPECT_EQ(drawing.Get(), DrawingOf(kept.get()).Get());
+  EXPECT_EQ(content, StreamText(drawing.Get()));
+  // No names added, none pruned.
+  EXPECT_EQ(1u, fonts->size());
+  EXPECT_TRUE(fonts->KeyExist("F1"));
+
+  // A full rewrite keeps the drawing once: for the stamp that still shows it.
+  EXPECT_EQ(1, SentinelsInRewrite(doc.get(), "SENTINELSHARED"));
+}
+
+// The only stamp with a drawing, redacted as a live annotation or after it
+// was flattened into the page: a full rewrite keeps nothing of the drawing.
+TEST_F(EPDFRedactEmbedderTest, RedactingTheOnlyStampLeavesNothingOfItsDrawing) {
+  for (bool flatten : {false, true}) {
+    SCOPED_TRACE(flatten ? "flattened" : "live");
+    const std::string drawing_pdf = MakeTextDrawing({"SENTINELONLY"});
+    ScopedFPDFDocument source(
+        FPDF_LoadMemDocument(drawing_pdf.data(), drawing_pdf.size(), nullptr));
+    ASSERT_TRUE(source);
+    ScopedFPDFDocument doc(FPDF_CreateNewDocument());
+    ScopedFPDFPage page(FPDFPage_New(doc.get(), 0, 600, 600));
+    ScopedFPDFAnnotation stamp =
+        AddStamp(page.get(), source.get(), FS_RECTF{50, 550, 350, 500});
+    if (flatten) {
+      FPDF_ANNOTATION flattened[] = {stamp.get()};
+      ASSERT_EQ(FLATTEN_SUCCESS,
+                EPDFPage_FlattenAnnotations(page.get(), flattened, 1,
+                                            FLAT_NORMALDISPLAY, nullptr));
+      stamp.reset();
+      page.reset(FPDF_LoadPage(doc.get(), 0));
+      ASSERT_TRUE(page);
+      ASSERT_NE(std::wstring::npos, ReadText(page.get()).find(L"SENTINELONLY"));
+    }
+    stamp.reset();
+    ASSERT_EQ(1, SentinelsInRewrite(doc.get(), "SENTINELONLY"));
+    {
+      ScopedFPDFAnnotation redact(
+          FPDFPage_CreateAnnot(page.get(), FPDF_ANNOT_REDACT));
+      const FS_RECTF area = {40, 560, 360, 490};
+      ASSERT_TRUE(FPDFAnnot_SetRect(redact.get(), &area));
+    }
+    ASSERT_TRUE(EPDFPage_ApplyRedactions(page.get(), nullptr));
+    ASSERT_TRUE(FPDFPage_GenerateContent(page.get()));
+    EXPECT_EQ(0, FPDFPage_GetAnnotCount(page.get()));
+    EXPECT_EQ(0, SentinelsInRewrite(doc.get(), "SENTINELONLY"));
+  }
+}
