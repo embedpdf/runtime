@@ -37,6 +37,7 @@
 #include "core/fpdfapi/parser/cpdf_dictionary.h"
 #include "core/fpdfapi/parser/cpdf_document.h"
 #include "core/fpdfapi/parser/cpdf_name.h"
+#include "core/fpdfapi/parser/cpdf_boolean.h"
 #include "core/fpdfapi/parser/cpdf_number.h"
 #include "core/fpdfapi/parser/cpdf_read_only_graph_guard.h"
 #include "core/fpdfapi/parser/cpdf_reference.h"
@@ -10618,6 +10619,449 @@ class EPDFStampResizeEmbedderTest : public EmbedderTest {
   ScopedFPDFAnnotation annot_;
 };
 
+namespace {
+
+// The bytes of a stream, filters applied.
+ByteString StreamBytes(const CPDF_Stream* stream) {
+  auto acc = pdfium::MakeRetain<CPDF_StreamAcc>(pdfium::WrapRetain(stream));
+  acc->LoadAllDataFiltered();
+  return ByteString(ByteStringView(acc->GetSpan()));
+}
+
+// Where a form shows what it draws: its /BBox through its /Matrix.
+CFX_FloatRect ShownBox(const CPDF_Stream* form) {
+  CFX_FloatRect box = form->GetDict()->GetMatrixFor("Matrix").TransformRect(
+      form->GetDict()->GetRectFor("BBox"));
+  box.Normalize();
+  return box;
+}
+
+// A form that only draws `form`, as editors put around an appearance.
+// `matrix` or a smaller `box` make it do something after all.
+RetainPtr<CPDF_Stream> DrawOnly(CPDF_Document* doc,
+                                const CPDF_Stream* form,
+                                bool group,
+                                CFX_Matrix matrix = CFX_Matrix(),
+                                std::optional<CFX_FloatRect> box = std::nullopt) {
+  const ByteStringView kContent = "/Form Do\n";
+  auto stream = doc->NewIndirect<CPDF_Stream>(kContent.unsigned_span());
+  auto dict = stream->GetMutableDict();
+  dict->SetNewFor<CPDF_Name>("Subtype", "Form");
+  dict->SetRectFor("BBox", box.value_or(ShownBox(form)));
+  if (!matrix.IsIdentity()) {
+    dict->SetMatrixFor("Matrix", matrix);
+  }
+  if (group) {
+    dict->SetNewFor<CPDF_Dictionary>("Group")->SetNewFor<CPDF_Name>(
+        "S", "Transparency");
+  }
+  dict->SetNewFor<CPDF_Dictionary>("Resources")
+      ->SetNewFor<CPDF_Dictionary>("XObject")
+      ->SetNewFor<CPDF_Reference>("Form", doc, form->GetObjNum());
+  return stream;
+}
+
+// Acrobat's stamp appearance: `/R0 gs /MWFOForm Do`, where /R0 only paints the
+// annotation's /CA over the artwork form (a red box when none is given).
+RetainPtr<CPDF_Stream> InstallOpacityLayer(CPDF_Document* doc,
+                                           CPDF_Dictionary* annot,
+                                           float opacity,
+                                           RetainPtr<const CPDF_Stream> form =
+                                               nullptr) {
+  if (!form) {
+    const ByteStringView kArtwork = "1 0 0 rg 0 0 200 100 re f";
+    auto artwork = doc->NewIndirect<CPDF_Stream>(kArtwork.unsigned_span());
+    artwork->GetMutableDict()->SetNewFor<CPDF_Name>("Subtype", "Form");
+    artwork->GetMutableDict()->SetRectFor("BBox",
+                                          CFX_FloatRect(0, 0, 200, 100));
+    form = std::move(artwork);
+  }
+
+  const ByteStringView kLayer = "/R0 gs\n/MWFOForm Do\n";
+  auto layer = doc->NewIndirect<CPDF_Stream>(kLayer.unsigned_span());
+  auto dict = layer->GetMutableDict();
+  dict->SetNewFor<CPDF_Name>("Subtype", "Form");
+  dict->SetRectFor("BBox", ShownBox(form.Get()));
+  auto resources = dict->SetNewFor<CPDF_Dictionary>("Resources");
+  auto state =
+      resources->SetNewFor<CPDF_Dictionary>("ExtGState")->SetNewFor<CPDF_Dictionary>(
+          "R0");
+  state->SetNewFor<CPDF_Name>("Type", "ExtGState");
+  state->SetNewFor<CPDF_Number>("CA", opacity);
+  state->SetNewFor<CPDF_Number>("ca", opacity);
+  state->SetNewFor<CPDF_Boolean>("AIS", false);
+  resources->SetNewFor<CPDF_Dictionary>("XObject")->SetNewFor<CPDF_Reference>(
+      "MWFOForm", doc, form->GetObjNum());
+  annot->SetNewFor<CPDF_Dictionary>("AP")->SetNewFor<CPDF_Reference>(
+      "N", doc, layer->GetObjNum());
+  return layer;
+}
+
+// The form a resource dictionary names `name`.
+RetainPtr<const CPDF_Stream> FormNamed(const CPDF_Stream* owner,
+                                       ByteStringView name) {
+  return owner->GetDict()
+      ->GetDictFor("Resources")
+      ->GetDictFor("XObject")
+      ->GetStreamFor(name);
+}
+
+}  // namespace
+
+TEST_F(EPDFStampResizeEmbedderTest, OpacityIsAcrobatsLayerOverOurWrapper) {
+  InstallArtwork();
+  annot_dict()->SetNewFor<CPDF_Number>("CA", 0.5f);
+  ASSERT_TRUE(
+      EPDFAnnot_UpdateAppearanceToRect(annot_.get(), EPDF_STAMP_FIT_CONTAIN));
+  // Byte for byte the layer Acrobat writes, which it replaces, not nests.
+  EXPECT_EQ("/R0 gs\n/MWFOForm Do\n",
+            GetNormalAppearanceStreamBytes(annot_.get()));
+  auto layer = appearance();
+  EXPECT_EQ(CFX_FloatRect(0, 0, 100, 100), layer->GetDict()->GetRectFor("BBox"));
+  EXPECT_FALSE(layer->GetDict()->KeyExist("Matrix"));
+  auto state = layer->GetDict()
+                   ->GetDictFor("Resources")
+                   ->GetDictFor("ExtGState")
+                   ->GetDictFor("R0");
+  ASSERT_TRUE(state);
+  EXPECT_FLOAT_EQ(0.5f, state->GetFloatFor("CA"));
+  EXPECT_FLOAT_EQ(0.5f, state->GetFloatFor("ca"));
+  EXPECT_FALSE(state->GetBooleanFor("AIS", true));
+  auto wrapper = FormNamed(layer.Get(), "MWFOForm");
+  ASSERT_TRUE(wrapper);
+  EXPECT_EQ("q .5 0 0 .5 0 25 cm /EPDFWRAP Do Q", StreamBytes(wrapper.Get()));
+  EXPECT_EQ("Transparency",
+            wrapper->GetDict()->GetDictFor("Group")->GetNameFor("S"));
+  auto drawing = FormNamed(wrapper.Get(), "EPDFWRAP");
+  ASSERT_TRUE(drawing);
+
+  // A new opacity replaces the layer over the same drawing.
+  ASSERT_TRUE(
+      EPDFAnnot_SetStampOpacity(annot_.get(), EPDF_STAMP_FIT_CONTAIN, 64));
+  EXPECT_FLOAT_EQ(64 / 255.f, annot_dict()->GetFloatFor("CA"));
+  EXPECT_FLOAT_EQ(64 / 255.f, appearance()
+                                  ->GetDict()
+                                  ->GetDictFor("Resources")
+                                  ->GetDictFor("ExtGState")
+                                  ->GetDictFor("R0")
+                                  ->GetFloatFor("CA"));
+  auto rewrapped = FormNamed(appearance().Get(), "MWFOForm");
+  EXPECT_EQ("q .5 0 0 .5 0 25 cm /EPDFWRAP Do Q",
+            StreamBytes(rewrapped.Get()));
+  EXPECT_EQ(drawing.Get(), FormNamed(rewrapped.Get(), "EPDFWRAP").Get());
+
+  // Back to opaque: no /CA, no layer, the wrapper is the appearance.
+  ASSERT_TRUE(
+      EPDFAnnot_SetStampOpacity(annot_.get(), EPDF_STAMP_FIT_CONTAIN, 255));
+  EXPECT_FALSE(annot_dict()->KeyExist("CA"));
+  EXPECT_EQ("q .5 0 0 .5 0 25 cm /EPDFWRAP Do Q",
+            GetNormalAppearanceStreamBytes(annot_.get()));
+  EXPECT_EQ(drawing.Get(), FormNamed(appearance().Get(), "EPDFWRAP").Get());
+}
+
+TEST_F(EPDFStampResizeEmbedderTest, SetStampOpacityReplacesAcrobatsLayer) {
+  InstallOpacityLayer(pdf(), annot_dict().Get(), 0.3f);
+  annot_dict()->SetNewFor<CPDF_Number>("CA", 0.3f);
+  EXPECT_FALSE(
+      EPDFAnnot_SetStampOpacity(annot_.get(), EPDF_STAMP_FIT_CONTAIN, 256));
+  ASSERT_TRUE(
+      EPDFAnnot_SetStampOpacity(annot_.get(), EPDF_STAMP_FIT_CONTAIN, 255));
+  // Opaque: Acrobat's artwork in our wrapper, without either layer.
+  EXPECT_FALSE(annot_dict()->KeyExist("CA"));
+  EXPECT_EQ("q .5 0 0 .5 0 25 cm /EPDFWRAP Do Q",
+            GetNormalAppearanceStreamBytes(annot_.get()));
+  EXPECT_EQ("/MWFOForm Do",
+            StreamBytes(FormNamed(appearance().Get(), "EPDFWRAP").Get()));
+
+  // A re-fit that fails leaves /CA and the appearance as they were.
+  auto before = appearance();
+  const FS_RECTF empty{10, 10, 10, 10};
+  ASSERT_TRUE(EPDFAnnot_SetRect(annot_.get(), &empty));
+  EXPECT_FALSE(
+      EPDFAnnot_SetStampOpacity(annot_.get(), EPDF_STAMP_FIT_CONTAIN, 128));
+  EXPECT_FALSE(annot_dict()->KeyExist("CA"));
+  EXPECT_EQ(before.Get(), appearance().Get());
+}
+
+TEST_F(EPDFStampResizeEmbedderTest,
+       ALayerThatDoesNotPaintCAOverOurWrapperIsPartOfTheDrawing) {
+  InstallArtwork();
+  annot_dict()->SetNewFor<CPDF_Number>("CA", 0.35f);
+  ASSERT_TRUE(
+      EPDFAnnot_UpdateAppearanceToRect(annot_.get(), EPDF_STAMP_FIT_CONTAIN));
+  // Another tool drops /CA and keeps the appearance: the page still shows
+  // 35%, which the data no longer describes, so it is part of the drawing.
+  annot_dict()->RemoveFor("CA");
+
+  {
+    ScopedFPDFDocument exported(EPDFAnnot_ExportAppearance(annot_.get()));
+    ASSERT_TRUE(exported);
+    ScopedFPDFPage page(FPDF_LoadPage(exported.get(), 0));
+    // Drawn as shown, in /Rect, the layer included.
+    EXPECT_FLOAT_EQ(100.0f, FPDF_GetPageWidthF(page.get()));
+    EXPECT_FLOAT_EQ(100.0f, FPDF_GetPageHeightF(page.get()));
+    auto exported_drawing = CPDFPageFromFPDFPage(page.get())
+                                ->GetDict()
+                                ->GetDictFor("Resources")
+                                ->GetDictFor("XObject")
+                                ->GetStreamFor("EPDFDRAWING");
+    ASSERT_TRUE(exported_drawing);
+    EXPECT_EQ("/R0 gs\n/MWFOForm Do\n", StreamBytes(exported_drawing.Get()));
+  }
+
+  ASSERT_TRUE(
+      EPDFAnnot_UpdateAppearanceToRect(annot_.get(), EPDF_STAMP_FIT_CONTAIN));
+  EXPECT_EQ("/R0 gs\n/MWFOForm Do\n",
+            StreamBytes(FormNamed(appearance().Get(), "EPDFWRAP").Get()));
+}
+
+TEST_F(EPDFStampResizeEmbedderTest, AnOpacityLayerRepeatingCAIsReplacedNotNested) {
+  InstallOpacityLayer(pdf(), annot_dict().Get(), 0.3f);
+  annot_dict()->SetNewFor<CPDF_Number>("CA", 0.3f);
+  ASSERT_TRUE(
+      EPDFAnnot_UpdateAppearanceToRect(annot_.get(), EPDF_STAMP_FIT_CONTAIN));
+  EXPECT_EQ("/R0 gs\n/MWFOForm Do\n",
+            GetNormalAppearanceStreamBytes(annot_.get()));
+  auto wrapper = FormNamed(appearance().Get(), "MWFOForm");
+  ASSERT_TRUE(wrapper);
+  EXPECT_EQ("q .5 0 0 .5 0 25 cm /EPDFWRAP Do Q", StreamBytes(wrapper.Get()));
+  // The drawing is Acrobat's artwork form, without Acrobat's layer.
+  auto drawing = FormNamed(wrapper.Get(), "EPDFWRAP");
+  ASSERT_TRUE(drawing);
+  EXPECT_EQ("/MWFOForm Do", StreamBytes(drawing.Get()));
+  EXPECT_FALSE(
+      drawing->GetDict()->GetDictFor("Resources")->KeyExist("ExtGState"));
+}
+
+TEST_F(EPDFStampResizeEmbedderTest, OurWrapperIsFoundUnderFormsThatOnlyDrawIt) {
+  InstallArtwork();
+  annot_dict()->SetNewFor<CPDF_Number>("CA", 0.5f);
+  ASSERT_TRUE(
+      EPDFAnnot_UpdateAppearanceToRect(annot_.get(), EPDF_STAMP_FIT_CONTAIN));
+  auto ours = FormNamed(appearance().Get(), "MWFOForm");
+  auto drawing = FormNamed(ours.Get(), "EPDFWRAP");
+  ASSERT_TRUE(drawing);
+
+  // What Acrobat saves after a new opacity: its layer, over a group and a
+  // plain form that only draw our wrapper, which it keeps as its artwork.
+  auto plain = DrawOnly(pdf(), ours.Get(), /*group=*/false);
+  auto group = DrawOnly(pdf(), plain.Get(), /*group=*/true);
+  InstallOpacityLayer(pdf(), annot_dict().Get(), 0.6f, group);
+  annot_dict()->SetNewFor<CPDF_Number>("CA", 0.6f);
+
+  // A copy's drawing is ours, in its own box.
+  {
+    ScopedFPDFDocument exported(EPDFAnnot_ExportAppearance(annot_.get()));
+    ASSERT_TRUE(exported);
+    ScopedFPDFPage page(FPDF_LoadPage(exported.get(), 0));
+    EXPECT_FLOAT_EQ(200.0f, FPDF_GetPageWidthF(page.get()));
+    EXPECT_FLOAT_EQ(100.0f, FPDF_GetPageHeightF(page.get()));
+    auto exported_drawing = CPDFPageFromFPDFPage(page.get())
+                                ->GetDict()
+                                ->GetDictFor("Resources")
+                                ->GetDictFor("XObject")
+                                ->GetStreamFor("EPDFDRAWING");
+    ASSERT_TRUE(exported_drawing);
+    EXPECT_EQ("1 0 0 rg 0 0 200 100 re f", StreamBytes(exported_drawing.Get()));
+  }
+
+  // A re-fit drops Acrobat's forms: one layer, one wrapper, our drawing.
+  ASSERT_TRUE(
+      EPDFAnnot_UpdateAppearanceToRect(annot_.get(), EPDF_STAMP_FIT_CONTAIN));
+  EXPECT_EQ("/R0 gs\n/MWFOForm Do\n",
+            GetNormalAppearanceStreamBytes(annot_.get()));
+  auto wrapper = FormNamed(appearance().Get(), "MWFOForm");
+  EXPECT_EQ("q .5 0 0 .5 0 25 cm /EPDFWRAP Do Q", StreamBytes(wrapper.Get()));
+  EXPECT_EQ(drawing.Get(), FormNamed(wrapper.Get(), "EPDFWRAP").Get());
+
+  // Acrobat at full opacity: no layer, a plain form around our wrapper.
+  annot_dict()->RemoveFor("CA");
+  auto around = DrawOnly(pdf(), wrapper.Get(), /*group=*/false);
+  annot_dict()->GetMutableDictFor("AP")->SetNewFor<CPDF_Reference>(
+      "N", pdf(), around->GetObjNum());
+  ASSERT_TRUE(
+      EPDFAnnot_UpdateAppearanceToRect(annot_.get(), EPDF_STAMP_FIT_CONTAIN));
+  EXPECT_EQ("q .5 0 0 .5 0 25 cm /EPDFWRAP Do Q",
+            GetNormalAppearanceStreamBytes(annot_.get()));
+  EXPECT_EQ(drawing.Get(), FormNamed(appearance().Get(), "EPDFWRAP").Get());
+}
+
+TEST_F(EPDFStampResizeEmbedderTest,
+       AFormThatChangesItsDrawingIsNotLookedThrough) {
+  InstallArtwork();
+  ASSERT_TRUE(
+      EPDFAnnot_UpdateAppearanceToRect(annot_.get(), EPDF_STAMP_FIT_CONTAIN));
+  auto ours = appearance();
+  const auto scales = DrawOnly(pdf(), ours.Get(), /*group=*/false,
+                               CFX_Matrix(2, 0, 0, 2, 0, 0));
+  const auto clips = DrawOnly(pdf(), ours.Get(), /*group=*/false, CFX_Matrix(),
+                              CFX_FloatRect(0, 0, 50, 100));
+  // Optional content can hide the form, and so what it draws.
+  const auto hides = DrawOnly(pdf(), ours.Get(), /*group=*/false);
+  hides->GetMutableDict()->SetNewFor<CPDF_Dictionary>("OC")->SetNewFor<CPDF_Name>(
+      "Type", "OCMD");
+  // A knockout group composites what it draws differently.
+  const auto knocks_out = DrawOnly(pdf(), ours.Get(), /*group=*/true);
+  knocks_out->GetMutableDict()->GetMutableDictFor("Group")->SetNewFor<CPDF_Boolean>(
+      "K", true);
+  for (const RetainPtr<CPDF_Stream>& around :
+       {scales, clips, hides, knocks_out}) {
+    annot_dict()->GetMutableDictFor("AP")->SetNewFor<CPDF_Reference>(
+        "N", pdf(), around->GetObjNum());
+    ASSERT_TRUE(
+        EPDFAnnot_UpdateAppearanceToRect(annot_.get(), EPDF_STAMP_FIT_CONTAIN));
+    // Another producer's drawing: the form around ours is wrapped whole.
+    EXPECT_EQ("/Form Do\n",
+              StreamBytes(FormNamed(appearance().Get(), "EPDFWRAP").Get()));
+  }
+}
+
+TEST_F(EPDFStampResizeEmbedderTest, AFormThatOnlyMovesItsDrawingIsLookedThrough) {
+  InstallArtwork();
+  ASSERT_TRUE(
+      EPDFAnnot_UpdateAppearanceToRect(annot_.get(), EPDF_STAMP_FIT_CONTAIN));
+  auto ours = appearance();
+  auto drawing = FormNamed(ours.Get(), "EPDFWRAP");
+  // What Acrobat writes when its arithmetic puts the turned box a fraction
+  // below the origin: a box moved down, drawn moved back up.
+  auto moves = DrawOnly(pdf(), ours.Get(), /*group=*/false,
+                        CFX_Matrix(1, 0, 0, 1, 0, 0.000839233f),
+                        CFX_FloatRect(0, -0.000839233f, 100, 99.999161f));
+  annot_dict()->GetMutableDictFor("AP")->SetNewFor<CPDF_Reference>(
+      "N", pdf(), moves->GetObjNum());
+  ASSERT_TRUE(
+      EPDFAnnot_UpdateAppearanceToRect(annot_.get(), EPDF_STAMP_FIT_CONTAIN));
+  EXPECT_EQ("q .5 0 0 .5 0 25 cm /EPDFWRAP Do Q",
+            GetNormalAppearanceStreamBytes(annot_.get()));
+  EXPECT_EQ(drawing.Get(), FormNamed(appearance().Get(), "EPDFWRAP").Get());
+}
+
+TEST_F(EPDFStampResizeEmbedderTest, WrappingMovesTheDrawingsEntriesWithIt) {
+  auto artwork = InstallArtwork();
+  auto artwork_dict = artwork->GetMutableDict();
+  auto group = artwork_dict->SetNewFor<CPDF_Dictionary>("Group");
+  group->SetNewFor<CPDF_Name>("S", "Transparency");
+  group->SetNewFor<CPDF_Boolean>("K", true);
+  artwork_dict->SetNewFor<CPDF_Dictionary>("OC")->SetNewFor<CPDF_Name>("Type",
+                                                                      "OCMD");
+  ASSERT_TRUE(
+      EPDFAnnot_UpdateAppearanceToRect(annot_.get(), EPDF_STAMP_FIT_CONTAIN));
+
+  // The drawing keeps its group and optional content; the wrapper has its
+  // own plain group and nothing of the drawing's.
+  auto wrapper = appearance();
+  auto drawing = FormNamed(wrapper.Get(), "EPDFWRAP");
+  ASSERT_TRUE(drawing);
+  EXPECT_TRUE(drawing->GetDict()->GetDictFor("Group")->GetBooleanFor("K", false));
+  EXPECT_TRUE(drawing->GetDict()->KeyExist("OC"));
+  EXPECT_FALSE(wrapper->GetDict()->KeyExist("OC"));
+  auto wrapper_group = wrapper->GetDict()->GetDictFor("Group");
+  EXPECT_EQ("Transparency", wrapper_group->GetNameFor("S"));
+  EXPECT_FALSE(wrapper_group->KeyExist("K"));
+
+  // So a copy's drawing draws the same.
+  ScopedFPDFDocument exported(EPDFAnnot_ExportAppearance(annot_.get()));
+  ASSERT_TRUE(exported);
+  ScopedFPDFPage page(FPDF_LoadPage(exported.get(), 0));
+  auto exported_drawing = CPDFPageFromFPDFPage(page.get())
+                              ->GetDict()
+                              ->GetDictFor("Resources")
+                              ->GetDictFor("XObject")
+                              ->GetStreamFor("EPDFDRAWING");
+  ASSERT_TRUE(exported_drawing);
+  EXPECT_TRUE(
+      exported_drawing->GetDict()->GetDictFor("Group")->GetBooleanFor("K", false));
+  EXPECT_TRUE(exported_drawing->GetDict()->KeyExist("OC"));
+}
+
+TEST_F(EPDFStampResizeEmbedderTest, RotatedWrapperStartsAtTheOrigin) {
+  InstallArtwork();
+  const FS_RECTF unrotated{10, 60, 110, 10};
+  ASSERT_TRUE(EPDFAnnot_SetEmbedMetadataNumber(annot_.get(), "Rotation", 30));
+  ASSERT_TRUE(
+      EPDFAnnot_SetEmbedMetadataRect(annot_.get(), "UnrotatedRect", &unrotated));
+  annot_dict()->SetNewFor<CPDF_Number>("CA", 0.5f);
+  ASSERT_TRUE(
+      EPDFAnnot_UpdateAppearanceToRect(annot_.get(), EPDF_STAMP_FIT_CONTAIN));
+  auto layer = appearance();
+  auto wrapper = FormNamed(layer.Get(), "MWFOForm");
+  ASSERT_TRUE(wrapper);
+  EXPECT_EQ(CFX_FloatRect(0, 0, 100, 50), wrapper->GetDict()->GetRectFor("BBox"));
+  const CFX_Matrix matrix = wrapper->GetDict()->GetMatrixFor("Matrix");
+  EXPECT_NEAR(0.866025f, matrix.a, 1e-5);
+  EXPECT_NEAR(0.5f, matrix.b, 1e-5);
+  EXPECT_NEAR(-0.5f, matrix.c, 1e-5);
+  EXPECT_NEAR(0.866025f, matrix.d, 1e-5);
+  // The turned box starts at the origin, and the layer's box is that box.
+  const CFX_FloatRect shown = ShownBox(wrapper.Get());
+  EXPECT_NEAR(0, shown.left, 1e-3);
+  EXPECT_NEAR(0, shown.bottom, 1e-3);
+  EXPECT_NEAR(111.6025f, shown.right, 1e-3);
+  EXPECT_NEAR(93.3013f, shown.top, 1e-3);
+  const CFX_FloatRect box = layer->GetDict()->GetRectFor("BBox");
+  EXPECT_NEAR(shown.left, box.left, 1e-3);
+  EXPECT_NEAR(shown.bottom, box.bottom, 1e-3);
+  EXPECT_NEAR(shown.right, box.right, 1e-3);
+  EXPECT_NEAR(shown.top, box.top, 1e-3);
+  EXPECT_FALSE(layer->GetDict()->KeyExist("Matrix"));
+}
+
+TEST_F(EPDFStampResizeEmbedderTest, ALayerThatDoesNotRepeatCAIsPartOfTheDrawing) {
+  InstallOpacityLayer(pdf(), annot_dict().Get(), 0.3f);
+  ASSERT_TRUE(
+      EPDFAnnot_UpdateAppearanceToRect(annot_.get(), EPDF_STAMP_FIT_CONTAIN));
+  EXPECT_EQ("q .5 0 0 .5 0 25 cm /EPDFWRAP Do Q",
+            GetNormalAppearanceStreamBytes(annot_.get()));
+  auto child = appearance()
+                   ->GetDict()
+                   ->GetDictFor("Resources")
+                   ->GetDictFor("XObject")
+                   ->GetStreamFor("EPDFWRAP");
+  ASSERT_TRUE(child);
+  EXPECT_EQ("/R0 gs\n/MWFOForm Do\n", StreamBytes(child.Get()));
+}
+
+TEST_F(EPDFStampResizeEmbedderTest, ExportAppearanceOfOurWrapperIsTheDrawing) {
+  InstallArtwork();
+  annot_dict()->SetNewFor<CPDF_Number>("CA", 0.5f);
+  ASSERT_TRUE(
+      EPDFAnnot_UpdateAppearanceToRect(annot_.get(), EPDF_STAMP_FIT_CONTAIN));
+  ScopedFPDFDocument exported(EPDFAnnot_ExportAppearance(annot_.get()));
+  ASSERT_TRUE(exported);
+  ASSERT_EQ(1, FPDF_GetPageCount(exported.get()));
+  ScopedFPDFPage page(FPDF_LoadPage(exported.get(), 0));
+  EXPECT_FLOAT_EQ(200.0f, FPDF_GetPageWidthF(page.get()));
+  EXPECT_FLOAT_EQ(100.0f, FPDF_GetPageHeightF(page.get()));
+  auto page_dict = CPDFPageFromFPDFPage(page.get())->GetDict();
+  EXPECT_EQ("q 1 0 0 1 0 0 cm /EPDFDRAWING Do Q",
+            StreamBytes(page_dict->GetStreamFor("Contents").Get()));
+  auto drawing = page_dict->GetDictFor("Resources")
+                     ->GetDictFor("XObject")
+                     ->GetStreamFor("EPDFDRAWING");
+  ASSERT_TRUE(drawing);
+  EXPECT_EQ("1 0 0 rg 0 0 200 100 re f", StreamBytes(drawing.Get()));
+}
+
+TEST_F(EPDFStampResizeEmbedderTest, ExportAppearanceLeavesAnOpacityLayerOut) {
+  InstallOpacityLayer(pdf(), annot_dict().Get(), 0.3f);
+  annot_dict()->SetNewFor<CPDF_Number>("CA", 0.3f);
+  ScopedFPDFDocument exported(EPDFAnnot_ExportAppearance(annot_.get()));
+  ASSERT_TRUE(exported);
+  ScopedFPDFPage page(FPDF_LoadPage(exported.get(), 0));
+  // Another producer's appearance: drawn as shown, in /Rect.
+  EXPECT_FLOAT_EQ(100.0f, FPDF_GetPageWidthF(page.get()));
+  EXPECT_FLOAT_EQ(100.0f, FPDF_GetPageHeightF(page.get()));
+  auto page_dict = CPDFPageFromFPDFPage(page.get())->GetDict();
+  EXPECT_EQ("q .5 0 0 1 0 0 cm /EPDFDRAWING Do Q",
+            StreamBytes(page_dict->GetStreamFor("Contents").Get()));
+  auto drawing = page_dict->GetDictFor("Resources")
+                     ->GetDictFor("XObject")
+                     ->GetStreamFor("EPDFDRAWING");
+  ASSERT_TRUE(drawing);
+  EXPECT_EQ("/MWFOForm Do", StreamBytes(drawing.Get()));
+  EXPECT_FALSE(drawing->GetDict()->GetDictFor("Resources")->KeyExist("ExtGState"));
+}
+
 TEST_F(EPDFStampResizeEmbedderTest, CoverCentersBothAxes) {
   InstallArtwork();
   ASSERT_TRUE(
@@ -10889,8 +11333,9 @@ TEST_P(EPDFStampSaveEmbedderTest,
     EXPECT_NEAR(-1, matrix.b, 1e-5);
     EXPECT_NEAR(1, matrix.c, 1e-5);
     EXPECT_NEAR(0, matrix.d, 1e-5);
-    EXPECT_NEAR(50, matrix.e, 1e-5);
-    EXPECT_NEAR(170, matrix.f, 1e-5);
+    // Turned about the origin, the turned box moved back to start there.
+    EXPECT_NEAR(0, matrix.e, 1e-5);
+    EXPECT_NEAR(60, matrix.f, 1e-5);
     EXPECT_EQ(CFX_FloatRect(0, 0, 60, 30), dict->GetRectFor("BBox"));
     EXPECT_EQ(CFX_FloatRect(0, 0, 200, 100),
               dict->GetRectFor("EPDFOrigContentRect"));

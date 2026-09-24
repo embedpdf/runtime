@@ -132,6 +132,7 @@ int CheckPDFiumCApi() {
   CHK(EPDFAttachment_GetDescription);
   CHK(EPDFAttachment_GetIntegerValue);
   CHK(EPDFAttachment_SetDescription);
+  CHK(EPDFAttachment_SetName);
   CHK(EPDFAttachment_SetSubtype);
   CHK(EPDFDoc_GetAttachmentIndexByKey);
   CHK(EPDFDoc_GetAttachmentKey);
@@ -619,6 +620,8 @@ int CheckPDFiumCApi() {
   // EmbedPDF: link every measurement entry point from C.
   CHK(EPDFAnnot_GetMeasure);
   CHK(EPDFAnnot_AddMeasure);
+  CHK(EPDFAnnot_ExportAppearance);
+  CHK(EPDFAnnot_SetStampOpacity);
   CHK(EPDFAnnot_RemoveMeasure);
   CHK(EPDFPage_CountViewports);
   CHK(EPDFPage_GetViewport);

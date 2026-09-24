@@ -6,6 +6,7 @@
 #include <vector>
 
 #include "public/fpdf_attachment.h"
+#include "public/fpdf_save.h"
 #include "public/fpdfview.h"
 #include "testing/embedder_test.h"
 #include "testing/fx_string_testhelpers.h"
@@ -760,4 +761,47 @@ TEST_F(FPDFAttachmentEmbedderTest, GetAttachmentIndexByKey) {
   EXPECT_EQ(-1, EPDFDoc_GetAttachmentIndexByKey(document(), key0.get()));
   EXPECT_EQ(0, EPDFDoc_GetAttachmentIndexByKey(document(), key1.get()));
   EXPECT_EQ(1, EPDFDoc_GetAttachmentIndexByKey(document(), key2.get()));
+}
+
+TEST_F(FPDFAttachmentEmbedderTest, SetNameKeepsTheRestOfTheFileSpec) {
+  ASSERT_TRUE(OpenDocument("embedded_attachments.pdf"));
+  FPDF_ATTACHMENT attachment = FPDFDoc_GetAttachment(document(), 0);
+  ASSERT_TRUE(attachment);
+
+  ScopedFPDFWideString desc = GetFPDFWideString(L"Kept description");
+  ASSERT_TRUE(EPDFAttachment_SetDescription(attachment, desc.get()));
+
+  ScopedFPDFWideString empty = GetFPDFWideString(L"");
+  EXPECT_FALSE(EPDFAttachment_SetName(attachment, empty.get()));
+  EXPECT_FALSE(EPDFAttachment_SetName(nullptr, empty.get()));
+
+  ScopedFPDFWideString name = GetFPDFWideString(L"r\u00e9sum\u00e9.txt");
+  ASSERT_TRUE(EPDFAttachment_SetName(attachment, name.get()));
+
+  unsigned long length_bytes = FPDFAttachment_GetName(attachment, nullptr, 0);
+  std::vector<FPDF_WCHAR> buf = GetFPDFWideStringBuffer(length_bytes);
+  ASSERT_EQ(length_bytes,
+            FPDFAttachment_GetName(attachment, buf.data(), length_bytes));
+  EXPECT_EQ(L"r\u00e9sum\u00e9.txt", GetPlatformWString(buf.data()));
+
+  // The file's bytes and description are untouched.
+  unsigned long out_len = 0;
+  ASSERT_TRUE(FPDFAttachment_GetFile(attachment, nullptr, 0, &out_len));
+  EXPECT_EQ(4u, out_len);
+  length_bytes = EPDFAttachment_GetDescription(attachment, nullptr, 0);
+  buf = GetFPDFWideStringBuffer(length_bytes);
+  ASSERT_EQ(length_bytes,
+            EPDFAttachment_GetDescription(attachment, buf.data(), length_bytes));
+  EXPECT_EQ(L"Kept description", GetPlatformWString(buf.data()));
+
+  // The name survives a save and reload.
+  ASSERT_TRUE(FPDF_SaveAsCopy(document(), this, 0));
+  ASSERT_TRUE(OpenSavedDocument());
+  FPDF_ATTACHMENT saved = FPDFDoc_GetAttachment(saved_document(), 0);
+  ASSERT_TRUE(saved);
+  length_bytes = FPDFAttachment_GetName(saved, nullptr, 0);
+  buf = GetFPDFWideStringBuffer(length_bytes);
+  ASSERT_EQ(length_bytes, FPDFAttachment_GetName(saved, buf.data(), length_bytes));
+  EXPECT_EQ(L"r\u00e9sum\u00e9.txt", GetPlatformWString(buf.data()));
+  CloseSavedDocument();
 }

@@ -61,6 +61,7 @@
 #include "fpdfsdk/cpdfsdk_helpers.h"
 #include "fpdfsdk/cpdfsdk_interactiveform.h"
 #include "fpdfsdk/epdf_appearance_exporter.h"
+#include "fpdfsdk/epdf_wrapped_appearance.h"
 
 namespace {
 
@@ -822,42 +823,21 @@ static CFX_FloatRect GetFormDisplayBox(const CPDF_Dictionary* stream_dict) {
   return bbox;
 }
 
-// Private metadata can survive an external editor replacing the appearance.
-// Only reuse our child when the stream still consists solely of its placement.
-// Derive the source bounds from the child, not a possibly stale cached rect.
-static CFX_FloatRect GetWrappedAPContentRect(const CPDF_Stream* ap) {
-  RetainPtr<const CPDF_Dictionary> resources =
-      ap->GetDict()->GetDictFor("Resources");
-  RetainPtr<const CPDF_Dictionary> xobjects =
-      resources ? resources->GetDictFor("XObject") : nullptr;
-  RetainPtr<const CPDF_Stream> child =
-      xobjects ? xobjects->GetStreamFor("EPDFWRAP") : nullptr;
-  if (!child || child.Get() == ap ||
-      child->GetDict()->GetNameFor("Subtype") != "Form") {
-    return CFX_FloatRect();
+// `resources` without the named graphics state. The /ExtGState dictionary is
+// copied first: it may be shared with other appearances.
+static void RemoveExtGState(CPDF_Dictionary* resources,
+                            const ByteString& name) {
+  RetainPtr<const CPDF_Dictionary> states = resources->GetDictFor("ExtGState");
+  if (!states) {
+    return;
   }
-
-  auto acc = pdfium::MakeRetain<CPDF_StreamAcc>(pdfium::WrapRetain(ap));
-  acc->LoadAllDataFiltered();
-  CPDF_StreamParser parser(acc->GetSpan());
-  auto keyword = [&parser](ByteStringView word) {
-    return parser.ParseNextElement() == CPDF_StreamParser::kKeyword &&
-           parser.GetWord() == word;
-  };
-  if (!keyword("q")) {
-    return CFX_FloatRect();
+  RetainPtr<CPDF_Dictionary> copy = ToDictionary(states->Clone());
+  copy->RemoveFor(name.AsStringView());
+  if (copy->size() == 0) {
+    resources->RemoveFor("ExtGState");
+  } else {
+    resources->SetFor("ExtGState", std::move(copy));
   }
-  for (int i = 0; i < 6; ++i) {
-    if (parser.ParseNextElement() != CPDF_StreamParser::kNumber) {
-      return CFX_FloatRect();
-    }
-  }
-  if (!keyword("cm") || parser.ParseNextElement() != CPDF_StreamParser::kName ||
-      parser.GetWord() != "/EPDFWRAP" || !keyword("Do") || !keyword("Q") ||
-      parser.ParseNextElement() != CPDF_StreamParser::kEndOfData) {
-    return CFX_FloatRect();
-  }
-  return GetFormDisplayBox(child->GetDict().Get());
 }
 
 // Detach the reference path as well as the stream: /AP and /AP/N state
@@ -897,7 +877,14 @@ static void SetDetachedNormalAppearance(CPDF_Document* doc,
 // Resources/XObject/EPDFWRAP, so the outer AP content can be a simple
 // "q ... cm /EPDFWRAP Do Q" that handles all scaling.  Returns false on
 // failure; on success the caller must write the new wrapper content stream.
-static bool WrapAPContentIntoFormXObject(CPDF_Stream* ap, CPDF_Document* doc) {
+// A layer that only repeats the annotation's `opacity` stays behind: our own
+// layer paints /CA over the wrapper, so keeping it would paint it twice.
+static bool WrapAPContentIntoFormXObject(CPDF_Stream* ap,
+                                         CPDF_Document* doc,
+                                         float opacity) {
+  const std::optional<EpdfOpacityLayer> layer =
+      EpdfFindOpacityLayer(ap, opacity);
+
   RetainPtr<CPDF_Dictionary> ap_dict = ap->GetMutableDict();
   if (!ap_dict) {
     return false;
@@ -928,18 +915,50 @@ static bool WrapAPContentIntoFormXObject(CPDF_Stream* ap, CPDF_Document* doc) {
     child_dict->RemoveFor("Matrix");
   }
 
+  // Every other entry belongs to the drawing, not to how we place it: its
+  // transparency group, optional content (/OC), metadata. It moves with the
+  // content, so the drawing a copy is made from draws the same.
+  std::vector<ByteString> drawing_keys;
+  {
+    CPDF_DictionaryLocker locker(ap_dict.Get());
+    for (const auto& entry : locker) {
+      const ByteString& key = entry.first;
+      if (key != "Type" && key != "Subtype" && key != "BBox" &&
+          key != "Matrix" && key != "Resources" && key != "Length" &&
+          key != "Filter" && key != "DecodeParms" && key != "DL" &&
+          key != "EPDFOrigContentRect") {
+        drawing_keys.push_back(key);
+      }
+    }
+  }
+  for (const ByteString& key : drawing_keys) {
+    child_dict->SetFor(key, ap_dict->RemoveFor(key.AsStringView()));
+  }
+
   // Move Resources to the child (avoids deep-clone cost).
   RetainPtr<CPDF_Dictionary> res = ap_dict->GetMutableDictFor("Resources");
   if (res) {
-    child_dict->SetFor("Resources", res->Clone());
+    RetainPtr<CPDF_Dictionary> child_res = ToDictionary(res->Clone());
+    if (layer) {
+      RemoveExtGState(child_res.Get(), layer->state);
+    }
+    child_dict->SetFor("Resources", std::move(child_res));
     ap_dict->RemoveFor("Resources");
   }
 
-  // Create the child stream with the original AP content bytes.
-  auto acc = pdfium::MakeRetain<CPDF_StreamAcc>(pdfium::WrapRetain(ap));
-  acc->LoadAllDataFiltered();
-  auto span = acc->GetSpan();
-  DataVector<uint8_t> content_bytes(span.begin(), span.end());
+  // Create the child stream with the original AP content bytes, or only the
+  // drawing when the content was an opacity layer around it.
+  DataVector<uint8_t> content_bytes;
+  if (layer) {
+    const ByteString drawing = layer->form_token + " Do";
+    content_bytes.assign(drawing.unsigned_span().begin(),
+                         drawing.unsigned_span().end());
+  } else {
+    auto acc = pdfium::MakeRetain<CPDF_StreamAcc>(pdfium::WrapRetain(ap));
+    acc->LoadAllDataFiltered();
+    auto span = acc->GetSpan();
+    content_bytes.assign(span.begin(), span.end());
+  }
 
   auto child_stream = doc->NewIndirect<CPDF_Stream>(std::move(child_dict));
   child_stream->SetData(content_bytes);
@@ -4235,8 +4254,12 @@ EPDFAnnot_GetName(FPDF_ANNOTATION annot, char* buffer, unsigned long buflen) {
       name_str, UNSAFE_BUFFERS(SpanFromFPDFApiArgs(buffer, buflen)));
 }
 
-FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV
-EPDFAnnot_UpdateAppearanceToRect(FPDF_ANNOTATION annot, EPDF_STAMP_FIT fit) {
+// Re-fit a placed drawing's appearance into its box, painting the annotation's
+// /CA. `painted_opacity` is the opacity the current appearance was painted
+// with: a layer that paints it is the opacity, not part of the drawing.
+static bool RefitPlacedAppearance(FPDF_ANNOTATION annot,
+                                  EPDF_STAMP_FIT fit,
+                                  float painted_opacity) {
   EPDFStampFitCpp fit_cpp = ToCpp(fit);
 
   CPDF_AnnotContext* ctx = CPDFAnnotContextFromFPDFAnnotation(annot);
@@ -4285,22 +4308,30 @@ EPDFAnnot_UpdateAppearanceToRect(FPDF_ANNOTATION annot, EPDF_STAMP_FIT fit) {
     }
   }
 
-  // 3) Edit a detached stream. Mutating a shared AP would also resize other
-  // annotations (or inactive states) that refer to it. Publish only on success.
-  ap = ToStream(ap->Clone());
-  RetainPtr<CPDF_Dictionary> ap_dict = ap->GetMutableDict();
-  if (!ap_dict) {
-    return false;
-  }
-
   CPDF_Document* doc = ctx->GetPage()->GetDocument();
   if (!doc) {
     return false;
   }
 
-  // 4) Reuse an intact wrapper, even if an editor stripped private metadata.
-  // Otherwise preserve the current appearance as the new source artwork.
-  CFX_FloatRect content_rect = GetWrappedAPContentRect(ap.Get());
+  // 3) Find our wrapper, under whatever other editors put around it, even if
+  // one stripped private metadata. Edit a detached copy: mutating a shared AP
+  // would also resize other annotations (or inactive states) that refer to
+  // it. Publish only on success.
+  const float opacity = EpdfGetAnnotOpacity(ad.Get());
+  CFX_FloatRect content_rect;
+  if (std::optional<EpdfWrappedAppearance> ours =
+          EpdfFindWrappedAppearance(ap.Get(), painted_opacity)) {
+    ap = ToStream(ours->wrapper->Clone());
+    content_rect = GetFormDisplayBox(ours->drawing->GetDict().Get());
+  } else {
+    ap = ToStream(ap->Clone());
+  }
+  RetainPtr<CPDF_Dictionary> ap_dict = ap ? ap->GetMutableDict() : nullptr;
+  if (!ap_dict) {
+    return false;
+  }
+
+  // 4) Otherwise the current appearance is the drawing to wrap.
   if (content_rect.IsEmpty()) {
     content_rect = GetFormDisplayBox(ap_dict.Get());
     if (content_rect.IsEmpty()) {
@@ -4312,7 +4343,7 @@ EPDFAnnot_UpdateAppearanceToRect(FPDF_ANNOTATION annot, EPDF_STAMP_FIT fit) {
       return false;
     }
 
-    if (!WrapAPContentIntoFormXObject(ap.Get(), doc)) {
+    if (!WrapAPContentIntoFormXObject(ap.Get(), doc, painted_opacity)) {
       return false;
     }
   }
@@ -4331,7 +4362,8 @@ EPDFAnnot_UpdateAppearanceToRect(FPDF_ANNOTATION annot, EPDF_STAMP_FIT fit) {
     return false;
   }
 
-  // 6) Write the wrapper content stream: q sx 0 0 sy tx ty cm /EPDFWRAP Do Q
+  // 6) Write the wrapper content stream:
+  //    q sx 0 0 sy tx ty cm /EPDFWRAP Do Q
   //    Form XObjects render in their own coordinate space.  content_rect.left
   //    and .bottom are the offset of the painted content within the child form,
   //    so the translation compensates for that offset after scaling to align
@@ -4349,31 +4381,77 @@ EPDFAnnot_UpdateAppearanceToRect(FPDF_ANNOTATION annot, EPDF_STAMP_FIT fit) {
     WriteFloat(buf, ty) << " cm /EPDFWRAP Do Q";
     ap->SetDataFromStringstreamAndRemoveFilter(&buf);
   }
+  // A transparency group, so the opacity layer above it fades the drawing
+  // once, as a whole: overlapping parts don't show through one another.
+  if (!ap_dict->KeyExist("Group")) {
+    ap_dict->SetNewFor<CPDF_Dictionary>("Group")->SetNewFor<CPDF_Name>(
+        "S", "Transparency");
+  }
 
   // 7) Update BBox to match the target box dimensions.
   ap_dict->SetRectFor("BBox", CFX_FloatRect(0, 0, box_w, box_h));
 
   // 8) Handle rotation: set AP Matrix for rotation, or clear any stale one.
+  // The box turns about the origin and moves so the turned box starts there
+  // too: /Rect places it on the page, and a form around the wrapper (our
+  // opacity layer, or another editor's) then needs no matrix of its own.
   if (use_rotation) {
     const float theta = rotate_deg * 3.14159265358979323846f / 180.0f;
     const float cos_t = cosf(theta);
     const float sin_t = sinf(theta);
-    const float cx = (unrotated.left + unrotated.right) / 2.0f;
-    const float cy = (unrotated.bottom + unrotated.top) / 2.0f;
-    // M = T(cx,cy) * R(theta) * T(-cx,-cy)
-    ap_dict->SetMatrixFor("Matrix",
-                          CFX_Matrix(cos_t, sin_t, -sin_t, cos_t,
-                                     cx * (1.0f - cos_t) + cy * sin_t,
-                                     cy * (1.0f - cos_t) - cx * sin_t));
+    CFX_Matrix rotation(cos_t, sin_t, -sin_t, cos_t, 0, 0);
+    CFX_FloatRect turned =
+        rotation.TransformRect(CFX_FloatRect(0, 0, box_w, box_h));
+    turned.Normalize();
+    rotation.Translate(-turned.left, -turned.bottom);
+    ap_dict->SetMatrixFor("Matrix", rotation);
   } else {
     ap_dict->RemoveFor("Matrix");
   }
 
-  SetDetachedNormalAppearance(doc, ad.Get(), ap);
+  // 9) Below full opacity, /CA is painted by a layer over the wrapper, in the
+  // form Acrobat writes and recognises (epdf_wrapped_appearance.h).
+  RetainPtr<CPDF_Stream> normal = ap;
+  if (opacity < 1.0f) {
+    doc->AddIndirectObject(ap);
+    normal = EpdfNewOpacityLayer(doc, ap.Get(), opacity);
+  }
+  SetDetachedNormalAppearance(doc, ad.Get(), normal);
   if (ctx->HasForm()) {
-    ctx->SetForm(ap);
+    ctx->SetForm(normal);
   }
   return true;
+}
+
+FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV
+EPDFAnnot_UpdateAppearanceToRect(FPDF_ANNOTATION annot, EPDF_STAMP_FIT fit) {
+  return RefitPlacedAppearance(
+      annot, fit, EpdfGetAnnotOpacity(GetAnnotDictFromFPDFAnnotation(annot)));
+}
+
+FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV
+EPDFAnnot_SetStampOpacity(FPDF_ANNOTATION annot,
+                          EPDF_STAMP_FIT fit,
+                          unsigned int alpha) {
+  RetainPtr<CPDF_Dictionary> dict = GetMutableAnnotDictFromFPDFAnnotation(annot);
+  if (!dict || alpha > 255) {
+    return false;
+  }
+  // The appearance still paints the old value; read it with that.
+  RetainPtr<const CPDF_Object> previous = dict->GetObjectFor("CA");
+  const float painted_opacity = EpdfGetAnnotOpacity(dict.Get());
+  if (!EPDFAnnot_SetOpacity(annot, alpha)) {
+    return false;
+  }
+  if (RefitPlacedAppearance(annot, fit, painted_opacity)) {
+    return true;
+  }
+  if (previous) {
+    dict->SetFor("CA", previous->Clone());
+  } else {
+    dict->RemoveFor("CA");
+  }
+  return false;
 }
 
 FPDF_EXPORT FPDF_ANNOTATION FPDF_CALLCONV
@@ -4665,7 +4743,8 @@ EPDFAnnot_SetAppearanceFromPage(FPDF_ANNOTATION annot,
   if (!content_rect.IsEmpty()) {
     cloned_dict->SetRectFor("EPDFOrigContentRect", content_rect);
 
-    if (!WrapAPContentIntoFormXObject(cloned_stream.Get(), dest_doc)) {
+    if (!WrapAPContentIntoFormXObject(cloned_stream.Get(), dest_doc,
+                                      EpdfGetAnnotOpacity(annot_dict.Get()))) {
       return false;
     }
 
@@ -4687,6 +4766,140 @@ EPDFAnnot_SetAppearanceFromPage(FPDF_ANNOTATION annot,
   ap_dict->SetNewFor<CPDF_Reference>("N", dest_doc, cloned_stream->GetObjNum());
 
   return true;
+}
+
+FPDF_EXPORT FPDF_DOCUMENT FPDF_CALLCONV
+EPDFAnnot_ExportAppearance(FPDF_ANNOTATION annot) {
+  CPDF_AnnotContext* ctx = CPDFAnnotContextFromFPDFAnnotation(annot);
+  IPDF_Page* annot_page = ctx ? ctx->GetPage() : nullptr;
+  CPDF_Document* src_doc = annot_page ? annot_page->GetDocument() : nullptr;
+  const CPDF_Dictionary* annot_dict = ctx ? ctx->GetAnnotDict() : nullptr;
+  if (!src_doc || !annot_dict) {
+    return nullptr;
+  }
+  RetainPtr<CPDF_Stream> ap =
+      GetAnnotAP(annot_dict, CPDF_Annot::AppearanceMode::kNormal);
+  if (!ap) {
+    return nullptr;
+  }
+
+  // What the data doesn't describe: the drawing, and where it sits. `box` is
+  // the page it is exported on; `placement` maps the drawing's space into it.
+  RetainPtr<const CPDF_Stream> drawing;
+  CFX_FloatRect box;
+  CFX_Matrix placement;
+  const float opacity = EpdfGetAnnotOpacity(annot_dict);
+  if (std::optional<EpdfWrappedAppearance> ours =
+          EpdfFindWrappedAppearance(ap.Get(), opacity)) {
+    // Our wrapper: its placement, opacity and rotation are the data's `fit`,
+    // `opacity` and `rotation`, so the drawing is the child, in its own box.
+    drawing = std::move(ours->drawing);
+    box = GetFormDisplayBox(drawing->GetDict().Get());
+  } else {
+    // Another producer's appearance, placed the way ISO 32000-2 12.5.5 places
+    // any appearance in /Rect, its own /Matrix included. A layer that only
+    // repeats the annotation's /CA is the data's `opacity`, so it stays out.
+    if (const std::optional<EpdfOpacityLayer> layer =
+            EpdfFindOpacityLayer(ap.Get(), opacity)) {
+      RetainPtr<CPDF_Stream> copy = ToStream(ap->Clone());
+      const ByteString content = layer->form_token + " Do";
+      copy->SetData(content.unsigned_span());
+      RetainPtr<CPDF_Dictionary> resources =
+          copy->GetMutableDict()->GetMutableDictFor("Resources");
+      if (resources) {
+        RetainPtr<CPDF_Dictionary> own = ToDictionary(resources->Clone());
+        RemoveExtGState(own.Get(), layer->state);
+        copy->GetMutableDict()->SetFor("Resources", std::move(own));
+      }
+      drawing = std::move(copy);
+    } else {
+      drawing = ap;
+    }
+
+    box = annot_dict->GetRectFor(pdfium::annotation::kRect);
+    box.Normalize();
+    CFX_FloatRect bbox = drawing->GetDict()->GetRectFor("BBox");
+    bbox.Normalize();
+    const CFX_Matrix matrix = drawing->GetDict()->GetMatrixFor("Matrix");
+    CFX_FloatRect shown = matrix.TransformRect(bbox);
+    shown.Normalize();
+    if (box.IsEmpty() || shown.IsEmpty()) {
+      return nullptr;
+    }
+    const float sx = box.Width() / shown.Width();
+    const float sy = box.Height() / shown.Height();
+    placement = CFX_Matrix(sx, 0, 0, sy, box.left - shown.left * sx,
+                           box.bottom - shown.bottom * sy);
+
+    // Our rotation metadata without our wrapper (another editor replaced the
+    // appearance): the data's `rotation` will be applied again on import, so
+    // it is taken out here, in the unrotated box the data describes.
+    float rotate_deg = GetEmbedMetadataFloatFor(annot_dict, "Rotation");
+    rotate_deg = fmod(fmod(rotate_deg, 360.0f) + 360.0f, 360.0f);
+    const CFX_FloatRect unrotated =
+        GetEmbedMetadataRectFor(annot_dict, "UnrotatedRect");
+    if (rotate_deg > 0.01f && rotate_deg < 359.99f && !unrotated.IsEmpty()) {
+      const float theta = -rotate_deg * 3.14159265358979323846f / 180.0f;
+      const float cos_t = cosf(theta);
+      const float sin_t = sinf(theta);
+      const float cx = (unrotated.left + unrotated.right) / 2.0f;
+      const float cy = (unrotated.bottom + unrotated.top) / 2.0f;
+      placement.Concat(CFX_Matrix(cos_t, sin_t, -sin_t, cos_t,
+                                  cx * (1.0f - cos_t) + cy * sin_t,
+                                  cy * (1.0f - cos_t) - cx * sin_t));
+      box = unrotated;
+      box.Normalize();
+    }
+  }
+  if (!drawing || box.IsEmpty()) {
+    return nullptr;
+  }
+  placement.Translate(-box.left, -box.bottom);
+
+  FPDF_DOCUMENT exported = FPDF_CreateNewDocument();
+  CPDF_Document* dest_doc = CPDFDocumentFromFPDFDocument(exported);
+  FPDF_PAGE page_handle =
+      dest_doc ? FPDFPage_New(exported, 0, box.Width(), box.Height()) : nullptr;
+  CPDF_Page* dest_page = page_handle ? CPDFPageFromFPDFPage(page_handle) : nullptr;
+  RetainPtr<CPDF_Dictionary> page_dict =
+      dest_page ? dest_page->GetMutableDict() : nullptr;
+  AnnotAppearanceExporter exporter(dest_doc, src_doc);
+  RetainPtr<CPDF_Stream> form =
+      page_dict ? exporter.ExportFormXObject(drawing) : nullptr;
+  if (!form) {
+    if (page_handle) {
+      FPDF_ClosePage(page_handle);
+    }
+    if (exported) {
+      FPDF_CloseDocument(exported);
+    }
+    return nullptr;
+  }
+  RetainPtr<CPDF_Dictionary> form_dict = form->GetMutableDict();
+  form_dict->SetNewFor<CPDF_Name>(pdfium::annotation::kType, "XObject");
+  form_dict->SetNewFor<CPDF_Name>(pdfium::annotation::kSubtype, "Form");
+
+  RetainPtr<CPDF_Dictionary> resources =
+      page_dict->SetNewFor<CPDF_Dictionary>("Resources");
+  RetainPtr<CPDF_Dictionary> xobjects =
+      resources->SetNewFor<CPDF_Dictionary>("XObject");
+  xobjects->SetNewFor<CPDF_Reference>("EPDFDRAWING", dest_doc,
+                                      form->GetObjNum());
+  fxcrt::ostringstream buf;
+  buf << "q ";
+  WriteFloat(buf, placement.a) << " ";
+  WriteFloat(buf, placement.b) << " ";
+  WriteFloat(buf, placement.c) << " ";
+  WriteFloat(buf, placement.d) << " ";
+  WriteFloat(buf, placement.e) << " ";
+  WriteFloat(buf, placement.f) << " cm /EPDFDRAWING Do Q";
+  auto contents = dest_doc->NewIndirect<CPDF_Stream>(
+      pdfium::MakeRetain<CPDF_Dictionary>());
+  contents->SetDataFromStringstreamAndRemoveFilter(&buf);
+  page_dict->SetNewFor<CPDF_Reference>("Contents", dest_doc,
+                                       contents->GetObjNum());
+  FPDF_ClosePage(page_handle);
+  return exported;
 }
 
 FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV EPDFAnnot_GetRect(FPDF_ANNOTATION annot,

@@ -44,6 +44,8 @@ source_set("fpdfsdk") {
     "epdf_jpeg_shim.cpp",
     "epdf_redact.cpp",
     "epdf_threading.cpp",
+    "epdf_wrapped_appearance.cpp",
+    "epdf_wrapped_appearance.h",
     "cpdfsdk_annot.cpp",
     "cpdfsdk_annot.h",
     "cpdfsdk_annotiteration.cpp",

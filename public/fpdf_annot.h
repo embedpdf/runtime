@@ -1844,7 +1844,13 @@ FPDF_EXPORT unsigned long FPDF_CALLCONV EPDFAnnot_GetName(FPDF_ANNOTATION annot,
 // Experimental EmbedPDF Extension API.
 // Resize the normal appearance (/AP/N) of a Stamp to match the annotation's
 // /Rect using the specified fit policy. Updates the AP /BBox and the image's
-// CTM.
+// CTM. Below full opacity (/CA < 1) the appearance is `/R0 gs /MWFOForm Do`
+// over the resized form, the layer Acrobat writes: Acrobat replaces a layer
+// named so when its opacity changes, rather than painting over it. Our
+// wrapper is found again under a layer that paints /CA and under forms that
+// only draw it, so another editor's changes don't nest the drawing. A layer
+// that paints another opacity is part of the drawing; to change /CA, use
+// EPDFAnnot_SetStampOpacity.
 //
 //   annot - handle to a Stamp annotation.
 //   fit   - one of EPDF_STAMP_FIT_*.
@@ -1852,6 +1858,22 @@ FPDF_EXPORT unsigned long FPDF_CALLCONV EPDFAnnot_GetName(FPDF_ANNOTATION annot,
 // Returns true on success.
 FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV
 EPDFAnnot_UpdateAppearanceToRect(FPDF_ANNOTATION annot, EPDF_STAMP_FIT fit);
+
+// Experimental EmbedPDF Extension API.
+// Set a Stamp's opacity (/CA, as EPDFAnnot_SetOpacity) and re-fit its
+// appearance as EPDFAnnot_UpdateAppearanceToRect does, reading the current
+// appearance with the opacity it was painted with: its opacity layer, ours or
+// Acrobat's, is replaced by one for the new value, not kept as drawing.
+//
+//   annot - handle to a Stamp annotation.
+//   fit   - one of EPDF_STAMP_FIT_*.
+//   alpha - the new opacity, 0-255; 255 removes /CA.
+//
+// Returns true on success; on failure /CA and the appearance are unchanged.
+FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV
+EPDFAnnot_SetStampOpacity(FPDF_ANNOTATION annot,
+                          EPDF_STAMP_FIT fit,
+                          unsigned int alpha);
 
 // Experimental EmbedPDF Extension API.
 // Create an annotation. (the difference from FPDFPage_CreateAnnot is that it
@@ -1968,6 +1990,31 @@ FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV
 EPDFAnnot_SetAppearanceFromPage(FPDF_ANNOTATION annot,
                                 FPDF_DOCUMENT src_doc,
                                 int page_index);
+
+// Experimental EmbedPDF Extension API.
+// Export what an annotation's normal appearance draws, apart from what its
+// dictionary describes, as a new single-page document: the drawing a copy of
+// the annotation is created from.
+//
+//   - EmbedPDF's own wrapper (the appearance a stamp gets from
+//     EPDFAnnot_UpdateAppearanceToRect), also when another editor has put
+//     forms that only draw it around it: the wrapped form, in its own box,
+//     without the wrapper's placement, rotation and opacity.
+//   - Any other appearance: drawn the way the page shows it, on a page the
+//     size of /Rect. A layer that only paints the annotation's /CA
+//     (`/GS gs /Form Do`, as Acrobat writes it) is left out, one that paints
+//     another opacity is part of the drawing; with rotation
+//     metadata, the rotation it describes is taken out and the page is the
+//     unrotated box.
+//
+// The source document is untouched.
+//
+//   annot - handle to an annotation with a normal appearance.
+//
+// Returns a new document (the caller closes it with FPDF_CloseDocument()),
+// or NULL when the annotation has no normal appearance or on error.
+FPDF_EXPORT FPDF_DOCUMENT FPDF_CALLCONV
+EPDFAnnot_ExportAppearance(FPDF_ANNOTATION annot);
 
 // Experimental EmbedPDF Extension API.
 // Get the annotation rectangle with normalization applied.

@@ -8,6 +8,7 @@
 
 #include <algorithm>
 #include <memory>
+#include <optional>
 #include <set>
 #include <utility>
 #include <vector>
@@ -67,6 +68,7 @@
 #include "fpdfsdk/cpdfsdk_helpers.h"
 #include "fpdfsdk/cpdfsdk_pageview.h"
 #include "fpdfsdk/cpdfsdk_renderpage.h"
+#include "fpdfsdk/epdf_wrapped_appearance.h"
 #include "fxjs/ijs_runtime.h"
 #include "public/epdf_named_pages.h"
 #include "public/fpdf_formfill.h"
@@ -1343,8 +1345,16 @@ EPDF_RenderAnnotBitmapUnrotated(FPDF_BITMAP bitmap,
     return false;
   }
 
-  // Read the raw BBox WITHOUT applying the AP Matrix.
+  // Read the raw BBox WITHOUT applying the AP Matrix. For our wrapper the
+  // rotation lives on the wrapper, which an opacity layer or another editor's
+  // forms may hold further down: then its box and matrix are the ones to undo.
   CFX_FloatRect form_bbox = pForm->GetDict()->GetRectFor("BBox");
+  CFX_Matrix form_matrix = pForm->GetDict()->GetMatrixFor("Matrix");
+  if (std::optional<EpdfWrappedAppearance> ours = EpdfFindWrappedAppearance(
+          pForm->GetStream().Get(), /*opacity=*/std::nullopt)) {
+    form_bbox = ours->wrapper->GetDict()->GetRectFor("BBox");
+    form_matrix = ours->wrapper_to_appearance;
+  }
 
   // Use /EMBD_Metadata /UnrotatedRect as the target rect for MatchRect.
   // Falls back to /Rect if EmbedPDF metadata is not set.
@@ -1358,7 +1368,6 @@ EPDF_RenderAnnotBitmapUnrotated(FPDF_BITMAP bitmap,
 
   // The form's Matrix (rotation) was baked into the content objects during
   // parsing by CPDF_ContentParser.  We must undo it so the bitmap is unrotated.
-  CFX_Matrix form_matrix = pForm->GetDict()->GetMatrixFor("Matrix");
   CFX_Matrix mtForm2Page = form_matrix.GetInverse();
 
   // Then map raw BBox -> target rect (identity when BBox == unrotatedRect).
