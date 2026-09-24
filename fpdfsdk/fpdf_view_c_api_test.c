@@ -621,6 +621,12 @@ int CheckPDFiumCApi() {
   CHK(EPDFAnnot_GetMeasure);
   CHK(EPDFAnnot_AddMeasure);
   CHK(EPDFAnnot_ExportAppearance);
+  CHK(EPDFAnnot_GetStampDrawing);
+  CHK(EPDFAnnot_SetStampDrawing);
+  CHK(EPDFDoc_CanonicalDrawing);
+  CHK(EPDFDoc_ExportDrawing);
+  CHK(EPDFDoc_GetStampDrawings);
+  CHK(EPDFDoc_ImportDrawing);
   CHK(EPDFAnnot_GetBooleanValue);
   CHK(EPDFAnnot_SetBooleanValue);
   CHK(EPDFAnnot_SetStampOpacity);

@@ -32,6 +32,7 @@
 #include "core/fpdfapi/parser/cpdf_layer_document.h"
 #include "fpdfsdk/cpdfsdk_customaccess.h"
 #include "fpdfsdk/cpdfsdk_filewriteadapter.h"
+#include "fpdfsdk/epdf_hasher.h"
 #include "core/fpdfapi/parser/cpdf_name.h"
 #include "core/fpdfapi/parser/cpdf_number.h"
 #include "core/fpdfapi/parser/cpdf_parser.h"
@@ -1135,84 +1136,10 @@ const std::vector<WideString>* SeedValueList(const SignatureRecord* record,
 // Digests.
 // ---------------------------------------------------------------------------
 
-class Hasher {
- public:
-  explicit Hasher(int algorithm) : algorithm_(algorithm) {
-    switch (algorithm_) {
-      case EPDF_DIGEST_SHA1:
-        CRYPT_SHA1Start(&sha1_);
-        break;
-      case EPDF_DIGEST_SHA256:
-        CRYPT_SHA256Start(&sha2_);
-        break;
-      case EPDF_DIGEST_SHA384:
-        CRYPT_SHA384Start(&sha2_);
-        break;
-      case EPDF_DIGEST_SHA512:
-        CRYPT_SHA512Start(&sha2_);
-        break;
-    }
-  }
-
-  static std::optional<size_t> DigestSize(int algorithm) {
-    switch (algorithm) {
-      case EPDF_DIGEST_SHA1:
-        return 20;
-      case EPDF_DIGEST_SHA256:
-        return 32;
-      case EPDF_DIGEST_SHA384:
-        return 48;
-      case EPDF_DIGEST_SHA512:
-        return 64;
-      default:
-        return std::nullopt;
-    }
-  }
-
-  void Update(pdfium::span<const uint8_t> data) {
-    switch (algorithm_) {
-      case EPDF_DIGEST_SHA1:
-        CRYPT_SHA1Update(&sha1_, data);
-        break;
-      case EPDF_DIGEST_SHA256:
-        CRYPT_SHA256Update(&sha2_, data);
-        break;
-      case EPDF_DIGEST_SHA384:
-        CRYPT_SHA384Update(&sha2_, data);
-        break;
-      case EPDF_DIGEST_SHA512:
-        CRYPT_SHA512Update(&sha2_, data);
-        break;
-    }
-  }
-
-  void Finish(pdfium::span<uint8_t> out) {
-    switch (algorithm_) {
-      case EPDF_DIGEST_SHA1:
-        CRYPT_SHA1Finish(&sha1_, out.first<20>());
-        break;
-      case EPDF_DIGEST_SHA256:
-        CRYPT_SHA256Finish(&sha2_, out.first<32>());
-        break;
-      case EPDF_DIGEST_SHA384:
-        CRYPT_SHA384Finish(&sha2_, out.first<48>());
-        break;
-      case EPDF_DIGEST_SHA512:
-        CRYPT_SHA512Finish(&sha2_, out.first<64>());
-        break;
-    }
-  }
-
- private:
-  const int algorithm_;
-  CRYPT_sha1_context sha1_;
-  CRYPT_sha2_context sha2_;
-};
-
 bool HashRange(IFX_SeekableReadStream* file,
                uint64_t start,
                uint64_t length,
-               Hasher* hasher) {
+               EpdfHasher* hasher) {
   static constexpr size_t kChunk = 64 * 1024;
   DataVector<uint8_t> chunk(kChunk);
   uint64_t offset = start;
@@ -1689,7 +1616,7 @@ EPDFSig_DigestByteRange(FPDF_DOCUMENT document,
   if (!range || !inout_len) {
     return false;
   }
-  std::optional<size_t> digest_size = Hasher::DigestSize(algorithm);
+  std::optional<size_t> digest_size = EpdfHasher::DigestSize(algorithm);
   if (!digest_size.has_value()) {
     return false;
   }
@@ -1710,7 +1637,7 @@ EPDFSig_DigestByteRange(FPDF_DOCUMENT document,
       r[2] > file_size - r[3] || r[0] + r[1] > r[2]) {
     return false;
   }
-  Hasher hasher(algorithm);
+  EpdfHasher hasher(algorithm);
   if (!HashRange(file.Get(), r[0], r[1], &hasher) ||
       !HashRange(file.Get(), r[2], r[3], &hasher)) {
     return false;
@@ -1730,7 +1657,7 @@ EPDFSig_DigestFileRange(FPDF_FILEACCESS* file_access,
   if (!file_access || !range || !inout_len) {
     return false;
   }
-  std::optional<size_t> digest_size = Hasher::DigestSize(algorithm);
+  std::optional<size_t> digest_size = EpdfHasher::DigestSize(algorithm);
   if (!digest_size.has_value()) {
     return false;
   }
@@ -1746,7 +1673,7 @@ EPDFSig_DigestFileRange(FPDF_FILEACCESS* file_access,
       r[2] > file_size - r[3] || r[0] + r[1] > r[2]) {
     return false;
   }
-  Hasher hasher(algorithm);
+  EpdfHasher hasher(algorithm);
   if (!HashRange(file.Get(), r[0], r[1], &hasher) ||
       !HashRange(file.Get(), r[2], r[3], &hasher)) {
     return false;
@@ -2669,7 +2596,7 @@ EPDFSig_Seal(unsigned char* buffer,
       !inout_len || obj_offset >= length || obj_len > length - obj_offset) {
     return false;
   }
-  std::optional<size_t> digest_size = Hasher::DigestSize(algorithm);
+  std::optional<size_t> digest_size = EpdfHasher::DigestSize(algorithm);
   if (!digest_size.has_value()) {
     return false;
   }
@@ -2686,7 +2613,7 @@ EPDFSig_Seal(unsigned char* buffer,
     return false;
   }
 
-  Hasher hasher(algorithm);
+  EpdfHasher hasher(algorithm);
   hasher.Update(file.first(static_cast<size_t>(plan->r1)));
   hasher.Update(file.subspan(static_cast<size_t>(plan->r2)));
   // SAFETY: capacity checked above.

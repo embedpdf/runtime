@@ -7,6 +7,7 @@
 #include <stdint.h>
 
 // NOLINTNEXTLINE(build/include)
+#include "epdf_digest.h"
 #include "fpdf_save.h"
 #include "fpdfview.h"
 
@@ -493,11 +494,6 @@ EPDFObjectDiff_GetRevisionHealth(EPDF_OBJECT_DIFF diff,
 // ---------------------------------------------------------------------------
 // Digests.
 // ---------------------------------------------------------------------------
-
-#define EPDF_DIGEST_SHA1 0
-#define EPDF_DIGEST_SHA256 1
-#define EPDF_DIGEST_SHA384 2
-#define EPDF_DIGEST_SHA512 3
 
 // Experimental EmbedPDF Extension API.
 // Hash bytes [r0, r0+r1) followed by [r2, r2+r3) of the document's own
