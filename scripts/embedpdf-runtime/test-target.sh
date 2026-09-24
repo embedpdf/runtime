@@ -58,7 +58,19 @@ PDF_RUNTIME_TARGET_OS_LIST="${PDF_RUNTIME_TARGET_OS_LIST:-$GN_TARGET_OS}" \
 if [[ "$TARGET" == linux-* ]]; then
   (
     cd "$SOURCE_DIR"
-    build/install-build-deps.sh --no-prompt
+    # EmbedPDF: the full install runs apt-get update + install, which costs
+    # minutes even when nothing is missing. Skip it when an image installed
+    # (and quick-checked) the deps from this exact script, as the monorepo's
+    # Docker test image does, or when Chromium's own quick check finds every
+    # package installed. The sysroot installer is already stamp-checked.
+    if [[ -n "${EMBEDPDF_BUILD_DEPS_INSTALLED_FROM:-}" ]] &&
+      cmp -s "$EMBEDPDF_BUILD_DEPS_INSTALLED_FROM" build/install-build-deps.py; then
+      echo "Linux build dependencies preinstalled from this install-build-deps.py"
+    elif build/install-build-deps.sh --quick-check >/dev/null 2>&1; then
+      echo "Linux build dependencies already installed"
+    else
+      build/install-build-deps.sh --no-prompt
+    fi
     build/linux/sysroot_scripts/install-sysroot.py "--arch=$GN_TARGET_CPU"
   )
 fi
