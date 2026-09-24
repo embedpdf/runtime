@@ -21,9 +21,11 @@ class AnnotAppearanceExporter final : public CPDF_PageOrganizer {
   AnnotAppearanceExporter(CPDF_Document* dest_doc, CPDF_Document* src_doc)
       : CPDF_PageOrganizer(dest_doc, src_doc) {}
 
+  // Changes nothing else in the destination: not its catalog, and not its
+  // /Info, which CPDF_PageOrganizer::Init() would stamp with a /Producer.
   RetainPtr<CPDF_Stream> ExportFormXObject(
       RetainPtr<const CPDF_Stream> src_stream) {
-    if (!src_stream || !Init()) {
+    if (!src_stream) {
       return nullptr;
     }
 

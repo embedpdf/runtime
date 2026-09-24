@@ -621,6 +621,8 @@ int CheckPDFiumCApi() {
   CHK(EPDFAnnot_GetMeasure);
   CHK(EPDFAnnot_AddMeasure);
   CHK(EPDFAnnot_ExportAppearance);
+  CHK(EPDFAnnot_GetBooleanValue);
+  CHK(EPDFAnnot_SetBooleanValue);
   CHK(EPDFAnnot_SetStampOpacity);
   CHK(EPDFAnnot_RemoveMeasure);
   CHK(EPDFPage_CountViewports);

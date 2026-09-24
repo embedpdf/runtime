@@ -171,6 +171,9 @@ pdfium_embeddertest_source_set("embeddertests") {
     "epdf_action_embeddertest.cpp",
     # EmbedPDF: covers the EPDFForm_* session-free form APIs.
     "epdf_form_embeddertest.cpp",
+    # EmbedPDF: experiment E9 of the annotation transfer plan (checkpoint and
+    # rollback of an import).
+    "epdf_checkpoint_embeddertest.cpp",
     # EmbedPDF: covers the /Names /Pages and /Templates name-tree APIs.
     "epdf_named_pages_embeddertest.cpp",
     "epdf_redact_embeddertest.cpp",

@@ -1933,6 +1933,33 @@ FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV
 EPDFAnnot_SetReplyType(FPDF_ANNOTATION annot, FPDF_ANNOT_REPLY_TYPE rt);
 
 // Experimental EmbedPDF Extension API.
+// Get a boolean entry of an annotation's dictionary, such as a popup's /Open.
+//
+//   annot - handle to an annotation.
+//   key   - the key of the entry.
+//   value - receives the value.
+//
+// Returns true when the entry exists and is a boolean; false otherwise, and
+// |value| is left unchanged.
+FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV
+EPDFAnnot_GetBooleanValue(FPDF_ANNOTATION annot,
+                          FPDF_BYTESTRING key,
+                          FPDF_BOOL* value);
+
+// Experimental EmbedPDF Extension API.
+// Set a boolean entry of an annotation's dictionary, such as a popup's /Open.
+//
+//   annot - handle to an annotation.
+//   key   - the key of the entry.
+//   value - the value to set.
+//
+// Returns true on success.
+FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV
+EPDFAnnot_SetBooleanValue(FPDF_ANNOTATION annot,
+                          FPDF_BYTESTRING key,
+                          FPDF_BOOL value);
+
+// Experimental EmbedPDF Extension API.
 // Set the overlay text for a Redact annotation. The overlay text is displayed
 // on the redacted area after the redaction is applied.
 //

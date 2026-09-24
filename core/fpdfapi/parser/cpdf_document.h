@@ -180,6 +180,13 @@ class CPDF_Document : public Observable,
   virtual RetainPtr<CPDF_Dictionary> GetMutableInfo();
   RetainPtr<CPDF_Dictionary> GetOrCreateInfo();
   RetainPtr<const CPDF_Array> GetFileIdentifier() const;
+  // EmbedPDF: the file identifier a save writes for a created document (one
+  // without a parser) instead of generating one: for output that must be the
+  // same bytes every time it is made. Null until set.
+  void SetPresetFileIdentifier(RetainPtr<const CPDF_Array> identifier);
+  // EmbedPDF: removes a created document's /Info, so a save writes no
+  // creation date. Call it before anything else is created in the document.
+  void DropCreatedDocumentInfo();
 
   // Returns the object number for the deleted page, or 0 on failure.
   uint32_t DeletePage(int iPage);
@@ -341,6 +348,7 @@ class CPDF_Document : public Observable,
   std::unique_ptr<CPDF_Parser> parser_;
   RetainPtr<CPDF_Dictionary> root_dict_;
   RetainPtr<CPDF_Dictionary> info_dict_;
+  RetainPtr<const CPDF_Array> preset_file_identifier_;
 
   // Vector of pairs to know current position in the page tree. The index in the
   // vector corresponds to the level being described. The pair contains a

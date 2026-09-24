@@ -870,8 +870,9 @@ void CPDF_Creator::InitID() {
   DCHECK(!id_array_);
 
   id_array_ = pdfium::MakeRetain<CPDF_Array>();
+  // EmbedPDF: a created document can carry a preset identifier.
   RetainPtr<const CPDF_Array> pOldIDArray =
-      parser_ ? parser_->GetIDArray() : nullptr;
+      parser_ ? parser_->GetIDArray() : document_->GetFileIdentifier();
   RetainPtr<const CPDF_Object> pID1 =
       pOldIDArray ? pOldIDArray->GetObjectAt(0) : nullptr;
   if (pID1) {
@@ -885,6 +886,11 @@ void CPDF_Creator::InitID() {
 
   if (pOldIDArray) {
     RetainPtr<const CPDF_Object> pID2 = pOldIDArray->GetObjectAt(1);
+    // EmbedPDF: a preset identifier is written as given, both halves.
+    if (!parser_ && pID2) {
+      id_array_->Append(pID2->Clone());
+      return;
+    }
     if (is_incremental_ && encrypt_dict_ && pID2) {
       id_array_->Append(pID2->Clone());
       return;

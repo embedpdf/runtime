@@ -27,6 +27,8 @@
 #include "core/fpdfapi/page/cpdf_page.h"
 #include "core/fpdfapi/page/cpdf_pageobject.h"
 #include "core/fpdfapi/page/cpdf_streamparser.h"
+#include "core/fdrm/fx_crypt.h"
+#include "core/fpdfapi/edit/cpdf_stringarchivestream.h"
 #include "core/fpdfapi/parser/cpdf_array.h"
 #include "core/fpdfapi/parser/cpdf_boolean.h"
 #include "core/fpdfapi/parser/cpdf_dictionary.h"
@@ -4552,6 +4554,35 @@ EPDFAnnot_SetReplyType(FPDF_ANNOTATION annot, FPDF_ANNOT_REPLY_TYPE rt) {
 }
 
 FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV
+EPDFAnnot_GetBooleanValue(FPDF_ANNOTATION annot,
+                          FPDF_BYTESTRING key,
+                          FPDF_BOOL* value) {
+  const CPDF_Dictionary* annot_dict = GetAnnotDictFromFPDFAnnotation(annot);
+  if (!annot_dict || !key || !value) {
+    return false;
+  }
+  RetainPtr<const CPDF_Object> entry = annot_dict->GetDirectObjectFor(key);
+  if (!entry || !entry->IsBoolean()) {
+    return false;
+  }
+  *value = entry->GetInteger() != 0;
+  return true;
+}
+
+FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV
+EPDFAnnot_SetBooleanValue(FPDF_ANNOTATION annot,
+                          FPDF_BYTESTRING key,
+                          FPDF_BOOL value) {
+  RetainPtr<CPDF_Dictionary> annot_dict =
+      GetMutableAnnotDictFromFPDFAnnotation(annot);
+  if (!annot_dict || !key) {
+    return false;
+  }
+  annot_dict->SetNewFor<CPDF_Boolean>(key, !!value);
+  return true;
+}
+
+FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV
 EPDFAnnot_SetOverlayText(FPDF_ANNOTATION annot, FPDF_WIDESTRING text) {
   if (FPDFAnnot_GetSubtype(annot) != FPDF_ANNOT_REDACT) {
     return false;
@@ -4627,6 +4658,104 @@ EPDFAnnot_GetOverlayTextRepeat(FPDF_ANNOTATION annot) {
   return dict->GetBooleanFor("Repeat", false);
 }
 
+// A transform too close to the identity to move a drawing: what a folded
+// placement reads back as once its numbers have been written and parsed.
+static bool IsNearIdentity(const CFX_Matrix& matrix) {
+  return fabsf(matrix.a - 1.0f) < 1e-5f && fabsf(matrix.b) < 1e-5f &&
+         fabsf(matrix.c) < 1e-5f && fabsf(matrix.d - 1.0f) < 1e-5f &&
+         fabsf(matrix.e) < 1e-3f && fabsf(matrix.f) < 1e-3f;
+}
+
+// A number as a file holds it: written, then read back.
+static float AsWritten(float value) {
+  const ByteString text = pdfium::MakeRetain<CPDF_Number>(value)->GetString();
+  return pdfium::MakeRetain<CPDF_Number>(text.AsStringView())->GetNumber();
+}
+
+static CFX_Matrix AsWritten(const CFX_Matrix& matrix) {
+  return CFX_Matrix(AsWritten(matrix.a), AsWritten(matrix.b),
+                    AsWritten(matrix.c), AsWritten(matrix.d),
+                    AsWritten(matrix.e), AsWritten(matrix.f));
+}
+
+// A new document for a drawing: no /Info, whose creation date would make
+// each export different bytes.
+static FPDF_DOCUMENT NewDrawingDocument() {
+  FPDF_DOCUMENT handle = FPDF_CreateNewDocument();
+  if (CPDF_Document* doc = CPDFDocumentFromFPDFDocument(handle)) {
+    doc->DropCreatedDocumentInfo();
+  }
+  return handle;
+}
+
+// Saves `doc` under an identifier made from its content: a digest of every
+// object in it. The same drawing is then the same bytes, on every runtime.
+static bool SetContentFileIdentifier(CPDF_Document* doc) {
+  fxcrt::ostringstream text;
+  CPDF_StringArchiveStream archive(&text);
+  for (uint32_t number = 1; number <= doc->GetLastObjNum(); ++number) {
+    RetainPtr<const CPDF_Object> object = doc->GetIndirectObject(number);
+    if (!object) {
+      continue;
+    }
+    text << number << " obj ";
+    if (!object->WriteTo(&archive, nullptr)) {
+      return false;
+    }
+    text << "\n";
+  }
+  const auto bytes = text.str();
+  std::array<uint8_t, 16> digest;
+  CRYPT_MD5Generate(pdfium::as_byte_span(bytes), digest);
+  auto identifier = pdfium::MakeRetain<CPDF_Array>();
+  identifier->AppendNew<CPDF_String>(digest, CPDF_String::DataType::kIsHex);
+  identifier->AppendNew<CPDF_String>(digest, CPDF_String::DataType::kIsHex);
+  doc->SetPresetFileIdentifier(std::move(identifier));
+  return true;
+}
+
+// The drawing a page holds when EPDFAnnot_ExportAppearance made it: content
+// that only draws one form, `/EPDFDRAWING Do`, and no other resources. Null
+// for any other page.
+static RetainPtr<const CPDF_Stream> CanonicalDrawingOf(
+    const CPDF_Dictionary* page_dict) {
+  RetainPtr<const CPDF_Object> contents = page_dict->GetObjectFor("Contents");
+  RetainPtr<const CPDF_Stream> content =
+      contents ? ToStream(contents->GetDirect()) : nullptr;
+  if (!content) {
+    return nullptr;
+  }
+  auto access = pdfium::MakeRetain<CPDF_StreamAcc>(content);
+  access->LoadAllDataFiltered();
+  ByteString text(ByteStringView(access->GetSpan()));
+  text.TrimWhitespace();
+  if (text != "/EPDFDRAWING Do") {
+    return nullptr;
+  }
+  RetainPtr<const CPDF_Dictionary> resources =
+      page_dict->GetDictFor("Resources");
+  if (!resources) {
+    return nullptr;
+  }
+  {
+    CPDF_DictionaryLocker locker(resources);
+    for (const auto& entry : locker) {
+      if (entry.first != "XObject" && entry.first != "ProcSet") {
+        return nullptr;
+      }
+    }
+  }
+  RetainPtr<const CPDF_Dictionary> xobjects = resources->GetDictFor("XObject");
+  if (!xobjects || xobjects->size() != 1) {
+    return nullptr;
+  }
+  RetainPtr<const CPDF_Stream> drawing = xobjects->GetStreamFor("EPDFDRAWING");
+  if (!drawing || drawing->GetDict()->GetNameFor("Subtype") != "Form") {
+    return nullptr;
+  }
+  return drawing;
+}
+
 FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV
 EPDFAnnot_SetAppearanceFromPage(FPDF_ANNOTATION annot,
                                 FPDF_DOCUMENT src_doc_handle,
@@ -4658,6 +4787,38 @@ EPDFAnnot_SetAppearanceFromPage(FPDF_ANNOTATION annot,
   media_box.Normalize();
   if (media_box.IsEmpty()) {
     return false;
+  }
+
+  // A drawing EPDFAnnot_ExportAppearance made is adopted as it is: its form
+  // becomes the drawing our wrapper places, not the content of a new form
+  // around it. Exporting it again then gives the same bytes.
+  if (RetainPtr<const CPDF_Stream> canonical =
+          CanonicalDrawingOf(src_page_dict.Get())) {
+    AnnotAppearanceExporter exporter(dest_doc, src_doc);
+    RetainPtr<CPDF_Stream> drawing = exporter.ExportFormXObject(canonical);
+    if (!drawing) {
+      return false;
+    }
+    const CFX_FloatRect box = GetFormDisplayBox(drawing->GetDict().Get());
+    if (box.IsEmpty()) {
+      return false;
+    }
+    auto wrapper_dict = dest_doc->New<CPDF_Dictionary>();
+    wrapper_dict->SetNewFor<CPDF_Name>(pdfium::annotation::kType, "XObject");
+    wrapper_dict->SetNewFor<CPDF_Name>(pdfium::annotation::kSubtype, "Form");
+    wrapper_dict->SetRectFor("BBox", box);
+    wrapper_dict->SetRectFor("EPDFOrigContentRect", box);
+    wrapper_dict->SetNewFor<CPDF_Dictionary>("Resources")
+        ->SetNewFor<CPDF_Dictionary>("XObject")
+        ->SetNewFor<CPDF_Reference>("EPDFWRAP", dest_doc,
+                                    drawing->GetObjNum());
+    auto wrapper = dest_doc->NewIndirect<CPDF_Stream>(std::move(wrapper_dict));
+    fxcrt::ostringstream buf;
+    buf << "q 1 0 0 1 0 0 cm /EPDFWRAP Do Q";
+    wrapper->SetDataFromStringstreamAndRemoveFilter(&buf);
+    annot_dict->GetOrCreateDictFor(pdfium::annotation::kAP)
+        ->SetNewFor<CPDF_Reference>("N", dest_doc, wrapper->GetObjNum());
+    return true;
   }
 
   // Collect page content bytes (Contents can be a stream or an array of
@@ -4856,20 +5017,12 @@ EPDFAnnot_ExportAppearance(FPDF_ANNOTATION annot) {
   }
   placement.Translate(-box.left, -box.bottom);
 
-  FPDF_DOCUMENT exported = FPDF_CreateNewDocument();
+  FPDF_DOCUMENT exported = NewDrawingDocument();
   CPDF_Document* dest_doc = CPDFDocumentFromFPDFDocument(exported);
-  FPDF_PAGE page_handle =
-      dest_doc ? FPDFPage_New(exported, 0, box.Width(), box.Height()) : nullptr;
-  CPDF_Page* dest_page = page_handle ? CPDFPageFromFPDFPage(page_handle) : nullptr;
-  RetainPtr<CPDF_Dictionary> page_dict =
-      dest_page ? dest_page->GetMutableDict() : nullptr;
   AnnotAppearanceExporter exporter(dest_doc, src_doc);
   RetainPtr<CPDF_Stream> form =
-      page_dict ? exporter.ExportFormXObject(drawing) : nullptr;
+      dest_doc ? exporter.ExportFormXObject(drawing) : nullptr;
   if (!form) {
-    if (page_handle) {
-      FPDF_ClosePage(page_handle);
-    }
     if (exported) {
       FPDF_CloseDocument(exported);
     }
@@ -4878,6 +5031,31 @@ EPDFAnnot_ExportAppearance(FPDF_ANNOTATION annot) {
   RetainPtr<CPDF_Dictionary> form_dict = form->GetMutableDict();
   form_dict->SetNewFor<CPDF_Name>(pdfium::annotation::kType, "XObject");
   form_dict->SetNewFor<CPDF_Name>(pdfium::annotation::kSubtype, "Form");
+  // The canonical page draws the form and nothing else; where the drawing
+  // sits is the form's own /Matrix. Importing it adopts the form as it is.
+  // The matrix holds its numbers as a file does, so an export made after an
+  // import computes the page from the same numbers and writes the same bytes.
+  if (!IsNearIdentity(placement)) {
+    CFX_Matrix matrix = form_dict->GetMatrixFor("Matrix");
+    matrix.Concat(placement);
+    form_dict->SetMatrixFor("Matrix", AsWritten(matrix));
+  }
+  // The page is the drawing's own box, however the drawing got here.
+  const CFX_FloatRect page_box = GetFormDisplayBox(form_dict.Get());
+  FPDF_PAGE page_handle =
+      page_box.IsEmpty()
+          ? nullptr
+          : FPDFPage_New(exported, 0, page_box.Width(), page_box.Height());
+  CPDF_Page* dest_page = page_handle ? CPDFPageFromFPDFPage(page_handle) : nullptr;
+  RetainPtr<CPDF_Dictionary> page_dict =
+      dest_page ? dest_page->GetMutableDict() : nullptr;
+  if (!page_dict) {
+    if (page_handle) {
+      FPDF_ClosePage(page_handle);
+    }
+    FPDF_CloseDocument(exported);
+    return nullptr;
+  }
 
   RetainPtr<CPDF_Dictionary> resources =
       page_dict->SetNewFor<CPDF_Dictionary>("Resources");
@@ -4886,18 +5064,29 @@ EPDFAnnot_ExportAppearance(FPDF_ANNOTATION annot) {
   xobjects->SetNewFor<CPDF_Reference>("EPDFDRAWING", dest_doc,
                                       form->GetObjNum());
   fxcrt::ostringstream buf;
-  buf << "q ";
-  WriteFloat(buf, placement.a) << " ";
-  WriteFloat(buf, placement.b) << " ";
-  WriteFloat(buf, placement.c) << " ";
-  WriteFloat(buf, placement.d) << " ";
-  WriteFloat(buf, placement.e) << " ";
-  WriteFloat(buf, placement.f) << " cm /EPDFDRAWING Do Q";
+  buf << "/EPDFDRAWING Do";
   auto contents = dest_doc->NewIndirect<CPDF_Stream>(
       pdfium::MakeRetain<CPDF_Dictionary>());
   contents->SetDataFromStringstreamAndRemoveFilter(&buf);
   page_dict->SetNewFor<CPDF_Reference>("Contents", dest_doc,
                                        contents->GetObjNum());
+
+  // Nothing private in a copy: how our wrapper placed a drawing is ours.
+  for (uint32_t number = 1; number <= dest_doc->GetLastObjNum(); ++number) {
+    RetainPtr<CPDF_Object> object = dest_doc->GetMutableIndirectObject(number);
+    RetainPtr<CPDF_Dictionary> dict =
+        object && object->IsStream()
+            ? object->AsMutableStream()->GetMutableDict()
+            : ToDictionary(object);
+    if (dict) {
+      dict->RemoveFor("EPDFOrigContentRect");
+    }
+  }
+  if (!SetContentFileIdentifier(dest_doc)) {
+    FPDF_ClosePage(page_handle);
+    FPDF_CloseDocument(exported);
+    return nullptr;
+  }
   FPDF_ClosePage(page_handle);
   return exported;
 }

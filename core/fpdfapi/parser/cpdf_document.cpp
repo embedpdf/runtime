@@ -818,7 +818,25 @@ RetainPtr<CPDF_Dictionary> CPDF_Document::GetOrCreateInfo() {
 
 RetainPtr<const CPDF_Array> CPDF_Document::GetFileIdentifier() const {
   CPDF_Parser* parser = GetParser();
-  return parser ? parser->GetIDArray() : nullptr;
+  return parser ? parser->GetIDArray() : preset_file_identifier_;
+}
+
+void CPDF_Document::SetPresetFileIdentifier(
+    RetainPtr<const CPDF_Array> identifier) {
+  preset_file_identifier_ = std::move(identifier);
+}
+
+void CPDF_Document::DropCreatedDocumentInfo() {
+  if (GetParser() || !info_dict_) {
+    return;
+  }
+  const uint32_t number = info_dict_->GetObjNum();
+  InvalidateCachedInfoDict();
+  DeleteIndirectObject(number);
+  // Nothing was created after it, so its number is free for the next object.
+  if (number == GetLastObjNum()) {
+    SetLastObjNum(number - 1);
+  }
 }
 
 uint32_t CPDF_Document::DeletePage(int iPage) {
