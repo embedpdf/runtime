@@ -4142,6 +4142,36 @@ EPDFAnnot_SetLinkedAnnot(FPDF_ANNOTATION annot,
   return true;
 }
 
+FPDF_EXPORT int FPDF_CALLCONV
+EPDFPage_GetAnnotIndexByNameRaw(FPDF_DOCUMENT doc,
+                                int page_index,
+                                FPDF_WIDESTRING nm) {
+  CPDF_Document* pdf = CPDFDocumentFromFPDFDocument(doc);
+  if (!pdf || !nm || !*nm || page_index < 0 ||
+      page_index >= pdf->GetPageCount()) {
+    return -1;
+  }
+  CPDF_DocumentViewScope document_view(pdf);
+  RetainPtr<const CPDF_Dictionary> page_dict =
+      pdf->GetPageDictionary(page_index);
+  if (!page_dict) {
+    return -1;
+  }
+  RetainPtr<const CPDF_Array> annots = page_dict->GetArrayFor("Annots");
+  if (!annots) {
+    return -1;
+  }
+  const WideString target = UNSAFE_BUFFERS(WideStringFromFPDFWideString(nm));
+  for (size_t i = 0; i < annots->size(); ++i) {
+    RetainPtr<const CPDF_Dictionary> dict =
+        ToDictionary(annots->GetDirectObjectAt(i));
+    if (dict && dict->GetUnicodeTextFor("NM") == target) {
+      return pdfium::checked_cast<int>(i);
+    }
+  }
+  return -1;
+}
+
 FPDF_EXPORT int FPDF_CALLCONV EPDFPage_GetAnnotCountRaw(FPDF_DOCUMENT doc,
                                                         int page_index) {
   CPDF_Document* pdf = CPDFDocumentFromFPDFDocument(doc);
@@ -4197,6 +4227,38 @@ EPDFPage_GetAnnotRaw(FPDF_DOCUMENT doc, int page_index, int index) {
                                                std::move(page), index);
 
   // The lifetime is now perfectly managed by smart pointers.
+  return FPDFAnnotationFromCPDFAnnotContext(ctx.release());
+}
+
+FPDF_EXPORT FPDF_ANNOTATION FPDF_CALLCONV
+EPDFPage_CreateAnnotRaw(FPDF_DOCUMENT doc,
+                        int page_index,
+                        FPDF_ANNOTATION_SUBTYPE subtype) {
+  CPDF_Document* pdf = CPDFDocumentFromFPDFDocument(doc);
+  if (!pdf || page_index < 0 || page_index >= pdf->GetPageCount() ||
+      !FPDFAnnot_IsSupportedSubtype(subtype)) {
+    return nullptr;
+  }
+  CPDF_DocumentViewScope document_view(pdf);
+  RetainPtr<CPDF_Dictionary> page_dict =
+      pdf->GetMutablePageDictionary(page_index);
+  if (!page_dict) {
+    return nullptr;
+  }
+  // Built from the dictionary alone: its content is never parsed.
+  auto page = pdfium::MakeRetain<CPDF_Page>(pdf, page_dict);
+
+  RetainPtr<CPDF_Dictionary> dict = pdf->NewIndirect<CPDF_Dictionary>();
+  dict->SetNewFor<CPDF_Name>(pdfium::annotation::kType, "Annot");
+  dict->SetNewFor<CPDF_Name>(pdfium::annotation::kSubtype,
+                             CPDF_Annot::AnnotSubtypeToString(
+                                 static_cast<CPDF_Annot::Subtype>(subtype)));
+  RetainPtr<CPDF_Array> annots = page->GetOrCreateAnnotsArray();
+  annots->AppendNew<CPDF_Reference>(pdf, dict->GetObjNum());
+  const int index = fxcrt::CollectionSize<int>(*annots) - 1;
+
+  auto ctx =
+      std::make_unique<RawAnnotContext>(std::move(dict), std::move(page), index);
   return FPDFAnnotationFromCPDFAnnotContext(ctx.release());
 }
 

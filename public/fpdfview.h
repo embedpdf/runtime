@@ -68,6 +68,7 @@ typedef struct fpdf_bookmark_t__* FPDF_BOOKMARK;
 typedef struct fpdf_clippath_t__* FPDF_CLIPPATH;
 typedef struct fpdf_dest_t__* FPDF_DEST;
 typedef struct fpdf_base_document_t__* EPDF_BASE_DOCUMENT;
+typedef struct epdf_checkpoint_t__* EPDF_CHECKPOINT;
 typedef struct fpdf_document_t__* FPDF_DOCUMENT;
 typedef struct fpdf_font_t__* FPDF_FONT;
 typedef struct fpdf_form_handle_t__* FPDF_FORMHANDLE;

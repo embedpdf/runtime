@@ -23,6 +23,8 @@ source_set("fpdfsdk") {
     "epdf_outline.cpp",
     # EmbedPDF: the catalog's /Names /Pages and /Templates name trees.
     "epdf_named_pages.cpp",
+    # EmbedPDF: checkpoints, which make a group of writes all or nothing.
+    "epdf_checkpoint.cpp",
     # EmbedPDF: digests (EPDF_DigestBuffer) and the hasher signatures share.
     "epdf_digest.cpp",
     "epdf_hasher.h",
@@ -174,8 +176,10 @@ pdfium_embeddertest_source_set("embeddertests") {
     "epdf_action_embeddertest.cpp",
     # EmbedPDF: covers the EPDFForm_* session-free form APIs.
     "epdf_form_embeddertest.cpp",
-    # EmbedPDF: experiment E9 of the annotation transfer plan (checkpoint and
-    # rollback of an import).
+    # EmbedPDF: covers annotation calls that read a page's dictionaries
+    # without loading the page.
+    "epdf_annot_raw_embeddertest.cpp",
+    # EmbedPDF: covers checkpoints and their rollback (epdf_checkpoint.h).
     "epdf_checkpoint_embeddertest.cpp",
     # EmbedPDF: covers the /Names /Pages and /Templates name-tree APIs.
     "epdf_named_pages_embeddertest.cpp",

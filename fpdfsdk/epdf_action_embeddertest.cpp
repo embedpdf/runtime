@@ -521,6 +521,58 @@ TEST_F(EPDFActionEmbedderTest, NodeDestPayloadFromCreatedGoTo) {
   EXPECT_EQ(0ul, EPDFAction_GetNodeName(model.get(), root, nullptr, 0));
 }
 
+TEST_F(EPDFActionEmbedderTest, DestinationsByPageObjectNumber) {
+  ScopedFPDFDocument document(FPDF_CreateNewDocument());
+  ASSERT_TRUE(document);
+  ScopedFPDFPage first(FPDFPage_New(document.get(), 0, 612, 792));
+  ScopedFPDFPage second(FPDFPage_New(document.get(), 1, 612, 792));
+  ASSERT_TRUE(first);
+  ASSERT_TRUE(second);
+  CPDF_Document* doc = CPDFDocumentFromFPDFDocument(document.get());
+  const uint32_t second_obj_num = doc->GetPageDictionary(1)->GetObjNum();
+  ASSERT_NE(0u, second_obj_num);
+
+  FPDF_DEST xyz = EPDFDest_CreateXYZByObjectNumber(
+      document.get(), second_obj_num, /*has_left=*/true, 30.0f,
+      /*has_top=*/true, 500.0f, /*has_zoom=*/false, 0.0f);
+  ASSERT_TRUE(xyz);
+  EXPECT_EQ(1, FPDFDest_GetDestPageIndex(document.get(), xyz));
+  FPDF_BOOL has_x = false;
+  FPDF_BOOL has_y = false;
+  FPDF_BOOL has_zoom = true;
+  FS_FLOAT x = 0;
+  FS_FLOAT y = 0;
+  FS_FLOAT zoom = 0;
+  ASSERT_TRUE(FPDFDest_GetLocationInPage(xyz, &has_x, &has_y, &has_zoom, &x,
+                                         &y, &zoom));
+  EXPECT_TRUE(has_x);
+  EXPECT_TRUE(has_y);
+  EXPECT_FALSE(has_zoom);
+  EXPECT_FLOAT_EQ(30.0f, x);
+  EXPECT_FLOAT_EQ(500.0f, y);
+
+  const FS_FLOAT top = 400.0f;
+  FPDF_DEST fit_h = EPDFDest_CreateViewByObjectNumber(
+      document.get(), second_obj_num, PDFDEST_VIEW_FITH, &top, 1);
+  ASSERT_TRUE(fit_h);
+  EXPECT_EQ(1, FPDFDest_GetDestPageIndex(document.get(), fit_h));
+  unsigned long num_params = 0;
+  FS_FLOAT params[4] = {};
+  EXPECT_EQ(static_cast<unsigned long>(PDFDEST_VIEW_FITH),
+            FPDFDest_GetView(fit_h, &num_params, params));
+  ASSERT_EQ(1ul, num_params);
+  EXPECT_FLOAT_EQ(400.0f, params[0]);
+
+  // Only a page's dictionary is a destination page.
+  const uint32_t catalog_obj_num = doc->GetRoot()->GetObjNum();
+  EXPECT_FALSE(EPDFDest_CreateXYZByObjectNumber(
+      document.get(), catalog_obj_num, true, 0, true, 0, false, 0));
+  EXPECT_FALSE(EPDFDest_CreateViewByObjectNumber(document.get(), 0,
+                                                 PDFDEST_VIEW_FIT, nullptr, 0));
+  EXPECT_FALSE(EPDFDest_CreateViewByObjectNumber(
+      document.get(), second_obj_num, PDFDEST_VIEW_XYZ, nullptr, 0));
+}
+
 TEST_F(EPDFActionEmbedderTest, NodeFilePathAndNamePayloadsFromSyntheticDicts) {
   ScopedFPDFDocument document(FPDF_CreateNewDocument());
   ASSERT_TRUE(document);

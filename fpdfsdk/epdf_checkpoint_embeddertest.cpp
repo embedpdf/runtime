@@ -1,19 +1,12 @@
 // Copyright 2026 CloudPDF LTD
 // SPDX-License-Identifier: Apache-2.0
 
-// Experiment E9 of the annotation transfer plan (platform repository,
-// docs/plans/2026-09-24-annotation-transfer.md, §3.4): can a checkpoint put a
-// document back exactly after an import that failed part way?
-//
-// The checkpoint is prototyped here with the document's internals; it is not
-// an API yet. An import only adds, so the checkpoint records the last object
-// number and each touched page's /Annots, and a rollback deletes every object
-// above that number and restores the /Annots it recorded. The document then
-// has to match its baseline: the same object graph, the same last object
-// number, and saves that write the same apart from the trailer /ID, which
-// every save writes afresh.
+// Checkpoints (public/epdf_checkpoint.h) make a group of writes all or
+// nothing. After writes that fail part way, a rollback brings the document
+// back to its baseline: the same object graph, the same last object number,
+// and saves that write the same apart from the trailer /ID, which every save
+// writes afresh.
 
-#include <cstdio>
 #include <map>
 #include <sstream>
 #include <string>
@@ -26,9 +19,9 @@
 #include "core/fpdfapi/parser/cpdf_stream.h"
 #include "core/fpdfapi/parser/cpdf_stream_acc.h"
 #include "core/fpdfapi/parser/cpdf_string.h"
-#include "core/fxcrt/unowned_ptr.h"
 #include "fpdfsdk/cpdfsdk_helpers.h"
 #include "public/cpp/fpdf_scopers.h"
+#include "public/epdf_checkpoint.h"
 #include "public/epdf_font.h"
 #include "public/fpdf_annot.h"
 #include "public/fpdf_attachment.h"
@@ -224,140 +217,6 @@ std::string WithoutFileId(std::string bytes) {
   return bytes;
 }
 
-// The prototype. It must be taken before the first write of the import, and
-// told about each page before the import first writes to it.
-class Checkpoint {
- public:
-  // Also records the dictionaries every page shares that appearance writers
-  // change: the catalog (a free text's /DA makes it an /AcroForm), and the
-  // form dictionary with its /DR and /DR /Font, which get the fonts.
-  explicit Checkpoint(CPDF_Document* doc)
-      : doc_(doc), mark_(doc->GetLastObjNum()) {
-    const CPDF_Dictionary* root = doc_->GetRoot();
-    Record(root->GetObjNum());
-    RetainPtr<const CPDF_Dictionary> form = root->GetDictFor("AcroForm");
-    if (!form) {
-      return;
-    }
-    Record(form->GetObjNum());
-    RetainPtr<const CPDF_Dictionary> resources = form->GetDictFor("DR");
-    if (!resources) {
-      return;
-    }
-    Record(resources->GetObjNum());
-    RetainPtr<const CPDF_Dictionary> fonts = resources->GetDictFor("Font");
-    if (fonts) {
-      Record(fonts->GetObjNum());
-    }
-  }
-
-  uint32_t mark() const { return mark_; }
-
-  void TouchPage(int index) {
-    RetainPtr<const CPDF_Dictionary> page = doc_->GetPageDictionary(index);
-    ASSERT_TRUE(page);
-    Page recorded;
-    recorded.index = index;
-    RetainPtr<const CPDF_Object> annots = page->GetObjectFor("Annots");
-    if (!annots) {
-      pages_.push_back(recorded);
-      return;
-    }
-    recorded.had_annots = true;
-    if (const CPDF_Reference* reference = annots->AsReference()) {
-      recorded.annots_number = reference->GetRefObjNum();
-      recorded.annots = doc_->GetOrParseIndirectObject(recorded.annots_number)
-                            ->Clone();
-    } else {
-      recorded.annots = annots->Clone();
-    }
-    pages_.push_back(recorded);
-  }
-
-  // Restores the recorded dictionaries and each page's /Annots, deletes every
-  // object numbered above the mark, and, with `reset_last_number`, gives the
-  // numbers back.
-  void Rollback(bool reset_last_number) {
-    for (const auto& [number, copy] : objects_) {
-      RetainPtr<CPDF_Dictionary> live =
-          number == doc_->GetRoot()->GetObjNum()
-              ? doc_->GetMutableRoot()
-              : ToDictionary(doc_->GetMutableIndirectObject(number));
-      ASSERT_TRUE(live);
-      std::vector<ByteString> keys;
-      {
-        CPDF_DictionaryLocker locker(live.Get());
-        for (const auto& entry : locker) {
-          keys.push_back(entry.first);
-        }
-      }
-      for (const ByteString& key : keys) {
-        live->RemoveFor(key.AsStringView());
-      }
-      CPDF_DictionaryLocker locker(copy->AsDictionary());
-      for (const auto& entry : locker) {
-        live->SetFor(entry.first, entry.second->Clone());
-      }
-    }
-    for (const Page& recorded : pages_) {
-      if (recorded.annots_number) {
-        // An indirect /Annots: the page keeps its reference; the array gets
-        // its entries back.
-        RetainPtr<CPDF_Array> array = ToArray(
-            doc_->GetMutableIndirectObject(recorded.annots_number));
-        ASSERT_TRUE(array);
-        array->Clear();
-        const CPDF_Array* copy = recorded.annots->AsArray();
-        for (size_t i = 0; i < copy->size(); ++i) {
-          array->Append(copy->GetObjectAt(i)->Clone());
-        }
-        continue;
-      }
-      RetainPtr<CPDF_Dictionary> page =
-          doc_->GetMutablePageDictionary(recorded.index);
-      ASSERT_TRUE(page);
-      if (recorded.had_annots) {
-        page->SetFor("Annots", recorded.annots->Clone());
-      } else {
-        page->RemoveFor("Annots");
-      }
-    }
-    for (uint32_t number = doc_->GetLastObjNum(); number > mark_; --number) {
-      doc_->DeleteIndirectObject(number);
-    }
-    if (reset_last_number) {
-      doc_->SetLastObjNum(mark_);
-    }
-  }
-
- private:
-  // An indirect dictionary's value now; direct ones travel inside their owner.
-  void Record(uint32_t number) {
-    if (!number) {
-      return;
-    }
-    for (const auto& [recorded, copy] : objects_) {
-      if (recorded == number) {
-        return;
-      }
-    }
-    objects_.emplace_back(number,
-                          doc_->GetOrParseIndirectObject(number)->Clone());
-  }
-
-  struct Page {
-    int index = 0;
-    bool had_annots = false;
-    uint32_t annots_number = 0;  // 0: a direct array
-    RetainPtr<CPDF_Object> annots;
-  };
-
-  UnownedPtr<CPDF_Document> doc_;
-  uint32_t mark_;
-  std::vector<Page> pages_;
-  std::vector<std::pair<uint32_t, RetainPtr<CPDF_Object>>> objects_;
-};
-
 ScopedFPDFAnnotation NewAnnot(FPDF_PAGE page,
                               FPDF_ANNOTATION_SUBTYPE subtype,
                               const FS_RECTF& rect) {
@@ -392,11 +251,11 @@ void AddPngStamp(FPDF_DOCUMENT doc,
 // redaction with overlay text on the page with /Annots; a note, its popup and a reply, with attribution, on the
 // page without.
 void ImportEverything(FPDF_DOCUMENT doc,
-                      Checkpoint& checkpoint,
+                      EPDF_CHECKPOINT checkpoint,
                       FPDF_DOCUMENT drawing,
                       EPDF_FONT_ID font) {
-  checkpoint.TouchPage(0);
-  checkpoint.TouchPage(1);
+  ASSERT_TRUE(EPDFDoc_CheckpointPage(checkpoint, 0));
+  ASSERT_TRUE(EPDFDoc_CheckpointPage(checkpoint, 1));
   ScopedFPDFPage first(FPDF_LoadPage(doc, 0));
   ScopedFPDFPage second(FPDF_LoadPage(doc, 1));
   ASSERT_TRUE(first);
@@ -481,7 +340,7 @@ uint32_t ColorAt(FPDF_PAGE page, int x, int y_from_bottom) {
 
 }  // namespace
 
-class EPDFCheckpointExperimentTest : public EmbedderTest {
+class EPDFCheckpointEmbedderTest : public EmbedderTest {
  protected:
   void SetUp() override {
     EmbedderTest::SetUp();
@@ -551,44 +410,25 @@ class EPDFCheckpointExperimentTest : public EmbedderTest {
     return state;
   }
 
-  // Compares, reporting each finding on its own line for the experiment log.
-  void ExpectSame(const State& before, const State& after, const char* label) {
-    std::vector<uint32_t> differing;
+  // The same document: every object, the last object number, and saves.
+  void ExpectSame(const State& before, const State& after) {
+    std::ostringstream differing;
     for (const auto& [number, text] : after.graph) {
       auto it = before.graph.find(number);
       if (it == before.graph.end() || it->second != text) {
-        differing.push_back(number);
+        differing << " " << number;
       }
     }
     for (const auto& [number, text] : before.graph) {
       if (!after.graph.count(number)) {
-        differing.push_back(number);
+        differing << " " << number;
       }
     }
-    std::ostringstream numbers;
-    for (uint32_t number : differing) {
-      numbers << " " << number;
-    }
-    printf("E9 %s: object graph %s%s\n", label,
-           differing.empty() ? "equal" : "differs at", numbers.str().c_str());
-    printf("E9 %s: last object number %u -> %u\n", label, before.last_number,
-           after.last_number);
-    printf("E9 %s: full save %s (%zu / %zu bytes)\n", label,
-           before.full_save == after.full_save ? "equal apart from /ID"
-                                               : "differs",
-           before.full_save.size(), after.full_save.size());
-    printf("E9 %s: incremental save %s (%zu / %zu bytes)\n", label,
-           before.incremental_save == after.incremental_save
-               ? "equal apart from /ID"
-               : "differs",
-           before.incremental_save.size(), after.incremental_save.size());
-    printf("E9 %s: changed since load %d -> %d, promoted objects %lu -> %lu\n",
-           label, before.changed_since_load, after.changed_since_load,
-           before.promoted, after.promoted);
-    EXPECT_TRUE(differing.empty()) << label;
-    EXPECT_EQ(before.full_save, after.full_save) << label;
-    EXPECT_EQ(before.incremental_save, after.incremental_save) << label;
-    EXPECT_EQ(before.changed_since_load, after.changed_since_load) << label;
+    EXPECT_EQ("", differing.str()) << "objects that differ";
+    EXPECT_EQ(before.last_number, after.last_number);
+    EXPECT_EQ(before.full_save, after.full_save);
+    EXPECT_EQ(before.incremental_save, after.incremental_save);
+    EXPECT_EQ(before.changed_since_load, after.changed_since_load);
   }
 
   std::string input_;
@@ -598,22 +438,20 @@ class EPDFCheckpointExperimentTest : public EmbedderTest {
   EPDF_FONT_ID font_ = 0;
 };
 
-// The gate: after an import that fails once everything is written, a rollback
-// brings back the baseline, on an ordinary document and on a layer, with and
-// without giving the object numbers back.
-TEST_F(EPDFCheckpointExperimentTest, RollbackRestoresTheBaseline) {
+// After writes that add everything an import can, on an ordinary document
+// and on a layer, with and without a form dictionary, a rollback brings back
+// the document as it was when the checkpoint was taken.
+TEST_F(EPDFCheckpointEmbedderTest, RollbackRestoresTheBaseline) {
   for (bool with_form : {false, true}) {
     for (bool layer : {false, true}) {
-      const bool reset_last_number = true;
-      const std::string label = std::string(layer ? "layer" : "document") +
-                                (with_form ? " with a form dictionary"
-                                           : " without a form dictionary");
-      SCOPED_TRACE(label);
+      SCOPED_TRACE(std::string(layer ? "layer" : "document") +
+                   (with_form ? " with a form dictionary"
+                              : " without a form dictionary"));
       ScopedFPDFDocument doc = Open(layer, with_form);
       ASSERT_TRUE(doc);
       CPDF_Document* document = CPDFDocumentFromFPDFDocument(doc.get());
 
-      // An edit earlier in the session: the checkpoint must bring back this
+      // An edit earlier in the session: the checkpoint brings back this
       // state, not the loaded one.
       {
         ScopedFPDFPage page(FPDF_LoadPage(doc.get(), 0));
@@ -623,17 +461,14 @@ TEST_F(EPDFCheckpointExperimentTest, RollbackRestoresTheBaseline) {
       }
       const State before = Capture(doc.get(), layer);
 
-      Checkpoint checkpoint(document);
+      EPDF_CHECKPOINT checkpoint = EPDFDoc_BeginCheckpoint(doc.get());
+      ASSERT_TRUE(checkpoint);
       ImportEverything(doc.get(), checkpoint, drawing_.get(), font_);
-      printf("E9 %s: the import wrote objects %u to %u\n", label.c_str(),
-             checkpoint.mark() + 1, document->GetLastObjNum());
+      EXPECT_GT(document->GetLastObjNum(), before.last_number);
+      EXPECT_TRUE(EPDFDoc_Rollback(checkpoint));
+      EPDFDoc_EndCheckpoint(checkpoint);
 
-      checkpoint.Rollback(reset_last_number);
-      const State after = Capture(doc.get(), layer);
-      ExpectSame(before, after, label.c_str());
-      if (reset_last_number) {
-        EXPECT_EQ(before.last_number, after.last_number);
-      }
+      ExpectSame(before, Capture(doc.get(), layer));
     }
   }
 }
@@ -642,41 +477,70 @@ TEST_F(EPDFCheckpointExperimentTest, RollbackRestoresTheBaseline) {
 // those numbers must not show through: a stamp made after the rollback, whose
 // image takes the number the rolled-back stamp's image had, shows its own
 // colour.
-TEST_F(EPDFCheckpointExperimentTest, NumbersUsedAgainShowTheNewContent) {
+TEST_F(EPDFCheckpointEmbedderTest, NumbersUsedAgainShowTheNewContent) {
   for (bool layer : {false, true}) {
     SCOPED_TRACE(layer ? "layer" : "document");
     ScopedFPDFDocument doc = Open(layer);
     ASSERT_TRUE(doc);
-    CPDF_Document* document = CPDFDocumentFromFPDFDocument(doc.get());
 
-    Checkpoint checkpoint(document);
-    checkpoint.TouchPage(0);
+    EPDF_CHECKPOINT checkpoint = EPDFDoc_BeginCheckpoint(doc.get());
+    ASSERT_TRUE(EPDFDoc_CheckpointPage(checkpoint, 0));
     {
       ScopedFPDFPage page(FPDF_LoadPage(doc.get(), 0));
       AddPngStamp(doc.get(), page.get(), kRedPng, {20, 200, 120, 150});
       EXPECT_EQ(0xff0000u, ColorAt(page.get(), 70, 175));
     }
-    const uint32_t red_last = document->GetLastObjNum();
-    checkpoint.Rollback(/*reset_last_number=*/true);
-
-    // A stream made now takes the first number given back. Was that number
-    // left marked as a modified appearance stream?
-    auto probe = document->NewIndirect<CPDF_Stream>(
-        pdfium::MakeRetain<CPDF_Dictionary>());
-    printf("E9 %s: first number after rollback %u, marked as a modified AP "
-           "stream: %d\n",
-           layer ? "layer" : "document", probe->GetObjNum(),
-           document->IsModifiedAPStream(probe.Get()));
-    document->DeleteIndirectObject(probe->GetObjNum());
-    document->SetLastObjNum(checkpoint.mark());
+    EXPECT_TRUE(EPDFDoc_Rollback(checkpoint));
+    EPDFDoc_EndCheckpoint(checkpoint);
 
     ScopedFPDFPage page(FPDF_LoadPage(doc.get(), 0));
     AddPngStamp(doc.get(), page.get(), kBluePng, {20, 200, 120, 150});
-    printf("E9 %s: red stamp used up to %u, blue up to %u\n",
-           layer ? "layer" : "document", red_last, document->GetLastObjNum());
-    const uint32_t color = ColorAt(page.get(), 70, 175);
-    printf("E9 %s: colour after reuse %06x\n", layer ? "layer" : "document",
-           color);
-    EXPECT_EQ(0x0000ffu, color);
+    EXPECT_EQ(0x0000ffu, ColorAt(page.get(), 70, 175));
   }
+}
+
+// An annotation made without loading its page is on the page, and a rollback
+// takes it back, on a page with /Annots and on one without.
+TEST_F(EPDFCheckpointEmbedderTest, AnAnnotationMadeWithoutItsPageRollsBack) {
+  for (bool layer : {false, true}) {
+    SCOPED_TRACE(layer ? "layer" : "document");
+    ScopedFPDFDocument doc = Open(layer);
+    ASSERT_TRUE(doc);
+    const State before = Capture(doc.get(), layer);
+    const int counts[] = {EPDFPage_GetAnnotCountRaw(doc.get(), 0),
+                          EPDFPage_GetAnnotCountRaw(doc.get(), 1)};
+
+    EPDF_CHECKPOINT checkpoint = EPDFDoc_BeginCheckpoint(doc.get());
+    for (int index : {0, 1}) {
+      ASSERT_TRUE(EPDFDoc_CheckpointPage(checkpoint, index));
+      ScopedFPDFAnnotation square(
+          EPDFPage_CreateAnnotRaw(doc.get(), index, FPDF_ANNOT_SQUARE));
+      ASSERT_TRUE(square);
+      const FS_RECTF rect{20, 60, 60, 20};
+      ASSERT_TRUE(FPDFAnnot_SetRect(square.get(), &rect));
+      ASSERT_TRUE(EPDFAnnot_GenerateAppearance(square.get()));
+      EXPECT_EQ(counts[index] + 1, EPDFPage_GetAnnotCountRaw(doc.get(), index));
+      ScopedFPDFPage page(FPDF_LoadPage(doc.get(), index));
+      ASSERT_EQ(counts[index] + 1, FPDFPage_GetAnnotCount(page.get()));
+      ScopedFPDFAnnotation loaded(FPDFPage_GetAnnot(page.get(), counts[index]));
+      EXPECT_EQ(FPDF_ANNOT_SQUARE, FPDFAnnot_GetSubtype(loaded.get()));
+    }
+    EXPECT_TRUE(EPDFDoc_Rollback(checkpoint));
+    EPDFDoc_EndCheckpoint(checkpoint);
+    ExpectSame(before, Capture(doc.get(), layer));
+  }
+}
+
+TEST_F(EPDFCheckpointEmbedderTest, RefusesWhatIsNotThere) {
+  EXPECT_FALSE(EPDFDoc_BeginCheckpoint(nullptr));
+  EXPECT_FALSE(EPDFDoc_CheckpointPage(nullptr, 0));
+  EXPECT_FALSE(EPDFDoc_Rollback(nullptr));
+  EPDFDoc_EndCheckpoint(nullptr);
+  ScopedFPDFDocument doc = Open(/*layer=*/false);
+  EPDF_CHECKPOINT checkpoint = EPDFDoc_BeginCheckpoint(doc.get());
+  EXPECT_FALSE(EPDFDoc_CheckpointPage(checkpoint, 99));
+  EXPECT_FALSE(EPDFDoc_CheckpointPage(checkpoint, -1));
+  EPDFDoc_EndCheckpoint(checkpoint);
+  EXPECT_FALSE(EPDFPage_CreateAnnotRaw(doc.get(), 99, FPDF_ANNOT_SQUARE));
+  EXPECT_FALSE(EPDFPage_CreateAnnotRaw(nullptr, 0, FPDF_ANNOT_SQUARE));
 }

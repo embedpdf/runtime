@@ -458,6 +458,44 @@ EPDFDest_CreateRemoteXYZ(FPDF_DOCUMENT fdoc,
   return FPDFDestFromCPDFArray(arr.Get());
 }
 
+FPDF_EXPORT FPDF_DEST FPDF_CALLCONV
+EPDFDest_CreateXYZByObjectNumber(FPDF_DOCUMENT fdoc,
+                                 unsigned int page_obj_num,
+                                 FPDF_BOOL has_left, FS_FLOAT left,
+                                 FPDF_BOOL has_top,  FS_FLOAT top,
+                                 FPDF_BOOL has_zoom, FS_FLOAT zoom) {
+  CPDF_Document* doc = CPDFDocumentFromFPDFDocument(fdoc);
+  if (!doc || page_obj_num == 0 || doc->GetPageIndex(page_obj_num) < 0)
+    return nullptr;
+
+  // INDIRECT array: [ pageRef /XYZ left? top? zoom? ]
+  auto arr = doc->NewIndirect<CPDF_Array>();
+  arr->AppendNew<CPDF_Reference>(doc, page_obj_num);
+  arr->AppendNew<CPDF_Name>("XYZ");
+  AppendXYZParams(arr.Get(), has_left, left, has_top, top, has_zoom, zoom);
+  return FPDFDestFromCPDFArray(arr.Get());
+}
+
+FPDF_EXPORT FPDF_DEST FPDF_CALLCONV
+EPDFDest_CreateViewByObjectNumber(FPDF_DOCUMENT fdoc,
+                                  unsigned int page_obj_num,
+                                  unsigned long view,
+                                  const FS_FLOAT* params,
+                                  unsigned long num_params) {
+  CPDF_Document* doc = CPDFDocumentFromFPDFDocument(fdoc);
+  if (!doc || page_obj_num == 0 || doc->GetPageIndex(page_obj_num) < 0)
+    return nullptr;
+  if (view == PDFDEST_VIEW_XYZ || view < PDFDEST_VIEW_FIT || view > PDFDEST_VIEW_FITBV)
+    return nullptr;
+
+  // INDIRECT array: [ pageRef /Fit* ... ]
+  auto arr = doc->NewIndirect<CPDF_Array>();
+  arr->AppendNew<CPDF_Reference>(doc, page_obj_num);
+  arr->AppendNew<CPDF_Name>(kViewNames[view]);
+  AppendNonXYZParams(arr.Get(), params, num_params, kViewMaxParams[view]);
+  return FPDFDestFromCPDFArray(arr.Get());
+}
+
 FPDF_EXPORT FPDF_ACTION FPDF_CALLCONV
 EPDFAction_CreateGoTo(FPDF_DOCUMENT document, FPDF_DEST dest) {
   CPDF_Document* pDoc = CPDFDocumentFromFPDFDocument(document);

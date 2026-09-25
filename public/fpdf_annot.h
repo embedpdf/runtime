@@ -1791,6 +1791,40 @@ FPDF_EXPORT FPDF_ANNOTATION FPDF_CALLCONV
 EPDFPage_GetAnnotRaw(FPDF_DOCUMENT doc, int page_index, int index);
 
 // Experimental EmbedPDF Extension API.
+// Find the annotation named |nm| (its /NM) on a page, without loading or
+// parsing the page or opening an annotation: only the page's /Annots and the
+// annotation dictionaries are read.
+//
+//   doc        - handle to a document.
+//   page_index - the index of the page.
+//   nm         - the name, UTF-16LE, NUL-terminated.
+//
+// Returns the annotation's index in the page's /Annots (the first, should
+// two share the name), or -1 when no annotation on the page has that name,
+// |nm| is empty, or the arguments are invalid.
+FPDF_EXPORT int FPDF_CALLCONV
+EPDFPage_GetAnnotIndexByNameRaw(FPDF_DOCUMENT doc,
+                                int page_index,
+                                FPDF_WIDESTRING nm);
+
+// Experimental EmbedPDF Extension API.
+// Create an annotation of |subtype| on a page without loading or parsing the
+// page: a new annotation dictionary, an object of its own, appended to the
+// page's /Annots. EPDFPage_CreateAnnot() on an unparsed page, for writing to
+// many pages at once.
+//
+//   doc        - handle to a document.
+//   page_index - the index of the page.
+//   subtype    - the subtype of the new annotation.
+//
+// Returns a handle to the new annotation, which the caller closes with
+// FPDFPage_CloseAnnot(), or NULL on error.
+FPDF_EXPORT FPDF_ANNOTATION FPDF_CALLCONV
+EPDFPage_CreateAnnotRaw(FPDF_DOCUMENT doc,
+                        int page_index,
+                        FPDF_ANNOTATION_SUBTYPE subtype);
+
+// Experimental EmbedPDF Extension API.
 // Remove the annotation by index.
 //
 //   doc    - handle to a document.
