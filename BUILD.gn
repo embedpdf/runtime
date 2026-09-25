@@ -200,6 +200,10 @@ source_set("pdfium_public_headers_impl") {
     "public/cpp/fpdf_scopers.h",
     # EmbedPDF: detached, read-only PDF action models.
     "public/epdf_action.h",
+    # EmbedPDF: checkpoints, which make a group of writes all or nothing.
+    "public/epdf_checkpoint.h",
+    # EmbedPDF: digests of bytes in memory, one implementation for every caller.
+    "public/epdf_digest.h",
     # EmbedPDF: public runtime font registration API used by page fallback
     # rendering and annotation authoring.
     "public/epdf_font.h",
@@ -207,7 +211,7 @@ source_set("pdfium_public_headers_impl") {
     "public/epdf_form.h",
     # EmbedPDF: the catalog's /Names /Pages and /Templates name trees.
     "public/epdf_named_pages.h",
-    # EmbedPDF: digital signatures - revisions, the signature model, digests.
+    # EmbedPDF: digital signatures - revisions, the signature model.
     "public/epdf_signature.h",
     # EmbedPDF: generic namespace-scoped document/page /PieceInfo metadata.
     "public/epdf_pieceinfo.h",

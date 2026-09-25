@@ -414,7 +414,11 @@ bool CPDF_RenderStatus::ProcessForm(const CPDF_FormObject* pFormObj,
   status.SetDropObjects(drop_objects_);
   status.SetFormResource(std::move(pResources));
   status.SetInGroup(in_group_);
-  status.Initialize(this, &pFormObj->graphic_states());
+  CPDF_GraphicStates initial_states = pFormObj->graphic_states();
+  // Form content already carries the inherited fill alpha in its objects or
+  // applies it when compositing a transparency group.
+  initial_states.mutable_general_state().SetFillAlpha(1.0f);
+  status.Initialize(this, &initial_states);
   {
     CFX_RenderDevice::StateRestorer restorer(device_);
     status.RenderObjectList(pFormObj->form(), matrix);

@@ -1791,6 +1791,57 @@ FPDF_EXPORT FPDF_ANNOTATION FPDF_CALLCONV
 EPDFPage_GetAnnotRaw(FPDF_DOCUMENT doc, int page_index, int index);
 
 // Experimental EmbedPDF Extension API.
+// Find the annotation named |nm| (its /NM) on a page, without loading or
+// parsing the page or opening an annotation: only the page's /Annots and the
+// annotation dictionaries are read.
+//
+//   doc        - handle to a document.
+//   page_index - the index of the page.
+//   nm         - the name, UTF-16LE, NUL-terminated.
+//
+// Returns the annotation's index in the page's /Annots (the first, should
+// two share the name), or -1 when no annotation on the page has that name,
+// |nm| is empty, or the arguments are invalid.
+FPDF_EXPORT int FPDF_CALLCONV
+EPDFPage_GetAnnotIndexByNameRaw(FPDF_DOCUMENT doc,
+                                int page_index,
+                                FPDF_WIDESTRING nm);
+
+// Experimental EmbedPDF Extension API.
+// Find the annotation that is object |object_number| on a page, without
+// loading or parsing the page or opening an annotation: only the page's
+// /Annots is read.
+//
+//   doc           - handle to a document.
+//   page_index    - the index of the page.
+//   object_number - the annotation dictionary's object number.
+//
+// Returns the annotation's index in the page's /Annots, or -1 when the page
+// has no such annotation (one written in place in /Annots has no object
+// number) or the arguments are invalid.
+FPDF_EXPORT int FPDF_CALLCONV
+EPDFPage_GetAnnotIndexByObjectNumberRaw(FPDF_DOCUMENT doc,
+                                        int page_index,
+                                        unsigned int object_number);
+
+// Experimental EmbedPDF Extension API.
+// Create an annotation of |subtype| on a page without loading or parsing the
+// page: a new annotation dictionary, an object of its own, appended to the
+// page's /Annots. EPDFPage_CreateAnnot() on an unparsed page, for writing to
+// many pages at once.
+//
+//   doc        - handle to a document.
+//   page_index - the index of the page.
+//   subtype    - the subtype of the new annotation.
+//
+// Returns a handle to the new annotation, which the caller closes with
+// FPDFPage_CloseAnnot(), or NULL on error.
+FPDF_EXPORT FPDF_ANNOTATION FPDF_CALLCONV
+EPDFPage_CreateAnnotRaw(FPDF_DOCUMENT doc,
+                        int page_index,
+                        FPDF_ANNOTATION_SUBTYPE subtype);
+
+// Experimental EmbedPDF Extension API.
 // Remove the annotation by index.
 //
 //   doc    - handle to a document.
@@ -1844,7 +1895,13 @@ FPDF_EXPORT unsigned long FPDF_CALLCONV EPDFAnnot_GetName(FPDF_ANNOTATION annot,
 // Experimental EmbedPDF Extension API.
 // Resize the normal appearance (/AP/N) of a Stamp to match the annotation's
 // /Rect using the specified fit policy. Updates the AP /BBox and the image's
-// CTM.
+// CTM. Below full opacity (/CA < 1) the appearance is `/R0 gs /MWFOForm Do`
+// over the resized form, the layer Acrobat writes: Acrobat replaces a layer
+// named so when its opacity changes, rather than painting over it. Our
+// wrapper is found again under a layer that paints /CA and under forms that
+// only draw it, so another editor's changes don't nest the drawing. A layer
+// that paints another opacity is part of the drawing; to change /CA, use
+// EPDFAnnot_SetStampOpacity.
 //
 //   annot - handle to a Stamp annotation.
 //   fit   - one of EPDF_STAMP_FIT_*.
@@ -1852,6 +1909,22 @@ FPDF_EXPORT unsigned long FPDF_CALLCONV EPDFAnnot_GetName(FPDF_ANNOTATION annot,
 // Returns true on success.
 FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV
 EPDFAnnot_UpdateAppearanceToRect(FPDF_ANNOTATION annot, EPDF_STAMP_FIT fit);
+
+// Experimental EmbedPDF Extension API.
+// Set a Stamp's opacity (/CA, as EPDFAnnot_SetOpacity) and re-fit its
+// appearance as EPDFAnnot_UpdateAppearanceToRect does, reading the current
+// appearance with the opacity it was painted with: its opacity layer, ours or
+// Acrobat's, is replaced by one for the new value, not kept as drawing.
+//
+//   annot - handle to a Stamp annotation.
+//   fit   - one of EPDF_STAMP_FIT_*.
+//   alpha - the new opacity, 0-255; 255 removes /CA.
+//
+// Returns true on success; on failure /CA and the appearance are unchanged.
+FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV
+EPDFAnnot_SetStampOpacity(FPDF_ANNOTATION annot,
+                          EPDF_STAMP_FIT fit,
+                          unsigned int alpha);
 
 // Experimental EmbedPDF Extension API.
 // Create an annotation. (the difference from FPDFPage_CreateAnnot is that it
@@ -1911,6 +1984,33 @@ FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV
 EPDFAnnot_SetReplyType(FPDF_ANNOTATION annot, FPDF_ANNOT_REPLY_TYPE rt);
 
 // Experimental EmbedPDF Extension API.
+// Get a boolean entry of an annotation's dictionary, such as a popup's /Open.
+//
+//   annot - handle to an annotation.
+//   key   - the key of the entry.
+//   value - receives the value.
+//
+// Returns true when the entry exists and is a boolean; false otherwise, and
+// |value| is left unchanged.
+FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV
+EPDFAnnot_GetBooleanValue(FPDF_ANNOTATION annot,
+                          FPDF_BYTESTRING key,
+                          FPDF_BOOL* value);
+
+// Experimental EmbedPDF Extension API.
+// Set a boolean entry of an annotation's dictionary, such as a popup's /Open.
+//
+//   annot - handle to an annotation.
+//   key   - the key of the entry.
+//   value - the value to set.
+//
+// Returns true on success.
+FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV
+EPDFAnnot_SetBooleanValue(FPDF_ANNOTATION annot,
+                          FPDF_BYTESTRING key,
+                          FPDF_BOOL value);
+
+// Experimental EmbedPDF Extension API.
 // Set the overlay text for a Redact annotation. The overlay text is displayed
 // on the redacted area after the redaction is applied.
 //
@@ -1968,6 +2068,128 @@ FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV
 EPDFAnnot_SetAppearanceFromPage(FPDF_ANNOTATION annot,
                                 FPDF_DOCUMENT src_doc,
                                 int page_index);
+
+// Experimental EmbedPDF Extension API.
+// Export what an annotation's normal appearance draws, apart from what its
+// dictionary describes, as a new single-page document: the drawing a copy of
+// the annotation is created from.
+//
+//   - EmbedPDF's own wrapper (the appearance a stamp gets from
+//     EPDFAnnot_SetStampDrawing or EPDFAnnot_UpdateAppearanceToRect), also
+//     when another editor has put forms that only draw it around it: the
+//     drawing it places, as EPDFDoc_ExportDrawing() exports it, without the
+//     wrapper's placement, rotation and opacity.
+//   - Any other appearance: the drawing in its own box, as its /BBox and
+//     /Matrix show it. The annotation's /Rect places it again: a copy fills
+//     /Rect with it, as ISO 32000-2 12.5.5 places any appearance. A layer
+//     that only paints the annotation's /CA (`/GS gs /Form Do`, as Acrobat
+//     writes it) is left out, one that paints another opacity is part of the
+//     drawing. With rotation metadata, the drawing is placed in /Rect, the
+//     rotation it describes is taken out, and the page is the unrotated box.
+//
+// The page is the canonical form of a drawing: its content is exactly
+// `/EPDFDRAWING Do`, the placement is folded into the form's /Matrix, and
+// the document has no /Info and an /ID made from its content. The same
+// drawing is the same bytes on every runtime, and EPDFAnnot_SetAppearanceFromPage
+// and EPDFDoc_ImportDrawing adopt the form as it is, so exporting what they
+// made gives the same bytes again. The source document is untouched.
+//
+//   annot - handle to an annotation with a normal appearance.
+//
+// Returns a new document (the caller closes it with FPDF_CloseDocument()),
+// or NULL when the annotation has no normal appearance or on error.
+FPDF_EXPORT FPDF_DOCUMENT FPDF_CALLCONV
+EPDFAnnot_ExportAppearance(FPDF_ANNOTATION annot);
+
+// Stamp drawings.
+//
+// A stamp's drawing is its artwork, one form. Each stamp places it with a
+// wrapper of its own, which holds the stamp's box, fit, rotation and
+// opacity, so stamps with the same artwork can share one drawing. A drawing
+// is never edited in place: a stamp that changes gets a new wrapper, and new
+// artwork is a new drawing. A drawing is known by its content, the
+// EPDF_DIGEST_SHA256 (EPDF_DigestBuffer()) of its canonical bytes.
+
+// Experimental EmbedPDF Extension API.
+// The canonical drawing of a page, in a new single-page document: the bytes
+// EPDFAnnot_ExportAppearance() gives for a stamp made from that page. A page
+// that is already canonical gives the same bytes back. It depends on the page
+// alone. |src_doc| is untouched.
+//
+//   src_doc    - the document holding the page: a PDF, or a page holding an
+//                image at its own size.
+//   page_index - zero-based index of the page.
+//
+// Returns a new document (the caller closes it with FPDF_CloseDocument()),
+// or NULL on error.
+FPDF_EXPORT FPDF_DOCUMENT FPDF_CALLCONV
+EPDFDoc_CanonicalDrawing(FPDF_DOCUMENT src_doc, int page_index);
+
+// Experimental EmbedPDF Extension API.
+// Add the drawing of a canonical page to |document| as a new object. Its
+// export (EPDFDoc_ExportDrawing()) is the canonical page's bytes.
+//
+//   document      - the document to add the drawing to.
+//   canonical_doc - a single-page document from EPDFDoc_CanonicalDrawing(),
+//                   EPDFDoc_ExportDrawing() or EPDFAnnot_ExportAppearance().
+//
+// Returns the drawing's object number, or 0 when |canonical_doc| is not one
+// canonical page, or on error.
+FPDF_EXPORT unsigned int FPDF_CALLCONV
+EPDFDoc_ImportDrawing(FPDF_DOCUMENT document, FPDF_DOCUMENT canonical_doc);
+
+// Experimental EmbedPDF Extension API.
+// Export one drawing of |document| as its canonical page, in a new
+// single-page document. |document| is untouched.
+//
+//   document - the document holding the drawing.
+//   drawing  - the drawing's object number (a form XObject).
+//
+// Returns a new document (the caller closes it with FPDF_CloseDocument()),
+// or NULL when |drawing| is not a form, or on error.
+FPDF_EXPORT FPDF_DOCUMENT FPDF_CALLCONV
+EPDFDoc_ExportDrawing(FPDF_DOCUMENT document, unsigned int drawing);
+
+// Experimental EmbedPDF Extension API.
+// The drawings EmbedPDF wrappers place on the stamps of |document|'s pages,
+// each once, in page and /Annots order. Reads the page dictionaries; no page
+// is loaded. A stamp without our wrapper has none.
+//
+//   document - handle to the document.
+//   buffer   - receives up to |buflen| object numbers; may be NULL.
+//   buflen   - capacity of |buffer|, in entries.
+//
+// Returns the number of drawings, which may exceed |buflen|.
+FPDF_EXPORT unsigned long FPDF_CALLCONV
+EPDFDoc_GetStampDrawings(FPDF_DOCUMENT document,
+                         unsigned int* buffer,
+                         unsigned long buflen);
+
+// Experimental EmbedPDF Extension API.
+// Make a stamp place |drawing|: a new wrapper that fits it into the stamp's
+// box with |fit|, honouring /EMBD_Metadata rotation, under a layer that
+// paints /CA below full opacity, as EPDFAnnot_UpdateAppearanceToRect() does.
+// The drawing is not changed, so other stamps can place it too.
+//
+//   annot   - handle to a Stamp annotation.
+//   drawing - object number of a drawing of the annotation's document.
+//   fit     - one of EPDF_STAMP_FIT_*.
+//
+// Returns true on success.
+FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV
+EPDFAnnot_SetStampDrawing(FPDF_ANNOTATION annot,
+                          unsigned int drawing,
+                          EPDF_STAMP_FIT fit);
+
+// Experimental EmbedPDF Extension API.
+// The drawing a stamp's wrapper places.
+//
+//   annot - handle to a Stamp annotation.
+//
+// Returns the drawing's object number, or 0 for a stamp without our wrapper,
+// or an annotation that is not a stamp.
+FPDF_EXPORT unsigned int FPDF_CALLCONV
+EPDFAnnot_GetStampDrawing(FPDF_ANNOTATION annot);
 
 // Experimental EmbedPDF Extension API.
 // Get the annotation rectangle with normalization applied.

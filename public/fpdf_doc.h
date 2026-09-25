@@ -582,6 +582,36 @@ EPDFDest_CreateView(FPDF_PAGE page,
                     unsigned long num_params);
 
 // Experimental EmbedPDF Extension API.
+// As EPDFDest_CreateXYZ(), for the page whose dictionary is object
+// |page_obj_num| of |document|. The page is not loaded: the destination only
+// refers to its dictionary.
+//
+// Returns NULL when |page_obj_num| is not a page of |document|.
+FPDF_EXPORT FPDF_DEST FPDF_CALLCONV
+EPDFDest_CreateXYZByObjectNumber(FPDF_DOCUMENT document,
+                                 unsigned int page_obj_num,
+                                 FPDF_BOOL has_left,
+                                 FS_FLOAT left,
+                                 FPDF_BOOL has_top,
+                                 FS_FLOAT top,
+                                 FPDF_BOOL has_zoom,
+                                 FS_FLOAT zoom);
+
+// Experimental EmbedPDF Extension API.
+// As EPDFDest_CreateView(), for the page whose dictionary is object
+// |page_obj_num| of |document|. The page is not loaded: the destination only
+// refers to its dictionary.
+//
+// Returns NULL when |page_obj_num| is not a page of |document|, or on the
+// errors EPDFDest_CreateView() returns NULL for.
+FPDF_EXPORT FPDF_DEST FPDF_CALLCONV
+EPDFDest_CreateViewByObjectNumber(FPDF_DOCUMENT document,
+                                  unsigned int page_obj_num,
+                                  unsigned long view,
+                                  const FS_FLOAT* params,
+                                  unsigned long num_params);
+
+// Experimental EmbedPDF Extension API.
 // Create a new *remote* destination array of the form [pageIndex /<View>
 // params…].
 //

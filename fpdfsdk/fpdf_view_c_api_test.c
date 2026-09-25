@@ -9,6 +9,7 @@
 
 #include "fpdfsdk/fpdf_view_c_api_test.h"
 
+#include "public/epdf_checkpoint.h"
 #include "public/epdf_font.h"
 #include "public/epdf_measure.h"
 #include "public/epdf_text.h"
@@ -132,6 +133,7 @@ int CheckPDFiumCApi() {
   CHK(EPDFAttachment_GetDescription);
   CHK(EPDFAttachment_GetIntegerValue);
   CHK(EPDFAttachment_SetDescription);
+  CHK(EPDFAttachment_SetName);
   CHK(EPDFAttachment_SetSubtype);
   CHK(EPDFDoc_GetAttachmentIndexByKey);
   CHK(EPDFDoc_GetAttachmentKey);
@@ -619,6 +621,26 @@ int CheckPDFiumCApi() {
   // EmbedPDF: link every measurement entry point from C.
   CHK(EPDFAnnot_GetMeasure);
   CHK(EPDFAnnot_AddMeasure);
+  CHK(EPDFAnnot_ExportAppearance);
+  CHK(EPDFPage_CreateAnnotRaw);
+  CHK(EPDFPage_GetAnnotIndexByNameRaw);
+  CHK(EPDFPage_GetAnnotIndexByObjectNumberRaw);
+  CHK(EPDFDest_CreateXYZByObjectNumber);
+  CHK(EPDFDest_CreateViewByObjectNumber);
+  CHK(EPDFDoc_BeginCheckpoint);
+  CHK(EPDFDoc_CheckpointPage);
+  CHK(EPDFDoc_CheckpointObject);
+  CHK(EPDFDoc_Rollback);
+  CHK(EPDFDoc_EndCheckpoint);
+  CHK(EPDFAnnot_GetStampDrawing);
+  CHK(EPDFAnnot_SetStampDrawing);
+  CHK(EPDFDoc_CanonicalDrawing);
+  CHK(EPDFDoc_ExportDrawing);
+  CHK(EPDFDoc_GetStampDrawings);
+  CHK(EPDFDoc_ImportDrawing);
+  CHK(EPDFAnnot_GetBooleanValue);
+  CHK(EPDFAnnot_SetBooleanValue);
+  CHK(EPDFAnnot_SetStampOpacity);
   CHK(EPDFAnnot_RemoveMeasure);
   CHK(EPDFPage_CountViewports);
   CHK(EPDFPage_GetViewport);

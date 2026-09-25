@@ -551,6 +551,27 @@ EPDFAttachment_SetDescription(FPDF_ATTACHMENT attachment,
   return true;
 }
 
+FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV
+EPDFAttachment_SetName(FPDF_ATTACHMENT attachment, FPDF_WIDESTRING name) {
+  CPDF_Object* file = CPDFObjectFromFPDFAttachment(attachment);
+  if (!file || !file->IsDictionary()) {
+    return false;
+  }
+
+  // SAFETY: required from caller.
+  WideString ws = UNSAFE_BUFFERS(WideStringFromFPDFWideString(name));
+  if (ws.IsEmpty()) {
+    return false;
+  }
+
+  // The same two entries FPDFAnnot_AddFileAttachment and FPDFDoc_AddAttachment
+  // write, so a renamed file reads like one created with that name.
+  CPDF_Dictionary* filespec = file->AsMutableDictionary();
+  filespec->SetNewFor<CPDF_String>("UF", ws.AsStringView());
+  filespec->SetNewFor<CPDF_String>("F", ws.AsStringView());
+  return true;
+}
+
 FPDF_EXPORT unsigned long FPDF_CALLCONV
 EPDFAttachment_GetDescription(FPDF_ATTACHMENT attachment,
                               FPDF_WCHAR* buffer,

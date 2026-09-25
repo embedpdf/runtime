@@ -23,7 +23,12 @@ source_set("fpdfsdk") {
     "epdf_outline.cpp",
     # EmbedPDF: the catalog's /Names /Pages and /Templates name trees.
     "epdf_named_pages.cpp",
-    # EmbedPDF: digital signatures - revisions, the signature model, digests.
+    # EmbedPDF: checkpoints, which make a group of writes all or nothing.
+    "epdf_checkpoint.cpp",
+    # EmbedPDF: digests (EPDF_DigestBuffer) and the hasher signatures share.
+    "epdf_digest.cpp",
+    "epdf_hasher.h",
+    # EmbedPDF: digital signatures - revisions, the signature model.
     "epdf_signature.cpp",
     # EmbedPDF: digital signatures - the cross-revision object diff.
     "epdf_revision_diff.cpp",
@@ -44,6 +49,8 @@ source_set("fpdfsdk") {
     "epdf_jpeg_shim.cpp",
     "epdf_redact.cpp",
     "epdf_threading.cpp",
+    "epdf_wrapped_appearance.cpp",
+    "epdf_wrapped_appearance.h",
     "cpdfsdk_annot.cpp",
     "cpdfsdk_annot.h",
     "cpdfsdk_annotiteration.cpp",
@@ -169,9 +176,16 @@ pdfium_embeddertest_source_set("embeddertests") {
     "epdf_action_embeddertest.cpp",
     # EmbedPDF: covers the EPDFForm_* session-free form APIs.
     "epdf_form_embeddertest.cpp",
+    # EmbedPDF: covers annotation calls that read a page's dictionaries
+    # without loading the page.
+    "epdf_annot_raw_embeddertest.cpp",
+    # EmbedPDF: covers checkpoints and their rollback (epdf_checkpoint.h).
+    "epdf_checkpoint_embeddertest.cpp",
     # EmbedPDF: covers the /Names /Pages and /Templates name-tree APIs.
     "epdf_named_pages_embeddertest.cpp",
     "epdf_redact_embeddertest.cpp",
+    # EmbedPDF: covers EPDF_DigestBuffer.
+    "epdf_digest_embeddertest.cpp",
     # EmbedPDF: covers the digital-signature APIs.
     "epdf_signature_embeddertest.cpp",
     # EmbedPDF: covers generic document/page /PieceInfo metadata APIs.

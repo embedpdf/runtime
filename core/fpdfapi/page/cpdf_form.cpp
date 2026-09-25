@@ -8,6 +8,7 @@
 
 #include <algorithm>
 #include <memory>
+#include <vector>
 
 #include "core/fpdfapi/page/cpdf_contentparser.h"
 #include "core/fpdfapi/page/cpdf_imageobject.h"
@@ -198,6 +199,26 @@ bool CPDF_Form::CloneBackingStreamForWrite() {
         ToDictionary(resources_->CloneForHolder(doc));
     if (!cloned_resources) {
       return false;
+    }
+    // EmbedPDF: a category (/Font, /XObject, /ExtGState...) that is an object
+    // of its own is shared with every other placement of this form, and
+    // content generation adds and prunes names in it. Copy it too. The fonts,
+    // images and forms it names stay shared: nothing here edits them.
+    std::vector<ByteString> shared_categories;
+    {
+      CPDF_DictionaryLocker locker(cloned_resources.Get());
+      for (const auto& entry : locker) {
+        if (entry.second->IsReference()) {
+          shared_categories.push_back(entry.first);
+        }
+      }
+    }
+    for (const ByteString& key : shared_categories) {
+      RetainPtr<const CPDF_Dictionary> category =
+          cloned_resources->GetDictFor(key.AsStringView());
+      if (category) {
+        cloned_resources->SetFor(key, category->CloneForHolder(doc));
+      }
     }
     clone->GetMutableDict()->SetFor("Resources", std::move(cloned_resources));
   }

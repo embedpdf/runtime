@@ -315,6 +315,17 @@ FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV
 EPDFAttachment_SetDescription(FPDF_ATTACHMENT attachment, FPDF_WIDESTRING desc);
 
 // Experimental EmbedPDF API.
+// Set the file name of the embedded file |attachment|: the /UF and /F
+// entries of its file specification. Every other entry is kept.
+//
+//   attachment - handle to an attachment.
+//   name       - the file name, encoded in UTF-16LE. Must not be empty.
+//
+// Returns true if successful.
+FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV
+EPDFAttachment_SetName(FPDF_ATTACHMENT attachment, FPDF_WIDESTRING name);
+
+// Experimental EmbedPDF API.
 // Get the description of the embedded file |attachment|.
 //
 //   attachment - handle to an attachment.
