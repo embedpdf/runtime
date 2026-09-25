@@ -4142,13 +4142,14 @@ EPDFAnnot_SetLinkedAnnot(FPDF_ANNOTATION annot,
   return true;
 }
 
-FPDF_EXPORT int FPDF_CALLCONV
-EPDFPage_GetAnnotIndexByNameRaw(FPDF_DOCUMENT doc,
-                                int page_index,
-                                FPDF_WIDESTRING nm) {
+namespace {
+
+// Index of the first entry of page |page_index|'s /Annots that |matches|, or
+// -1. The page is not loaded: only its dictionary and /Annots are read.
+template <typename Matches>
+int FindAnnotIndexRaw(FPDF_DOCUMENT doc, int page_index, Matches matches) {
   CPDF_Document* pdf = CPDFDocumentFromFPDFDocument(doc);
-  if (!pdf || !nm || !*nm || page_index < 0 ||
-      page_index >= pdf->GetPageCount()) {
+  if (!pdf || page_index < 0 || page_index >= pdf->GetPageCount()) {
     return -1;
   }
   CPDF_DocumentViewScope document_view(pdf);
@@ -4161,15 +4162,44 @@ EPDFPage_GetAnnotIndexByNameRaw(FPDF_DOCUMENT doc,
   if (!annots) {
     return -1;
   }
-  const WideString target = UNSAFE_BUFFERS(WideStringFromFPDFWideString(nm));
   for (size_t i = 0; i < annots->size(); ++i) {
-    RetainPtr<const CPDF_Dictionary> dict =
-        ToDictionary(annots->GetDirectObjectAt(i));
-    if (dict && dict->GetUnicodeTextFor("NM") == target) {
+    if (matches(annots->GetObjectAt(i))) {
       return pdfium::checked_cast<int>(i);
     }
   }
   return -1;
+}
+
+}  // namespace
+
+FPDF_EXPORT int FPDF_CALLCONV
+EPDFPage_GetAnnotIndexByNameRaw(FPDF_DOCUMENT doc,
+                                int page_index,
+                                FPDF_WIDESTRING nm) {
+  if (!nm || !*nm) {
+    return -1;
+  }
+  const WideString target = UNSAFE_BUFFERS(WideStringFromFPDFWideString(nm));
+  return FindAnnotIndexRaw(
+      doc, page_index, [&](RetainPtr<const CPDF_Object> entry) {
+        RetainPtr<const CPDF_Dictionary> dict =
+            ToDictionary(entry->GetDirect());
+        return dict && dict->GetUnicodeTextFor("NM") == target;
+      });
+}
+
+FPDF_EXPORT int FPDF_CALLCONV
+EPDFPage_GetAnnotIndexByObjectNumberRaw(FPDF_DOCUMENT doc,
+                                        int page_index,
+                                        unsigned int object_number) {
+  if (object_number == 0) {
+    return -1;
+  }
+  return FindAnnotIndexRaw(
+      doc, page_index, [&](RetainPtr<const CPDF_Object> entry) {
+        const CPDF_Reference* reference = entry->AsReference();
+        return reference && reference->GetRefObjNum() == object_number;
+      });
 }
 
 FPDF_EXPORT int FPDF_CALLCONV EPDFPage_GetAnnotCountRaw(FPDF_DOCUMENT doc,

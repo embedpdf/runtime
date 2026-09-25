@@ -85,6 +85,38 @@ TEST_F(EPDFAnnotRawEmbedderTest, FindsANameOnAnAnnotationWrittenInPlace) {
   EXPECT_EQ(0, IndexByName(doc.get(), 0, L"inline"));
 }
 
+TEST_F(EPDFAnnotRawEmbedderTest, FindsAnAnnotationByObjectNumber) {
+  ScopedFPDFDocument doc(FPDF_CreateNewDocument());
+  ASSERT_TRUE(doc);
+  ScopedFPDFPage page(FPDFPage_New(doc.get(), 0, 612, 792));
+  ASSERT_TRUE(page);
+  page.reset();
+  CPDF_Document* pdf = CPDFDocumentFromFPDFDocument(doc.get());
+  // One written in place in /Annots, then two objects of their own.
+  RetainPtr<CPDF_Array> annots =
+      pdf->GetMutablePageDictionary(0)->SetNewFor<CPDF_Array>("Annots");
+  annots->AppendNew<CPDF_Dictionary>()->SetNewFor<CPDF_Name>("Subtype",
+                                                             "Square");
+  unsigned int numbers[2] = {};
+  for (unsigned int& number : numbers) {
+    ScopedFPDFAnnotation annot(
+        EPDFPage_CreateAnnotRaw(doc.get(), 0, FPDF_ANNOT_SQUARE));
+    ASSERT_TRUE(annot);
+    number = static_cast<unsigned int>(EPDFAnnot_GetObjectNumber(annot.get()));
+    ASSERT_NE(0u, number);
+  }
+  EXPECT_EQ(1,
+            EPDFPage_GetAnnotIndexByObjectNumberRaw(doc.get(), 0, numbers[0]));
+  EXPECT_EQ(2,
+            EPDFPage_GetAnnotIndexByObjectNumberRaw(doc.get(), 0, numbers[1]));
+  EXPECT_EQ(-1, EPDFPage_GetAnnotIndexByObjectNumberRaw(doc.get(), 0, 0));
+  EXPECT_EQ(-1, EPDFPage_GetAnnotIndexByObjectNumberRaw(doc.get(), 0, 99999));
+  EXPECT_EQ(-1,
+            EPDFPage_GetAnnotIndexByObjectNumberRaw(doc.get(), 1, numbers[0]));
+  EXPECT_EQ(-1,
+            EPDFPage_GetAnnotIndexByObjectNumberRaw(nullptr, 0, numbers[0]));
+}
+
 TEST_F(EPDFAnnotRawEmbedderTest, FindsNothingWhereThereIsNothing) {
   ScopedFPDFDocument doc(FPDF_CreateNewDocument());
   ASSERT_TRUE(doc);

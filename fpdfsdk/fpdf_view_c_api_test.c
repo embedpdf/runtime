@@ -624,10 +624,12 @@ int CheckPDFiumCApi() {
   CHK(EPDFAnnot_ExportAppearance);
   CHK(EPDFPage_CreateAnnotRaw);
   CHK(EPDFPage_GetAnnotIndexByNameRaw);
+  CHK(EPDFPage_GetAnnotIndexByObjectNumberRaw);
   CHK(EPDFDest_CreateXYZByObjectNumber);
   CHK(EPDFDest_CreateViewByObjectNumber);
   CHK(EPDFDoc_BeginCheckpoint);
   CHK(EPDFDoc_CheckpointPage);
+  CHK(EPDFDoc_CheckpointObject);
   CHK(EPDFDoc_Rollback);
   CHK(EPDFDoc_EndCheckpoint);
   CHK(EPDFAnnot_GetStampDrawing);

@@ -76,6 +76,21 @@ class EpdfCheckpoint {
     return true;
   }
 
+  // An object the writes will change: its value now. One numbered above the
+  // mark is new, and goes on a rollback anyway.
+  bool RecordObject(uint32_t number) {
+    if (number > mark_) {
+      return true;
+    }
+    CPDF_DocumentViewScope document_view(doc_);
+    RetainPtr<CPDF_Object> object = doc_->GetOrParseIndirectObject(number);
+    if (!object || !object->IsDictionary()) {
+      return false;
+    }
+    Record(number);
+    return true;
+  }
+
   bool Rollback() {
     CPDF_DocumentViewScope document_view(doc_);
     bool restored = true;
@@ -198,11 +213,20 @@ EPDFDoc_CheckpointPage(EPDF_CHECKPOINT checkpoint, int page_index) {
   return recorded && page_index >= 0 && recorded->RecordPage(page_index);
 }
 
-FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV EPDFDoc_Rollback(EPDF_CHECKPOINT checkpoint) {
+FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV
+EPDFDoc_CheckpointObject(EPDF_CHECKPOINT checkpoint,
+                         unsigned int object_number) {
+  EpdfCheckpoint* recorded = CheckpointFromHandle(checkpoint);
+  return recorded && object_number > 0 && recorded->RecordObject(object_number);
+}
+
+FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV
+EPDFDoc_Rollback(EPDF_CHECKPOINT checkpoint) {
   EpdfCheckpoint* recorded = CheckpointFromHandle(checkpoint);
   return recorded && recorded->Rollback();
 }
 
-FPDF_EXPORT void FPDF_CALLCONV EPDFDoc_EndCheckpoint(EPDF_CHECKPOINT checkpoint) {
+FPDF_EXPORT void FPDF_CALLCONV
+EPDFDoc_EndCheckpoint(EPDF_CHECKPOINT checkpoint) {
   delete CheckpointFromHandle(checkpoint);
 }

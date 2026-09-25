@@ -14,8 +14,9 @@
 // writes that add: new objects, entries appended to a recorded page's
 // /Annots, and changes to the dictionaries every page shares that appearance
 // writers touch, which it records: the catalog (it gains an /AcroForm) and
-// the form dictionary with its /DR and /DR /Font. It does not undo a change
-// to any other object that existed when it was taken.
+// the form dictionary with its /DR and /DR /Font. A change to any other
+// object that existed when it was taken is undone only when that object was
+// recorded first, with EPDFDoc_CheckpointObject().
 //
 // On a layer document, an object a write promoted into the layer stays
 // promoted after a rollback, holding its base value: saves and "changed
@@ -43,6 +44,17 @@ EPDFDoc_BeginCheckpoint(FPDF_DOCUMENT document);
 // Returns true on success.
 FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV
 EPDFDoc_CheckpointPage(EPDF_CHECKPOINT checkpoint, int page_index);
+
+// Experimental EmbedPDF Extension API.
+// Record the dictionary numbered |object_number| before a write under
+// |checkpoint| changes it, such as an annotation a new popup is linked to.
+// Recording it again keeps the first record; an object numbered above the
+// checkpoint's last object number is new, and needs no record.
+//
+// Returns true on success, false when there is no such dictionary.
+FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV
+EPDFDoc_CheckpointObject(EPDF_CHECKPOINT checkpoint,
+                         unsigned int object_number);
 
 // Experimental EmbedPDF Extension API.
 // Undo every write made since |checkpoint| was taken: the recorded

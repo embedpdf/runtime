@@ -531,6 +531,47 @@ TEST_F(EPDFCheckpointEmbedderTest, AnAnnotationMadeWithoutItsPageRollsBack) {
   }
 }
 
+TEST_F(EPDFCheckpointEmbedderTest, ARecordedAnnotationGetsItsValueBack) {
+  for (bool layer : {false, true}) {
+    SCOPED_TRACE(layer ? "layer" : "document");
+    ScopedFPDFDocument doc = Open(layer);
+    ASSERT_TRUE(doc);
+    // A note that is there before the checkpoint.
+    ScopedFPDFAnnotation note(
+        EPDFPage_CreateAnnotRaw(doc.get(), 0, FPDF_ANNOT_TEXT));
+    ASSERT_TRUE(note);
+    const unsigned int number =
+        static_cast<unsigned int>(EPDFAnnot_GetObjectNumber(note.get()));
+    const int index = EPDFPage_GetAnnotCountRaw(doc.get(), 0) - 1;
+    note.reset();
+    const State before = Capture(doc.get(), layer);
+
+    // A popup linked to it: the note gains a /Popup.
+    EPDF_CHECKPOINT checkpoint = EPDFDoc_BeginCheckpoint(doc.get());
+    ASSERT_TRUE(EPDFDoc_CheckpointPage(checkpoint, 0));
+    ASSERT_TRUE(EPDFDoc_CheckpointObject(checkpoint, number));
+    ScopedFPDFAnnotation popup(
+        EPDFPage_CreateAnnotRaw(doc.get(), 0, FPDF_ANNOT_POPUP));
+    ASSERT_TRUE(popup);
+    // A new object needs no record.
+    EXPECT_TRUE(EPDFDoc_CheckpointObject(
+        checkpoint,
+        static_cast<unsigned int>(EPDFAnnot_GetObjectNumber(popup.get()))));
+    ScopedFPDFAnnotation parent(EPDFPage_GetAnnotRaw(doc.get(), 0, index));
+    ASSERT_TRUE(parent);
+    ASSERT_TRUE(EPDFAnnot_SetLinkedAnnot(popup.get(), "Parent", parent.get()));
+    ASSERT_TRUE(EPDFAnnot_SetLinkedAnnot(parent.get(), "Popup", popup.get()));
+    ScopedFPDFWideString contents = GetFPDFWideString(L"changed");
+    ASSERT_TRUE(FPDFAnnot_SetStringValue(parent.get(), "Contents", contents.get()));
+    parent.reset();
+    popup.reset();
+
+    EXPECT_TRUE(EPDFDoc_Rollback(checkpoint));
+    EPDFDoc_EndCheckpoint(checkpoint);
+    ExpectSame(before, Capture(doc.get(), layer));
+  }
+}
+
 TEST_F(EPDFCheckpointEmbedderTest, RefusesWhatIsNotThere) {
   EXPECT_FALSE(EPDFDoc_BeginCheckpoint(nullptr));
   EXPECT_FALSE(EPDFDoc_CheckpointPage(nullptr, 0));
@@ -540,6 +581,8 @@ TEST_F(EPDFCheckpointEmbedderTest, RefusesWhatIsNotThere) {
   EPDF_CHECKPOINT checkpoint = EPDFDoc_BeginCheckpoint(doc.get());
   EXPECT_FALSE(EPDFDoc_CheckpointPage(checkpoint, 99));
   EXPECT_FALSE(EPDFDoc_CheckpointPage(checkpoint, -1));
+  EXPECT_FALSE(EPDFDoc_CheckpointObject(nullptr, 1));
+  EXPECT_FALSE(EPDFDoc_CheckpointObject(checkpoint, 0));
   EPDFDoc_EndCheckpoint(checkpoint);
   EXPECT_FALSE(EPDFPage_CreateAnnotRaw(doc.get(), 99, FPDF_ANNOT_SQUARE));
   EXPECT_FALSE(EPDFPage_CreateAnnotRaw(nullptr, 0, FPDF_ANNOT_SQUARE));

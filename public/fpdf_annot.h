@@ -1808,6 +1808,23 @@ EPDFPage_GetAnnotIndexByNameRaw(FPDF_DOCUMENT doc,
                                 FPDF_WIDESTRING nm);
 
 // Experimental EmbedPDF Extension API.
+// Find the annotation that is object |object_number| on a page, without
+// loading or parsing the page or opening an annotation: only the page's
+// /Annots is read.
+//
+//   doc           - handle to a document.
+//   page_index    - the index of the page.
+//   object_number - the annotation dictionary's object number.
+//
+// Returns the annotation's index in the page's /Annots, or -1 when the page
+// has no such annotation (one written in place in /Annots has no object
+// number) or the arguments are invalid.
+FPDF_EXPORT int FPDF_CALLCONV
+EPDFPage_GetAnnotIndexByObjectNumberRaw(FPDF_DOCUMENT doc,
+                                        int page_index,
+                                        unsigned int object_number);
+
+// Experimental EmbedPDF Extension API.
 // Create an annotation of |subtype| on a page without loading or parsing the
 // page: a new annotation dictionary, an object of its own, appended to the
 // page's /Annots. EPDFPage_CreateAnnot() on an unparsed page, for writing to
