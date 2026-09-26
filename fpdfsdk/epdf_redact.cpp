@@ -401,13 +401,14 @@ bool ApplySingleRedactionCore(CPDF_Page* page,
       }
     }
 
-    AddPopupCascade(page, &removals);
-
     const int redact_index =
         FindAnnotIndexOnPageByObjNumOrDict(page, redact_dict);
     if (redact_index >= 0) {
       AddRemovalCandidate(page, static_cast<size_t>(redact_index), &removals);
     }
+
+    // After the mark joins the removals, so its own popup goes too.
+    AddPopupCascade(page, &removals);
   }
 
   SortCandidatesByOriginalIndex(&removals);

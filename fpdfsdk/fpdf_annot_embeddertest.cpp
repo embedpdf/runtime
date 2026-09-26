@@ -731,6 +731,41 @@ TEST_F(FPDFAnnotEmbedderTest, SetAP) {
   EXPECT_EQ(kStreamData, GetPlatformWString(buf.data()));
 }
 
+TEST_F(FPDFAnnotEmbedderTest, OpacityIsStoredAsGiven) {
+  ScopedFPDFDocument doc(FPDF_CreateNewDocument());
+  ASSERT_TRUE(doc);
+  ScopedFPDFPage page(FPDFPage_New(doc.get(), 0, 100, 100));
+  ASSERT_TRUE(page);
+  ScopedFPDFAnnotation annot(
+      FPDFPage_CreateAnnot(page.get(), FPDF_ANNOT_SQUARE));
+  ASSERT_TRUE(annot);
+  CPDF_AnnotContext* context = CPDFAnnotContextFromFPDFAnnotation(annot.get());
+  ASSERT_TRUE(context);
+
+  // No /CA reads opaque.
+  float opacity = 0;
+  ASSERT_TRUE(EPDFAnnot_GetOpacity(annot.get(), &opacity));
+  EXPECT_FLOAT_EQ(1.f, opacity);
+
+  // /CA is the value given, not an 8-bit alpha (0.5 was 128 / 255).
+  ASSERT_TRUE(EPDFAnnot_SetOpacity(annot.get(), 0.5f));
+  EXPECT_EQ(0.5f, context->GetAnnotDict()->GetFloatFor("CA"));
+  ASSERT_TRUE(EPDFAnnot_GetOpacity(annot.get(), &opacity));
+  EXPECT_EQ(0.5f, opacity);
+  ASSERT_TRUE(EPDFAnnot_SetOpacity(annot.get(), 0.3f));
+  ASSERT_TRUE(EPDFAnnot_GetOpacity(annot.get(), &opacity));
+  EXPECT_EQ(0.3f, opacity);
+
+  // Outside 0..1 is refused and changes nothing; 1 removes /CA.
+  EXPECT_FALSE(EPDFAnnot_SetOpacity(annot.get(), 1.5f));
+  EXPECT_FALSE(EPDFAnnot_SetOpacity(annot.get(), -0.1f));
+  EXPECT_FALSE(EPDFAnnot_SetOpacity(annot.get(),
+                                    std::numeric_limits<float>::quiet_NaN()));
+  EXPECT_EQ(0.3f, context->GetAnnotDict()->GetFloatFor("CA"));
+  ASSERT_TRUE(EPDFAnnot_SetOpacity(annot.get(), 1.f));
+  EXPECT_FALSE(context->GetAnnotDict()->KeyExist("CA"));
+}
+
 TEST_F(FPDFAnnotEmbedderTest, SetAPWithOpacity) {
   ScopedFPDFDocument doc(FPDF_CreateNewDocument());
   ASSERT_TRUE(doc);
@@ -8798,6 +8833,41 @@ TEST_F(FPDFAnnotEmbedderTest, ApplyRedactionCascadesPopupRemoval) {
   EXPECT_EQ(0, FPDFPage_GetAnnotCount(page.get()));
 }
 
+TEST_F(FPDFAnnotEmbedderTest, ApplyRedactionRemovesTheMarksOwnPopup) {
+  ScopedFPDFDocument doc(FPDF_CreateNewDocument());
+  ASSERT_TRUE(doc);
+  ScopedFPDFPage page(FPDFPage_New(doc.get(), 0, 200, 200));
+  ASSERT_TRUE(page);
+  ScopedFPDFAnnotation redact(
+      EPDFPage_CreateAnnot(page.get(), FPDF_ANNOT_REDACT));
+  ASSERT_TRUE(redact);
+  const FS_RECTF rect{20, 150, 180, 50};
+  ASSERT_TRUE(FPDFAnnot_SetRect(redact.get(), &rect));
+  // The popup lies outside the region: only the mark's /Popup takes it.
+  ScopedFPDFAnnotation popup(
+      EPDFPage_CreateAnnot(page.get(), FPDF_ANNOT_POPUP));
+  ASSERT_TRUE(popup);
+  const FS_RECTF popup_rect{0, 20, 10, 0};
+  ASSERT_TRUE(FPDFAnnot_SetRect(popup.get(), &popup_rect));
+  CPDF_Document* pdf = CPDFDocumentFromFPDFDocument(doc.get());
+  RetainPtr<CPDF_Dictionary> redact_dict =
+      CPDFAnnotContextFromFPDFAnnotation(redact.get())->GetMutableAnnotDict();
+  RetainPtr<CPDF_Dictionary> popup_dict =
+      CPDFAnnotContextFromFPDFAnnotation(popup.get())->GetMutableAnnotDict();
+  redact_dict->SetNewFor<CPDF_Reference>("Popup", pdf,
+                                         popup_dict->GetObjNum());
+  popup_dict->SetNewFor<CPDF_Reference>("Parent", pdf,
+                                        redact_dict->GetObjNum());
+  popup.reset();
+  ASSERT_EQ(2, FPDFPage_GetAnnotCount(page.get()));
+
+  // As applying the page's marks does: the mark goes, and its popup with it.
+  uint32_t removed = 7;
+  ASSERT_TRUE(EPDFAnnot_ApplyRedaction(page.get(), redact.get(), &removed));
+  EXPECT_EQ(1u, removed);
+  EXPECT_EQ(0, FPDFPage_GetAnnotCount(page.get()));
+}
+
 TEST_F(FPDFAnnotEmbedderTest, ApplyPageRedactionsCountsRemovedAnnotations) {
   ASSERT_TRUE(OpenDocument("redact_apply_all_visible.pdf"));
   ScopedPage page = LoadScopedPage(0);
@@ -10170,6 +10240,22 @@ TEST_F(FPDFAnnotEmbedderTest, LayerRemoveAnnotRawPromotesOnlyThePage) {
   EXPECT_FALSE(EPDFLayer_IsObjectPromoted(doc.layer, second));
 }
 
+TEST_F(FPDFAnnotEmbedderTest, LayerRemoveAnnotRawRemovesOneTheLayerCreated) {
+  LayerFixture doc;
+  ASSERT_TRUE(doc.OpenFresh(kTwoAnnots));
+  const int initial = EPDFPage_GetAnnotCountRaw(doc.layer, 0);
+  {
+    ScopedFPDFAnnotation created(
+        EPDFPage_CreateAnnotRaw(doc.layer, 0, FPDF_ANNOT_SQUARE));
+    ASSERT_TRUE(created);
+  }
+  ASSERT_EQ(initial + 1, EPDFPage_GetAnnotCountRaw(doc.layer, 0));
+
+  // The layer's own /Annots, where the create put it.
+  ASSERT_TRUE(EPDFPage_RemoveAnnotRaw(doc.layer, 0, initial));
+  EXPECT_EQ(initial, EPDFPage_GetAnnotCountRaw(doc.layer, 0));
+}
+
 TEST_F(FPDFAnnotEmbedderTest, LayerMoveAnnotsPromotesOnlyThePageAndMoveBackIsUnchanged) {
   LayerFixture doc;
   ASSERT_TRUE(doc.OpenFresh(kTwoAnnots));
@@ -10768,9 +10854,9 @@ TEST_F(EPDFStampResizeEmbedderTest, OpacityIsAcrobatsLayerOverOurWrapper) {
 
   // A new opacity replaces the layer over the same drawing.
   ASSERT_TRUE(
-      EPDFAnnot_SetStampOpacity(annot_.get(), EPDF_STAMP_FIT_CONTAIN, 64));
-  EXPECT_FLOAT_EQ(64 / 255.f, annot_dict()->GetFloatFor("CA"));
-  EXPECT_FLOAT_EQ(64 / 255.f, appearance()
+      EPDFAnnot_SetStampOpacity(annot_.get(), EPDF_STAMP_FIT_CONTAIN, 0.25f));
+  EXPECT_FLOAT_EQ(0.25f, annot_dict()->GetFloatFor("CA"));
+  EXPECT_FLOAT_EQ(0.25f, appearance()
                                   ->GetDict()
                                   ->GetDictFor("Resources")
                                   ->GetDictFor("ExtGState")
@@ -10783,7 +10869,7 @@ TEST_F(EPDFStampResizeEmbedderTest, OpacityIsAcrobatsLayerOverOurWrapper) {
 
   // Back to opaque: no /CA, no layer, the wrapper is the appearance.
   ASSERT_TRUE(
-      EPDFAnnot_SetStampOpacity(annot_.get(), EPDF_STAMP_FIT_CONTAIN, 255));
+      EPDFAnnot_SetStampOpacity(annot_.get(), EPDF_STAMP_FIT_CONTAIN, 1.f));
   EXPECT_FALSE(annot_dict()->KeyExist("CA"));
   EXPECT_EQ("q .5 0 0 .5 0 25 cm /EPDFWRAP Do Q",
             GetNormalAppearanceStreamBytes(annot_.get()));
@@ -10794,9 +10880,9 @@ TEST_F(EPDFStampResizeEmbedderTest, SetStampOpacityReplacesAcrobatsLayer) {
   InstallOpacityLayer(pdf(), annot_dict().Get(), 0.3f);
   annot_dict()->SetNewFor<CPDF_Number>("CA", 0.3f);
   EXPECT_FALSE(
-      EPDFAnnot_SetStampOpacity(annot_.get(), EPDF_STAMP_FIT_CONTAIN, 256));
+      EPDFAnnot_SetStampOpacity(annot_.get(), EPDF_STAMP_FIT_CONTAIN, 1.5f));
   ASSERT_TRUE(
-      EPDFAnnot_SetStampOpacity(annot_.get(), EPDF_STAMP_FIT_CONTAIN, 255));
+      EPDFAnnot_SetStampOpacity(annot_.get(), EPDF_STAMP_FIT_CONTAIN, 1.f));
   // Opaque: Acrobat's artwork in our wrapper, without either layer.
   EXPECT_FALSE(annot_dict()->KeyExist("CA"));
   EXPECT_EQ("q .5 0 0 .5 0 25 cm /EPDFWRAP Do Q",
@@ -10809,7 +10895,7 @@ TEST_F(EPDFStampResizeEmbedderTest, SetStampOpacityReplacesAcrobatsLayer) {
   const FS_RECTF empty{10, 10, 10, 10};
   ASSERT_TRUE(EPDFAnnot_SetRect(annot_.get(), &empty));
   EXPECT_FALSE(
-      EPDFAnnot_SetStampOpacity(annot_.get(), EPDF_STAMP_FIT_CONTAIN, 128));
+      EPDFAnnot_SetStampOpacity(annot_.get(), EPDF_STAMP_FIT_CONTAIN, 0.5f));
   EXPECT_FALSE(annot_dict()->KeyExist("CA"));
   EXPECT_EQ(before.Get(), appearance().Get());
 }
@@ -11572,7 +11658,7 @@ TEST_F(EPDFStampResizeEmbedderTest,
       }
       case Change::kOpacity:
         ASSERT_TRUE(EPDFAnnot_SetStampOpacity(changed.get(),
-                                              EPDF_STAMP_FIT_CONTAIN, 128));
+                                              EPDF_STAMP_FIT_CONTAIN, 0.5f));
         break;
       case Change::kNewDrawing: {
         const unsigned int other = import(green);

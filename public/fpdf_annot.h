@@ -1264,25 +1264,25 @@ FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV EPDFAnnot_SetColor(FPDF_ANNOTATION annot,
                                                        unsigned int B);
 
 // Experimental EmbedPDF Extension API.
-// Set the opacity of an annotaion.
+// Set the opacity of an annotation: /CA, stored as given. 1 removes /CA.
 //
-// annot - handle to an annotation.
-// alpha - the opacity. Ranges from 0 to 255.
+// annot   - handle to an annotation.
+// opacity - the opacity, 0 (transparent) to 1 (opaque).
 //
-// Returns true if succesful.
+// Returns true if successful; false for a value outside 0..1.
 FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV
-EPDFAnnot_SetOpacity(FPDF_ANNOTATION annot,
-                     unsigned int alpha /* 0 = transparent … 255 = opaque */);
+EPDFAnnot_SetOpacity(FPDF_ANNOTATION annot, float opacity);
 
 // Experimental EmbedPDF Extension API.
-// Get the opacity of an annotation.
+// Get the opacity of an annotation: /CA as stored, clamped to 0..1; 1 when
+// absent.
 //
-// annot - handle to an annotation.
-// alpha - buffer to hold the opacity. Ranges from 0 to 255.
+// annot   - handle to an annotation.
+// opacity - receives the opacity.
 //
-// Returns true if succesful.
+// Returns true if successful.
 FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV
-EPDFAnnot_GetOpacity(FPDF_ANNOTATION annot, unsigned int* alpha /* 0-255 */);
+EPDFAnnot_GetOpacity(FPDF_ANNOTATION annot, float* opacity);
 
 // Experimental EmbedPDF Extension API.
 // Clear the color of an annotation.
@@ -1916,15 +1916,15 @@ EPDFAnnot_UpdateAppearanceToRect(FPDF_ANNOTATION annot, EPDF_STAMP_FIT fit);
 // appearance with the opacity it was painted with: its opacity layer, ours or
 // Acrobat's, is replaced by one for the new value, not kept as drawing.
 //
-//   annot - handle to a Stamp annotation.
-//   fit   - one of EPDF_STAMP_FIT_*.
-//   alpha - the new opacity, 0-255; 255 removes /CA.
+//   annot   - handle to a Stamp annotation.
+//   fit     - one of EPDF_STAMP_FIT_*.
+//   opacity - the new opacity, 0 to 1; 1 removes /CA.
 //
 // Returns true on success; on failure /CA and the appearance are unchanged.
 FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV
 EPDFAnnot_SetStampOpacity(FPDF_ANNOTATION annot,
                           EPDF_STAMP_FIT fit,
-                          unsigned int alpha);
+                          float opacity);
 
 // Experimental EmbedPDF Extension API.
 // Create an annotation. (the difference from FPDFPage_CreateAnnot is that it

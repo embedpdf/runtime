@@ -2875,24 +2875,25 @@ EPDFAnnot_ClearColor(FPDF_ANNOTATION annot, FPDFANNOT_COLORTYPE type) {
 }
 
 FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV EPDFAnnot_SetOpacity(FPDF_ANNOTATION annot,
-                                                         unsigned int alpha) {
+                                                         float opacity) {
   RetainPtr<CPDF_Dictionary> dict =
       GetMutableAnnotDictFromFPDFAnnotation(annot);
-  if (!dict || alpha > 255) {
+  // Written this way round, a NaN is refused too.
+  if (!dict || !(opacity >= 0.f && opacity <= 1.f)) {
     return false;
   }
 
-  if (alpha == 255) {
+  if (opacity == 1.f) {
     dict->RemoveFor("CA");
   } else {
-    dict->SetNewFor<CPDF_Number>("CA", alpha / 255.f);
+    dict->SetNewFor<CPDF_Number>("CA", opacity);
   }
   return true;
 }
 
 FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV EPDFAnnot_GetOpacity(FPDF_ANNOTATION annot,
-                                                         unsigned int* alpha) {
-  if (!alpha) {
+                                                         float* opacity) {
+  if (!opacity) {
     return false;
   }
   const CPDF_Dictionary* dict = GetAnnotDictFromFPDFAnnotation(annot);
@@ -2900,8 +2901,8 @@ FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV EPDFAnnot_GetOpacity(FPDF_ANNOTATION annot,
     return false;
   }
 
-  float ca = dict->KeyExist("CA") ? dict->GetFloatFor("CA") : 1.0f;
-  *alpha = std::clamp(ca, 0.f, 1.f) * 255.f + 0.5f;
+  const float ca = dict->KeyExist("CA") ? dict->GetFloatFor("CA") : 1.0f;
+  *opacity = std::clamp(ca, 0.f, 1.f);
   return true;
 }
 
@@ -4300,6 +4301,9 @@ FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV EPDFPage_RemoveAnnotRaw(FPDF_DOCUMENT doc,
       index < 0) {
     return false;
   }
+  // As the raw create and get: a layer's page resolves its /Annots in the
+  // layer, not in the base.
+  CPDF_DocumentViewScope document_view(pdf);
 
   // Bounds are checked on the const view; only a real removal takes the
   // mutable page dictionary.
@@ -4559,15 +4563,15 @@ EPDFAnnot_UpdateAppearanceToRect(FPDF_ANNOTATION annot, EPDF_STAMP_FIT fit) {
 FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV
 EPDFAnnot_SetStampOpacity(FPDF_ANNOTATION annot,
                           EPDF_STAMP_FIT fit,
-                          unsigned int alpha) {
+                          float opacity) {
   RetainPtr<CPDF_Dictionary> dict = GetMutableAnnotDictFromFPDFAnnotation(annot);
-  if (!dict || alpha > 255) {
+  if (!dict || !(opacity >= 0.f && opacity <= 1.f)) {
     return false;
   }
   // The appearance still paints the old value; read it with that.
   RetainPtr<const CPDF_Object> previous = dict->GetObjectFor("CA");
   const float painted_opacity = EpdfGetAnnotOpacity(dict.Get());
-  if (!EPDFAnnot_SetOpacity(annot, alpha)) {
+  if (!EPDFAnnot_SetOpacity(annot, opacity)) {
     return false;
   }
   if (RefitPlacedAppearance(annot, fit, painted_opacity)) {

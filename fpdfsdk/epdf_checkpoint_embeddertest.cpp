@@ -268,7 +268,7 @@ void ImportEverything(FPDF_DOCUMENT doc,
     ASSERT_TRUE(
         EPDFAnnot_UpdateAppearanceToRect(stamp.get(), EPDF_STAMP_FIT_CONTAIN));
     ASSERT_TRUE(
-        EPDFAnnot_SetStampOpacity(stamp.get(), EPDF_STAMP_FIT_CONTAIN, 128));
+        EPDFAnnot_SetStampOpacity(stamp.get(), EPDF_STAMP_FIT_CONTAIN, 0.5f));
   }
   AddPngStamp(doc, first.get(), kRedPng, {20, 200, 120, 150});
   {
