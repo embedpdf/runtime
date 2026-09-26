@@ -316,6 +316,10 @@ void CFX_Path::AppendPointAndClose(const CFX_PointF& point, Point::Type type) {
   points_.emplace_back(point, type, /*close=*/true);
 }
 
+void CFX_Path::AppendPoints(pdfium::span<const Point> points) {
+  points_.insert(points_.end(), points.begin(), points.end());
+}
+
 void CFX_Path::AppendLine(const CFX_PointF& pt1, const CFX_PointF& pt2) {
   if (points_.empty() || fabs(points_.back().point_.x - pt1.x) > 0.001 ||
       fabs(points_.back().point_.y - pt1.y) > 0.001) {

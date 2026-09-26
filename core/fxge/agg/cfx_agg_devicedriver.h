@@ -100,6 +100,16 @@ class CFX_AggDeviceDriver final : public RenderDeviceDriverIface {
   void Clear(uint32_t color);
 
  private:
+  // The path storage, rasterizer, scanline and stroker every path of this
+  // device is drawn with. Building them per path costs more than rasterizing
+  // the small paths that vector-heavy pages consist of.
+  class Workspace;
+
+  Workspace& GetWorkspace();
+  // Frees the workspace when one large path grew it, instead of keeping that
+  // memory until the device is destroyed.
+  void ReleaseLargeWorkspace();
+
   void RenderRasterizer(pdfium::agg::rasterizer_scanline_aa& rasterizer,
                         uint32_t color,
                         bool bFullCover,
@@ -117,6 +127,7 @@ class CFX_AggDeviceDriver final : public RenderDeviceDriverIface {
   const bool rgb_byte_order_;
   const bool group_knockout_;
   RetainPtr<CFX_DIBitmap> backdrop_bitmap_;
+  std::unique_ptr<Workspace> workspace_;
 };
 
 }  // namespace pdfium

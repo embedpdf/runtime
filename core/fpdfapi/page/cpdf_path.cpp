@@ -55,14 +55,14 @@ void CPDF_Path::AppendRect(float left, float bottom, float right, float top) {
 
 void CPDF_Path::AppendPoint(const CFX_PointF& point,
                             CFX_Path::Point::Type type) {
-  CFX_Path data;
-  data.AppendPoint(point, type);
-  Append(data, nullptr);
+  ref_.GetPrivateCopy()->AppendPoint(point, type);
 }
 
 void CPDF_Path::AppendPointAndClose(const CFX_PointF& point,
                                     CFX_Path::Point::Type type) {
-  CFX_Path data;
-  data.AppendPointAndClose(point, type);
-  Append(data, nullptr);
+  ref_.GetPrivateCopy()->AppendPointAndClose(point, type);
+}
+
+void CPDF_Path::AppendPoints(pdfium::span<const CFX_Path::Point> points) {
+  ref_.GetPrivateCopy()->AppendPoints(points);
 }

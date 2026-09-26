@@ -39,3 +39,7 @@ outline_aa::render_line().
 0016-support-negative-dash-phases.patch: Support negative dash phases in
 calc_dash_start().
 0017-support-odd-size-dash-arrays.patch: Support odd-sized dash arrays.
+0018-reuse-across-paths.patch: Let one path_storage and one
+rasterizer_scanline_aa draw many paths: path_storage::remove_all(),
+rasterizer_scanline_aa::reset_to_initial(), and a cell block limit that
+counts the blocks the current outline uses rather than the ones allocated.

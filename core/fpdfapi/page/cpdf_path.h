@@ -37,6 +37,7 @@ class CPDF_Path {
   void AppendRect(float left, float bottom, float right, float top);
   void AppendPoint(const CFX_PointF& point, CFX_Path::Point::Type type);
   void AppendPointAndClose(const CFX_PointF& point, CFX_Path::Point::Type type);
+  void AppendPoints(pdfium::span<const CFX_Path::Point> points);
 
   // TODO(tsepez): Remove when all access thru this class.
   const CFX_Path* GetObject() const { return ref_.GetObject(); }

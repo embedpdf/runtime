@@ -1862,6 +1862,19 @@ EPDF_RenderAnnotBitmapUnrotated(FPDF_BITMAP bitmap,
                                 const FS_MATRIX* matrix,
                                 int flags);
 
+// Experimental EmbedPDF Extension API.
+// Empties the page's image cache and frees the decoded images it holds, so
+// the page renders its images as a newly loaded page does. Renders of one
+// page share its image cache, and a cached decode depends on the size of the
+// render that made it: call this where each render must be independent of
+// earlier ones, such as before reusing a loaded page for a later job.
+//
+//   page - Handle to the page.
+//
+// Returns false, and changes nothing, when `page` is invalid or a
+// progressive render of it (FPDF_RenderPageBitmap_Start) is in progress.
+FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV EPDFPage_ResetRenderCache(FPDF_PAGE page);
+
 #ifdef PDF_ENABLE_V8
 // Function: FPDF_GetRecommendedV8Flags
 //          Returns a space-separated string of command line flags that are

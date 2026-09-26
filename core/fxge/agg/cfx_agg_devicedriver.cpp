@@ -272,8 +272,11 @@ void RgbByteOrderTransferBitmap(RetainPtr<CFX_DIBitmap> pBitmap,
   }
 }
 
+// `solid_stroke` must stroke `path_data`; it is used unless the dash pattern
+// applies.
 void RasterizeStroke(agg::rasterizer_scanline_aa* rasterizer,
                      agg::path_storage* path_data,
+                     agg::conv_stroke<agg::path_storage>& solid_stroke,
                      const CFX_Matrix* pObject2Device,
                      const CFX_GraphStateData* pGraphState,
                      float scale,
@@ -360,7 +363,7 @@ void RasterizeStroke(agg::rasterizer_scanline_aa* rasterizer,
     rasterizer->add_path_transformed(stroke, pObject2Device);
     return;
   }
-  agg::conv_stroke<agg::path_storage> stroke(*path_data);
+  agg::conv_stroke<agg::path_storage>& stroke = solid_stroke;
   stroke.line_join(join);
   stroke.line_cap(cap);
   stroke.miter_limit(pGraphState->miter_limit());
@@ -914,9 +917,10 @@ class RendererScanLineAaOffset {
   unsigned top_;
 };
 
-agg::path_storage BuildAggPath(const CFX_Path& path,
-                               const CFX_Matrix* pObject2Device) {
-  agg::path_storage agg_path;
+// Appends `path` to `agg_path`, which the caller passes empty.
+void BuildAggPath(const CFX_Path& path,
+                  const CFX_Matrix* pObject2Device,
+                  agg::path_storage& agg_path) {
   pdfium::span<const CFX_Path::Point> points = path.GetPoints();
   for (size_t i = 0; i < points.size(); ++i) {
     CFX_PointF pos = points[i].point_;
@@ -959,10 +963,41 @@ agg::path_storage BuildAggPath(const CFX_Path& path,
       agg_path.end_poly();
     }
   }
-  return agg_path;
 }
 
 }  // namespace
+
+class CFX_AggDeviceDriver::Workspace {
+ public:
+  Workspace() : solid_stroke_(path_) {}
+
+  // Each accessor returns its object in the state a new one has, keeping the
+  // memory it allocated for earlier paths.
+  agg::path_storage& EmptyPath() {
+    path_.remove_all();
+    return path_;
+  }
+  agg::rasterizer_scanline_aa& InitialRasterizer(float width, float height) {
+    rasterizer_.reset_to_initial();
+    rasterizer_.clip_box(0.0f, 0.0f, width, height);
+    return rasterizer_;
+  }
+  agg::scanline_u8& scanline() { return scanline_; }
+  // Strokes the path returned by EmptyPath(). The adaptor restarts its stroke
+  // generator for every polygon; RasterizeStroke() sets each parameter.
+  agg::conv_stroke<agg::path_storage>& solid_stroke() { return solid_stroke_; }
+
+  bool HoldsLargeBuffers() const {
+    // 16 cell blocks are 1 MiB; the paths this reuse is for need one.
+    return rasterizer_.allocated_cell_blocks() > 16;
+  }
+
+ private:
+  agg::path_storage path_;
+  agg::rasterizer_scanline_aa rasterizer_;
+  agg::scanline_u8 scanline_;
+  agg::conv_stroke<agg::path_storage> solid_stroke_;
+};
 
 CFX_AggDeviceDriver::CFX_AggDeviceDriver(
     RetainPtr<CFX_DIBitmap> pBitmap,
@@ -981,6 +1016,19 @@ CFX_AggDeviceDriver::CFX_AggDeviceDriver(
 
 CFX_AggDeviceDriver::~CFX_AggDeviceDriver() {
   DestroyPlatform();
+}
+
+CFX_AggDeviceDriver::Workspace& CFX_AggDeviceDriver::GetWorkspace() {
+  if (!workspace_) {
+    workspace_ = std::make_unique<Workspace>();
+  }
+  return *workspace_;
+}
+
+void CFX_AggDeviceDriver::ReleaseLargeWorkspace() {
+  if (workspace_ && workspace_->HoldsLargeBuffers()) {
+    workspace_.reset();
+  }
 }
 
 #if !BUILDFLAG(IS_APPLE)
@@ -1071,8 +1119,7 @@ void CFX_AggDeviceDriver::SetClipMask(agg::rasterizer_scanline_aa& rasterizer) {
     RendererScanLineAaOffset<agg::renderer_base<agg::pixfmt_gray8>>
         final_render(base_buf, path_rect.left, path_rect.top);
     final_render.color(agg::gray8(255));
-    agg::scanline_u8 scanline;
-    agg::render_scanlines(rasterizer, scanline, final_render,
+    agg::render_scanlines(rasterizer, GetWorkspace().scanline(), final_render,
                           fill_options_.aliased_path);
   }
   clip_rgn_->IntersectMaskF(path_rect.left, path_rect.top,
@@ -1100,15 +1147,17 @@ bool CFX_AggDeviceDriver::SetClip_PathFill(
     clip_rgn_->IntersectRect(rect);
     return true;
   }
-  agg::path_storage path_data = BuildAggPath(path, pObject2Device);
+  Workspace& workspace = GetWorkspace();
+  agg::path_storage& path_data = workspace.EmptyPath();
+  BuildAggPath(path, pObject2Device, path_data);
   path_data.end_poly();
-  agg::rasterizer_scanline_aa rasterizer;
-  rasterizer.clip_box(0.0f, 0.0f,
-                      static_cast<float>(GetDeviceCaps(FXDC_PIXEL_WIDTH)),
-                      static_cast<float>(GetDeviceCaps(FXDC_PIXEL_HEIGHT)));
+  agg::rasterizer_scanline_aa& rasterizer = workspace.InitialRasterizer(
+      static_cast<float>(GetDeviceCaps(FXDC_PIXEL_WIDTH)),
+      static_cast<float>(GetDeviceCaps(FXDC_PIXEL_HEIGHT)));
   rasterizer.add_path(path_data);
   rasterizer.filling_rule(GetAlternateOrWindingFillType(fill_options));
   SetClipMask(rasterizer);
+  ReleaseLargeWorkspace();
   return true;
 }
 
@@ -1120,15 +1169,17 @@ bool CFX_AggDeviceDriver::SetClip_PathStroke(
     clip_rgn_ = std::make_unique<CFX_AggClipRgn>(
         GetDeviceCaps(FXDC_PIXEL_WIDTH), GetDeviceCaps(FXDC_PIXEL_HEIGHT));
   }
-  agg::path_storage path_data = BuildAggPath(path, nullptr);
-  agg::rasterizer_scanline_aa rasterizer;
-  rasterizer.clip_box(0.0f, 0.0f,
-                      static_cast<float>(GetDeviceCaps(FXDC_PIXEL_WIDTH)),
-                      static_cast<float>(GetDeviceCaps(FXDC_PIXEL_HEIGHT)));
-  RasterizeStroke(&rasterizer, &path_data, pObject2Device, pGraphState, 1.0f,
-                  false);
+  Workspace& workspace = GetWorkspace();
+  agg::path_storage& path_data = workspace.EmptyPath();
+  BuildAggPath(path, nullptr, path_data);
+  agg::rasterizer_scanline_aa& rasterizer = workspace.InitialRasterizer(
+      static_cast<float>(GetDeviceCaps(FXDC_PIXEL_WIDTH)),
+      static_cast<float>(GetDeviceCaps(FXDC_PIXEL_HEIGHT)));
+  RasterizeStroke(&rasterizer, &path_data, workspace.solid_stroke(),
+                  pObject2Device, pGraphState, 1.0f, false);
   rasterizer.filling_rule(agg::fill_non_zero);
   SetClipMask(rasterizer);
+  ReleaseLargeWorkspace();
   return true;
 }
 
@@ -1157,8 +1208,7 @@ void CFX_AggDeviceDriver::RenderRasterizer(
   RetainPtr<CFX_DIBitmap> pt = bGroupKnockout ? backdrop_bitmap_ : nullptr;
   CFX_AggRenderer render(bitmap_, pt, clip_rgn_.get(), color, bFullCover,
                          rgb_byte_order_);
-  agg::scanline_u8 scanline;
-  agg::render_scanlines(rasterizer, scanline, render,
+  agg::render_scanlines(rasterizer, GetWorkspace().scanline(), render,
                         fill_options_.aliased_path);
 }
 
@@ -1173,13 +1223,16 @@ bool CFX_AggDeviceDriver::DrawPath(const CFX_Path& path,
   }
 
   fill_options_ = fill_options;
+  const float device_width = static_cast<float>(GetDeviceCaps(FXDC_PIXEL_WIDTH));
+  const float device_height =
+      static_cast<float>(GetDeviceCaps(FXDC_PIXEL_HEIGHT));
   if (fill_options.fill_type != CFX_FillRenderOptions::FillType::kNoFill &&
       fill_color) {
-    agg::path_storage path_data = BuildAggPath(path, pObject2Device);
-    agg::rasterizer_scanline_aa rasterizer;
-    rasterizer.clip_box(0.0f, 0.0f,
-                        static_cast<float>(GetDeviceCaps(FXDC_PIXEL_WIDTH)),
-                        static_cast<float>(GetDeviceCaps(FXDC_PIXEL_HEIGHT)));
+    Workspace& workspace = GetWorkspace();
+    agg::path_storage& path_data = workspace.EmptyPath();
+    BuildAggPath(path, pObject2Device, path_data);
+    agg::rasterizer_scanline_aa& rasterizer =
+        workspace.InitialRasterizer(device_width, device_height);
     rasterizer.add_path(path_data);
     rasterizer.filling_rule(GetAlternateOrWindingFillType(fill_options));
     RenderRasterizer(rasterizer, fill_color, fill_options.full_cover,
@@ -1187,19 +1240,21 @@ bool CFX_AggDeviceDriver::DrawPath(const CFX_Path& path,
   }
   int stroke_alpha = FXARGB_A(stroke_color);
   if (!pGraphState || !stroke_alpha) {
+    ReleaseLargeWorkspace();
     return true;
   }
 
   if (fill_options.zero_area) {
-    agg::path_storage path_data = BuildAggPath(path, pObject2Device);
-    agg::rasterizer_scanline_aa rasterizer;
-    rasterizer.clip_box(0.0f, 0.0f,
-                        static_cast<float>(GetDeviceCaps(FXDC_PIXEL_WIDTH)),
-                        static_cast<float>(GetDeviceCaps(FXDC_PIXEL_HEIGHT)));
-    RasterizeStroke(&rasterizer, &path_data, nullptr, pGraphState, 1,
-                    fill_options.stroke_text_mode);
+    Workspace& workspace = GetWorkspace();
+    agg::path_storage& path_data = workspace.EmptyPath();
+    BuildAggPath(path, pObject2Device, path_data);
+    agg::rasterizer_scanline_aa& rasterizer =
+        workspace.InitialRasterizer(device_width, device_height);
+    RasterizeStroke(&rasterizer, &path_data, workspace.solid_stroke(), nullptr,
+                    pGraphState, 1, fill_options.stroke_text_mode);
     RenderRasterizer(rasterizer, stroke_color, fill_options.full_cover,
                      group_knockout_);
+    ReleaseLargeWorkspace();
     return true;
   }
   CFX_Matrix matrix1;
@@ -1214,15 +1269,16 @@ bool CFX_AggDeviceDriver::DrawPath(const CFX_Path& path,
     matrix1 = *pObject2Device * matrix2.GetInverse();
   }
 
-  agg::path_storage path_data = BuildAggPath(path, &matrix1);
-  agg::rasterizer_scanline_aa rasterizer;
-  rasterizer.clip_box(0.0f, 0.0f,
-                      static_cast<float>(GetDeviceCaps(FXDC_PIXEL_WIDTH)),
-                      static_cast<float>(GetDeviceCaps(FXDC_PIXEL_HEIGHT)));
-  RasterizeStroke(&rasterizer, &path_data, &matrix2, pGraphState, matrix1.a,
-                  fill_options.stroke_text_mode);
+  Workspace& workspace = GetWorkspace();
+  agg::path_storage& path_data = workspace.EmptyPath();
+  BuildAggPath(path, &matrix1, path_data);
+  agg::rasterizer_scanline_aa& rasterizer =
+      workspace.InitialRasterizer(device_width, device_height);
+  RasterizeStroke(&rasterizer, &path_data, workspace.solid_stroke(), &matrix2,
+                  pGraphState, matrix1.a, fill_options.stroke_text_mode);
   RenderRasterizer(rasterizer, stroke_color, fill_options.full_cover,
                    group_knockout_);
+  ReleaseLargeWorkspace();
   return true;
 }
 

@@ -1409,6 +1409,18 @@ EPDF_RenderAnnotBitmapUnrotated(FPDF_BITMAP bitmap,
   return true;
 }
 
+FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV EPDFPage_ResetRenderCache(FPDF_PAGE page) {
+  CPDF_Page* pPage = CPDFPageFromFPDFPage(page);
+  // A progressive render holds loaders that point into the cache.
+  if (!pPage || pPage->GetRenderContext()) {
+    return false;
+  }
+  if (pPage->GetPageImageCache()) {
+    pPage->AddPageImageCache();
+  }
+  return true;
+}
+
 #if defined(PDF_USE_SKIA)
 FPDF_EXPORT void FPDF_CALLCONV FPDF_RenderPageSkia(FPDF_SKIA_CANVAS canvas,
                                                    FPDF_PAGE page,

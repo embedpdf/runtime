@@ -28,6 +28,7 @@
 #include "public/fpdf_doc.h"
 #include "public/fpdf_edit.h"
 #include "public/fpdf_javascript.h"
+#include "public/fpdf_progressive.h"
 #include "public/fpdf_save.h"
 #include "public/fpdf_text.h"
 #include "public/fpdfview.h"
@@ -3211,6 +3212,35 @@ TEST_F(FPDFViewEmbedderTest, EPDFDocGetPageObjectNumberByIndex) {
   ASSERT_TRUE(page);
   EXPECT_EQ(objnum, EPDFPage_GetObjectNumber(page.get()));
   EXPECT_EQ(1u, doc->GetParsedPageCountForTesting());
+}
+
+TEST_F(FPDFViewEmbedderTest, EPDFPageResetRenderCache) {
+  EXPECT_FALSE(EPDFPage_ResetRenderCache(nullptr));
+
+  ASSERT_TRUE(OpenDocument("embedded_images.pdf"));
+  ScopedPage page = LoadScopedPage(0);
+  ASSERT_TRUE(page);
+
+  const std::string first = HashBitmap(RenderLoadedPage(page.get()).get());
+  EXPECT_TRUE(EPDFPage_ResetRenderCache(page.get()));
+  EXPECT_EQ(first, HashBitmap(RenderLoadedPage(page.get()).get()));
+
+  // Refused while a progressive render holds the page's render context, which
+  // it does from FPDF_RenderPageBitmap_Start() until FPDF_RenderPage_Close().
+  const int width = static_cast<int>(FPDF_GetPageWidthF(page.get()));
+  const int height = static_cast<int>(FPDF_GetPageHeightF(page.get()));
+  ScopedFPDFBitmap bitmap(FPDFBitmap_Create(width, height, 0));
+  FPDFBitmap_FillRect(bitmap.get(), 0, 0, width, height, 0xFFFFFFFF);
+  IFSDK_PAUSE pause = {};
+  pause.version = 1;
+  pause.NeedToPauseNow = [](IFSDK_PAUSE*) -> FPDF_BOOL { return false; };
+  EXPECT_EQ(FPDF_RENDER_DONE,
+            FPDF_RenderPageBitmap_Start(bitmap.get(), page.get(), 0, 0, width,
+                                        height, 0, 0, &pause));
+  EXPECT_FALSE(EPDFPage_ResetRenderCache(page.get()));
+  FPDF_RenderPage_Close(page.get());
+  EXPECT_TRUE(EPDFPage_ResetRenderCache(page.get()));
+  EXPECT_EQ(first, HashBitmap(RenderLoadedPage(page.get()).get()));
 }
 
 TEST_F(FPDFViewEmbedderTest, EPDFDocSetPageRotationByObjectNumber) {

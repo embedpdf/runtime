@@ -113,6 +113,18 @@ public:
     {
         return m_sorted;
     }
+    // Like reset(), and also restores the pen position a new outline has.
+    // The allocated cell blocks are kept for reuse.
+    void reset_to_initial()
+    {
+        reset();
+        m_cur_x = 0;
+        m_cur_y = 0;
+    }
+    unsigned allocated_blocks() const
+    {
+        return m_num_blocks;
+    }
 private:
     outline_aa(const outline_aa&);
     const outline_aa& operator = (const outline_aa&);
@@ -220,6 +232,21 @@ public:
     {
         m_outline.reset();
         m_status = status_initial;
+    }
+    // Restores every setting a newly constructed rasterizer has (reset() keeps
+    // the filling rule and the clip box), keeping the outline's cell blocks.
+    void reset_to_initial()
+    {
+        m_outline.reset_to_initial();
+        m_filling_rule = fill_non_zero;
+        m_clipped_start_x = 0;
+        m_clipped_start_y = 0;
+        m_status = status_initial;
+        m_clipping = false;
+    }
+    unsigned allocated_cell_blocks() const
+    {
+        return m_outline.allocated_blocks();
     }
     void clip_box(float x1, float y1, float x2, float y2)
     {

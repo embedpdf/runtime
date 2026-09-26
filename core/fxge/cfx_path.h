@@ -14,6 +14,7 @@
 
 #include "core/fxcrt/fx_coordinates.h"
 #include "core/fxcrt/retain_ptr.h"
+#include "core/fxcrt/span.h"
 
 class CFX_Path {
  public:
@@ -64,6 +65,8 @@ class CFX_Path {
   void AppendLine(const CFX_PointF& pt1, const CFX_PointF& pt2);
   void AppendPoint(const CFX_PointF& point, Point::Type type);
   void AppendPointAndClose(const CFX_PointF& point, Point::Type type);
+  // Appends `points` as given, in a single allocation when the path is empty.
+  void AppendPoints(pdfium::span<const Point> points);
   void ClosePath();
 
  private:

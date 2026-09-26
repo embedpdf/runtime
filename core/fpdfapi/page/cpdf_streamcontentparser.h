@@ -111,6 +111,10 @@ class CPDF_StreamContentParser {
   void AddPathRect(float x, float y, float w, float h);
   void AddPathObject(CFX_FillRenderOptions::FillType fill_type,
                      RenderType render_type);
+  void AddPathObjectFromPoints(std::vector<CFX_Path::Point>& path_points,
+                               CFX_FillRenderOptions::FillType path_clip_type,
+                               CFX_FillRenderOptions::FillType fill_type,
+                               RenderType render_type);
   CPDF_ImageObject* AddImageFromStream(RetainPtr<CPDF_Stream> pStream,
                                        const ByteString& name);
   CPDF_ImageObject* AddImageFromStreamObjNum(uint32_t stream_obj_num,

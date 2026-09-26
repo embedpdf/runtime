@@ -100,6 +100,13 @@ public:
     unsigned vertex(float* x, float* y);
     void add_vertex(float x, float y, unsigned cmd);
     void end_poly();
+    // Empties the path and keeps its blocks, so it can be filled again
+    // without allocating.
+    void remove_all()
+    {
+        m_total_vertices = 0;
+        m_iterator = 0;
+    }
 private:
     void allocate_block(unsigned nb);
     unsigned char* storage_ptrs(float** xy_ptr);

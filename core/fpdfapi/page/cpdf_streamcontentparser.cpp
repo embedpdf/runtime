@@ -1581,11 +1581,20 @@ void CPDF_StreamContentParser::AddPathPointAndClose(
 void CPDF_StreamContentParser::AddPathObject(
     CFX_FillRenderOptions::FillType fill_type,
     RenderType render_type) {
-  std::vector<CFX_Path::Point> path_points;
-  path_points.swap(path_points_);
   CFX_FillRenderOptions::FillType path_clip_type = path_clip_type_;
   path_clip_type_ = CFX_FillRenderOptions::FillType::kNoFill;
+  // `path_points_` is cleared, not released, so the next path reuses its
+  // capacity instead of growing a new vector.
+  AddPathObjectFromPoints(path_points_, path_clip_type, fill_type,
+                          render_type);
+  path_points_.clear();
+}
 
+void CPDF_StreamContentParser::AddPathObjectFromPoints(
+    std::vector<CFX_Path::Point>& path_points,
+    CFX_FillRenderOptions::FillType path_clip_type,
+    CFX_FillRenderOptions::FillType fill_type,
+    RenderType render_type) {
   if (path_points.empty()) {
     return;
   }
@@ -1620,13 +1629,7 @@ void CPDF_StreamContentParser::AddPathObject(
   }
 
   CPDF_Path path;
-  for (const auto& point : path_points) {
-    if (point.close_figure_) {
-      path.AppendPointAndClose(point.point_, point.type_);
-    } else {
-      path.AppendPoint(point.point_, point.type_);
-    }
-  }
+  path.AppendPoints(path_points);
 
   CFX_Matrix matrix =
       cur_states_->current_transformation_matrix() * mt_content_to_user_;

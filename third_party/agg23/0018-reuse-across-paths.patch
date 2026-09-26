@@ -1,0 +1,79 @@
+diff --git a/third_party/agg23/agg_path_storage.h b/third_party/agg23/agg_path_storage.h
+index 82148061a..6837955f4 100644
+--- a/third_party/agg23/agg_path_storage.h
++++ b/third_party/agg23/agg_path_storage.h
+@@ -100,6 +100,13 @@ public:
+     unsigned vertex(float* x, float* y);
+     void add_vertex(float x, float y, unsigned cmd);
+     void end_poly();
++    // Empties the path and keeps its blocks, so it can be filled again
++    // without allocating.
++    void remove_all()
++    {
++        m_total_vertices = 0;
++        m_iterator = 0;
++    }
+ private:
+     void allocate_block(unsigned nb);
+     unsigned char* storage_ptrs(float** xy_ptr);
+diff --git a/third_party/agg23/agg_rasterizer_scanline_aa.cpp b/third_party/agg23/agg_rasterizer_scanline_aa.cpp
+index ed59cf0ff..ad802d1a5 100644
+--- a/third_party/agg23/agg_rasterizer_scanline_aa.cpp
++++ b/third_party/agg23/agg_rasterizer_scanline_aa.cpp
+@@ -134,7 +134,10 @@ AGG_INLINE void outline_aa::add_cur_cell()
+ {
+     if(m_cur_cell.area | m_cur_cell.cover) {
+         if((m_num_cells & cell_block_mask) == 0) {
+-            if(m_num_blocks >= cell_block_limit) {
++            // Count the blocks this outline uses, not the ones allocated: an
++            // outline reused after reset() keeps its blocks, and must reach
++            // the limit exactly where a new outline would.
++            if(m_cur_block >= cell_block_limit) {
+                 return;
+             }
+             allocate_block();
+diff --git a/third_party/agg23/agg_rasterizer_scanline_aa.h b/third_party/agg23/agg_rasterizer_scanline_aa.h
+index dd0d00076..bcd62efab 100644
+--- a/third_party/agg23/agg_rasterizer_scanline_aa.h
++++ b/third_party/agg23/agg_rasterizer_scanline_aa.h
+@@ -113,6 +113,18 @@ public:
+     {
+         return m_sorted;
+     }
++    // Like reset(), and also restores the pen position a new outline has.
++    // The allocated cell blocks are kept for reuse.
++    void reset_to_initial()
++    {
++        reset();
++        m_cur_x = 0;
++        m_cur_y = 0;
++    }
++    unsigned allocated_blocks() const
++    {
++        return m_num_blocks;
++    }
+ private:
+     outline_aa(const outline_aa&);
+     const outline_aa& operator = (const outline_aa&);
+@@ -221,6 +233,21 @@ public:
+         m_outline.reset();
+         m_status = status_initial;
+     }
++    // Restores every setting a newly constructed rasterizer has (reset() keeps
++    // the filling rule and the clip box), keeping the outline's cell blocks.
++    void reset_to_initial()
++    {
++        m_outline.reset_to_initial();
++        m_filling_rule = fill_non_zero;
++        m_clipped_start_x = 0;
++        m_clipped_start_y = 0;
++        m_status = status_initial;
++        m_clipping = false;
++    }
++    unsigned allocated_cell_blocks() const
++    {
++        return m_outline.allocated_blocks();
++    }
+     void clip_box(float x1, float y1, float x2, float y2)
+     {
+         m_clip_box = rect(poly_coord(x1), poly_coord(y1),
