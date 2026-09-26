@@ -460,7 +460,8 @@ FPDF_GetPageLabel(FPDF_DOCUMENT document,
 //
 //   document - handle to the document.
 //   tag      - the tag to set.
-//   value    - the value to set.
+//   value    - the value to set; NULL removes |tag|. An empty string is a
+//              value: |tag| stays, present and empty.
 //
 // Returns true on success.
 FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV EPDF_SetMetaText(FPDF_DOCUMENT document,

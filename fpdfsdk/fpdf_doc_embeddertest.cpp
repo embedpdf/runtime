@@ -943,6 +943,20 @@ TEST_F(FPDFDocEmbedderTest, GetMetaTextFromNewDocument) {
   EXPECT_EQ(2u, FPDF_GetMetaText(empty_doc.get(), "Title", buf, sizeof(buf)));
 }
 
+TEST_F(FPDFDocEmbedderTest, SetMetaTextKeepsAnEmptyValue) {
+  ScopedFPDFDocument doc(FPDF_CreateNewDocument());
+  ASSERT_TRUE(doc);
+  ScopedFPDFWideString empty = GetFPDFWideString(L"");
+  ASSERT_TRUE(EPDF_SetMetaText(doc.get(), "Title", empty.get()));
+  EXPECT_TRUE(EPDF_HasMetaText(doc.get(), "Title"));
+  unsigned short buf[16];
+  EXPECT_EQ(2u, FPDF_GetMetaText(doc.get(), "Title", buf, sizeof(buf)));
+
+  // NULL removes it.
+  ASSERT_TRUE(EPDF_SetMetaText(doc.get(), "Title", nullptr));
+  EXPECT_FALSE(EPDF_HasMetaText(doc.get(), "Title"));
+}
+
 TEST_F(FPDFDocEmbedderTest, GetPageAAction) {
   ASSERT_TRUE(OpenDocument("get_page_aaction.pdf"));
   ScopedPage page = LoadScopedPage(0);

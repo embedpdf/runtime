@@ -689,14 +689,13 @@ FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV EPDF_SetMetaText(FPDF_DOCUMENT document,
   }
 
   ByteString key(tag);
-  WideString wide = value ? UNSAFE_BUFFERS(WideStringFromFPDFWideString(value))
-                          : WideString();
-
-  if (wide.IsEmpty()) {
+  if (!value) {
     // RemoveFor() expects ByteStringView.
     info->RemoveFor(key.AsStringView());
     return true;
   }
+  // An empty string is a value: the key stays, present and empty.
+  WideString wide = UNSAFE_BUFFERS(WideStringFromFPDFWideString(value));
 
   // Store as Unicode CPDF_String (same pattern as FPDFAnnot_SetStringValue).
   info->SetNewFor<CPDF_String>(key, wide.AsStringView());
