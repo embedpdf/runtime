@@ -1173,7 +1173,8 @@ TEST_F(EPDFFormEmbedderTest, ImportFDF) {
       "%%EOF\r\n";
 
   EPDF_FORM_IMPORT_RESULT result;
-  ASSERT_TRUE(EPDFForm_ImportFDF(document(), kFdf, sizeof(kFdf) - 1, &result));
+  ASSERT_TRUE(EPDFForm_ImportFDF(document(), kFdf, sizeof(kFdf) - 1, nullptr, 0,
+                                 &result));
   EXPECT_EQ(3u, result.fields_total);
   EXPECT_EQ(2u, result.fields_applied);
   EXPECT_EQ(1u, result.fields_skipped);
@@ -1189,7 +1190,41 @@ TEST_F(EPDFFormEmbedderTest, ImportFDF) {
   EPDFForm_CloseModel(model);
 
   // Garbage payloads are rejected.
-  EXPECT_FALSE(EPDFForm_ImportFDF(document(), "not fdf", 7, &result));
+  EXPECT_FALSE(
+      EPDFForm_ImportFDF(document(), "not fdf", 7, nullptr, 0, &result));
+}
+
+// Fields the caller lists are never written and count as skipped: the
+// engine passes the fields a signature locked.
+TEST_F(EPDFFormEmbedderTest, ImportSkipsListedFields) {
+  ASSERT_TRUE(OpenDocument("orphan_widgets.pdf"));
+  static const char kFdf[] =
+      "%FDF-1.2\r\n"
+      "1 0 obj\r\n"
+      "<< /FDF << /Fields [\r\n"
+      "<< /T (linked_text) /V (imported) >>\r\n"
+      "<< /T (orphan_radio) /V (b) >>\r\n"
+      "] >> >>\r\n"
+      "endobj\r\n"
+      "trailer\r\n"
+      "<< /Root 1 0 R >>\r\n"
+      "%%EOF\r\n";
+
+  const uint32_t skip[] = {4u};  // linked_text
+  EPDF_FORM_IMPORT_RESULT result;
+  ASSERT_TRUE(
+      EPDFForm_ImportFDF(document(), kFdf, sizeof(kFdf) - 1, skip, 1, &result));
+  EXPECT_EQ(2u, result.fields_total);
+  EXPECT_EQ(1u, result.fields_applied);
+  EXPECT_EQ(1u, result.fields_skipped);
+
+  EPDF_FORM_MODEL model = EPDFForm_LoadModel(document());
+  ASSERT_TRUE(model);
+  int field = EPDFForm_GetFieldIndexByObjNum(model, 4u);
+  EXPECT_NE(L"imported", GetCurrentFieldValue(model, field));
+  field = EPDFForm_GetFieldIndexByObjNum(model, 6u);
+  EXPECT_EQ(L"b", GetCurrentFieldValue(model, field));
+  EPDFForm_CloseModel(model);
 }
 
 // Fill a layer, export its FDF, and replay it onto a second fresh layer of
@@ -1212,7 +1247,8 @@ TEST_F(EPDFFormEmbedderTest, FdfRoundTripAcrossLayers) {
   LayerDoc second;
   ASSERT_TRUE(OpenLayer("orphan_widgets.pdf", &second));
   EPDF_FORM_IMPORT_RESULT result;
-  ASSERT_TRUE(EPDFForm_ImportFDF(second.layer, fdf.data(), length, &result));
+  ASSERT_TRUE(EPDFForm_ImportFDF(second.layer, fdf.data(), length, nullptr, 0,
+                                 &result));
   EXPECT_EQ(3u,
             result.fields_total);  // linked_text, orphan_check, orphan_radio
   EXPECT_EQ(3u, result.fields_applied);
@@ -1258,8 +1294,8 @@ TEST_F(EPDFFormEmbedderTest, ImportXFDF) {
       "</fields></xfdf>";
 
   EPDF_FORM_IMPORT_RESULT result;
-  ASSERT_TRUE(
-      EPDFForm_ImportXFDF(document(), kXfdf, sizeof(kXfdf) - 1, &result));
+  ASSERT_TRUE(EPDFForm_ImportXFDF(document(), kXfdf, sizeof(kXfdf) - 1, nullptr,
+                                  0, &result));
   EXPECT_EQ(2u, result.fields_total);
   EXPECT_EQ(2u, result.fields_applied);
   EXPECT_EQ(0u, result.fields_skipped);
@@ -1286,8 +1322,8 @@ TEST_F(EPDFFormEmbedderTest, ImportXFDFMultiSelect) {
       "</fields></xfdf>";
 
   EPDF_FORM_IMPORT_RESULT result;
-  ASSERT_TRUE(
-      EPDFForm_ImportXFDF(document(), kXfdf, sizeof(kXfdf) - 1, &result));
+  ASSERT_TRUE(EPDFForm_ImportXFDF(document(), kXfdf, sizeof(kXfdf) - 1, nullptr,
+                                  0, &result));
   EXPECT_EQ(1u, result.fields_total);
   EXPECT_EQ(1u, result.fields_applied);
 
@@ -1320,7 +1356,8 @@ TEST_F(EPDFFormEmbedderTest, XfdfRoundTripPreservesValues) {
   LayerDoc second;
   ASSERT_TRUE(OpenLayer("toggle_fields.pdf", &second));
   EPDF_FORM_IMPORT_RESULT result;
-  ASSERT_TRUE(EPDFForm_ImportXFDF(second.layer, xfdf.data(), length, &result));
+  ASSERT_TRUE(EPDFForm_ImportXFDF(second.layer, xfdf.data(), length, nullptr, 0,
+                                  &result));
   EXPECT_EQ(0u, result.fields_skipped);
 
   EPDF_FORM_MODEL model = EPDFForm_LoadModel(second.layer);

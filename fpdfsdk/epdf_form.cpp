@@ -1334,7 +1334,21 @@ struct ImportStats {
   uint32_t applied = 0;
   uint32_t skipped = 0;
   uint32_t widgets_changed = 0;
+  // Fields the caller excludes (by object number): never written, counted
+  // as skipped.
+  std::set<uint32_t> skip;
 };
+
+ImportStats ImportStatsSkipping(const uint32_t* skip_field_objnums,
+                                unsigned long skip_count) {
+  ImportStats stats;
+  if (skip_field_objnums && skip_count > 0) {
+    auto skips = UNSAFE_BUFFERS(
+        pdfium::span(skip_field_objnums, static_cast<size_t>(skip_count)));
+    stats.skip.insert(skips.begin(), skips.end());
+  }
+  return stats;
+}
 
 void WriteImportResult(const ImportStats& stats,
                        EPDF_FORM_IMPORT_RESULT* out_result) {
@@ -1361,7 +1375,7 @@ void ApplyImportedValues(CPDF_Document* doc,
     return;
   }
   const uint32_t field_objnum = field->GetFieldDict()->GetObjNum();
-  if (field_objnum == 0) {
+  if (field_objnum == 0 || stats->skip.count(field_objnum) > 0) {
     ++stats->skipped;
     return;
   }
@@ -2306,6 +2320,8 @@ FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV
 EPDFForm_ImportFDF(FPDF_DOCUMENT document,
                    const void* data,
                    unsigned long size,
+                   const uint32_t* skip_field_objnums,
+                   unsigned long skip_count,
                    EPDF_FORM_IMPORT_RESULT* out_result) {
   if (out_result) {
     *out_result = {};
@@ -2328,7 +2344,7 @@ EPDFForm_ImportFDF(FPDF_DOCUMENT document,
   }
 
   std::unique_ptr<CPDF_InteractiveForm> form = BuildReconciledForm(doc);
-  ImportStats stats;
+  ImportStats stats = ImportStatsSkipping(skip_field_objnums, skip_count);
   RetainPtr<const CPDF_Array> fields = main_dict->GetArrayFor("Fields");
   if (fields) {
     WalkFdfFields(doc, form.get(), fields.Get(), WideString(), &stats,
@@ -2342,6 +2358,8 @@ FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV
 EPDFForm_ImportXFDF(FPDF_DOCUMENT document,
                     const void* data,
                     unsigned long size,
+                    const uint32_t* skip_field_objnums,
+                    unsigned long skip_count,
                     EPDF_FORM_IMPORT_RESULT* out_result) {
   if (out_result) {
     *out_result = {};
@@ -2367,7 +2385,7 @@ EPDFForm_ImportXFDF(FPDF_DOCUMENT document,
   }
 
   std::unique_ptr<CPDF_InteractiveForm> form = BuildReconciledForm(doc);
-  ImportStats stats;
+  ImportStats stats = ImportStatsSkipping(skip_field_objnums, skip_count);
   CFX_XMLElement* fields = FindXmlChildByTag(xfdf, L"fields");
   if (fields) {
     for (CFX_XMLNode* child = fields->GetFirstChild(); child;

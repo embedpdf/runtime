@@ -484,8 +484,11 @@ EPDFForm_ExportXFDF(FPDF_DOCUMENT document,
 
 // Per-import accounting. A field entry is "applied" when its value was
 // written (including no-op writes of an unchanged value) and "skipped" when
-// the name is unknown, the field family cannot take the value, or the value
-// failed validation (unknown toggle state, MaxLen, non-option choice, ...).
+// the name is unknown, the field is in the caller's skip list, the field
+// family cannot take the value, or the value failed validation (unknown
+// toggle state, non-option choice, ...). A text
+// value longer than MaxLen is cut to fit, as a value write does, and counts
+// as applied.
 typedef struct {
   uint32_t fields_total;
   uint32_t fields_applied;
@@ -497,13 +500,18 @@ typedef struct {
 // Apply form data from an FDF payload to the document.
 //
 // Accepts both flat entries with dotted /T names and hierarchical /Kids
-// trees. Returns TRUE when the FDF parsed, regardless of per-field skips
-// (see |out_result|); FALSE when the payload is not FDF. On a layer
-// document only the fields that actually change promote.
+// trees. Fields whose object number is in |skip_field_objnums| (|skip_count|
+// entries; NULL/0 for none) are never written and count as skipped: the
+// caller's fields a signature locked. Returns TRUE when the FDF parsed,
+// regardless of per-field skips (see |out_result|); FALSE when the payload
+// is not FDF. On a layer document only the fields that actually change
+// promote.
 FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV
 EPDFForm_ImportFDF(FPDF_DOCUMENT document,
                    const void* data,
                    unsigned long size,
+                   const uint32_t* skip_field_objnums,
+                   unsigned long skip_count,
                    EPDF_FORM_IMPORT_RESULT* out_result);
 
 // Experimental EmbedPDF Extension API.
@@ -515,6 +523,8 @@ FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV
 EPDFForm_ImportXFDF(FPDF_DOCUMENT document,
                     const void* data,
                     unsigned long size,
+                    const uint32_t* skip_field_objnums,
+                    unsigned long skip_count,
                     EPDF_FORM_IMPORT_RESULT* out_result);
 
 // ---------------------------------------------------------------------------
