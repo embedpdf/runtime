@@ -155,34 +155,11 @@ RetainPtr<CFX_DIBitmap> CPDF_RenderTiling::Draw(
     return nullptr;
   }
 
-  bool bAligned =
-      pPattern->bbox().left == 0 && pPattern->bbox().bottom == 0 &&
-      pPattern->bbox().right == pPattern->x_step() &&
-      pPattern->bbox().top == pPattern->y_step() &&
-      (mtPattern2Device.IsScaled() || mtPattern2Device.Is90Rotated());
-  if (bAligned) {
-    int orig_x = FXSYS_roundf(mtPattern2Device.e);
-    int orig_y = FXSYS_roundf(mtPattern2Device.f);
-    min_col = (clip_box.left - orig_x) / width;
-    if (clip_box.left < orig_x) {
-      min_col--;
-    }
-
-    max_col = (clip_box.right - orig_x) / width;
-    if (clip_box.right <= orig_x) {
-      max_col--;
-    }
-
-    min_row = (clip_box.top - orig_y) / height;
-    if (clip_box.top < orig_y) {
-      min_row--;
-    }
-
-    max_row = (clip_box.bottom - orig_y) / height;
-    if (clip_box.bottom <= orig_y) {
-      max_row--;
-    }
-  }
+  // Every cell is placed at its own position, rounded to the pixel. Stepping
+  // by the cell's width rounded up to whole pixels would move each cell a
+  // fraction of a pixel further from the pattern's origin, which can lie
+  // hundreds of cells off the page: the tiling would drift, by an amount
+  // that changes with every zoom.
   float left_offset = cell_bbox.left - mtPattern2Device.e;
   float top_offset = cell_bbox.bottom - mtPattern2Device.f;
   RetainPtr<CFX_DIBitmap> pPatternBitmap;
@@ -216,29 +193,20 @@ RetainPtr<CFX_DIBitmap> CPDF_RenderTiling::Draw(
   pdfium::span<const uint8_t> src_buf = pPatternBitmap->GetBuffer();
   for (int col = min_col; col <= max_col; col++) {
     for (int row = min_row; row <= max_row; row++) {
-      int start_x;
-      int start_y;
-      if (bAligned) {
-        start_x =
-            FXSYS_roundf(mtPattern2Device.e) + col * width - clip_box.left;
-        start_y =
-            FXSYS_roundf(mtPattern2Device.f) + row * height - clip_box.top;
-      } else {
-        CFX_PointF original = mtPattern2Device.Transform(
-            CFX_PointF(col * pPattern->x_step(), row * pPattern->y_step()));
+      CFX_PointF original = mtPattern2Device.Transform(
+          CFX_PointF(col * pPattern->x_step(), row * pPattern->y_step()));
 
-        FX_SAFE_INT32 safeStartX = FXSYS_roundf(original.x + left_offset);
-        FX_SAFE_INT32 safeStartY = FXSYS_roundf(original.y + top_offset);
+      FX_SAFE_INT32 safeStartX = FXSYS_roundf(original.x + left_offset);
+      FX_SAFE_INT32 safeStartY = FXSYS_roundf(original.y + top_offset);
 
-        safeStartX -= clip_box.left;
-        safeStartY -= clip_box.top;
-        if (!safeStartX.IsValid() || !safeStartY.IsValid()) {
-          return nullptr;
-        }
-
-        start_x = safeStartX.ValueOrDie();
-        start_y = safeStartY.ValueOrDie();
+      safeStartX -= clip_box.left;
+      safeStartY -= clip_box.top;
+      if (!safeStartX.IsValid() || !safeStartY.IsValid()) {
+        return nullptr;
       }
+
+      const int start_x = safeStartX.ValueOrDie();
+      const int start_y = safeStartY.ValueOrDie();
       if (width == 1 && height == 1) {
         if (start_x < 0 || start_x >= clip_box.Width() || start_y < 0 ||
             start_y >= clip_box.Height()) {

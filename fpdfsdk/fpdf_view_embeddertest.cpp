@@ -3413,6 +3413,72 @@ TEST_F(FPDFViewEmbedderTest, SlicedRenderMatchesOneShot) {
   }
 }
 
+// Every cell of a tiling pattern sits where the pattern puts it, to the pixel,
+// at every zoom. Stepping from the pattern's origin by the cell's width rounded
+// to whole pixels drifts over the hundreds of cells between an origin far off
+// the page and the page, by an amount that changes with the zoom.
+TEST_F(FPDFViewEmbedderTest, TilingPatternCellsStayInPlaceAtEveryZoom) {
+  ASSERT_TRUE(OpenDocument("embedpdf_tiling_patterns.pdf"));
+  // Renders the whole of `page` scaled by `scale`, and returns where each dark
+  // run starts along a line one pixel into the bitmap: across it, or down it.
+  // (A bitmap smaller than a cell would have its cells drawn one by one.)
+  auto run_starts = [](FPDF_PAGE page, float scale, bool down) {
+    const int length = static_cast<int>(200 * scale);
+    ScopedFPDFBitmap bitmap(FPDFBitmap_Create(length, length, 0));
+    FPDFBitmap_FillRect(bitmap.get(), 0, 0, length, length, 0xFFFFFFFF);
+    const FS_MATRIX matrix = {scale, 0, 0, scale, 0, 0};
+    const FS_RECTF clip = {0, 0, static_cast<float>(length),
+                           static_cast<float>(length)};
+    FPDF_RenderPageBitmapWithMatrix(bitmap.get(), page, &matrix, &clip, 0);
+    const uint8_t* buffer =
+        static_cast<const uint8_t*>(FPDFBitmap_GetBuffer(bitmap.get()));
+    const int stride = FPDFBitmap_GetStride(bitmap.get());
+    std::vector<int> starts;
+    bool dark = false;
+    for (int i = 0; i < length; ++i) {
+      const uint8_t blue = down ? UNSAFE_TODO(buffer[i * stride + 4])
+                                : UNSAFE_TODO(buffer[stride + i * 4]);
+      const bool now = blue < 128;
+      if (now && !dark) {
+        starts.push_back(i);
+      }
+      dark = now;
+    }
+    return starts;
+  };
+  struct Case {
+    int page;
+    bool down;
+    // Where on the device, in points, the bars start: `first + k * period`.
+    float first;
+    float period;
+    // In pixels. A cell is drawn into an image of whole pixels, stretched to
+    // fit, so a bar far from the cell's corner may move by part of a pixel.
+    float tolerance;
+  };
+  const Case kCases[] = {
+      // Bars at x = 6.7 + 10 k along the cells' left edges: the origin is at
+      // x = -5003.3.
+      {0, false, 6.7f, 10.0f, 1.0f},
+      // Turned a quarter and scaled by 1.3: bars 2.6 high every 13, the
+      // topmost from y = 200 - 13.8 on the page, at the cells' far side.
+      {2, true, 186.2f - 13.0f * 14, 13.0f, 1.5f},
+  };
+  for (const Case& c : kCases) {
+    ScopedPage page = LoadScopedPage(c.page);
+    ASSERT_TRUE(page);
+    for (float scale : {0.73f, 1.37f, 2.9f, 4.45f}) {
+      const std::vector<int> starts = run_starts(page.get(), scale, c.down);
+      ASSERT_GE(starts.size(), 14u) << "page " << c.page << " scale " << scale;
+      for (int start : starts) {
+        const float k = std::round((start / scale - c.first) / c.period);
+        EXPECT_NEAR((c.first + c.period * k) * scale, start, c.tolerance)
+            << "page " << c.page << " scale " << scale;
+      }
+    }
+  }
+}
+
 TEST_F(FPDFViewEmbedderTest, SlicedRenderCancels) {
   EXPECT_EQ(FPDF_RENDER_FAILED, EPDF_RenderPageBitmapWithMatrix_Start(
                                     nullptr, nullptr, nullptr, nullptr, 0, 0));
