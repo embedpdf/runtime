@@ -38,6 +38,10 @@ class CStretchEngine {
 
   // Indicates whether to manually set interpolate bilinear option to true to
   // achieve a smoother rendering results.
+  // Turns off the passes over runs of clear or set bits in 1 bpp sources, so
+  // a test can resample bit by bit and compare.
+  static void SetBitRunsEnabledForTesting(bool enabled);
+
   static bool UseInterpolateBilinear(const FXDIB_ResampleOptions& options,
                                      int dest_width,
                                      int dest_height,

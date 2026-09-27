@@ -24,6 +24,7 @@
 #include "core/fpdfapi/parser/cpdf_number.h"
 #include "core/fpdfapi/parser/cpdf_reference.h"
 #include "core/fxge/agg/cfx_agg_devicedriver.h"
+#include "core/fxge/dib/cstretchengine.h"
 #include "core/fxge/cfx_defaultrenderdevice.h"
 #include "fpdfsdk/cpdfsdk_helpers.h"
 #include "fpdfsdk/fpdf_view_c_api_test.h"
@@ -3486,6 +3487,24 @@ TEST_F(FPDFViewEmbedderTest, DecodedImageStoreKeepsItsBudget) {
   // Closing the document drops its decodes.
   CloseDocument();
   EXPECT_EQ(0u, EPDF_GetDecodedImageBytes());
+}
+
+TEST_F(FPDFViewEmbedderTest, MaskBitRunsResampleAsBitByBit) {
+  ASSERT_TRUE(OpenDocument("embedpdf_image_masks.pdf"));
+  const int page_count = FPDF_GetPageCount(document());
+  ASSERT_EQ(3, page_count);
+  // The 1600 px masks shrink about 20, 3 and 1.5 times.
+  for (int i = 0; i < page_count; ++i) {
+    ScopedPage page = LoadScopedPage(i);
+    ASSERT_TRUE(page);
+    for (int width : {97, 640, 1400}) {
+      CStretchEngine::SetBitRunsEnabledForTesting(false);
+      const std::string expected = RenderWidth(page.get(), width);
+      CStretchEngine::SetBitRunsEnabledForTesting(true);
+      EXPECT_EQ(expected, RenderWidth(page.get(), width))
+          << "page " << i << " width " << width;
+    }
+  }
 }
 
 TEST_F(FPDFViewEmbedderTest, EPDFDocSetPageRotationByObjectNumber) {

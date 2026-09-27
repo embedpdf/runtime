@@ -28,6 +28,33 @@ static_assert(
 
 namespace {
 
+bool g_bit_runs_enabled = true;
+
+// How the bits `first` to `last` of a 1 bpp scanline are set. Bits are
+// stored most significant first.
+enum class BitRun { kClear, kSet, kMixed };
+
+BitRun ClassifyBits(const uint8_t* scan, int first, int last) {
+  bool any_set = false;
+  bool all_set = true;
+  for (int byte = first / 8; byte <= last / 8; ++byte) {
+    uint8_t mask = 0xff;
+    if (byte == first / 8) {
+      mask &= 0xff >> (first % 8);
+    }
+    if (byte == last / 8) {
+      mask &= static_cast<uint8_t>(0xff << (7 - last % 8));
+    }
+    const uint8_t bits = UNSAFE_TODO(scan[byte]) & mask;
+    any_set = any_set || bits != 0;
+    all_set = all_set && bits == mask;
+  }
+  if (!any_set) {
+    return BitRun::kClear;
+  }
+  return all_set ? BitRun::kSet : BitRun::kMixed;
+}
+
 size_t TotalBytesForWeightCount(size_t weight_count) {
   // Always room for one weight even for empty ranges due to declaration
   // of weights_[1] in the header. Don't shrink below this since
@@ -40,6 +67,11 @@ size_t TotalBytesForWeightCount(size_t weight_count) {
 }
 
 }  // namespace
+
+// static
+void CStretchEngine::SetBitRunsEnabledForTesting(bool enabled) {
+  g_bit_runs_enabled = enabled;
+}
 
 // static
 bool CStretchEngine::UseInterpolateBilinear(
@@ -342,13 +374,29 @@ bool CStretchEngine::ContinueStretchHorz(PauseIndicatorIface* pPause) {
         for (int col = dest_clip_.left; col < dest_clip_.right; ++col) {
           const PixelWeight* pWeights = weight_table_.GetPixelWeight(col);
           uint32_t dest_a = 0;
-          for (int j = pWeights->src_start_; j <= pWeights->src_end_; ++j) {
-            uint32_t pixel_weight = pWeights->GetWeightForPosition(j);
-            UNSAFE_TODO({
-              if (src_scan[j / 8] & (1 << (7 - j % 8))) {
-                dest_a += pixel_weight * 255;
-              }
-            });
+          // Clear bits add nothing, and set bits add 255 times each weight,
+          // which is 255 times the weights' sum. Only a window with both
+          // needs its bits one by one.
+          const BitRun run =
+              g_bit_runs_enabled
+                  ? ClassifyBits(src_scan, pWeights->src_start_,
+                                 pWeights->src_end_)
+                  : BitRun::kMixed;
+          if (run == BitRun::kSet) {
+            uint32_t weights = 0;
+            for (int j = pWeights->src_start_; j <= pWeights->src_end_; ++j) {
+              weights += pWeights->GetWeightForPosition(j);
+            }
+            dest_a = weights * 255;
+          } else if (run == BitRun::kMixed) {
+            for (int j = pWeights->src_start_; j <= pWeights->src_end_; ++j) {
+              uint32_t pixel_weight = pWeights->GetWeightForPosition(j);
+              UNSAFE_TODO({
+                if (src_scan[j / 8] & (1 << (7 - j % 8))) {
+                  dest_a += pixel_weight * 255;
+                }
+              });
+            }
           }
           dest_span[dest_span_index++] = PixelFromFixed(dest_a);
         }
