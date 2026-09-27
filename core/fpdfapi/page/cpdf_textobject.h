@@ -55,6 +55,8 @@ class CPDF_TextObject final : public CPDF_PageObject {
 
   CFX_PointF GetPos() const { return pos_; }
   CFX_Matrix GetTextMatrix() const;
+  // The glyphs' box in text space, as the last position calculation found it.
+  const CFX_FloatRect& GetOriginalRect() const { return original_rect_; }
 
   RetainPtr<CPDF_Font> GetFont() const;
   float GetFontSize() const;
@@ -84,6 +86,7 @@ class CPDF_TextObject final : public CPDF_PageObject {
   float CalcPositionDataInternal(const RetainPtr<CPDF_Font>& font);
 
   CFX_PointF pos_;
+  CFX_FloatRect original_rect_;
   std::vector<uint32_t> char_codes_;
   std::vector<float> char_pos_;
 };

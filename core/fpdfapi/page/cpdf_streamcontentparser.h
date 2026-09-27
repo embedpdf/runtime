@@ -16,6 +16,7 @@
 #include "core/fpdfapi/page/cpdf_contentmarks.h"
 #include "core/fpdfapi/page/cpdf_form.h"
 #include "core/fpdfapi/page/cpdf_path.h"
+#include "core/fpdfapi/page/cpdf_pathobject.h"
 #include "core/fpdfapi/page/cpdf_pageobjectholder.h"
 #include "core/fxcrt/bytestring.h"
 #include "core/fxcrt/fx_coordinates.h"
@@ -232,6 +233,9 @@ class CPDF_StreamContentParser {
   // The geometry of the last path object. The next path with bit-identical
   // points shares it (copy-on-write) instead of storing a copy.
   CPDF_Path last_path_;
+  // The matrix of the last path object, which the next path with the same
+  // matrix shares.
+  RetainPtr<const CPDF_PathObject::SharedMatrix> last_path_matrix_;
   CFX_PointF path_start_;
   CFX_PointF path_current_;
   CFX_FillRenderOptions::FillType path_clip_type_ =

@@ -2,6 +2,7 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
+#include <math.h>
 #include <stdint.h>
 
 #include <array>
@@ -16,6 +17,7 @@
 #include "core/fpdfapi/font/cpdf_font.h"
 #include "core/fpdfapi/page/cpdf_page.h"
 #include "core/fpdfapi/page/cpdf_pageobject.h"
+#include "core/fpdfapi/page/cpdf_pathobject.h"
 #include "core/fpdfapi/parser/cpdf_array.h"
 #include "core/fpdfapi/parser/cpdf_dictionary.h"
 #include "core/fpdfapi/parser/cpdf_number.h"
@@ -5109,4 +5111,52 @@ TEST_F(FPDFEditEmbedderTest, FormModifyObject) {
   CloseDocument();
 
   VerifySavedDocument("form_object_with_image_removed_image");
+}
+
+// Paths parsed under one `cm` store their matrix once; transforming one of them
+// changes only that path.
+TEST_F(FPDFEditEmbedderTest, PathsShareMatrixUntilOneChanges) {
+  ASSERT_TRUE(OpenDocument("embedpdf_repeated_paths.pdf"));
+  ScopedPage page = LoadScopedPage(0);
+  ASSERT_TRUE(page);
+  FPDF_PAGEOBJECT first = FPDFPage_GetObject(page.get(), 0);
+  FPDF_PAGEOBJECT second = FPDFPage_GetObject(page.get(), 1);
+  ASSERT_EQ(FPDF_PAGEOBJ_PATH, FPDFPageObj_GetType(first));
+  ASSERT_EQ(FPDF_PAGEOBJ_PATH, FPDFPageObj_GetType(second));
+
+  FS_MATRIX before;
+  ASSERT_TRUE(FPDFPageObj_GetMatrix(second, &before));
+  EXPECT_FLOAT_EQ(0.24f, before.a);
+
+  FPDFPageObj_Transform(first, 2, 0, 0, 2, 10, 20);
+  FS_MATRIX moved;
+  ASSERT_TRUE(FPDFPageObj_GetMatrix(first, &moved));
+  EXPECT_EQ(before.a * 2, moved.a);
+  EXPECT_EQ(before.d * 2, moved.d);
+  EXPECT_EQ(10.0f, moved.e);
+  EXPECT_EQ(20.0f, moved.f);
+
+  FS_MATRIX after;
+  ASSERT_TRUE(FPDFPageObj_GetMatrix(second, &after));
+  EXPECT_EQ(before.a, after.a);
+  EXPECT_EQ(before.d, after.d);
+  EXPECT_EQ(before.e, after.e);
+  EXPECT_EQ(before.f, after.f);
+
+  // The identity needs no storage, a matrix keeps its exact bits (-0 is not
+  // 0), and only the same bits are shared.
+  EXPECT_FALSE(CPDF_PathObject::ShareMatrix(CFX_Matrix(), nullptr));
+  const CFX_Matrix negative_zero(1, -0.0f, 0, 1, 0, 0);
+  RetainPtr<const CPDF_PathObject::SharedMatrix> shared =
+      CPDF_PathObject::ShareMatrix(negative_zero, nullptr);
+  ASSERT_TRUE(shared);
+  EXPECT_TRUE(signbit(shared->value().b));
+  EXPECT_EQ(shared, CPDF_PathObject::ShareMatrix(negative_zero, shared));
+  EXPECT_FALSE(CPDF_PathObject::ShareMatrix(CFX_Matrix(), shared));
+
+  CPDF_PathObject path;
+  path.SetPathMatrix(negative_zero);
+  EXPECT_TRUE(signbit(path.matrix().b));
+  path.SetPathMatrix(CFX_Matrix());
+  EXPECT_FALSE(signbit(path.matrix().b));
 }

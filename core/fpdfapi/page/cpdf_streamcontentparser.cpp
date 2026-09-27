@@ -1673,7 +1673,9 @@ void CPDF_StreamContentParser::AddPathObjectFromPoints(
     pPathObj->set_filltype(fill_type);
     pPathObj->path() = path;
     SetGraphicStates(pPathObj.get(), true, false, true);
-    pPathObj->SetPathMatrix(matrix);
+    last_path_matrix_ = CPDF_PathObject::ShareMatrix(
+        matrix, std::move(last_path_matrix_));
+    pPathObj->SetSharedPathMatrix(last_path_matrix_);
     object_holder_->AppendPageObject(std::move(pPathObj));
   }
   if (path_clip_type != CFX_FillRenderOptions::FillType::kNoFill) {

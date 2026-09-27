@@ -37,10 +37,17 @@ class CPDF_ImageObject final : public CPDF_PageObject {
   void SetImageMatrix(const CFX_Matrix& matrix);
   const CFX_Matrix& matrix() const { return matrix_; }
 
+  // The unit square the image matrix maps, once the bounding box is known.
+  const CFX_FloatRect& GetOriginalRect() const { return original_rect_; }
+  const CFX_Matrix& original_matrix() const { return original_matrix_; }
+
  private:
   void MaybePurgeCache();
 
   CFX_Matrix matrix_;
+  CFX_FloatRect original_rect_;
+  // TODO(thestig): Use with `CPDF_FormObject` and `CPDF_PageObject` as well.
+  CFX_Matrix original_matrix_;
   RetainPtr<CPDF_Image> image_;
 };
 

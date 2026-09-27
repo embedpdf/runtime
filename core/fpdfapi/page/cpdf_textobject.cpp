@@ -351,8 +351,8 @@ float CPDF_TextObject::CalcPositionDataInternal(
     max_y = max_y * fontsize / 1000;
   }
 
-  SetOriginalRect(CFX_FloatRect(min_x, min_y, max_x, max_y));
-  CFX_FloatRect rect = GetTextMatrix().TransformRect(GetOriginalRect());
+  original_rect_ = CFX_FloatRect(min_x, min_y, max_x, max_y);
+  CFX_FloatRect rect = GetTextMatrix().TransformRect(original_rect_);
   if (TextRenderingModeIsStrokeMode(text_state().GetTextMode())) {
     // TODO(crbug.com/42270854): Does the original rect need a similar
     // adjustment?
