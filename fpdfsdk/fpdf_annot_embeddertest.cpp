@@ -1085,6 +1085,48 @@ TEST_F(FPDFAnnotEmbedderTest, ReadPurityRenderMarkupAnnotWithoutAP) {
   EXPECT_EQ(last_obj_num, doc->GetLastObjNum());
 }
 
+// A markup annotation with contents gets a popup PDFium makes, which draws
+// only once opened. Rendering must not build that popup's appearance, which
+// added a font and two objects to the document for every popup of every render.
+TEST_F(FPDFAnnotEmbedderTest, ReadPurityRenderMarkupAnnotWithContents) {
+  ASSERT_TRUE(OpenDocument("rectangles.pdf"));
+  ScopedPage page = LoadScopedPage(0);
+  ASSERT_TRUE(page);
+  for (int i = 0; i < 3; ++i) {
+    ScopedFPDFAnnotation annot(
+        FPDFPage_CreateAnnot(page.get(), FPDF_ANNOT_SQUARE));
+    ASSERT_TRUE(annot);
+    const float left = 20.0f + 40.0f * i;
+    const FS_RECTF rect = {left, 120.0f, left + 30.0f, 90.0f};
+    ASSERT_TRUE(FPDFAnnot_SetRect(annot.get(), &rect));
+  }
+  // Without contents, no annotation gets a popup.
+  const std::string expected =
+      HashBitmap(RenderLoadedPageWithFlags(page.get(), FPDF_ANNOT).get());
+
+  ScopedFPDFWideString contents = GetFPDFWideString(L"60");
+  const int annot_count = FPDFPage_GetAnnotCount(page.get());
+  ASSERT_EQ(3, annot_count);
+  for (int i = 0; i < annot_count; ++i) {
+    ScopedFPDFAnnotation annot(FPDFPage_GetAnnot(page.get(), i));
+    ASSERT_TRUE(annot);
+    ASSERT_TRUE(
+        FPDFAnnot_SetStringValue(annot.get(), "Contents", contents.get()));
+  }
+  CPDF_Document* doc = CPDFDocumentFromFPDFDocument(document());
+  ASSERT_TRUE(doc);
+  const uint32_t last_obj_num = doc->GetLastObjNum();
+  {
+    CPDF_ReadOnlyGraphGuard guard;
+    for (int i = 0; i < 3; ++i) {
+      EXPECT_EQ(
+          expected,
+          HashBitmap(RenderLoadedPageWithFlags(page.get(), FPDF_ANNOT).get()));
+    }
+  }
+  EXPECT_EQ(last_obj_num, doc->GetLastObjNum());
+}
+
 TEST_F(FPDFAnnotEmbedderTest, ExplicitGenerateAppearanceAllowed) {
   ASSERT_TRUE(OpenDocument("annotation_markup_multiline_no_ap.pdf"));
   ScopedPage page = LoadScopedPage(0);

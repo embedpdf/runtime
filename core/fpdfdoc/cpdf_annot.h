@@ -194,7 +194,18 @@ class CPDF_Annot {
                                           size_t nIndex);
   static size_t QuadPointCount(const CPDF_Array* pArray);
 
+  // When an annotation without an appearance gets one generated.
+  enum class MissingAppearance {
+    kGenerateNow,
+    // Only once it is drawn: for annotations PDFium makes itself, such as the
+    // popup of a markup annotation, which is drawn only once opened.
+    kGenerateWhenDrawn,
+  };
+
   CPDF_Annot(RetainPtr<CPDF_Dictionary> dict, CPDF_Document* document);
+  CPDF_Annot(RetainPtr<CPDF_Dictionary> dict,
+             CPDF_Document* document,
+             MissingAppearance missing_appearance);
   ~CPDF_Annot();
 
   Subtype GetSubtype() const;

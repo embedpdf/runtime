@@ -129,6 +129,11 @@ RetainPtr<CPDF_Stream> GetAnnotAPInternal(const CPDF_Dictionary* pAnnotDict,
 }  // namespace
 
 CPDF_Annot::CPDF_Annot(RetainPtr<CPDF_Dictionary> dict, CPDF_Document* document)
+    : CPDF_Annot(std::move(dict), document, MissingAppearance::kGenerateNow) {}
+
+CPDF_Annot::CPDF_Annot(RetainPtr<CPDF_Dictionary> dict,
+                       CPDF_Document* document,
+                       MissingAppearance missing_appearance)
     : annot_dict_(std::move(dict)),
       document_(document),
       subtype_(StringToAnnotSubtype(
@@ -137,7 +142,10 @@ CPDF_Annot::CPDF_Annot(RetainPtr<CPDF_Dictionary> dict, CPDF_Document* document)
       has_generated_ap_(
           annot_dict_->GetBooleanFor(kPDFiumKey_HasGeneratedAP, false) ||
           (CanGenerateEphemeralAP() && ShouldGenerateAP())) {
-  if (!CanGenerateEphemeralAP()) {
+  // Drawing generates a missing appearance too: see DrawAppearance() and
+  // DrawInContext().
+  if (missing_appearance == MissingAppearance::kGenerateNow &&
+      !CanGenerateEphemeralAP()) {
     GenerateAPIfNeeded();
   }
 }
