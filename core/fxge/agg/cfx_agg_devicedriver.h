@@ -111,10 +111,9 @@ class CFX_AggDeviceDriver final : public RenderDeviceDriverIface {
   // The scanlines of one rasterizer pass, recorded to be composited again.
   class RecordedPass;
   // What DrawPath() needs to recognize a repeated small path: the last path
-  // object, the inputs of a call that drew it again, and the passes of a call
-  // that repeated those inputs. Later calls with identical inputs composite
-  // the recorded passes instead of rasterizing: the rasterizer output depends
-  // on nothing else.
+  // object, and the inputs and recorded passes of the call that drew it
+  // again. Later calls with identical inputs composite the recorded passes
+  // instead of rasterizing: the rasterizer output depends on nothing else.
   class PathMemo;
 
   Workspace& GetWorkspace();

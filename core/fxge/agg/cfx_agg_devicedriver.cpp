@@ -1180,7 +1180,6 @@ class CFX_AggDeviceDriver::PathMemo {
     last_path_ = reinterpret_cast<uintptr_t>(&path);
     has_inputs_ = false;
     recorded_ = false;
-    too_large_ = false;
   }
 
   // Whether `in` equals the kept inputs.
@@ -1199,7 +1198,6 @@ class CFX_AggDeviceDriver::PathMemo {
   void Remember(const Inputs& in) {
     has_inputs_ = true;
     recorded_ = false;
-    too_large_ = false;
     fill_pass_ = in.fill_pass;
     stroke_pass_ = in.stroke_pass;
     width_ = in.width;
@@ -1223,16 +1221,14 @@ class CFX_AggDeviceDriver::PathMemo {
   }
 
   void FinishRecording() {
-    too_large_ = fill_.too_large() || stroke_.too_large();
-    recorded_ = !too_large_;
+    recorded_ = !fill_.too_large() && !stroke_.too_large();
     fill_.Seal();
     stroke_.Seal();
   }
 
-  // Whether the passes of the last call's inputs are recorded.
+  // Whether the passes of the kept inputs are recorded; when not, they were
+  // too large to record.
   bool recorded() const { return recorded_; }
-  // Whether they were too large to record.
-  bool too_large() const { return too_large_; }
 
   RecordedPass& fill() { return fill_; }
   RecordedPass& stroke() { return stroke_; }
@@ -1241,7 +1237,6 @@ class CFX_AggDeviceDriver::PathMemo {
   uintptr_t last_path_ = 0;
   bool has_inputs_ = false;
   bool recorded_ = false;
-  bool too_large_ = false;
   bool fill_pass_ = false;
   bool stroke_pass_ = false;
   int width_ = 0;
@@ -1530,9 +1525,14 @@ bool CFX_AggDeviceDriver::DrawPath(const CFX_Path& path,
                                 GetDeviceCaps(FXDC_PIXEL_WIDTH),
                                 GetDeviceCaps(FXDC_PIXEL_HEIGHT)};
   if (!path_memo_->SameInputs(inputs)) {
+    // The object repeats with new inputs: keep them and record this call for
+    // the calls that repeat them. Only objects the content stream repeats get
+    // here, so paths drawn once pay nothing for the recording.
     path_memo_->Remember(inputs);
+    path_memo_->BeginRecording();
     DrawPathPasses(path, pObject2Device, pGraphState, fill_color, stroke_color,
-                   fill_options, nullptr);
+                   fill_options, path_memo_.get());
+    path_memo_->FinishRecording();
     return true;
   }
   if (path_memo_->recorded()) {
@@ -1548,17 +1548,9 @@ bool CFX_AggDeviceDriver::DrawPath(const CFX_Path& path,
     }
     return true;
   }
-  if (path_memo_->too_large()) {
-    DrawPathPasses(path, pObject2Device, pGraphState, fill_color, stroke_color,
-                   fill_options, nullptr);
-    return true;
-  }
-  // The inputs repeat what was kept: record this call for the ones after.
-  // Recording only then keeps paths that are not repeated free of its cost.
-  path_memo_->BeginRecording();
+  // Its passes were too large to record.
   DrawPathPasses(path, pObject2Device, pGraphState, fill_color, stroke_color,
-                 fill_options, path_memo_.get());
-  path_memo_->FinishRecording();
+                 fill_options, nullptr);
   return true;
 }
 
