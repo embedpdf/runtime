@@ -28,7 +28,7 @@ static_assert(
 
 namespace {
 
-bool g_bit_runs_enabled = true;
+bool g_specialized_loops_enabled = true;
 
 // How the bits `first` to `last` of a 1 bpp scanline are set. Bits are
 // stored most significant first.
@@ -55,6 +55,116 @@ BitRun ClassifyBits(const uint8_t* scan, int first, int last) {
   return all_set ? BitRun::kSet : BitRun::kMixed;
 }
 
+// The horizontal pass over one row of an opaque source with `kBytes` bytes
+// per pixel, into the destination columns `left` to `right`. Each channel is
+// the sum the general loop computes, added in two halves, which unsigned
+// arithmetic leaves unchanged.
+template <int kBytes>
+void StretchOpaqueRow(pdfium::span<const uint8_t> src,
+                      pdfium::span<uint8_t> dest,
+                      const CStretchEngine::WeightTable& table,
+                      int left,
+                      int right) {
+  CHECK_LE(static_cast<size_t>(right - left) * kBytes, dest.size());
+  uint8_t* out = dest.data();
+  for (int col = left; col < right; ++col) {
+    const CStretchEngine::PixelWeight* weights = table.GetPixelWeight(col);
+    const int count = weights->src_end_ - weights->src_start_ + 1;
+    CHECK_LE(static_cast<size_t>(weights->src_start_ + std::max(count, 0)) *
+                 kBytes,
+             src.size());
+    // SAFETY: the table holds `count` weights for this column, and the check
+    // above keeps its source pixels in `src`.
+    UNSAFE_BUFFERS({
+      const uint32_t* weight = weights->weights_;
+      const uint8_t* pixel = src.data() + weights->src_start_ * kBytes;
+      uint32_t b0 = 0;
+      uint32_t g0 = 0;
+      uint32_t r0 = 0;
+      uint32_t b1 = 0;
+      uint32_t g1 = 0;
+      uint32_t r1 = 0;
+      int i = 0;
+      for (; i + 1 < count; i += 2) {
+        b0 += weight[i] * pixel[0];
+        g0 += weight[i] * pixel[1];
+        r0 += weight[i] * pixel[2];
+        b1 += weight[i + 1] * pixel[kBytes];
+        g1 += weight[i + 1] * pixel[kBytes + 1];
+        r1 += weight[i + 1] * pixel[kBytes + 2];
+        pixel += 2 * kBytes;
+      }
+      if (i < count) {
+        b0 += weight[i] * pixel[0];
+        g0 += weight[i] * pixel[1];
+        r0 += weight[i] * pixel[2];
+      }
+      out[0] = CStretchEngine::PixelFromFixed(b0 + b1);
+      out[1] = CStretchEngine::PixelFromFixed(g0 + g1);
+      out[2] = CStretchEngine::PixelFromFixed(r0 + r1);
+      out += kBytes;
+    });
+  }
+}
+
+// The vertical pass for one destination row of 3 channels, reading the
+// horizontal pass's rows `src_top` onwards from `inter` (`pitch` bytes each)
+// for the destination columns `left` to `right`. Each channel is the sum the
+// general loop computes, added in two halves.
+void StretchVertRow(pdfium::span<const uint8_t> inter,
+                    size_t pitch,
+                    int src_top,
+                    const CStretchEngine::PixelWeight* weights,
+                    int bytes_per_pixel,
+                    int columns,
+                    pdfium::span<uint8_t> dest) {
+  const int count = weights->src_end_ - weights->src_start_ + 1;
+  if (count > 0) {
+    const size_t first = static_cast<size_t>(weights->src_start_ - src_top);
+    CHECK_LE((first + count - 1) * pitch +
+                 static_cast<size_t>(columns) * bytes_per_pixel,
+             inter.size());
+  }
+  CHECK_LE(static_cast<size_t>(columns) * bytes_per_pixel, dest.size());
+  // SAFETY: the checks above keep every row and column read in `inter`, and
+  // every pixel written in `dest`.
+  UNSAFE_BUFFERS({
+    const uint32_t* weight = weights->weights_;
+    const uint8_t* rows =
+        inter.data() +
+        static_cast<size_t>(weights->src_start_ - src_top) * pitch;
+    uint8_t* out = dest.data();
+    for (int col = 0; col < columns; ++col) {
+      const uint8_t* pixel = rows + static_cast<size_t>(col) * bytes_per_pixel;
+      uint32_t b0 = 0;
+      uint32_t g0 = 0;
+      uint32_t r0 = 0;
+      uint32_t b1 = 0;
+      uint32_t g1 = 0;
+      uint32_t r1 = 0;
+      int i = 0;
+      for (; i + 1 < count; i += 2) {
+        b0 += weight[i] * pixel[0];
+        g0 += weight[i] * pixel[1];
+        r0 += weight[i] * pixel[2];
+        b1 += weight[i + 1] * pixel[pitch];
+        g1 += weight[i + 1] * pixel[pitch + 1];
+        r1 += weight[i + 1] * pixel[pitch + 2];
+        pixel += 2 * pitch;
+      }
+      if (i < count) {
+        b0 += weight[i] * pixel[0];
+        g0 += weight[i] * pixel[1];
+        r0 += weight[i] * pixel[2];
+      }
+      out[0] = CStretchEngine::PixelFromFixed(b0 + b1);
+      out[1] = CStretchEngine::PixelFromFixed(g0 + g1);
+      out[2] = CStretchEngine::PixelFromFixed(r0 + r1);
+      out += bytes_per_pixel;
+    }
+  });
+}
+
 size_t TotalBytesForWeightCount(size_t weight_count) {
   // Always room for one weight even for empty ranges due to declaration
   // of weights_[1] in the header. Don't shrink below this since
@@ -69,8 +179,8 @@ size_t TotalBytesForWeightCount(size_t weight_count) {
 }  // namespace
 
 // static
-void CStretchEngine::SetBitRunsEnabledForTesting(bool enabled) {
-  g_bit_runs_enabled = enabled;
+void CStretchEngine::SetSpecializedLoopsEnabledForTesting(bool enabled) {
+  g_specialized_loops_enabled = enabled;
 }
 
 // static
@@ -363,7 +473,8 @@ bool CStretchEngine::ContinueStretchHorz(PauseIndicatorIface* pPause) {
       rows_to_go = kStrechPauseRows;
     }
 
-    const uint8_t* src_scan = source_->GetScanline(cur_row_).data();
+    pdfium::span<const uint8_t> src_row = source_->GetScanline(cur_row_);
+    const uint8_t* src_scan = src_row.data();
     pdfium::span<uint8_t> dest_span = inter_buf_.subspan(
         (cur_row_ - src_clip_.top) * inter_pitch_, inter_pitch_);
     size_t dest_span_index = 0;
@@ -378,7 +489,7 @@ bool CStretchEngine::ContinueStretchHorz(PauseIndicatorIface* pPause) {
           // which is 255 times the weights' sum. Only a window with both
           // needs its bits one by one.
           const BitRun run =
-              g_bit_runs_enabled
+              g_specialized_loops_enabled
                   ? ClassifyBits(src_scan, pWeights->src_start_,
                                  pWeights->src_end_)
                   : BitRun::kMixed;
@@ -442,6 +553,16 @@ bool CStretchEngine::ContinueStretchHorz(PauseIndicatorIface* pPause) {
         break;
       }
       case TransformMethod::kManyBpptoManyBpp: {
+        if (g_specialized_loops_enabled && (Bpp == 3 || Bpp == 4)) {
+          if (Bpp == 3) {
+            StretchOpaqueRow<3>(src_row, dest_span, weight_table_,
+                                dest_clip_.left, dest_clip_.right);
+          } else {
+            StretchOpaqueRow<4>(src_row, dest_span, weight_table_,
+                                dest_clip_.left, dest_clip_.right);
+          }
+          break;
+        }
         for (int col = dest_clip_.left; col < dest_clip_.right; ++col) {
           const PixelWeight* pWeights = weight_table_.GetPixelWeight(col);
           uint32_t dest_r = 0;
@@ -534,6 +655,11 @@ void CStretchEngine::StretchVert() {
       }
       case TransformMethod::k8BppToManyBpp:
       case TransformMethod::kManyBpptoManyBpp: {
+        if (g_specialized_loops_enabled) {
+          StretchVertRow(inter_buf_, inter_pitch_, src_clip_.top, pWeights,
+                         DestBpp, dest_clip_.Width(), dest_scanline_);
+          break;
+        }
         for (int col = dest_clip_.left; col < dest_clip_.right; ++col) {
           pdfium::span<const uint8_t> src_span =
               inter_buf_.subspan((col - dest_clip_.left) * DestBpp);

@@ -3489,21 +3489,36 @@ TEST_F(FPDFViewEmbedderTest, DecodedImageStoreKeepsItsBudget) {
   EXPECT_EQ(0u, EPDF_GetDecodedImageBytes());
 }
 
-TEST_F(FPDFViewEmbedderTest, MaskBitRunsResampleAsBitByBit) {
-  ASSERT_TRUE(OpenDocument("embedpdf_image_masks.pdf"));
-  const int page_count = FPDF_GetPageCount(document());
-  ASSERT_EQ(3, page_count);
-  // The 1600 px masks shrink about 20, 3 and 1.5 times.
-  for (int i = 0; i < page_count; ++i) {
-    ScopedPage page = LoadScopedPage(i);
-    ASSERT_TRUE(page);
-    for (int width : {97, 640, 1400}) {
-      CStretchEngine::SetBitRunsEnabledForTesting(false);
-      const std::string expected = RenderWidth(page.get(), width);
-      CStretchEngine::SetBitRunsEnabledForTesting(true);
-      EXPECT_EQ(expected, RenderWidth(page.get(), width))
-          << "page " << i << " width " << width;
+TEST_F(FPDFViewEmbedderTest, SpecializedResampleLoopsMatchGeneralOnes) {
+  struct Case {
+    const char* file;
+    int page;
+  };
+  // 1-bit masks that are mostly clear, mostly set and mixed, with rows that
+  // end mid-byte; RGB images with and without masks; and JPEG photos.
+  constexpr Case kCases[] = {
+      {"embedpdf_image_masks.pdf", 0},    {"embedpdf_image_masks.pdf", 1},
+      {"embedpdf_image_masks.pdf", 2},    {"embedpdf_decoded_images.pdf", 2},
+      {"embedded_images.pdf", 0},
+  };
+  for (const Case& test_case : kCases) {
+    ASSERT_TRUE(OpenDocument(test_case.file));
+    {
+      ScopedPage page = LoadScopedPage(test_case.page);
+      ASSERT_TRUE(page);
+      // The 1600 px masks shrink strongly, moderately and slightly; the
+      // 120 px RGB images grow. The render baselines' zoomed tiles grow the
+      // masks too.
+      for (int width : {97, 640, 1400}) {
+        CStretchEngine::SetSpecializedLoopsEnabledForTesting(false);
+        const std::string expected = RenderWidth(page.get(), width);
+        CStretchEngine::SetSpecializedLoopsEnabledForTesting(true);
+        EXPECT_EQ(expected, RenderWidth(page.get(), width))
+            << test_case.file << " page " << test_case.page << " width "
+            << width;
+      }
     }
+    CloseDocument();
   }
 }
 
