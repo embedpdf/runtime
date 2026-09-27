@@ -4,7 +4,14 @@
 
 #include "core/fxcodec/flate/flatemodule.h"
 
+#include <stdint.h>
+
+#include <array>
+#include <memory>
+
 #include "core/fxcodec/data_and_bytes_consumed.h"
+#include "core/fxcodec/scanlinedecoder.h"
+#include "core/fxcrt/data_vector.h"
 #include "testing/gmock/include/gmock/gmock.h"
 #include "testing/gtest/include/gtest/gtest.h"
 #include "testing/test_support.h"
@@ -185,4 +192,23 @@ TEST(FlateModule, DecodeToSinkGarbageInput) {
   EXPECT_EQ(FlateModule::SinkDecodeStatus::kSuccess, status);
   EXPECT_EQ(0u, total);
   EXPECT_EQ(0u, sink_calls);
+}
+
+TEST(FlateModule, PredictorDecoderRewindRepeatsLines) {
+  // Two RGB lines of one pixel, PNG Up predictor: 1 2 3, then 4 5 6.
+  static constexpr std::array<uint8_t, 8> kPredicted = {2, 1, 2, 3,
+                                                        2, 3, 3, 3};
+  static constexpr std::array<uint8_t, 3> kFirst = {1, 2, 3};
+  static constexpr std::array<uint8_t, 3> kSecond = {4, 5, 6};
+  DataVector<uint8_t> encoded = FlateModule::Encode(kPredicted);
+  std::unique_ptr<ScanlineDecoder> decoder = FlateModule::CreateDecoder(
+      encoded, /*width=*/1, /*height=*/2, /*nComps=*/3, /*bpc=*/8,
+      /*predictor=*/12, /*Colors=*/3, /*BitsPerComponent=*/8, /*Columns=*/1);
+  ASSERT_TRUE(decoder);
+  EXPECT_THAT(decoder->GetScanline(0), ElementsAreArray(kFirst));
+  EXPECT_THAT(decoder->GetScanline(1), ElementsAreArray(kSecond));
+
+  // Going back rewinds the decoder, which must decode the same lines again.
+  EXPECT_THAT(decoder->GetScanline(0), ElementsAreArray(kFirst));
+  EXPECT_THAT(decoder->GetScanline(1), ElementsAreArray(kSecond));
 }

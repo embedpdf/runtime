@@ -689,6 +689,9 @@ bool FlatePredictorScanlineDecoder::Rewind() {
   }
 
   left_over_ = 0;
+  // The first line predicts from zeros again, not from the last line decoded
+  // before the rewind.
+  std::ranges::fill(last_line_.span(), 0);
   return true;
 }
 
