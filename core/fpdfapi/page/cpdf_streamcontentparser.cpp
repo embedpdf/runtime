@@ -8,6 +8,7 @@
 
 #include <algorithm>
 #include <array>
+#include <bit>
 #include <map>
 #include <memory>
 #include <utility>
@@ -51,6 +52,25 @@
 #include "core/fxge/cfx_graphstatedata.h"
 
 namespace {
+
+// Bit-identical points: the same types, close flags and coordinate bits, so
+// 0 and -0 differ.
+bool HaveSamePoints(pdfium::span<const CFX_Path::Point> a,
+                    pdfium::span<const CFX_Path::Point> b) {
+  if (a.size() != b.size()) {
+    return false;
+  }
+  for (size_t i = 0; i < a.size(); ++i) {
+    if (a[i].type_ != b[i].type_ || a[i].close_figure_ != b[i].close_figure_ ||
+        std::bit_cast<uint32_t>(a[i].point_.x) !=
+            std::bit_cast<uint32_t>(b[i].point_.x) ||
+        std::bit_cast<uint32_t>(a[i].point_.y) !=
+            std::bit_cast<uint32_t>(b[i].point_.y)) {
+      return false;
+    }
+  }
+  return true;
+}
 
 constexpr int kMaxFormLevel = 40;
 
@@ -1628,13 +1648,26 @@ void CPDF_StreamContentParser::AddPathObjectFromPoints(
     path_points.pop_back();
   }
 
-  CPDF_Path path;
-  path.AppendPoints(path_points);
-
   CFX_Matrix matrix =
       cur_states_->current_transformation_matrix() * mt_content_to_user_;
   bool bStroke = render_type == RenderType::kStroke;
-  if (bStroke || fill_type != CFX_FillRenderOptions::FillType::kNoFill) {
+  const bool painted =
+      bStroke || fill_type != CFX_FillRenderOptions::FillType::kNoFill;
+
+  // Only painted paths share geometry: a clip-only path is transformed below,
+  // which a second reference would turn into a copy.
+  CPDF_Path path;
+  if (painted && last_path_.HasRef() &&
+      HaveSamePoints(last_path_.GetPoints(), path_points)) {
+    path = last_path_;
+  } else {
+    path.AppendPoints(path_points);
+    if (painted) {
+      last_path_ = path;
+    }
+  }
+
+  if (painted) {
     auto pPathObj = std::make_unique<CPDF_PathObject>(GetCurrentStreamIndex());
     pPathObj->set_stroke(bStroke);
     pPathObj->set_filltype(fill_type);

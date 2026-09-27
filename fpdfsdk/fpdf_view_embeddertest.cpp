@@ -19,6 +19,7 @@
 #include "core/fpdfapi/parser/cpdf_document.h"
 #include "core/fpdfapi/parser/cpdf_number.h"
 #include "core/fpdfapi/parser/cpdf_reference.h"
+#include "core/fxge/agg/cfx_agg_devicedriver.h"
 #include "core/fxge/cfx_defaultrenderdevice.h"
 #include "fpdfsdk/cpdfsdk_helpers.h"
 #include "fpdfsdk/fpdf_view_c_api_test.h"
@@ -3241,6 +3242,42 @@ TEST_F(FPDFViewEmbedderTest, EPDFPageResetRenderCache) {
   FPDF_RenderPage_Close(page.get());
   EXPECT_TRUE(EPDFPage_ResetRenderCache(page.get()));
   EXPECT_EQ(first, HashBitmap(RenderLoadedPage(page.get()).get()));
+}
+
+// A path drawn again with identical inputs reuses the previous rasterization;
+// every page here repeats paths under a condition that changes how the repeat
+// composites (alpha, clip, knockout, blend, dash, caps, fill and stroke).
+TEST_F(FPDFViewEmbedderTest, RepeatedPathsRenderAsWithoutPathMemo) {
+  ASSERT_TRUE(OpenDocument("embedpdf_repeated_paths.pdf"));
+  const int page_count = FPDF_GetPageCount(document());
+  ASSERT_EQ(12, page_count);
+
+  auto render = [](FPDF_PAGE page, float scale, int alpha, int flags) {
+    const int width =
+        static_cast<int>(FPDF_GetPageWidthF(page) * scale + 0.5f);
+    const int height =
+        static_cast<int>(FPDF_GetPageHeightF(page) * scale + 0.5f);
+    ScopedFPDFBitmap bitmap(FPDFBitmap_Create(width, height, alpha));
+    FPDFBitmap_FillRect(bitmap.get(), 0, 0, width, height, 0xFFFFFFFF);
+    FPDF_RenderPageBitmap(bitmap.get(), page, 0, 0, width, height, 0, flags);
+    return HashBitmap(bitmap.get());
+  };
+
+  for (int i = 0; i < page_count; ++i) {
+    ScopedPage page = LoadScopedPage(i);
+    ASSERT_TRUE(page);
+    for (float scale : {0.37f, 1.0f, 3.37f}) {
+      for (int alpha : {0, 1}) {
+        const int flags = alpha ? FPDF_ANNOT | FPDF_REVERSE_BYTE_ORDER : 0;
+        pdfium::CFX_AggDeviceDriver::SetPathMemoEnabledForTesting(false);
+        const std::string without = render(page.get(), scale, alpha, flags);
+        pdfium::CFX_AggDeviceDriver::SetPathMemoEnabledForTesting(true);
+        const std::string with = render(page.get(), scale, alpha, flags);
+        EXPECT_EQ(without, with)
+            << "page " << i << " scale " << scale << " alpha " << alpha;
+      }
+    }
+  }
 }
 
 TEST_F(FPDFViewEmbedderTest, EPDFDocSetPageRotationByObjectNumber) {

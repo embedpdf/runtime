@@ -15,6 +15,7 @@
 
 #include "core/fpdfapi/page/cpdf_contentmarks.h"
 #include "core/fpdfapi/page/cpdf_form.h"
+#include "core/fpdfapi/page/cpdf_path.h"
 #include "core/fpdfapi/page/cpdf_pageobjectholder.h"
 #include "core/fxcrt/bytestring.h"
 #include "core/fxcrt/fx_coordinates.h"
@@ -228,6 +229,9 @@ class CPDF_StreamContentParser {
   std::stack<std::unique_ptr<CPDF_ContentMarks>> content_marks_stack_;
   std::vector<std::unique_ptr<CPDF_TextObject>> clip_text_list_;
   std::vector<CFX_Path::Point> path_points_;
+  // The geometry of the last path object. The next path with bit-identical
+  // points shares it (copy-on-write) instead of storing a copy.
+  CPDF_Path last_path_;
   CFX_PointF path_start_;
   CFX_PointF path_current_;
   CFX_FillRenderOptions::FillType path_clip_type_ =
