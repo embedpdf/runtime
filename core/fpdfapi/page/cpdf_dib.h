@@ -52,6 +52,18 @@ class CPDF_DIB final : public CFX_DIBBase {
   RetainPtr<CPDF_ColorSpace> GetColorSpace() const { return color_space_; }
   uint32_t GetMatteColor() const { return matte_color_; }
   bool IsJBigImage() const;
+  bool IsJpxImage() const;
+
+  // The JPX resolution levels a decode to `max_size_required` skips, for an
+  // image `width` × `height` pixels; 0 when no size is required.
+  static uint8_t ResolutionLevelsToSkip(int width,
+                                        int height,
+                                        const CFX_Size& max_size_required);
+  // The levels the last StartLoadDIBBase() computed. Only JPX decodes skip
+  // them.
+  uint8_t resolution_levels_to_skip() const {
+    return resolution_levels_to_skip_;
+  }
 
   bool Load();
   LoadState StartLoadDIBBase(bool bHasMask,
@@ -120,6 +132,7 @@ class CPDF_DIB final : public CFX_DIBBase {
   CPDF_ColorSpace::Family group_family_ = CPDF_ColorSpace::Family::kUnknown;
   uint32_t matte_color_ = 0;
   LoadState status_ = LoadState::kFail;
+  uint8_t resolution_levels_to_skip_ = 0;
   bool load_mask_ = false;
   bool default_decode_ = true;
   bool image_mask_ = false;

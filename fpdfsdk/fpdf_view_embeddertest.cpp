@@ -232,6 +232,26 @@ TEST(fpdf, CApiTest) {
 
 class FPDFViewEmbedderTest : public EmbedderTest {
  protected:
+  // Sets the decoded image budget for a test and empties the store after it.
+  class ScopedDecodedImageBudget {
+   public:
+    explicit ScopedDecodedImageBudget(unsigned long bytes) {
+      EPDF_SetDecodedImageBudget(bytes);
+    }
+    ~ScopedDecodedImageBudget() { EPDF_SetDecodedImageBudget(0); }
+  };
+
+  // Renders `page` `width` px wide.
+  static std::string RenderWidth(FPDF_PAGE page, int width) {
+    const int height = static_cast<int>(width * FPDF_GetPageHeightF(page) /
+                                        FPDF_GetPageWidthF(page));
+    ScopedFPDFBitmap bitmap(FPDFBitmap_Create(width, height, 0));
+    FPDFBitmap_FillRect(bitmap.get(), 0, 0, width, height, 0xFFFFFFFF);
+    FPDF_RenderPageBitmap(bitmap.get(), page, 0, 0, width, height, 0,
+                          FPDF_ANNOT);
+    return HashBitmap(bitmap.get());
+  }
+
   // Renders `page` at 800 × 800 px into the 200 px tile at `left`, `top`,
   // with the object groups on or off.
   static std::string RenderObjectGroupsTile(FPDF_PAGE page,
@@ -3392,6 +3412,80 @@ TEST_F(FPDFViewEmbedderTest, ObjectGroupsFollowEdits) {
       RenderObjectGroupsTile(form_page.get(), 500, 100, true);
   EXPECT_NE(before, after);
   EXPECT_EQ(RenderObjectGroupsTile(form_page.get(), 500, 100, false), after);
+}
+
+TEST_F(FPDFViewEmbedderTest, DecodedImageStoreRendersAsNewDecodes) {
+  // Every render loads the page again, as the engine does per job, so each
+  // render after the first draws from the store.
+  struct Case {
+    const char* file;
+    int page;
+    std::vector<int> widths;
+  };
+  // The huge image, which a store keeps decoded in full; a masked and an
+  // inverted image; a JPX image, whose widths make it decode at several
+  // resolution levels and come back to them; and images of PDFium's own
+  // tests. The render baselines cover the huge image at more sizes, and drawn
+  // three times on one page.
+  const Case kCases[] = {
+      {"embedpdf_decoded_images.pdf", 0, {300, 150}},
+      {"embedpdf_decoded_images.pdf", 2, {1400, 150, 600}},
+      {"embedpdf_jpx_resolution_levels.pdf", 0, {1400, 150, 600, 1400, 150}},
+      {"embedded_images.pdf", 0, {1400, 150, 600}},
+      {"form_object_with_image.pdf", 0, {1400, 150, 600}},
+      {"jpx_lzw.pdf", 0, {1400, 150, 600}},
+  };
+  for (const Case& test_case : kCases) {
+    ASSERT_TRUE(OpenDocument(test_case.file));
+    std::vector<std::string> expected;
+    for (int width : test_case.widths) {
+      ScopedPage page = LoadScopedPage(test_case.page);
+      ASSERT_TRUE(page);
+      expected.push_back(RenderWidth(page.get(), width));
+    }
+    {
+      ScopedDecodedImageBudget budget(256 * 1024 * 1024);
+      for (size_t i = 0; i < test_case.widths.size(); ++i) {
+        ScopedPage page = LoadScopedPage(test_case.page);
+        ASSERT_TRUE(page);
+        EXPECT_EQ(expected[i], RenderWidth(page.get(), test_case.widths[i]))
+            << test_case.file << " page " << test_case.page << " width "
+            << test_case.widths[i];
+      }
+      EXPECT_GT(EPDF_GetDecodedImageBytes(), 0u) << test_case.file;
+    }
+    EXPECT_EQ(0u, EPDF_GetDecodedImageBytes());
+    CloseDocument();
+  }
+}
+
+TEST_F(FPDFViewEmbedderTest, DecodedImageStoreKeepsItsBudget) {
+  ASSERT_TRUE(OpenDocument("embedpdf_decoded_images.pdf"));
+  std::string huge_expected;
+  {
+    ScopedPage page = LoadScopedPage(0);
+    huge_expected = RenderWidth(page.get(), 400);
+  }
+
+  // The huge image decodes to 67.5 MB, which a 16 MB budget cannot keep.
+  ScopedDecodedImageBudget budget(16 * 1024 * 1024);
+  {
+    ScopedPage page = LoadScopedPage(0);
+    EXPECT_EQ(huge_expected, RenderWidth(page.get(), 400));
+  }
+  EXPECT_EQ(0u, EPDF_GetDecodedImageBytes());
+
+  // The small images fit.
+  {
+    ScopedPage page = LoadScopedPage(2);
+    RenderWidth(page.get(), 800);
+  }
+  EXPECT_GT(EPDF_GetDecodedImageBytes(), 0u);
+  EXPECT_LE(EPDF_GetDecodedImageBytes(), 16u * 1024 * 1024);
+
+  // Closing the document drops its decodes.
+  CloseDocument();
+  EXPECT_EQ(0u, EPDF_GetDecodedImageBytes());
 }
 
 TEST_F(FPDFViewEmbedderTest, EPDFDocSetPageRotationByObjectNumber) {

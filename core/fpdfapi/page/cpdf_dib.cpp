@@ -197,14 +197,10 @@ CPDF_DIB::LoadState CPDF_DIB::StartLoadDIBBase(
     return LoadState::kFail;
   }
 
-  uint8_t resolution_levels_to_skip = 0;
-  if (max_size_required.width != 0 && max_size_required.height != 0) {
-    resolution_levels_to_skip = static_cast<uint8_t>(std::log2(
-        std::max(1, std::min(GetWidth() / max_size_required.width,
-                             GetHeight() / max_size_required.height))));
-  }
+  resolution_levels_to_skip_ =
+      ResolutionLevelsToSkip(GetWidth(), GetHeight(), max_size_required);
 
-  LoadState iCreatedDecoder = CreateDecoder(resolution_levels_to_skip);
+  LoadState iCreatedDecoder = CreateDecoder(resolution_levels_to_skip_);
   if (iCreatedDecoder == LoadState::kFail) {
     return LoadState::kFail;
   }
@@ -815,6 +811,22 @@ RetainPtr<CPDF_DIB> CPDF_DIB::DetachMask() {
 
 bool CPDF_DIB::IsJBigImage() const {
   return stream_acc_->GetImageDecoder() == "JBIG2Decode";
+}
+
+bool CPDF_DIB::IsJpxImage() const {
+  return stream_acc_->GetImageDecoder() == "JPXDecode";
+}
+
+// static
+uint8_t CPDF_DIB::ResolutionLevelsToSkip(int width,
+                                         int height,
+                                         const CFX_Size& max_size_required) {
+  if (max_size_required.width == 0 || max_size_required.height == 0) {
+    return 0;
+  }
+  return static_cast<uint8_t>(
+      std::log2(std::max(1, std::min(width / max_size_required.width,
+                                     height / max_size_required.height))));
 }
 
 CPDF_DIB::LoadState CPDF_DIB::StartLoadMaskDIB(

@@ -12,7 +12,9 @@
 #include <functional>
 #include <map>
 #include <memory>
+#include <optional>
 
+#include "core/fpdfapi/page/cpdf_decodedimagestore.h"
 #include "core/fpdfapi/page/cpdf_dib.h"
 #include "core/fxcrt/maybe_owned.h"
 #include "core/fxcrt/retain_ptr.h"
@@ -91,6 +93,10 @@ class CPDF_PageImageCache {
     RetainPtr<CFX_DIBBase> cached_bitmap_;
     RetainPtr<CFX_DIBBase> cached_mask_;
     bool cached_set_max_size_required_ = false;
+    // Where the decode in progress goes in the decoded image store, and the
+    // JPX resolution levels its request skips.
+    std::optional<CPDF_DecodedImageStore::Key> store_key_;
+    uint8_t store_levels_ = 0;
   };
 
   void ClearImageCacheEntry(const CPDF_Stream* pStream);

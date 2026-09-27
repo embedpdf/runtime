@@ -1875,6 +1875,26 @@ EPDF_RenderAnnotBitmapUnrotated(FPDF_BITMAP bitmap,
 // progressive render of it (FPDF_RenderPageBitmap_Start) is in progress.
 FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV EPDFPage_ResetRenderCache(FPDF_PAGE page);
 
+// Experimental EmbedPDF Extension API.
+// Sets how many bytes of decoded images are kept across page loads, for every
+// document of this PDFium instance (the calling thread's, in thread-confined
+// builds), so an image rendered again after its page's image cache was
+// emptied is not decoded again. A kept decode renders the same bytes as a new
+// one. Above the budget the least recently used decodes are dropped. 0, the
+// default, keeps none and empties the store.
+//
+// The caller must set the budget to 0 before changing anything a decode
+// depends on: an image stream, its colour space or the resources naming it.
+// Closing a document drops its decodes.
+//
+//   bytes - The most bytes kept, counting images and their masks.
+FPDF_EXPORT void FPDF_CALLCONV EPDF_SetDecodedImageBudget(unsigned long bytes);
+
+// Experimental EmbedPDF Extension API.
+// Returns how many bytes of decoded images are kept (see
+// EPDF_SetDecodedImageBudget).
+FPDF_EXPORT unsigned long FPDF_CALLCONV EPDF_GetDecodedImageBytes();
+
 #ifdef PDF_ENABLE_V8
 // Function: FPDF_GetRecommendedV8Flags
 //          Returns a space-separated string of command line flags that are

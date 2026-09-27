@@ -16,6 +16,7 @@
 #include "build/build_config.h"
 #include "constants/page_object.h"
 #include "core/fpdfapi/page/cpdf_annotcontext.h"
+#include "core/fpdfapi/page/cpdf_decodedimagestore.h"
 #include "core/fpdfapi/page/cpdf_docpagedata.h"
 #include "core/fpdfapi/page/cpdf_form.h"
 #include "core/fpdfapi/page/cpdf_occontext.h"
@@ -1409,6 +1410,17 @@ EPDF_RenderAnnotBitmapUnrotated(FPDF_BITMAP bitmap,
   return true;
 }
 
+FPDF_EXPORT void FPDF_CALLCONV EPDF_SetDecodedImageBudget(unsigned long bytes) {
+  if (CPDF_DecodedImageStore* store = CPDF_DecodedImageStore::Get()) {
+    store->SetBudget(bytes);
+  }
+}
+
+FPDF_EXPORT unsigned long FPDF_CALLCONV EPDF_GetDecodedImageBytes() {
+  CPDF_DecodedImageStore* store = CPDF_DecodedImageStore::Get();
+  return store ? pdfium::checked_cast<unsigned long>(store->bytes()) : 0;
+}
+
 FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV EPDFPage_ResetRenderCache(FPDF_PAGE page) {
   CPDF_Page* pPage = CPDFPageFromFPDFPage(page);
   // A progressive render holds loaders that point into the cache.
@@ -1474,8 +1486,13 @@ FPDF_EXPORT void FPDF_CALLCONV FPDF_ClosePage(FPDF_PAGE page) {
 }
 
 FPDF_EXPORT void FPDF_CALLCONV FPDF_CloseDocument(FPDF_DOCUMENT document) {
+  CPDF_Document* doc = CPDFDocumentFromFPDFDocument(document);
+  // Its decoded images hold its streams, which must not outlive it.
+  if (doc && CPDF_DecodedImageStore::Get()) {
+    CPDF_DecodedImageStore::Get()->DropDocument(doc);
+  }
   // Take it back across the API and throw it away,
-  std::unique_ptr<CPDF_Document>(CPDFDocumentFromFPDFDocument(document));
+  std::unique_ptr<CPDF_Document> discarded(doc);
 }
 
 FPDF_EXPORT unsigned long FPDF_CALLCONV FPDF_GetLastError() {

@@ -29,6 +29,8 @@ source_set("page") {
     "cpdf_contentparser.h",
     "cpdf_devicecs.cpp",
     "cpdf_devicecs.h",
+    "cpdf_decodedimagestore.cpp",
+    "cpdf_decodedimagestore.h",
     "cpdf_dib.cpp",
     "cpdf_dib.h",
     "cpdf_docpagedata.cpp",

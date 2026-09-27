@@ -8,6 +8,7 @@
 
 #include "core/fpdfapi/font/cpdf_fontglobals.h"
 #include "core/fpdfapi/page/cpdf_colorspace.h"
+#include "core/fpdfapi/page/cpdf_decodedimagestore.h"
 #include "core/fpdfapi/page/cpdf_streamcontentparser.h"
 
 namespace pdfium {
@@ -17,9 +18,11 @@ void InitializePageModule() {
   CPDF_FontGlobals::Create();
   CPDF_FontGlobals::GetInstance()->LoadEmbeddedMaps();
   CPDF_StreamContentParser::InitializeGlobals();
+  CPDF_DecodedImageStore::Create();
 }
 
 void DestroyPageModule() {
+  CPDF_DecodedImageStore::Destroy();
   CPDF_StreamContentParser::DestroyGlobals();
   CPDF_FontGlobals::Destroy();
   CPDF_ColorSpace::DestroyGlobals();
