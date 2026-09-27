@@ -6,12 +6,16 @@
 
 #include "public/fpdf_progressive.h"
 
+#include <algorithm>
+#include <chrono>
 #include <memory>
 #include <utility>
 
 #include "core/fpdfapi/page/cpdf_page.h"
 #include "core/fpdfapi/render/cpdf_pagerendercontext.h"
 #include "core/fpdfapi/render/cpdf_progressiverenderer.h"
+#include "core/fxcrt/fx_coordinates.h"
+#include "core/fxcrt/pauseindicator_iface.h"
 #include "core/fxge/cfx_defaultrenderdevice.h"
 #include "core/fxge/dib/cfx_dibitmap.h"
 #include "fpdfsdk/cpdfsdk_helpers.h"
@@ -34,6 +38,35 @@ namespace {
 
 int ToFPDFStatus(CPDF_ProgressiveRenderer::Status status) {
   return static_cast<int>(status);
+}
+
+// Asks to pause once a time budget has passed.
+class BudgetPause final : public PauseIndicatorIface {
+ public:
+  explicit BudgetPause(int budget_ms)
+      : deadline_(std::chrono::steady_clock::now() +
+                  std::chrono::milliseconds(std::max(budget_ms, 0))) {}
+
+  bool NeedToPauseNow() override {
+    return std::chrono::steady_clock::now() >= deadline_;
+  }
+
+ private:
+  const std::chrono::steady_clock::time_point deadline_;
+};
+
+// The status of a render after one of its slices. A render that ended hands
+// the bitmap back in the alpha form it came in.
+int SliceStatus(CPDF_PageRenderContext* context) {
+  const int status = ToFPDFStatus(context->renderer_->GetStatus());
+#if defined(PDF_USE_SKIA)
+  if (status != FPDF_RENDER_TOBECONTINUED &&
+      CFX_DefaultRenderDevice::UseSkiaRenderer() &&
+      !context->return_premultiplied_) {
+    context->device_->GetBitmap()->UnPreMultiply();
+  }
+#endif  // defined(PDF_USE_SKIA)
+  return status;
 }
 
 }  // namespace
@@ -169,4 +202,80 @@ FPDF_EXPORT void FPDF_CALLCONV FPDF_RenderPage_Close(FPDF_PAGE page) {
   if (pPage) {
     pPage->ClearRenderContext();
   }
+}
+
+FPDF_EXPORT int FPDF_CALLCONV
+EPDF_RenderPageBitmapWithMatrix_Start(FPDF_BITMAP bitmap,
+                                      FPDF_PAGE page,
+                                      const FS_MATRIX* matrix,
+                                      const FS_RECTF* clipping,
+                                      int flags,
+                                      int budget_ms) {
+  ScopedFPDFPageView page_view(page);
+  if (!page_view) {
+    return FPDF_RENDER_FAILED;
+  }
+  CPDF_Page* pPage = page_view.Get();
+  // A page holds one render at a time.
+  if (pPage->GetRenderContext()) {
+    return FPDF_RENDER_FAILED;
+  }
+
+  RetainPtr<CFX_DIBitmap> pBitmap(CFXDIBitmapFromFPDFBitmap(bitmap));
+  if (!pBitmap) {
+    return FPDF_RENDER_FAILED;
+  }
+  ValidateBitmapPremultiplyState(pBitmap);
+
+  auto owned_context = std::make_unique<CPDF_PageRenderContext>();
+  CPDF_PageRenderContext* context = owned_context.get();
+  pPage->SetRenderContext(std::move(owned_context));
+  context->return_premultiplied_ = pBitmap->IsPremultiplied();
+
+#if defined(PDF_USE_SKIA)
+  if (CFX_DefaultRenderDevice::UseSkiaRenderer()) {
+    pBitmap->PreMultiply();
+  }
+#endif
+
+  auto device = std::make_unique<CFX_DefaultRenderDevice>();
+  device->AttachWithRgbByteOrder(pBitmap, !!(flags & FPDF_REVERSE_BYTE_ORDER));
+  context->device_ = std::move(device);
+
+  // The clip and transform of FPDF_RenderPageBitmapWithMatrix().
+  CFX_FloatRect clipping_rect;
+  if (clipping) {
+    clipping_rect = CFXFloatRectFromFSRectF(*clipping);
+  }
+  CFX_Matrix transform_matrix = pPage->GetDisplayMatrix();
+  if (matrix) {
+    transform_matrix *= CFXMatrixFromFSMatrix(*matrix);
+  }
+
+  BudgetPause pause(budget_ms);
+  CPDFSDK_StartRenderPage(context, pPage, transform_matrix,
+                          clipping_rect.ToFxRect(), flags, &pause);
+  return SliceStatus(context);
+}
+
+FPDF_EXPORT int FPDF_CALLCONV EPDF_RenderPage_Continue(FPDF_PAGE page,
+                                                       int budget_ms) {
+  ScopedFPDFPageView page_view(page);
+  if (!page_view) {
+    return FPDF_RENDER_FAILED;
+  }
+  auto* context =
+      static_cast<CPDF_PageRenderContext*>(page_view.Get()->GetRenderContext());
+  if (!context || !context->renderer_) {
+    return FPDF_RENDER_FAILED;
+  }
+  // A render that already ended has handed its bitmap back.
+  if (context->renderer_->GetStatus() !=
+      CPDF_ProgressiveRenderer::kToBeContinued) {
+    return ToFPDFStatus(context->renderer_->GetStatus());
+  }
+
+  BudgetPause pause(budget_ms);
+  context->renderer_->Continue(&pause);
+  return SliceStatus(context);
 }

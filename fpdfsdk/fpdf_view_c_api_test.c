@@ -390,6 +390,8 @@ int CheckPDFiumCApi() {
   CHK(FPDF_NewXObjectFromPage);
 
   // fpdf_progressive.h
+  CHK(EPDF_RenderPageBitmapWithMatrix_Start);
+  CHK(EPDF_RenderPage_Continue);
   CHK(FPDF_RenderPageBitmapWithColorScheme_Start);
   CHK(FPDF_RenderPageBitmap_Start);
   CHK(FPDF_RenderPage_Close);

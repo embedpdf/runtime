@@ -253,6 +253,47 @@ class FPDFViewEmbedderTest : public EmbedderTest {
     return HashBitmap(bitmap.get());
   }
 
+  // Renders `page` scaled by `scale` into a `width` × `height` bitmap whose
+  // top left corner is device pixel `left`, `top`. With `slices`, the render
+  // is sliced as finely as EPDF_RenderPageBitmapWithMatrix_Start() allows, and
+  // `slices` counts the slices; without, FPDF_RenderPageBitmapWithMatrix()
+  // renders it at once.
+  static std::string RenderMatrixTile(FPDF_PAGE page,
+                                      float scale,
+                                      int left,
+                                      int top,
+                                      int width,
+                                      int height,
+                                      int flags,
+                                      int* slices) {
+    ScopedFPDFBitmap bitmap(FPDFBitmap_Create(width, height, 1));
+    FPDFBitmap_FillRect(bitmap.get(), 0, 0, width, height, 0xFFFFFFFF);
+    const FS_MATRIX matrix = {scale,
+                              0,
+                              0,
+                              scale,
+                              static_cast<float>(-left),
+                              static_cast<float>(-top)};
+    const FS_RECTF clip = {0, 0, static_cast<float>(width),
+                           static_cast<float>(height)};
+    if (!slices) {
+      FPDF_RenderPageBitmapWithMatrix(bitmap.get(), page, &matrix, &clip,
+                                      flags);
+      return HashBitmap(bitmap.get());
+    }
+    int status = EPDF_RenderPageBitmapWithMatrix_Start(bitmap.get(), page,
+                                                       &matrix, &clip, flags,
+                                                       /*budget_ms=*/0);
+    *slices = 1;
+    while (status == FPDF_RENDER_TOBECONTINUED) {
+      status = EPDF_RenderPage_Continue(page, /*budget_ms=*/0);
+      ++*slices;
+    }
+    EXPECT_EQ(FPDF_RENDER_DONE, status);
+    FPDF_RenderPage_Close(page);
+    return HashBitmap(bitmap.get());
+  }
+
   // Renders `page` at 800 × 800 px into the 200 px tile at `left`, `top`,
   // with the object groups on or off.
   static std::string RenderObjectGroupsTile(FPDF_PAGE page,
@@ -3282,6 +3323,157 @@ TEST_F(FPDFViewEmbedderTest, EPDFPageResetRenderCache) {
   FPDF_RenderPage_Close(page.get());
   EXPECT_TRUE(EPDFPage_ResetRenderCache(page.get()));
   EXPECT_EQ(first, HashBitmap(RenderLoadedPage(page.get()).get()));
+}
+
+// A render sliced at every chance writes the bytes of a render at once:
+// images (JPEG, JPX, JBIG2, masks, soft masks, the huge image), forms,
+// transparency, shadings, annotations, repeated paths and grouped objects,
+// whole pages and tiles.
+TEST_F(FPDFViewEmbedderTest, SlicedRenderMatchesOneShot) {
+  const char* const kFiles[] = {
+      "embedded_images.pdf",
+      "embedpdf_jpx_resolution_levels.pdf",
+      "bug_631912.pdf",
+      "embedpdf_image_masks.pdf",
+      "matte.pdf",
+      "nested_form_alpha.pdf",
+      "form_object_with_image.pdf",
+      "bug_547706.pdf",
+      "annotation_stamp_with_ap.pdf",
+      "many_rectangles.pdf",
+      "embedpdf_repeated_paths.pdf",
+      "embedpdf_object_groups.pdf",
+  };
+  int most_slices = 0;
+  for (const char* file : kFiles) {
+    ASSERT_TRUE(OpenDocument(file)) << file;
+    const int page_count = std::min(FPDF_GetPageCount(document()), 4);
+    for (int i = 0; i < page_count; ++i) {
+      ScopedPage page = LoadScopedPage(i);
+      ASSERT_TRUE(page) << file << " page " << i;
+      const int width = static_cast<int>(FPDF_GetPageWidthF(page.get()));
+      const int height = static_cast<int>(FPDF_GetPageHeightF(page.get()));
+      struct Case {
+        float scale;
+        int left;
+        int top;
+        int width;
+        int height;
+        int flags;
+      };
+      const Case kCases[] = {
+          {1, 0, 0, width, height, FPDF_ANNOT | FPDF_REVERSE_BYTE_ORDER},
+          {0.5f, 0, 0, width / 2 + 1, height / 2 + 1, 0},
+          // A tile in the middle of the page at 2.5 times.
+          {2.5f, width, height, 256, 256, FPDF_ANNOT},
+      };
+      for (const Case& c : kCases) {
+        int slices = 0;
+        const std::string sliced =
+            RenderMatrixTile(page.get(), c.scale, c.left, c.top, c.width,
+                             c.height, c.flags, &slices);
+        EXPECT_EQ(RenderMatrixTile(page.get(), c.scale, c.left, c.top, c.width,
+                                   c.height, c.flags, nullptr),
+                  sliced)
+            << file << " page " << i << " scale " << c.scale;
+        most_slices = std::max(most_slices, slices);
+      }
+    }
+    CloseDocument();
+  }
+  // The renders really paused.
+  EXPECT_GT(most_slices, 10);
+
+  // With decoded images kept, the first sliced render of a page decodes and
+  // keeps its images, and the second draws them from the store: the huge
+  // image (page 0), and a masked and an inverted image (page 2).
+  ASSERT_TRUE(OpenDocument("embedpdf_decoded_images.pdf"));
+  for (int page_index : {0, 2}) {
+    std::string expected;
+    int width = 0;
+    int height = 0;
+    {
+      ScopedPage page = LoadScopedPage(page_index);
+      ASSERT_TRUE(page);
+      width = static_cast<int>(FPDF_GetPageWidthF(page.get()) * 0.5f);
+      height = static_cast<int>(FPDF_GetPageHeightF(page.get()) * 0.5f);
+      expected =
+          RenderMatrixTile(page.get(), 0.5f, 0, 0, width, height, 0, nullptr);
+    }
+    ScopedDecodedImageBudget budget(256 * 1024 * 1024);
+    for (int round = 0; round < 2; ++round) {
+      ScopedPage page = LoadScopedPage(page_index);
+      ASSERT_TRUE(page);
+      int slices = 0;
+      EXPECT_EQ(expected, RenderMatrixTile(page.get(), 0.5f, 0, 0, width,
+                                           height, 0, &slices))
+          << "page " << page_index << " round " << round;
+      EXPECT_GT(EPDF_GetDecodedImageBytes(), 0u);
+    }
+  }
+}
+
+TEST_F(FPDFViewEmbedderTest, SlicedRenderCancels) {
+  EXPECT_EQ(FPDF_RENDER_FAILED, EPDF_RenderPageBitmapWithMatrix_Start(
+                                    nullptr, nullptr, nullptr, nullptr, 0, 0));
+  EXPECT_EQ(FPDF_RENDER_FAILED, EPDF_RenderPage_Continue(nullptr, 0));
+
+  ASSERT_TRUE(OpenDocument("many_rectangles.pdf"));
+  ScopedPage page = LoadScopedPage(0);
+  ASSERT_TRUE(page);
+  const int width = static_cast<int>(FPDF_GetPageWidthF(page.get()));
+  const int height = static_cast<int>(FPDF_GetPageHeightF(page.get()));
+  const std::string whole =
+      RenderMatrixTile(page.get(), 1, 0, 0, width, height, FPDF_ANNOT, nullptr);
+
+  // Nothing is left on the page by a start that fails.
+  EXPECT_EQ(FPDF_RENDER_FAILED,
+            EPDF_RenderPageBitmapWithMatrix_Start(nullptr, page.get(), nullptr,
+                                                  nullptr, 0, 0));
+  EXPECT_EQ(FPDF_RENDER_FAILED, EPDF_RenderPage_Continue(page.get(), 0));
+  EXPECT_TRUE(EPDFPage_ResetRenderCache(page.get()));
+
+  ScopedFPDFBitmap bitmap(FPDFBitmap_Create(width, height, 1));
+  FPDFBitmap_FillRect(bitmap.get(), 0, 0, width, height, 0xFFFFFFFF);
+  const FS_MATRIX matrix = {1, 0, 0, 1, 0, 0};
+  const FS_RECTF clip = {0, 0, static_cast<float>(width),
+                         static_cast<float>(height)};
+  ASSERT_EQ(FPDF_RENDER_TOBECONTINUED,
+            EPDF_RenderPageBitmapWithMatrix_Start(
+                bitmap.get(), page.get(), &matrix, &clip, FPDF_ANNOT, 0));
+  ASSERT_EQ(FPDF_RENDER_TOBECONTINUED, EPDF_RenderPage_Continue(page.get(), 0));
+
+  // While it is paused the page holds it: no second render starts, and the
+  // render cache stays.
+  ScopedFPDFBitmap other(FPDFBitmap_Create(width, height, 1));
+  EXPECT_EQ(FPDF_RENDER_FAILED,
+            EPDF_RenderPageBitmapWithMatrix_Start(
+                other.get(), page.get(), &matrix, &clip, FPDF_ANNOT, 0));
+  EXPECT_FALSE(EPDFPage_ResetRenderCache(page.get()));
+
+  // Closing cancels it.
+  FPDF_RenderPage_Close(page.get());
+  EXPECT_EQ(FPDF_RENDER_FAILED, EPDF_RenderPage_Continue(page.get(), 0));
+  EXPECT_TRUE(EPDFPage_ResetRenderCache(page.get()));
+  EXPECT_NE(whole, HashBitmap(bitmap.get()));
+
+  // The page renders as before, at once and sliced.
+  EXPECT_EQ(whole, RenderMatrixTile(page.get(), 1, 0, 0, width, height,
+                                    FPDF_ANNOT, nullptr));
+  int slices = 0;
+  EXPECT_EQ(whole, RenderMatrixTile(page.get(), 1, 0, 0, width, height,
+                                    FPDF_ANNOT, &slices));
+  EXPECT_GT(slices, 2);
+
+  // A generous budget renders it in one slice, and continuing a render that
+  // is done changes nothing.
+  FPDFBitmap_FillRect(bitmap.get(), 0, 0, width, height, 0xFFFFFFFF);
+  EXPECT_EQ(FPDF_RENDER_DONE,
+            EPDF_RenderPageBitmapWithMatrix_Start(
+                bitmap.get(), page.get(), &matrix, &clip, FPDF_ANNOT, 60000));
+  EXPECT_EQ(FPDF_RENDER_DONE, EPDF_RenderPage_Continue(page.get(), 0));
+  FPDF_RenderPage_Close(page.get());
+  EXPECT_EQ(whole, HashBitmap(bitmap.get()));
 }
 
 // A path drawn again with identical inputs reuses the previous rasterization;

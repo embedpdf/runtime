@@ -13,6 +13,7 @@ class CFX_Matrix;
 class CPDFSDK_PauseAdapter;
 class CPDF_Page;
 class CPDF_PageRenderContext;
+class PauseIndicatorIface;
 struct FX_RECT;
 
 void CPDFSDK_RenderPage(CPDF_PageRenderContext* context,
@@ -21,6 +22,15 @@ void CPDFSDK_RenderPage(CPDF_PageRenderContext* context,
                         const FX_RECT& clipping_rect,
                         int flags,
                         const FPDF_COLORSCHEME* color_scheme);
+
+// Starts rendering `pPage` as CPDFSDK_RenderPage() renders it, pausing when
+// `pause` asks to; the render context keeps the render until it is cleared.
+void CPDFSDK_StartRenderPage(CPDF_PageRenderContext* context,
+                             CPDF_Page* pPage,
+                             const CFX_Matrix& matrix,
+                             const FX_RECT& clipping_rect,
+                             int flags,
+                             PauseIndicatorIface* pause);
 
 // TODO(thestig): Consider giving this a better name, and make its parameters
 // more similar to those of CPDFSDK_RenderPage().
