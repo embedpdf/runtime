@@ -13,6 +13,7 @@
 #include "core/fpdfapi/page/cpdf_allstates.h"
 #include "core/fpdfapi/page/cpdf_contentparser.h"
 #include "core/fpdfapi/page/cpdf_pageobject.h"
+#include "core/fpdfapi/page/cpdf_pageobjectgroups.h"
 #include "core/fpdfapi/parser/cpdf_dictionary.h"
 #include "core/fpdfapi/parser/cpdf_document.h"
 #include "core/fpdfapi/parser/cpdf_object.h"
@@ -23,6 +24,15 @@
 #include "core/fxcrt/fx_extension.h"
 #include "core/fxcrt/notreached.h"
 #include "core/fxcrt/stl_util.h"
+
+namespace {
+
+// Holders with fewer objects walk them faster than they build runs.
+constexpr size_t kMinObjectsForGroups = 8 * CPDF_PageObjectGroups::kSize;
+
+bool g_object_groups_enabled = true;
+
+}  // namespace
 
 bool GraphicsData::operator<(const GraphicsData& other) const {
   if (!FXSYS_SafeEQ(fillAlpha, other.fillAlpha)) {
@@ -254,6 +264,7 @@ void CPDF_PageObjectHolder::ResetParsedContent() {
   parser_.reset();
   parse_state_ = ParseState::kNotParsed;
   page_object_list_.clear();
+  object_groups_.reset();
   all_ctms_.clear();
   mask_bounding_boxes_.clear();
   dirty_streams_.clear();
@@ -394,10 +405,41 @@ CPDF_PageObject* CPDF_PageObjectHolder::GetPageObjectByIndex(
              : nullptr;
 }
 
+const CPDF_PageObjectGroups* CPDF_PageObjectHolder::GetObjectGroups(
+    const CFX_FloatRect& clip) const {
+  if (!g_object_groups_enabled || parse_state_ != ParseState::kParsed ||
+      page_object_list_.size() < kMinObjectsForGroups) {
+    return nullptr;
+  }
+  if (!object_groups_ || !object_groups_->IsCurrent()) {
+    // Where the objects can show: a page's box, or a form's /BBox, which is in
+    // the same space as a form's clip.
+    CFX_FloatRect area = bbox_;
+    if (area.IsEmpty()) {
+      area = GetDict()->GetRectFor("BBox");
+      area.Normalize();
+    }
+    CFX_FloatRect shown = clip;
+    shown.Intersect(area);
+    if (2 * shown.Width() * shown.Height() > area.Width() * area.Height()) {
+      return nullptr;
+    }
+    object_groups_ = std::make_unique<CPDF_PageObjectGroups>(*this);
+  }
+  return object_groups_.get();
+}
+
+// static
+void CPDF_PageObjectHolder::SetObjectGroupsEnabledForTesting(bool enabled) {
+  g_object_groups_enabled = enabled;
+}
+
 void CPDF_PageObjectHolder::AppendPageObject(
     std::unique_ptr<CPDF_PageObject> pPageObj) {
   CHECK(pPageObj);
+  pPageObj->held_ = true;
   page_object_list_.push_back(std::move(pPageObj));
+  object_groups_.reset();
 }
 
 bool CPDF_PageObjectHolder::InsertPageObjectAtIndex(
@@ -408,10 +450,12 @@ bool CPDF_PageObjectHolder::InsertPageObjectAtIndex(
     return false;
   }
 
+  page_obj->held_ = true;
   // Unsafe, but the compiler will not complain, because
   // std::deque::iterator::operator++() has not been marked as unsafe yet.
   page_object_list_.insert(UNSAFE_TODO(page_object_list_.begin() + index),
                            std::move(page_obj));
+  object_groups_.reset();
   return true;
 }
 
@@ -425,6 +469,8 @@ std::unique_ptr<CPDF_PageObject> CPDF_PageObjectHolder::RemovePageObject(
 
   std::unique_ptr<CPDF_PageObject> result = std::move(*it);
   page_object_list_.erase(it);
+  result->held_ = false;
+  object_groups_.reset();
 
   int32_t content_stream = pPageObj->GetContentStream();
   if (content_stream >= 0) {
@@ -442,5 +488,6 @@ bool CPDF_PageObjectHolder::ErasePageObjectAtIndex(size_t index) {
   // Unsafe, but the compiler will not complain, because
   // std::deque::iterator::operator++() has not been marked as unsafe yet.
   page_object_list_.erase(UNSAFE_TODO(page_object_list_.begin() + index));
+  object_groups_.reset();
   return true;
 }

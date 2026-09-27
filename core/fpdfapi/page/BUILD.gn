@@ -67,6 +67,8 @@ source_set("page") {
     "cpdf_pagemodule.h",
     "cpdf_pageobject.cpp",
     "cpdf_pageobject.h",
+    "cpdf_pageobjectgroups.cpp",
+    "cpdf_pageobjectgroups.h",
     "cpdf_pageobjectholder.cpp",
     "cpdf_pageobjectholder.h",
     "cpdf_path.cpp",

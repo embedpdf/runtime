@@ -15,6 +15,10 @@
 
 #include "build/build_config.h"
 #include "constants/page_object.h"
+#include "core/fpdfapi/page/cpdf_form.h"
+#include "core/fpdfapi/page/cpdf_formobject.h"
+#include "core/fpdfapi/page/cpdf_page.h"
+#include "core/fpdfapi/page/cpdf_pageobjectholder.h"
 #include "core/fpdfapi/parser/cpdf_dictionary.h"
 #include "core/fpdfapi/parser/cpdf_document.h"
 #include "core/fpdfapi/parser/cpdf_number.h"
@@ -228,6 +232,21 @@ TEST(fpdf, CApiTest) {
 
 class FPDFViewEmbedderTest : public EmbedderTest {
  protected:
+  // Renders `page` at 800 × 800 px into the 200 px tile at `left`, `top`,
+  // with the object groups on or off.
+  static std::string RenderObjectGroupsTile(FPDF_PAGE page,
+                                            int left,
+                                            int top,
+                                            bool groups) {
+    CPDF_PageObjectHolder::SetObjectGroupsEnabledForTesting(groups);
+    ScopedFPDFBitmap bitmap(FPDFBitmap_Create(200, 200, 1));
+    FPDFBitmap_FillRect(bitmap.get(), 0, 0, 200, 200, 0xFFFFFFFF);
+    FPDF_RenderPageBitmap(bitmap.get(), page, -left, -top, 800, 800, 0,
+                          FPDF_ANNOT);
+    CPDF_PageObjectHolder::SetObjectGroupsEnabledForTesting(true);
+    return HashBitmap(bitmap.get());
+  }
+
   void CheckReadOnlyLayerWorkflowProducesEmptyDelta(const char* file_name) {
     FileAccessForTesting base_access(file_name);
     EPDF_BASE_DOCUMENT base = EPDF_LoadBaseDocument(&base_access, nullptr);
@@ -3278,6 +3297,101 @@ TEST_F(FPDFViewEmbedderTest, RepeatedPathsRenderAsWithoutPathMemo) {
       }
     }
   }
+}
+
+TEST_F(FPDFViewEmbedderTest, ObjectGroupsRenderAsWithoutThem) {
+  ASSERT_TRUE(OpenDocument("embedpdf_object_groups.pdf"));
+  const int page_count = FPDF_GetPageCount(document());
+  ASSERT_EQ(4, page_count);
+
+  // Tiles over the grid, over the empty upper-right quarter, across both, and
+  // at the corners.
+  constexpr int kTiles[][2] = {{0, 600},   {100, 500}, {500, 100},
+                               {300, 300}, {600, 0},   {0, 0}};
+  for (int i = 0; i < page_count; ++i) {
+    ScopedPage page = LoadScopedPage(i);
+    ASSERT_TRUE(page);
+    for (const auto& tile : kTiles) {
+      EXPECT_EQ(
+          RenderObjectGroupsTile(page.get(), tile[0], tile[1], false),
+          RenderObjectGroupsTile(page.get(), tile[0], tile[1], true))
+          << "page " << i << " tile " << tile[0] << "," << tile[1];
+    }
+  }
+}
+
+TEST_F(FPDFViewEmbedderTest, ObjectGroupsFollowEdits) {
+  ASSERT_TRUE(OpenDocument("embedpdf_object_groups.pdf"));
+  ScopedPage page = LoadScopedPage(0);
+  ASSERT_TRUE(page);
+  const CPDF_Page* cpdf_page = CPDFPageFromFPDFPage(page.get());
+  // A clip holding the whole page gets groups only while they are current.
+  const CFX_FloatRect whole = cpdf_page->GetBBox();
+
+  // The tile at device 500..700, 100..300 lies in the empty upper-right
+  // quarter, which every run of the grid misses.
+  const std::string empty = RenderObjectGroupsTile(page.get(), 500, 100, true);
+  EXPECT_TRUE(cpdf_page->GetObjectGroups(whole));
+
+  // Move the first square of the grid from 4,4 into the tile.
+  FPDF_PAGEOBJECT square = FPDFPage_GetObject(page.get(), 0);
+  ASSERT_TRUE(square);
+  FPDFPageObj_Transform(square, 1, 0, 0, 1, 146, 146);
+  EXPECT_FALSE(cpdf_page->GetObjectGroups(whole));
+  const std::string moved = RenderObjectGroupsTile(page.get(), 500, 100, true);
+  EXPECT_NE(empty, moved);
+  EXPECT_EQ(RenderObjectGroupsTile(page.get(), 500, 100, false), moved);
+
+  // Add a square inside the tile, then take it out again.
+  FPDF_PAGEOBJECT added = FPDFPageObj_CreateNewRect(160, 130, 5, 5);
+  ASSERT_TRUE(added);
+  ASSERT_TRUE(FPDFPageObj_SetFillColor(added, 0, 0, 255, 255));
+  ASSERT_TRUE(FPDFPath_SetDrawMode(added, FPDF_FILLMODE_WINDING, 0));
+  FPDFPage_InsertObject(page.get(), added);
+  EXPECT_FALSE(cpdf_page->GetObjectGroups(whole));
+  const std::string inserted =
+      RenderObjectGroupsTile(page.get(), 500, 100, true);
+  EXPECT_NE(moved, inserted);
+  EXPECT_EQ(RenderObjectGroupsTile(page.get(), 500, 100, false), inserted);
+  ASSERT_TRUE(FPDFPage_RemoveObject(page.get(), added));
+  FPDFPageObj_Destroy(added);
+  EXPECT_EQ(moved, RenderObjectGroupsTile(page.get(), 500, 100, true));
+
+  // An object whose bounds are not finite.
+  FPDF_PAGEOBJECT odd = FPDFPageObj_CreateNewRect(10, 10, 5, 5);
+  ASSERT_TRUE(odd);
+  ASSERT_TRUE(FPDFPath_SetDrawMode(odd, FPDF_FILLMODE_WINDING, 0));
+  const float nan = std::numeric_limits<float>::quiet_NaN();
+  FPDFPageObj_Transform(odd, nan, 0, 0, nan, 0, 0);
+  FPDFPage_InsertObject(page.get(), odd);
+  EXPECT_EQ(RenderObjectGroupsTile(page.get(), 500, 100, false),
+            RenderObjectGroupsTile(page.get(), 500, 100, true));
+  EXPECT_EQ(RenderObjectGroupsTile(page.get(), 0, 600, false),
+            RenderObjectGroupsTile(page.get(), 0, 600, true));
+
+  // Inside a form: its frame spans the page, so the form object reaches the
+  // tile and the form's own groups decide what is drawn.
+  ScopedPage form_page = LoadScopedPage(1);
+  ASSERT_TRUE(form_page);
+  FPDF_PAGEOBJECT form = FPDFPage_GetObject(form_page.get(), 0);
+  ASSERT_EQ(FPDF_PAGEOBJ_FORM, FPDFPageObj_GetType(form));
+  const CPDF_Form* cpdf_form =
+      CPDFPageObjectFromFPDFPageObject(form)->AsForm()->form();
+  // The form's /BBox.
+  const CFX_FloatRect whole_form(0, 0, 200, 200);
+  const std::string before =
+      RenderObjectGroupsTile(form_page.get(), 500, 100, true);
+  EXPECT_TRUE(cpdf_form->GetObjectGroups(whole_form));
+
+  // Object 0 is the frame; move the first square of the grid into the tile.
+  FPDF_PAGEOBJECT inner = FPDFFormObj_GetObject(form, 1);
+  ASSERT_TRUE(inner);
+  FPDFPageObj_Transform(inner, 1, 0, 0, 1, 146, 146);
+  EXPECT_FALSE(cpdf_form->GetObjectGroups(whole_form));
+  const std::string after =
+      RenderObjectGroupsTile(form_page.get(), 500, 100, true);
+  EXPECT_NE(before, after);
+  EXPECT_EQ(RenderObjectGroupsTile(form_page.get(), 500, 100, false), after);
 }
 
 TEST_F(FPDFViewEmbedderTest, EPDFDocSetPageRotationByObjectNumber) {

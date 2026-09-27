@@ -9,6 +9,7 @@
 #include <stdint.h>
 
 #include <algorithm>
+#include <iterator>
 #include <memory>
 #include <numeric>
 #include <set>
@@ -31,6 +32,7 @@
 #include "core/fpdfapi/page/cpdf_page.h"
 #include "core/fpdfapi/page/cpdf_pageimagecache.h"
 #include "core/fpdfapi/page/cpdf_pageobject.h"
+#include "core/fpdfapi/page/cpdf_pageobjectgroups.h"
 #include "core/fpdfapi/page/cpdf_pathobject.h"
 #include "core/fpdfapi/page/cpdf_shadingobject.h"
 #include "core/fpdfapi/page/cpdf_shadingpattern.h"
@@ -216,7 +218,26 @@ void CPDF_RenderStatus::RenderObjectList(
     const CFX_Matrix& mtObj2Device) {
   CFX_FloatRect clip_rect = mtObj2Device.GetInverse().TransformRect(
       CFX_FloatRect(device_->GetClipBox()));
-  for (const auto& pCurObj : *pObjectHolder) {
+  auto misses_clip = [&clip_rect](const CFX_FloatRect& rect) {
+    return rect.left > clip_rect.right || rect.right < clip_rect.left ||
+           rect.bottom > clip_rect.top || rect.top < clip_rect.bottom;
+  };
+  // A run that may hold `stop_obj_` must not be passed over.
+  const CPDF_PageObjectGroups* groups =
+      stop_obj_ ? nullptr : pObjectHolder->GetObjectGroups(clip_rect);
+  const size_t count = pObjectHolder->GetPageObjectCount();
+  size_t index = 0;
+  const auto end = pObjectHolder->end();
+  for (auto it = pObjectHolder->begin(); it != end; ++it, ++index) {
+    if (groups && index % CPDF_PageObjectGroups::kSize == 0 &&
+        misses_clip(groups->GetBounds(index))) {
+      // No object of this run passes the test below.
+      const size_t run = std::min(CPDF_PageObjectGroups::kSize, count - index);
+      std::advance(it, run - 1);
+      index += run - 1;
+      continue;
+    }
+    const std::unique_ptr<CPDF_PageObject>& pCurObj = *it;
     if (pCurObj.get() == stop_obj_) {
       stopped_ = true;
       return;
@@ -225,10 +246,7 @@ void CPDF_RenderStatus::RenderObjectList(
       continue;
     }
 
-    if (pCurObj->GetRect().left > clip_rect.right ||
-        pCurObj->GetRect().right < clip_rect.left ||
-        pCurObj->GetRect().bottom > clip_rect.top ||
-        pCurObj->GetRect().top < clip_rect.bottom) {
+    if (misses_clip(pCurObj->GetRect())) {
       continue;
     }
     RenderSingleObject(pCurObj.get(), mtObj2Device);

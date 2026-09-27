@@ -69,8 +69,18 @@ class CPDF_PageObject {
 
   void SetOriginalRect(const CFX_FloatRect& rect) { original_rect_ = rect; }
   const CFX_FloatRect& GetOriginalRect() const { return original_rect_; }
-  void SetRect(const CFX_FloatRect& rect) { rect_ = rect; }
+  void SetRect(const CFX_FloatRect& rect) {
+    rect_ = rect;
+    if (held_) {
+      NoteHeldBoundsChanged();
+    }
+  }
   const CFX_FloatRect& GetRect() const { return rect_; }
+
+  // Counts, process-wide, the changes to GetRect() of objects that a holder
+  // lists. A holder's object groups are current while it is unchanged.
+  static uint64_t HeldBoundsGeneration();
+
   FX_RECT GetBBox() const;
   FX_RECT GetTransformedBBox(const CFX_Matrix& matrix) const;
 
@@ -143,6 +153,11 @@ class CPDF_PageObject {
   void InitializeOriginalMatrix(const CFX_Matrix& matrix);
 
  private:
+  // Only a holder lists and unlists objects.
+  friend class CPDF_PageObjectHolder;
+
+  static void NoteHeldBoundsChanged();
+
   CPDF_GraphicStates graphic_states_;
   CFX_FloatRect rect_;
   CFX_FloatRect original_rect_;
@@ -159,6 +174,8 @@ class CPDF_PageObject {
   // `original_matrix_`.
   bool matrix_dirty_ = false;
   bool is_active_ = true;
+  // Whether a holder lists this object.
+  bool held_ = false;
   int32_t content_stream_;
   // The resource name for this object.
   ByteString resource_name_;

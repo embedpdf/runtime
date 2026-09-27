@@ -30,6 +30,7 @@
 class CPDF_ContentParser;
 class CPDF_Document;
 class CPDF_PageObject;
+class CPDF_PageObjectGroups;
 class CPDF_Stream;
 class PauseIndicatorIface;
 
@@ -114,6 +115,17 @@ class CPDF_PageObjectHolder {
   iterator end() { return page_object_list_.end(); }
   const_iterator end() const { return page_object_list_.end(); }
 
+  // The bounds of runs of consecutive objects, for a render whose clip test is
+  // `clip`. Returns nullptr while the list is still being parsed, when there
+  // are too few objects for runs to pay, and when out-of-date runs would have
+  // to be computed for a clip that shows more than half of the page's box or
+  // the form's /BBox, where few runs miss it.
+  const CPDF_PageObjectGroups* GetObjectGroups(const CFX_FloatRect& clip) const;
+
+  // Turns the object groups off, so a test can render without them and
+  // compare.
+  static void SetObjectGroupsEnabledForTesting(bool enabled);
+
   const CFX_FloatRect& GetBBox() const { return bbox_; }
 
   const CPDF_Transparency& GetTransparency() const { return transparency_; }
@@ -179,6 +191,8 @@ class CPDF_PageObjectHolder {
   std::vector<CFX_FloatRect> mask_bounding_boxes_;
   std::unique_ptr<CPDF_ContentParser> parser_;
   std::deque<std::unique_ptr<CPDF_PageObject>> page_object_list_;
+  // Computed on demand; dropped whenever `page_object_list_` changes.
+  mutable std::unique_ptr<CPDF_PageObjectGroups> object_groups_;
 
   CTMMap all_ctms_;
 

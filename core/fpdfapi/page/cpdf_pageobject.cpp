@@ -6,9 +6,26 @@
 
 #include "core/fpdfapi/page/cpdf_pageobject.h"
 
+#include <atomic>
 #include <utility>
 
 #include "core/fxcrt/fx_coordinates.h"
+
+namespace {
+
+std::atomic<uint64_t> g_held_bounds_generation{0};
+
+}  // namespace
+
+// static
+uint64_t CPDF_PageObject::HeldBoundsGeneration() {
+  return g_held_bounds_generation.load(std::memory_order_relaxed);
+}
+
+// static
+void CPDF_PageObject::NoteHeldBoundsChanged() {
+  g_held_bounds_generation.fetch_add(1, std::memory_order_relaxed);
+}
 
 CPDF_PageObject::CPDF_PageObject(int32_t content_stream)
     : content_stream_(content_stream) {}
@@ -86,7 +103,7 @@ void CPDF_PageObject::SetDefaultStates() {
 
 void CPDF_PageObject::CopyData(const CPDF_PageObject* pSrc) {
   graphic_states_ = pSrc->graphic_states_;
-  rect_ = pSrc->rect_;
+  SetRect(pSrc->rect_);
   dirty_ = true;
 }
 

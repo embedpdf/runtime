@@ -6,11 +6,15 @@
 
 #include "core/fpdfapi/render/cpdf_progressiverenderer.h"
 
+#include <algorithm>
+#include <iterator>
+
 #include "build/build_config.h"
 #include "core/fpdfapi/page/cpdf_image.h"
 #include "core/fpdfapi/page/cpdf_imageobject.h"
 #include "core/fpdfapi/page/cpdf_pageimagecache.h"
 #include "core/fpdfapi/page/cpdf_pageobject.h"
+#include "core/fpdfapi/page/cpdf_pageobjectgroups.h"
 #include "core/fpdfapi/page/cpdf_pageobjectholder.h"
 #include "core/fpdfapi/render/cpdf_renderoptions.h"
 #include "core/fpdfapi/render/cpdf_renderstatus.h"
@@ -63,23 +67,37 @@ void CPDF_ProgressiveRenderer::Continue(PauseIndicatorIface* pPause) {
       clip_rect_ = current_layer_->GetMatrix().GetInverse().TransformRect(
           CFX_FloatRect(device_->GetClipBox()));
     }
+    const CPDF_PageObjectHolder* holder = current_layer_->GetObjectHolder();
     CPDF_PageObjectHolder::const_iterator iter;
-    CPDF_PageObjectHolder::const_iterator iterEnd =
-        current_layer_->GetObjectHolder()->end();
+    CPDF_PageObjectHolder::const_iterator iterEnd = holder->end();
     if (last_object_rendered_ != iterEnd) {
       iter = last_object_rendered_;
       ++iter;
     } else {
-      iter = current_layer_->GetObjectHolder()->begin();
+      iter = holder->begin();
     }
+    auto touches_clip = [this](const CFX_FloatRect& rect) {
+      return rect.left <= clip_rect_.right && rect.right >= clip_rect_.left &&
+             rect.bottom <= clip_rect_.top && rect.top >= clip_rect_.bottom;
+    };
+    const CPDF_PageObjectGroups* groups = holder->GetObjectGroups(clip_rect_);
+    const size_t count = holder->GetPageObjectCount();
+    size_t index = std::distance(holder->begin(), iter);
     int nObjsToGo = kStepLimit;
     bool is_mask = false;
     while (iter != iterEnd) {
+      if (groups && index % CPDF_PageObjectGroups::kSize == 0 &&
+          !touches_clip(groups->GetBounds(index))) {
+        // No object of this run passes the test below.
+        const size_t run = std::min(CPDF_PageObjectGroups::kSize, count - index);
+        std::advance(iter, run - 1);
+        last_object_rendered_ = iter;
+        ++iter;
+        index += run;
+        continue;
+      }
       CPDF_PageObject* pCurObj = iter->get();
-      if (pCurObj->IsActive() && pCurObj->GetRect().left <= clip_rect_.right &&
-          pCurObj->GetRect().right >= clip_rect_.left &&
-          pCurObj->GetRect().bottom <= clip_rect_.top &&
-          pCurObj->GetRect().top >= clip_rect_.bottom) {
+      if (pCurObj->IsActive() && touches_clip(pCurObj->GetRect())) {
         if (options_->GetOptions().bBreakForMasks && pCurObj->IsImage() &&
             pCurObj->AsImage()->GetImage()->IsMask()) {
 #if BUILDFLAG(IS_WIN)
@@ -116,6 +134,7 @@ void CPDF_ProgressiveRenderer::Continue(PauseIndicatorIface* pPause) {
         nObjsToGo = kStepLimit;
       }
       ++iter;
+      ++index;
       if (is_mask && iter != iterEnd) {
         return;
       }
