@@ -6,6 +6,7 @@
 
 #include "core/fxcrt/fx_number.h"
 
+#include <array>
 #include <limits>
 #include <variant>
 
@@ -14,6 +15,70 @@
 #include "core/fxcrt/fx_string.h"
 #include "core/fxcrt/numerics/safe_conversions.h"
 
+namespace {
+
+// Powers of ten that a double holds exactly.
+constexpr std::array<double, 13> kPowersOfTen = {
+    1e0, 1e1, 1e2, 1e3, 1e4, 1e5, 1e6, 1e7, 1e8, 1e9, 1e10, 1e11, 1e12};
+
+// Decodes the forms nearly every number in a content stream takes: an
+// optional sign, then digits with at most one '.' among them. Gives exactly
+// what the general code in FX_Number(ByteStringView) gives, and returns false
+// for anything else and for numbers too long to decode this way.
+bool DecodeCommonForm(ByteStringView str,
+                      std::variant<uint32_t, int32_t, float>& value) {
+  const bool negative = str.Front() == '-';
+  const bool is_signed = negative || str.Front() == '+';
+  uint64_t digits = 0;
+  size_t digit_count = 0;
+  size_t fraction_digits = 0;
+  bool point = false;
+  for (const auto ch : str.Substr(is_signed ? 1 : 0)) {
+    if (FXSYS_IsDecimalDigit(ch)) {
+      // Past 15 digits this may wrap, but such numbers are refused below.
+      digits = digits * 10 + (ch - '0');
+      ++digit_count;
+      fraction_digits += point;
+    } else if (ch == '.' && !point) {
+      point = true;
+    } else {
+      return false;
+    }
+  }
+  if (digit_count == 0 || digit_count > 15) {
+    return false;
+  }
+
+  if (!point) {
+    // Nine digits cannot overflow, so these are the general code's results:
+    // unsigned without a sign, signed with one.
+    if (digit_count > 9) {
+      return false;
+    }
+    const auto magnitude = static_cast<int32_t>(digits);
+    if (is_signed) {
+      value = negative ? -magnitude : magnitude;
+    } else {
+      value = static_cast<uint32_t>(magnitude);
+    }
+    return true;
+  }
+
+  if (fraction_digits >= kPowersOfTen.size()) {
+    return false;
+  }
+  // Both operands are exact, so the quotient is the correctly rounded double.
+  // With at most 12 fraction digits and 15 digits in all, rounding it to
+  // float cannot round twice, so this is the correctly rounded float that
+  // StringToFloat() returns. StringToFloat() drops a leading '+'.
+  const auto magnitude = static_cast<float>(static_cast<double>(digits) /
+                                            kPowersOfTen[fraction_digits]);
+  value = negative ? -magnitude : magnitude;
+  return true;
+}
+
+}  // namespace
+
 FX_Number::FX_Number() = default;
 
 FX_Number::FX_Number(int32_t value) : value_(value) {}
@@ -21,7 +86,7 @@ FX_Number::FX_Number(int32_t value) : value_(value) {}
 FX_Number::FX_Number(float value) : value_(value) {}
 
 FX_Number::FX_Number(ByteStringView strc) {
-  if (strc.IsEmpty()) {
+  if (strc.IsEmpty() || DecodeCommonForm(strc, value_)) {
     return;
   }
 
