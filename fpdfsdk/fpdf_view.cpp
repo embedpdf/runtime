@@ -735,7 +735,7 @@ namespace {
 // a leaked page handle. When `normalize` is true, the page's rotation is
 // overridden to 0 so all subsequent operations use normalized 0-degree
 // coordinates (the intrinsic rotation is surfaced separately via
-// EPDF_GetPageRotationByIndex). Returns nullptr on any failure.
+// EPDF_GetPageRotateByIndex). Returns nullptr on any failure.
 FPDF_PAGE LoadPageByValidatedIndex(FPDF_DOCUMENT document,
                                    CPDF_Document* doc,
                                    int page_index,
@@ -1756,21 +1756,26 @@ static RetainPtr<const CPDF_Dictionary> GetPageDictionaryByIndex(
     FPDF_DOCUMENT document,
     CPDF_Document* doc,
     int page_index);
-static int GetInheritedPageRotation(const CPDF_Dictionary* page_dict);
+static int GetInheritedPageRotate(const CPDF_Dictionary* page_dict);
 
-FPDF_EXPORT int FPDF_CALLCONV
-EPDF_GetPageRotationByIndex(FPDF_DOCUMENT document, int page_index) {
+FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV
+EPDF_GetPageRotateByIndex(FPDF_DOCUMENT document, int page_index, int* rotate) {
+  if (!rotate) {
+    return false;
+  }
+
   auto* pDoc = CPDFDocumentFromFPDFDocument(document);
   if (!pDoc) {
-    return -1;
+    return false;
   }
 
   RetainPtr<const CPDF_Dictionary> dict =
       GetPageDictionaryByIndex(document, pDoc, page_index);
   if (!dict) {
-    return -1;
+    return false;
   }
-  return GetInheritedPageRotation(dict.Get());
+  *rotate = GetInheritedPageRotate(dict.Get());
+  return true;
 }
 
 static RetainPtr<const CPDF_Dictionary> GetPageDictionaryByIndex(
@@ -1822,14 +1827,14 @@ static CFX_FloatRect GetInheritedRect(const CPDF_Dictionary* page_dict,
   return CFX_FloatRect();
 }
 
-static int GetInheritedPageRotation(const CPDF_Dictionary* page_dict) {
+// The page's /Rotate as written, resolved through the page tree (ISO 32000-1
+// Table 30 makes it inheritable); 0 when no node sets it.
+static int GetInheritedPageRotate(const CPDF_Dictionary* page_dict) {
   std::set<const CPDF_Dictionary*> visited;
   const CPDF_Dictionary* dict = page_dict;
   while (dict && !visited.contains(dict)) {
     if (dict->KeyExist(pdfium::page_object::kRotate)) {
-      int rotation =
-          (dict->GetIntegerFor(pdfium::page_object::kRotate) / 90) % 4;
-      return rotation < 0 ? rotation + 4 : rotation;
+      return dict->GetIntegerFor(pdfium::page_object::kRotate);
     }
     visited.insert(dict);
     dict = dict->GetDictFor(pdfium::page_object::kParent).Get();

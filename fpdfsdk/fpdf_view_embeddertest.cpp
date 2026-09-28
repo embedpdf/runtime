@@ -3969,6 +3969,40 @@ TEST_F(FPDFViewEmbedderTest, EPDFGetPageBoxByIndex) {
   EXPECT_EQ(0u, doc->GetParsedPageCountForTesting());
 }
 
+TEST_F(FPDFViewEmbedderTest, EPDFGetPageRotateByIndex) {
+  ASSERT_TRUE(OpenDocument("rectangles.pdf"));
+
+  int rotate = -1;
+  EXPECT_FALSE(EPDF_GetPageRotateByIndex(nullptr, 0, &rotate));
+  EXPECT_FALSE(EPDF_GetPageRotateByIndex(document(), 0, nullptr));
+  EXPECT_FALSE(EPDF_GetPageRotateByIndex(document(), 1, &rotate));
+
+  // No /Rotate anywhere: 0.
+  ASSERT_TRUE(EPDF_GetPageRotateByIndex(document(), 0, &rotate));
+  EXPECT_EQ(0, rotate);
+
+  // As written, even when it isn't a multiple of 90 or is negative.
+  CPDF_Document* doc = CPDFDocumentFromFPDFDocument(document());
+  RetainPtr<CPDF_Dictionary> page_dict = doc->GetMutablePageDictionary(0);
+  ASSERT_TRUE(page_dict);
+  for (int written : {135, -90, 450}) {
+    page_dict->SetNewFor<CPDF_Number>(pdfium::page_object::kRotate, written);
+    ASSERT_TRUE(EPDF_GetPageRotateByIndex(document(), 0, &rotate));
+    EXPECT_EQ(written, rotate);
+  }
+
+  // Inherited from the page tree when the page doesn't set it.
+  page_dict->RemoveFor(pdfium::page_object::kRotate);
+  RetainPtr<CPDF_Dictionary> tree =
+      page_dict->GetMutableDictFor(pdfium::page_object::kParent);
+  ASSERT_TRUE(tree);
+  tree->SetNewFor<CPDF_Number>(pdfium::page_object::kRotate, 270);
+  ASSERT_TRUE(EPDF_GetPageRotateByIndex(document(), 0, &rotate));
+  EXPECT_EQ(270, rotate);
+
+  EXPECT_EQ(0u, doc->GetParsedPageCountForTesting());
+}
+
 TEST_F(FPDFViewEmbedderTest, EPDFGetPageUserUnitByIndex) {
   ASSERT_TRUE(OpenDocument("rectangles.pdf"));
 

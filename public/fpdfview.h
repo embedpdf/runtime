@@ -1085,17 +1085,22 @@ typedef enum EPDF_PAGE_BOX_TYPE {
 } EPDF_PAGE_BOX_TYPE;
 
 // Experimental EmbedPDF API.
-// Function: EPDF_GetPageRotationByIndex
-//          Get the rotation of the page at the given index without parsing
-//          the page contents.
+// Function: EPDF_GetPageRotateByIndex
+//          Get the page's /Rotate at the given index as the file writes it,
+//          resolved through page-tree inheritance, without parsing the page
+//          contents. No normalizing: a value that isn't a multiple of 90, or
+//          is negative or past 360, comes back as written; the caller applies
+//          the rules.
 // Parameters:
 //          document    -   Handle to document. Returned by FPDF_LoadDocument().
 //          page_index  -   Page index, zero for the first page.
+//          rotate      -   Receives the /Rotate value, 0 when absent.
 // Return value:
-//          The rotation as quarter-turns (must be one of 0, 1, 2, 3).
-//          Returns -1 on error (document or page not found).
-FPDF_EXPORT int FPDF_CALLCONV
-EPDF_GetPageRotationByIndex(FPDF_DOCUMENT document, int page_index);
+//          Non-zero for success. 0 on error (document or page not found).
+FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV
+EPDF_GetPageRotateByIndex(FPDF_DOCUMENT document,
+                          int page_index,
+                          int* rotate);
 
 // Experimental EmbedPDF API.
 // Function: EPDF_GetPageBoxByIndex
@@ -1956,7 +1961,7 @@ EPDFDoc_LoadPageByObjectNumber(FPDF_DOCUMENT document, unsigned int obj_num);
 // rotation override to 0 so all subsequent operations (GetPageWidth,
 // annotations, text, rendering) use normalized coordinates as if the page had
 // no rotation. The intrinsic rotation is surfaced separately via
-// EPDF_GetPageRotationByIndex().
+// EPDF_GetPageRotateByIndex().
 //
 //   document - handle to the document.
 //   obj_num  - the indirect object number of the page dictionary.
