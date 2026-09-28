@@ -324,8 +324,8 @@ TEST_F(CPDFGenerateAPTest, GenerateEphemeralInkAPDoesNotInflateAnnotRect) {
   EXPECT_EQ(0u, generated->normal_stream->GetObjNum());
   EXPECT_EQ(last_obj_num, doc.GetLastObjNum());
   EXPECT_EQ(original_rect, annot_dict->GetRectFor(pdfium::annotation::kRect));
-  // The ephemeral BBox minimally encloses both the authored /Rect and the
-  // stroked ink: points 1..9 inflated by half the width (2).
+  // The ephemeral BBox is what the ink paints: points 1..9 inflated by half
+  // the width (2).
   EXPECT_EQ(CFX_FloatRect(-1, -1, 11, 11),
             generated->normal_stream->GetDict()->GetRectFor("BBox"));
   EXPECT_FALSE(annot_dict->KeyExist(pdfium::annotation::kAP));

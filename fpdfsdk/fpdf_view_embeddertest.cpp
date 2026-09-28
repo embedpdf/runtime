@@ -1347,23 +1347,28 @@ TEST_F(FPDFViewEmbedderTest,
 
   FS_RECTF original_rect;
   ASSERT_TRUE(FPDFAnnot_GetRect(writer.get(), &original_rect));
-  const FS_RECTF moved_rect = {
-      160.0f,
-      440.0f,
-      500.0f,
-      250.0f,
-  };
   const FS_POINTF moved_vertices[] = {
       {176.0f, 319.0f},
       {367.0f, 434.0f},
       {489.0f, 266.42f},
   };
 
-  ASSERT_TRUE(FPDFAnnot_SetRect(writer.get(), &moved_rect));
   ASSERT_TRUE(EPDFAnnot_SetVertices(writer.get(), moved_vertices,
                                     std::size(moved_vertices)));
   ASSERT_TRUE(EPDFAnnot_GenerateAppearance(writer.get()));
   ASSERT_TRUE(FPDFPage_GenerateContent(writer_page.get()));
+
+  // Drawing the appearance sets /Rect to what it paints around the moved
+  // vertices.
+  FS_RECTF moved_rect;
+  ASSERT_TRUE(FPDFAnnot_GetRect(writer.get(), &moved_rect));
+  EXPECT_NE(original_rect.left, moved_rect.left);
+  for (const FS_POINTF& vertex : moved_vertices) {
+    EXPECT_LE(moved_rect.left, vertex.x);
+    EXPECT_GE(moved_rect.right, vertex.x);
+    EXPECT_LE(moved_rect.bottom, vertex.y);
+    EXPECT_GE(moved_rect.top, vertex.y);
+  }
 
   FS_RECTF observed_rect;
   ASSERT_TRUE(FPDFAnnot_GetRect(reader.get(), &observed_rect));
@@ -1477,7 +1482,6 @@ TEST_F(FPDFViewEmbedderTest,
       250.0f,
   };
   ASSERT_TRUE(FPDFAnnot_SetRect(writer.get(), &moved_rect));
-  ASSERT_TRUE(EPDFAnnot_GenerateAppearance(writer.get()));
   ASSERT_TRUE(FPDFPage_GenerateContent(page.get()));
   writer.reset();
 

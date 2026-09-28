@@ -940,7 +940,7 @@ TEST_F(FPDFAnnotEmbedderTest, RemoveInkList) {
   EXPECT_FALSE(annot_dict->KeyExist("InkList"));
 }
 
-TEST_F(FPDFAnnotEmbedderTest, GenerateInkAppearanceIsIdempotentOnRect) {
+TEST_F(FPDFAnnotEmbedderTest, GenerateInkAppearanceSetsRectToWhatItPaints) {
   ScopedFPDFDocument doc(FPDF_CreateNewDocument());
   ASSERT_TRUE(doc);
   ScopedFPDFPage page(FPDFPage_New(doc.get(), 0, 200, 200));
@@ -959,42 +959,93 @@ TEST_F(FPDFAnnotEmbedderTest, GenerateInkAppearanceIsIdempotentOnRect) {
                                   /*vertical_radius=*/0.0f,
                                   /*border_width=*/6.0f));
 
-  // A caller-authored /Rect that already encloses the STROKED ink: the point
-  // bounds (50..120, 50..90) inflated by border_width / 2 = 3 on every side —
-  // exactly the rect EmbedPDF's writers supply.
-  const FS_RECTF authored{/*left=*/47.0f, /*top=*/93.0f, /*right=*/123.0f,
-                          /*bottom=*/47.0f};
-  ASSERT_TRUE(FPDFAnnot_SetRect(annot.get(), &authored));
-
-  // Generating the appearance must NOT disturb a rect the ink already fits in
-  // — no matter how many times it runs (the engine re-bakes after every
-  // edit). The old behavior inflated /Rect by border_width / 2 per call.
-  for (int i = 0; i < 3; ++i) {
-    ASSERT_TRUE(EPDFAnnot_GenerateAppearance(annot.get()));
-    FS_RECTF rect;
-    ASSERT_TRUE(FPDFAnnot_GetRect(annot.get(), &rect));
-    EXPECT_FLOAT_EQ(authored.left, rect.left) << "iteration " << i;
-    EXPECT_FLOAT_EQ(authored.top, rect.top) << "iteration " << i;
-    EXPECT_FLOAT_EQ(authored.right, rect.right) << "iteration " << i;
-    EXPECT_FLOAT_EQ(authored.bottom, rect.bottom) << "iteration " << i;
-  }
-
-  // A TIGHT rect (bare point bounds, no stroke padding — common in foreign
-  // documents, the case the upstream inflate was hacked in for) is corrected
-  // ONCE to the minimal rect that contains the stroked ink, then stays
-  // stable on further regenerations.
+  // Whatever /Rect was, too wide or too tight, it becomes what the strokes
+  // paint: the points 50..120 x 50..90 and half the width (round caps and
+  // joins), the same on every redraw.
+  const FS_RECTF wide{/*left=*/0.0f, /*top=*/200.0f, /*right=*/200.0f,
+                      /*bottom=*/0.0f};
   const FS_RECTF tight{/*left=*/50.0f, /*top=*/90.0f, /*right=*/120.0f,
                        /*bottom=*/50.0f};
-  ASSERT_TRUE(FPDFAnnot_SetRect(annot.get(), &tight));
-  for (int i = 0; i < 3; ++i) {
-    ASSERT_TRUE(EPDFAnnot_GenerateAppearance(annot.get()));
-    FS_RECTF rect;
-    ASSERT_TRUE(FPDFAnnot_GetRect(annot.get(), &rect));
-    EXPECT_FLOAT_EQ(47.0f, rect.left) << "iteration " << i;
-    EXPECT_FLOAT_EQ(93.0f, rect.top) << "iteration " << i;
-    EXPECT_FLOAT_EQ(123.0f, rect.right) << "iteration " << i;
-    EXPECT_FLOAT_EQ(47.0f, rect.bottom) << "iteration " << i;
+  for (const FS_RECTF& start : {wide, tight}) {
+    ASSERT_TRUE(FPDFAnnot_SetRect(annot.get(), &start));
+    for (int i = 0; i < 2; ++i) {
+      ASSERT_TRUE(EPDFAnnot_GenerateAppearance(annot.get()));
+      FS_RECTF rect;
+      ASSERT_TRUE(FPDFAnnot_GetRect(annot.get(), &rect));
+      EXPECT_FLOAT_EQ(47.0f, rect.left) << "iteration " << i;
+      EXPECT_FLOAT_EQ(93.0f, rect.top) << "iteration " << i;
+      EXPECT_FLOAT_EQ(123.0f, rect.right) << "iteration " << i;
+      EXPECT_FLOAT_EQ(47.0f, rect.bottom) << "iteration " << i;
+    }
   }
+
+  // A thinner line gives the room back.
+  ASSERT_TRUE(FPDFAnnot_SetBorder(annot.get(), 0.0f, 0.0f, 2.0f));
+  ASSERT_TRUE(EPDFAnnot_GenerateAppearance(annot.get()));
+  FS_RECTF thinner;
+  ASSERT_TRUE(FPDFAnnot_GetRect(annot.get(), &thinner));
+  EXPECT_FLOAT_EQ(49.0f, thinner.left);
+  EXPECT_FLOAT_EQ(91.0f, thinner.top);
+  EXPECT_FLOAT_EQ(121.0f, thinner.right);
+  EXPECT_FLOAT_EQ(49.0f, thinner.bottom);
+}
+
+TEST_F(FPDFAnnotEmbedderTest, LineRectHoldsItsArrowhead) {
+  ScopedFPDFDocument doc(FPDF_CreateNewDocument());
+  ASSERT_TRUE(doc);
+  ScopedFPDFPage page(FPDFPage_New(doc.get(), 0, 600, 600));
+  ASSERT_TRUE(page);
+  ScopedFPDFAnnotation annot(FPDFPage_CreateAnnot(page.get(), FPDF_ANNOT_LINE));
+  ASSERT_TRUE(annot);
+  const FS_POINTF start{100, 400};
+  const FS_POINTF end{320, 500};
+  ASSERT_TRUE(EPDFAnnot_SetLine(annot.get(), &start, &end));
+  ASSERT_TRUE(EPDFAnnot_SetLineEndings(annot.get(), FPDF_ANNOT_LE_None,
+                                       FPDF_ANNOT_LE_ClosedArrow));
+  ASSERT_TRUE(FPDFAnnot_SetBorder(annot.get(), 0.0f, 0.0f, 2.0f));
+  // A /Rect at the two points would clip the arrowhead and the line's width.
+  const FS_RECTF points{/*left=*/100, /*top=*/500, /*right=*/320,
+                        /*bottom=*/400};
+  ASSERT_TRUE(FPDFAnnot_SetRect(annot.get(), &points));
+  ASSERT_TRUE(EPDFAnnot_GenerateAppearance(annot.get()));
+
+  FS_RECTF rect;
+  ASSERT_TRUE(FPDFAnnot_GetRect(annot.get(), &rect));
+  EXPECT_LT(rect.left, 100.0f);
+  EXPECT_LT(rect.bottom, 400.0f);
+  // The arrowhead's wing and tip reach past the end point.
+  EXPECT_GT(rect.right, 320.5f);
+  EXPECT_GT(rect.top, 500.5f);
+  // No /RD on a line.
+  EXPECT_FALSE(FPDFAnnot_HasKey(annot.get(), "RD"));
+}
+
+TEST_F(FPDFAnnotEmbedderTest, CloudyPolygonRectHoldsItsBumps) {
+  ScopedFPDFDocument doc(FPDF_CreateNewDocument());
+  ASSERT_TRUE(doc);
+  ScopedFPDFPage page(FPDFPage_New(doc.get(), 0, 600, 600));
+  ASSERT_TRUE(page);
+  ScopedFPDFAnnotation annot(
+      FPDFPage_CreateAnnot(page.get(), FPDF_ANNOT_POLYGON));
+  ASSERT_TRUE(annot);
+  static constexpr FS_POINTF kVertices[] = {
+      {100, 100}, {300, 100}, {200, 250}};
+  ASSERT_TRUE(
+      EPDFAnnot_SetVertices(annot.get(), kVertices, std::size(kVertices)));
+  ASSERT_TRUE(FPDFAnnot_SetBorder(annot.get(), 0.0f, 0.0f, 2.0f));
+  ASSERT_TRUE(EPDFAnnot_SetBorderEffect(annot.get(), 1.0f));
+  const FS_RECTF points{/*left=*/100, /*top=*/250, /*right=*/300,
+                        /*bottom=*/100};
+  ASSERT_TRUE(FPDFAnnot_SetRect(annot.get(), &points));
+  ASSERT_TRUE(EPDFAnnot_GenerateAppearance(annot.get()));
+
+  // The bumps reach out past the vertices on every side.
+  FS_RECTF rect;
+  ASSERT_TRUE(FPDFAnnot_GetRect(annot.get(), &rect));
+  EXPECT_LT(rect.left, 99.0f);
+  EXPECT_LT(rect.bottom, 99.0f);
+  EXPECT_GT(rect.right, 301.0f);
+  EXPECT_GT(rect.top, 251.0f);
 }
 
 TEST_F(FPDFAnnotEmbedderTest, BadParams) {
@@ -10287,13 +10338,13 @@ TEST_F(FPDFAnnotEmbedderTest, GenerateFileAttachmentAppearance) {
   EXPECT_THAT(appearance, HasSubstr(L"S\n"));
 
   // Like the note icon, the /Rect is forced to the fixed 20x20 icon box
-  // anchored at the original bottom-left corner.
+  // anchored at the original top-left corner.
   FS_RECTF actual_rect;
   ASSERT_TRUE(FPDFAnnot_GetRect(annot.get(), &actual_rect));
   EXPECT_FLOAT_EQ(50.0f, actual_rect.left);
-  EXPECT_FLOAT_EQ(50.0f, actual_rect.bottom);
+  EXPECT_FLOAT_EQ(110.0f, actual_rect.bottom);
   EXPECT_FLOAT_EQ(70.0f, actual_rect.right);
-  EXPECT_FLOAT_EQ(70.0f, actual_rect.top);
+  EXPECT_FLOAT_EQ(130.0f, actual_rect.top);
 }
 
 TEST_F(FPDFAnnotEmbedderTest, GenerateFileAttachmentAppearancePerIcon) {

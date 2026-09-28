@@ -1579,20 +1579,20 @@ CFX_FloatRect MeasurePaintedBox(CPDF_Document* doc,
 // still be that edge, as a border drawn inside the shape is.
 constexpr float kMeasureNoise = 1e-3f;
 
-// A box kind's appearance, drawn about `footprint` in the form's space (the
-// shape's box, or where a callout's turned text box reaches) and put on the
-// page by `matrix`. The form's /BBox is the box around the shape and what the
-// drawing adds (a cloudy border's bumps, a callout's line and arrow). A
-// persistent annotation's /Rect is where `matrix` puts that box, which places
-// the appearance at scale 1, and /RD is how far /Rect reaches past the
-// upright box around the shape, in rectangle order as Acrobat writes it;
-// none when the drawing stays inside the shape.
-bool GenerateAndSetBoxAPDict(APGenerationTarget* target,
-                             const CPDF_Dictionary* annot_dict,
-                             fxcrt::ostringstream* app_stream,
-                             RetainPtr<CPDF_Dictionary> resource_dict,
-                             const CFX_Matrix& matrix,
-                             const CFX_FloatRect& footprint) {
+// An appearance drawn about `footprint` in the form's space (a box kind's
+// shape, or a line's points) and put on the page by `matrix`. The form's
+// /BBox is the box around the footprint and all the drawing paints (a
+// border's bumps, a line's width and endings, a caption). A persistent
+// annotation's /Rect is where `matrix` puts that box, which places the
+// appearance at scale 1. Returns the /BBox, or nothing when the stream isn't
+// set.
+std::optional<CFX_FloatRect> GenerateAndSetFramedAPDict(
+    APGenerationTarget* target,
+    const CPDF_Dictionary* annot_dict,
+    fxcrt::ostringstream* app_stream,
+    RetainPtr<CPDF_Dictionary> resource_dict,
+    const CFX_Matrix& matrix,
+    const CFX_FloatRect& footprint) {
   CFX_FloatRect shape = footprint;
   shape.Normalize();
   CFX_FloatRect frame = shape;
@@ -1614,18 +1614,41 @@ bool GenerateAndSetBoxAPDict(APGenerationTarget* target,
   }
   if (!GenerateAPDict(target, annot_dict, app_stream, std::move(resource_dict),
                       /*is_text_markup_annotation=*/false, matrix, frame)) {
+    return std::nullopt;
+  }
+  if (target->IsPersistent()) {
+    CFX_FloatRect rect = matrix.TransformRect(frame);
+    rect.Normalize();
+    target->persistent_annot_dict->SetRectFor(pdfium::annotation::kRect, rect);
+  }
+  return frame;
+}
+
+// A box kind's appearance (`GenerateAndSetFramedAPDict`), with /RD: how far
+// /Rect reaches past the upright box around the shape, in rectangle order as
+// Acrobat writes it; none when the drawing stays inside the shape.
+bool GenerateAndSetBoxAPDict(APGenerationTarget* target,
+                             const CPDF_Dictionary* annot_dict,
+                             fxcrt::ostringstream* app_stream,
+                             RetainPtr<CPDF_Dictionary> resource_dict,
+                             const CFX_Matrix& matrix,
+                             const CFX_FloatRect& footprint) {
+  const std::optional<CFX_FloatRect> frame =
+      GenerateAndSetFramedAPDict(target, annot_dict, app_stream,
+                                 std::move(resource_dict), matrix, footprint);
+  if (!frame.has_value()) {
     return false;
   }
   if (!target->IsPersistent()) {
     return true;
   }
-
-  CFX_FloatRect rect = matrix.TransformRect(frame);
+  CFX_FloatRect shape = footprint;
+  shape.Normalize();
+  CFX_FloatRect rect = matrix.TransformRect(frame.value());
   rect.Normalize();
   CFX_FloatRect upright = matrix.TransformRect(shape);
   upright.Normalize();
   CPDF_Dictionary* dict = target->persistent_annot_dict;
-  dict->SetRectFor(pdfium::annotation::kRect, rect);
   const float differences[] = {upright.left - rect.left,
                                upright.bottom - rect.bottom,
                                rect.right - upright.right,
@@ -1642,14 +1665,30 @@ bool GenerateAndSetBoxAPDict(APGenerationTarget* target,
   return true;
 }
 
-bool GenerateAndSetAPDictWithBBox(APGenerationTarget* target,
-                                  const CPDF_Dictionary* annot_dict,
-                                  fxcrt::ostringstream* app_stream,
-                                  RetainPtr<CPDF_Dictionary> resource_dict,
-                                  const CFX_FloatRect& bbox) {
-  return GenerateAPDict(
-      target, annot_dict, app_stream, std::move(resource_dict),
-      /*is_text_markup_annotation=*/false, CFX_Matrix(), bbox);
+// The box around `points`; empty when there are none.
+CFX_FloatRect BoundsOfPoints(pdfium::span<const CFX_PointF> points) {
+  if (points.empty()) {
+    return CFX_FloatRect();
+  }
+  CFX_FloatRect bounds(points.front().x, points.front().y, points.front().x,
+                       points.front().y);
+  for (const CFX_PointF& point : points) {
+    bounds.UpdateRect(point);
+  }
+  return bounds;
+}
+
+// A line, polyline, polygon or ink appearance: framed about its points, with
+// no /RD (a point kind has none).
+bool GenerateAndSetPointsAPDict(APGenerationTarget* target,
+                                const CPDF_Dictionary* annot_dict,
+                                fxcrt::ostringstream* app_stream,
+                                RetainPtr<CPDF_Dictionary> resource_dict,
+                                pdfium::span<const CFX_PointF> points) {
+  return GenerateAndSetFramedAPDict(target, annot_dict, app_stream,
+                                    std::move(resource_dict), CFX_Matrix(),
+                                    BoundsOfPoints(points))
+      .has_value();
 }
 
 bool GenerateAndSetAPDict(CPDF_Document* doc,
@@ -2960,39 +2999,11 @@ bool FinishShapeDimensionAP(APGenerationTarget* target,
   auto layout = pdfium::dimension::LayoutShapeCaption(
       annot, center, caption->width, caption->height);
   AppendDimensionCaption(*ap, *caption, layout);
-  // Start from the current path, never the previous /Rect: moving a caption
-  // inward must shrink the appearance frame again. Include the PDF default
-  // miter limit and, for open paths, the supported line-ending envelope.
-  CFX_FloatRect bounds(points.front().x, points.front().y, points.front().x,
-                       points.front().y);
-  for (const auto& point : points) {
-    bounds.UpdateRect(point);
-  }
-  const float stroke = std::max(0.0f, GetBorderWidth(annot));
-  float padding = 5 * stroke;
-  const auto cloudy = GetCloudyBorderInfo(annot);
-  if (closed && cloudy.is_cloudy) {
-    padding = 4 * cloudy.intensity + stroke;
-  } else if (!closed) {
-    auto endings = annot->GetArrayFor("LE");
-    if (endings && (endings->GetByteStringAt(0) != "None" ||
-                    endings->GetByteStringAt(1) != "None")) {
-      padding = 8 * stroke;
-    }
-  }
-  bounds.Inflate(padding, padding);
-  if (!caption->text_ops.IsEmpty()) {
-    layout.bounds.Inflate(1, 1);
-    bounds.Union(layout.bounds);
-  }
-  if (target->IsPersistent()) {
-    annot->SetRectFor("Rect", bounds);
-  }
   auto resources = GenerateResourcesDict(
       target->doc, GenerateExtGStateDict(*annot, blend_name),
       std::move(caption->fonts));
-  return GenerateAndSetAPDictWithBBox(target, annot, ap, std::move(resources),
-                                      bounds);
+  return GenerateAndSetPointsAPDict(target, annot, ap, std::move(resources),
+                                    points);
 }
 
 bool GenerateDimensionLineAP(APGenerationTarget* target,
@@ -3063,29 +3074,11 @@ bool GenerateDimensionLineAP(APGenerationTarget* target,
                         label.outside_arrows);
   }
   AppendDimensionCaption(ap, caption, label);
-  CFX_FloatRect bounds = line.bounds;
-  if (label.outside_arrows) {
-    const CFX_PointF start = line.start - 20 * border * line.along;
-    const CFX_PointF end = line.end + 20 * border * line.along;
-    CFX_FloatRect stubs(start.x, start.y, end.x, end.y);
-    stubs.Normalize();
-    stubs.Inflate(border / 2, border / 2);
-    bounds.Union(stubs);
-  }
-  if (!caption.text_ops.IsEmpty()) {
-    bounds.Union(label.bounds);
-  }
-  bounds.Inflate(1, 1);
-  // A regenerated distance owns its full appearance. Derive a fresh rectangle
-  // so moving a caption or leader back inward also shrinks the saved bounds.
-  if (target->IsPersistent()) {
-    annot->SetRectFor("Rect", bounds);
-  }
   auto resources = GenerateResourcesDict(
       target->doc, GenerateExtGStateDict(*annot, blend_name),
       std::move(caption.fonts));
-  return GenerateAndSetAPDictWithBBox(target, annot, &ap, std::move(resources),
-                                      bounds);
+  return GenerateAndSetPointsAPDict(target, annot, &ap, std::move(resources),
+                                    points);
 }
 
 bool GeneratePolygonAP(APGenerationTarget* target,
@@ -3153,12 +3146,15 @@ bool GeneratePolygonAP(APGenerationTarget* target,
                                   &app);
   }
 
+  std::vector<CFX_PointF> points;
+  for (size_t i = 0; i + 1 < verts->size(); i += 2) {
+    points.push_back({verts->GetFloatAt(i), verts->GetFloatAt(i + 1)});
+  }
   auto gs_dict = GenerateExtGStateDict(*annot_dict, blend_name);
   auto res_dict =
       GenerateResourcesDict(target->doc, std::move(gs_dict), nullptr);
-  GenerateAndSetAPDict(target, annot_dict, &app, std::move(res_dict),
-                       /*is_text_markup=*/false);
-  return true;
+  return GenerateAndSetPointsAPDict(target, annot_dict, &app,
+                                    std::move(res_dict), points);
 }
 
 bool GenerateLineAP(APGenerationTarget* target,
@@ -3208,9 +3204,8 @@ bool GenerateLineAP(APGenerationTarget* target,
   auto gs_dict = GenerateExtGStateDict(*annot_dict, blend_name);
   auto res_dict =
       GenerateResourcesDict(target->doc, std::move(gs_dict), nullptr);
-  GenerateAndSetAPDict(target, annot_dict, &ap, std::move(res_dict),
-                       /*is_text_markup=*/false);
-  return true;
+  return GenerateAndSetPointsAPDict(target, annot_dict, &ap,
+                                    std::move(res_dict), points);
 }
 
 bool GeneratePolyLineAP(APGenerationTarget* target,
@@ -3269,9 +3264,8 @@ bool GeneratePolyLineAP(APGenerationTarget* target,
   auto gs_dict = GenerateExtGStateDict(*annot_dict, blend_name);
   auto res_dict =
       GenerateResourcesDict(target->doc, std::move(gs_dict), nullptr);
-  GenerateAndSetAPDict(target, annot_dict, &ap, std::move(res_dict),
-                       /*is_text_markup=*/false);
-  return true;
+  return GenerateAndSetPointsAPDict(target, annot_dict, &ap,
+                                    std::move(res_dict), points);
 }
 
 bool GenerateInkAP(APGenerationTarget* target,
@@ -3301,14 +3295,7 @@ bool GenerateInkAP(APGenerationTarget* target,
 
   app_stream << GetDashPatternString(annot_dict);
 
-  // Track the stroked ink's true bounds while writing the path: the union of
-  // every /InkList point, inflated by half the border width below (the round
-  // caps/joins set above — `1 J 1 j` — extend exactly border_width / 2 past a
-  // point). This is what the appearance actually PAINTS, independent of what
-  // /Rect currently claims.
-  CFX_FloatRect ink_bounds;
-  bool has_ink_point = false;
-
+  std::vector<CFX_PointF> points;
   for (size_t i = 0; i < ink_list->size(); i++) {
     RetainPtr<const CPDF_Array> coordinates_array = ink_list->GetArrayAt(i);
     // An ink stroke needs at least one point to start.
@@ -3319,12 +3306,7 @@ bool GenerateInkAP(APGenerationTarget* target,
     const float x0 = coordinates_array->GetFloatAt(0);
     const float y0 = coordinates_array->GetFloatAt(1);
     app_stream << x0 << " " << y0 << " m ";
-    if (has_ink_point) {
-      ink_bounds.UpdateRect(CFX_PointF(x0, y0));
-    } else {
-      ink_bounds = CFX_FloatRect(x0, y0, x0, y0);
-      has_ink_point = true;
-    }
+    points.push_back({x0, y0});
 
     // Start loop at the second point (index 2) ---
     // The 'm' command already moves to the first point.
@@ -3332,43 +3314,22 @@ bool GenerateInkAP(APGenerationTarget* target,
       const float x = coordinates_array->GetFloatAt(j);
       const float y = coordinates_array->GetFloatAt(j + 1);
       app_stream << x << " " << y << " l ";
-      ink_bounds.UpdateRect(CFX_PointF(x, y));
+      points.push_back({x, y});
     }
 
     app_stream << "S\n";
   }
 
-  // ENSURE-FIT, never blind-inflate. The caller owns /Rect (EmbedPDF's
-  // writers author it as the stroked visual bounds already); grow it only
-  // when the painted ink would actually be clipped, by the minimal union —
-  // so regeneration is IDEMPOTENT. Upstream PDFium instead inflated /Rect by
-  // border_width / 2 unconditionally on every call: harmless on its one-shot
-  // "synthesize a missing /AP at load" path, but unbounded growth once the
-  // appearance is re-baked after each edit.
-  CFX_FloatRect rect = annot_dict->GetRectFor(pdfium::annotation::kRect);
-  rect.Normalize();
-  if (has_ink_point) {
-    ink_bounds.Inflate(border_width / 2, border_width / 2);
-    if (!rect.Contains(ink_bounds)) {
-      rect.Union(ink_bounds);
-      if (target->IsPersistent()) {
-        annot_dict->SetRectFor(pdfium::annotation::kRect, rect);
-      }
-    }
+  if (points.empty()) {
+    return false;
   }
-
+  // /Rect is what the strokes paint, measured on every redraw: it shrinks
+  // with a thinner line as it grows with a wider one.
   auto gs_dict = GenerateExtGStateDict(*annot_dict, blend_name);
   auto resources_dict =
       GenerateResourcesDict(target->doc, std::move(gs_dict), nullptr);
-  if (target->IsPersistent()) {
-    GenerateAndSetAPDict(target, annot_dict, &app_stream,
-                         std::move(resources_dict),
-                         false /*IsTextMarkupAnnotation*/);
-  } else {
-    GenerateAndSetAPDictWithBBox(target, annot_dict, &app_stream,
-                                 std::move(resources_dict), rect);
-  }
-  return true;
+  return GenerateAndSetPointsAPDict(target, annot_dict, &app_stream,
+                                    std::move(resources_dict), points);
 }
 
 bool GenerateTextAP(CPDF_Document* doc,
@@ -3377,10 +3338,13 @@ bool GenerateTextAP(CPDF_Document* doc,
   fxcrt::ostringstream app_stream;
   app_stream << "/" << kGSDictName << " gs ";
 
+  // A note renders at a fixed icon size, its top-left corner at /Rect's:
+  // the corner PDF keeps in place for a note that doesn't zoom.
   CFX_FloatRect rect = annot_dict->GetRectFor(pdfium::annotation::kRect);
+  rect.Normalize();
   const float note_length = 20;
-  CFX_FloatRect note_rect(rect.left, rect.bottom, rect.left + note_length,
-                          rect.bottom + note_length);
+  CFX_FloatRect note_rect(rect.left, rect.top - note_length,
+                          rect.left + note_length, rect.top);
   annot_dict->SetRectFor(pdfium::annotation::kRect, note_rect);
 
   app_stream << GenerateTextSymbolAP(note_rect, *annot_dict);
@@ -3399,11 +3363,12 @@ bool GenerateFileAttachmentAP(CPDF_Document* doc,
   app_stream << "/" << kGSDictName << " gs ";
 
   // Like the note icon, a file attachment renders at a fixed icon size
-  // anchored at the /Rect's bottom-left corner.
+  // anchored at the /Rect's top-left corner.
   CFX_FloatRect rect = annot_dict->GetRectFor(pdfium::annotation::kRect);
+  rect.Normalize();
   const float icon_length = 20;
-  CFX_FloatRect icon_rect(rect.left, rect.bottom, rect.left + icon_length,
-                          rect.bottom + icon_length);
+  CFX_FloatRect icon_rect(rect.left, rect.top - icon_length,
+                          rect.left + icon_length, rect.top);
   annot_dict->SetRectFor(pdfium::annotation::kRect, icon_rect);
 
   app_stream << GenerateFileAttachmentSymbolAP(icon_rect, *annot_dict);
