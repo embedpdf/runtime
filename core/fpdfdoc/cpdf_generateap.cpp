@@ -1247,6 +1247,23 @@ CPDF_Annot::LineEnding ReadCalloutLineEnding(
   return CPDF_Annot::LineEnding::kNone;
 }
 
+// The square the note and file icons are designed in. An icon is drawn in
+// it, then scaled onto its annotation's /Rect.
+constexpr CFX_FloatRect kIconDesign(0, 0, 20, 20);
+
+// The matrix that puts the icon's design square onto `rect`, each axis on its
+// own: a rect that isn't square stretches the icon, as it does in every PDF
+// app. WriteMatrix keeps every number in PDF's number syntax.
+ByteString IconDesignOnto(CFX_FloatRect rect) {
+  rect.Normalize();
+  fxcrt::ostringstream out;
+  WriteMatrix(out, CFX_Matrix(rect.Width() / kIconDesign.Width(), 0, 0,
+                              rect.Height() / kIconDesign.Height(), rect.left,
+                              rect.bottom))
+      << " cm\n";
+  return ByteString(out);
+}
+
 ByteString GenerateTextSymbolAP(const CFX_FloatRect& rect,
                                 const CPDF_Dictionary& annot_dict) {
   fxcrt::ostringstream app_stream;
@@ -3338,16 +3355,10 @@ bool GenerateTextAP(CPDF_Document* doc,
   fxcrt::ostringstream app_stream;
   app_stream << "/" << kGSDictName << " gs ";
 
-  // A note renders at a fixed icon size, its top-left corner at /Rect's:
-  // the corner PDF keeps in place for a note that doesn't zoom.
-  CFX_FloatRect rect = annot_dict->GetRectFor(pdfium::annotation::kRect);
-  rect.Normalize();
-  const float note_length = 20;
-  CFX_FloatRect note_rect(rect.left, rect.top - note_length,
-                          rect.left + note_length, rect.top);
-  annot_dict->SetRectFor(pdfium::annotation::kRect, note_rect);
-
-  app_stream << GenerateTextSymbolAP(note_rect, *annot_dict);
+  // The note icon fills /Rect, as every PDF app draws an appearance onto
+  // its /Rect: a bigger rect is a bigger icon.
+  app_stream << IconDesignOnto(annot_dict->GetRectFor(pdfium::annotation::kRect));
+  app_stream << GenerateTextSymbolAP(kIconDesign, *annot_dict);
 
   auto gs_dict = GenerateExtGStateDict(*annot_dict, blend_name);
   auto resources_dict = GenerateResourcesDict(doc, std::move(gs_dict), nullptr);
@@ -3362,16 +3373,9 @@ bool GenerateFileAttachmentAP(CPDF_Document* doc,
   fxcrt::ostringstream app_stream;
   app_stream << "/" << kGSDictName << " gs ";
 
-  // Like the note icon, a file attachment renders at a fixed icon size
-  // anchored at the /Rect's top-left corner.
-  CFX_FloatRect rect = annot_dict->GetRectFor(pdfium::annotation::kRect);
-  rect.Normalize();
-  const float icon_length = 20;
-  CFX_FloatRect icon_rect(rect.left, rect.top - icon_length,
-                          rect.left + icon_length, rect.top);
-  annot_dict->SetRectFor(pdfium::annotation::kRect, icon_rect);
-
-  app_stream << GenerateFileAttachmentSymbolAP(icon_rect, *annot_dict);
+  // Like the note icon, the file icon fills /Rect.
+  app_stream << IconDesignOnto(annot_dict->GetRectFor(pdfium::annotation::kRect));
+  app_stream << GenerateFileAttachmentSymbolAP(kIconDesign, *annot_dict);
 
   auto gs_dict = GenerateExtGStateDict(*annot_dict, blend_name);
   auto resources_dict = GenerateResourcesDict(doc, std::move(gs_dict), nullptr);

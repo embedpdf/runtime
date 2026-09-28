@@ -10337,14 +10337,47 @@ TEST_F(FPDFAnnotEmbedderTest, GenerateFileAttachmentAppearance) {
   std::wstring appearance = GetNormalAppearance(annot.get());
   EXPECT_THAT(appearance, HasSubstr(L"S\n"));
 
-  // Like the note icon, the /Rect is forced to the fixed 20x20 icon box
-  // anchored at the original top-left corner.
+  // The icon fills /Rect: its 20x20 design is scaled onto the 40x80 rect,
+  // which stays as it was set.
+  EXPECT_THAT(appearance, HasSubstr(L"2 0 0 4 50 50 cm\n"));
   FS_RECTF actual_rect;
   ASSERT_TRUE(FPDFAnnot_GetRect(annot.get(), &actual_rect));
   EXPECT_FLOAT_EQ(50.0f, actual_rect.left);
-  EXPECT_FLOAT_EQ(110.0f, actual_rect.bottom);
-  EXPECT_FLOAT_EQ(70.0f, actual_rect.right);
+  EXPECT_FLOAT_EQ(50.0f, actual_rect.bottom);
+  EXPECT_FLOAT_EQ(90.0f, actual_rect.right);
   EXPECT_FLOAT_EQ(130.0f, actual_rect.top);
+}
+
+TEST_F(FPDFAnnotEmbedderTest, GenerateTextAppearanceFillsItsRect) {
+  ScopedFPDFDocument doc(FPDF_CreateNewDocument());
+  ASSERT_TRUE(doc);
+  ScopedFPDFPage page(FPDFPage_New(doc.get(), 0, 400, 400));
+  ASSERT_TRUE(page);
+
+  auto note_at = [&](const FS_RECTF& rect) {
+    ScopedFPDFAnnotation annot(FPDFPage_CreateAnnot(page.get(), FPDF_ANNOT_TEXT));
+    EXPECT_TRUE(annot);
+    EXPECT_TRUE(FPDFAnnot_SetRect(annot.get(), &rect));
+    EXPECT_TRUE(EPDFAnnot_GenerateAppearance(annot.get()));
+    FS_RECTF kept;
+    EXPECT_TRUE(FPDFAnnot_GetRect(annot.get(), &kept));
+    EXPECT_FLOAT_EQ(rect.left, kept.left);
+    EXPECT_FLOAT_EQ(rect.bottom, kept.bottom);
+    EXPECT_FLOAT_EQ(rect.right, kept.right);
+    EXPECT_FLOAT_EQ(rect.top, kept.top);
+    return GetNormalAppearance(annot.get());
+  };
+
+  // The usual 20x20 note draws its design as it is; a 50x50 one draws it
+  // two and a half times as big. The icon is the same, only its size.
+  const std::wstring usual = note_at({10.0f, 30.0f, 30.0f, 10.0f});
+  const std::wstring big = note_at({50.0f, 100.0f, 100.0f, 50.0f});
+  EXPECT_THAT(usual, HasSubstr(L"1 0 0 1 10 10 cm\n"));
+  EXPECT_THAT(big, HasSubstr(L"2.5 0 0 2.5 50 50 cm\n"));
+  const auto after_matrix = [](const std::wstring& appearance) {
+    return appearance.substr(appearance.find(L" cm\n"));
+  };
+  EXPECT_EQ(after_matrix(usual), after_matrix(big));
 }
 
 TEST_F(FPDFAnnotEmbedderTest, GenerateFileAttachmentAppearancePerIcon) {
