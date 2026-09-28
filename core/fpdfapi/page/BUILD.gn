@@ -61,6 +61,8 @@ source_set("page") {
     "cpdf_meshstream.h",
     "cpdf_occontext.cpp",
     "cpdf_occontext.h",
+    "cpdf_paintedbounds.cpp",
+    "cpdf_paintedbounds.h",
     "cpdf_page.cpp",
     "cpdf_page.h",
     "cpdf_pageimagecache.cpp",

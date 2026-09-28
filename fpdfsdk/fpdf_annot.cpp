@@ -22,6 +22,7 @@
 #include "core/fpdfapi/edit/cpdf_pageorganizer.h"
 #include "core/fpdfapi/page/cpdf_annotcontext.h"
 #include "core/fpdfapi/page/cpdf_form.h"
+#include "core/fpdfapi/page/cpdf_paintedbounds.h"
 #include "core/fpdfapi/page/cpdf_formobject.h"
 #include "core/fpdfapi/page/cpdf_image.h"
 #include "core/fpdfapi/page/cpdf_imageobject.h"
@@ -43,6 +44,7 @@
 #include "core/fpdfapi/parser/cpdf_string.h"
 #include "core/fpdfapi/parser/fpdf_parser_utility.h"
 #include "core/fpdfdoc/cpdf_annot.h"
+#include "core/fpdfdoc/cpdf_annot_rotation.h"
 #include "core/fpdfdoc/cpdf_color_utils.h"
 #include "core/fpdfdoc/cpdf_formfield.h"
 #include "core/fpdfdoc/cpdf_generateap.h"
@@ -773,7 +775,7 @@ static bool FitImageIntoBox(float box_w,
 // Returns the bounding rect of the actual painted page objects inside a Form
 // XObject.  CPDF_Form::ParseContent() (called with no parent matrix) reads the
 // stream's /Matrix and folds it into the CTM during content parsing, so
-// CalcBoundingBox() already returns bounds in the post-Matrix display space.
+// GetPaintedBounds() already returns bounds in the post-Matrix display space.
 // We therefore must NOT apply the Matrix again here.
 // Falls back to the raw /BBox if the form has no parseable page objects.
 static CFX_FloatRect GetPaintedFormBounds(CPDF_Document* doc,
@@ -792,7 +794,7 @@ static CFX_FloatRect GetPaintedFormBounds(CPDF_Document* doc,
       pdfium::WrapRetain(stream));
   form->ParseContent();
 
-  CFX_FloatRect bounds = form->CalcBoundingBox();
+  CFX_FloatRect bounds = GetPaintedBounds(*form);
   bounds.Normalize();
   if (bounds.IsEmpty()) {
     bounds = stream_dict->GetRectFor("BBox");
@@ -3018,33 +3020,6 @@ EPDFAnnot_GetRectangleDifferences(FPDF_ANNOTATION annot,
 }
 
 FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV
-EPDFAnnot_SetRectangleDifferences(FPDF_ANNOTATION annot,
-                                  float left,
-                                  float bottom,
-                                  float right,
-                                  float top) {
-  FPDF_ANNOTATION_SUBTYPE subtype = FPDFAnnot_GetSubtype(annot);
-  if (subtype != FPDF_ANNOT_SQUARE && subtype != FPDF_ANNOT_CIRCLE &&
-      subtype != FPDF_ANNOT_CARET && subtype != FPDF_ANNOT_FREETEXT &&
-      subtype != FPDF_ANNOT_POLYGON) {
-    return false;
-  }
-
-  CPDF_Dictionary* pAnnotDict = GetMutableAnnotDictFromFPDFAnnotation(annot);
-  if (!pAnnotDict) {
-    return false;
-  }
-
-  RetainPtr<CPDF_Array> pRDArray = pAnnotDict->SetNewFor<CPDF_Array>("RD");
-  pRDArray->AppendNew<CPDF_Number>(left);
-  pRDArray->AppendNew<CPDF_Number>(bottom);
-  pRDArray->AppendNew<CPDF_Number>(right);
-  pRDArray->AppendNew<CPDF_Number>(top);
-
-  return true;
-}
-
-FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV
 EPDFAnnot_ClearRectangleDifferences(FPDF_ANNOTATION annot) {
   FPDF_ANNOTATION_SUBTYPE subtype = FPDFAnnot_GetSubtype(annot);
   if (subtype != FPDF_ANNOT_SQUARE && subtype != FPDF_ANNOT_CIRCLE &&
@@ -4362,15 +4337,13 @@ struct PlacementBox {
 };
 
 static PlacementBox ReadPlacementBox(const CPDF_Dictionary* annot_dict) {
-  float degrees = GetEmbedMetadataFloatFor(annot_dict, "Rotation");
-  degrees = fmod(fmod(degrees, 360.0f) + 360.0f, 360.0f);
-  const CFX_FloatRect unrotated =
-      GetEmbedMetadataRectFor(annot_dict, "UnrotatedRect");
+  const std::optional<fpdfdoc::AnnotRotation> recorded =
+      fpdfdoc::GetRecordedAnnotRotation(annot_dict);
   PlacementBox box;
-  box.rotated = degrees > 0.01f && degrees < 359.99f && !unrotated.IsEmpty();
-  box.degrees = degrees;
-  box.rect = box.rotated ? unrotated
-                         : annot_dict->GetRectFor(pdfium::annotation::kRect);
+  box.rotated = recorded.has_value();
+  box.degrees = recorded ? recorded->degrees : 0;
+  box.rect = recorded ? recorded->box
+                      : annot_dict->GetRectFor(pdfium::annotation::kRect);
   return box;
 }
 
@@ -4453,6 +4426,15 @@ static bool PlaceWrapper(CPDF_AnnotContext* ctx,
     turned.Normalize();
     rotation.Translate(-turned.left, -turned.bottom);
     ap_dict->SetMatrixFor("Matrix", rotation);
+    // /Rect is the upright box around the turned drawing, about the box's
+    // middle: it places the appearance at scale 1, where any other would
+    // stretch it.
+    const CFX_PointF center = fpdfdoc::BoxCenter(box.rect);
+    ad->SetRectFor(pdfium::annotation::kRect,
+                   CFX_FloatRect(center.x - turned.Width() / 2,
+                                 center.y - turned.Height() / 2,
+                                 center.x + turned.Width() / 2,
+                                 center.y + turned.Height() / 2));
   } else {
     ap_dict->RemoveFor("Matrix");
   }
@@ -4534,8 +4516,18 @@ static bool RefitPlacedAppearance(FPDF_ANNOTATION annot,
     return false;
   }
 
-  // Otherwise the current appearance is the drawing to wrap.
+  // Otherwise the current appearance is the drawing to wrap. Turned by our
+  // keys, it is the form another app drew it in, without the matrices that
+  // turn and place that form (a stamp Acrobat turned): our wrapper places and
+  // turns it now, as it takes over the stretch onto /Rect.
   if (content_rect.IsEmpty()) {
+    if (box.rotated) {
+      ap = ToStream(EpdfFindDrawnForm(ap.Get(), painted_opacity).form->Clone());
+      if (!ap) {
+        return false;
+      }
+      ap->GetMutableDict()->RemoveFor("Matrix");
+    }
     content_rect = GetFormDisplayBox(ap->GetDict().Get());
     if (content_rect.IsEmpty()) {
       content_rect = GetPaintedFormBounds(doc, ap.Get());
@@ -4640,6 +4632,47 @@ FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV EPDFAnnot_GetRotate(FPDF_ANNOTATION annot,
   }
 
   *rotation = dict->GetFloatFor("Rotate");
+  return true;
+}
+
+FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV
+EPDFAnnot_GetAppearanceTransform(FPDF_ANNOTATION annot,
+                                 FS_RECTF* box,
+                                 FS_MATRIX* matrix) {
+  if (!box || !matrix) {
+    return false;
+  }
+  ScopedFPDFAnnotationView view(annot);
+  if (!view) {
+    return false;
+  }
+  const CPDF_Dictionary* dict = view.Get()->GetAnnotDict();
+  RetainPtr<const CPDF_Stream> normal =
+      dict ? GetAnnotAP(dict, CPDF_Annot::AppearanceMode::kNormal) : nullptr;
+  if (!normal) {
+    return false;
+  }
+  RetainPtr<const CPDF_Dictionary> normal_dict = normal->GetDict();
+  CFX_FloatRect normal_bbox = normal_dict->GetRectFor("BBox");
+  normal_bbox.Normalize();
+  CFX_FloatRect rect = dict->GetRectFor(pdfium::annotation::kRect);
+  rect.Normalize();
+  if (normal_bbox.IsEmpty() || rect.IsEmpty()) {
+    return false;
+  }
+  // How a viewer places an appearance (ISO 32000-2 12.5.5): its BBox through
+  // its Matrix, the result stretched onto /Rect.
+  CFX_Matrix placement;
+  placement.MatchRect(
+      rect, normal_dict->GetMatrixFor("Matrix").TransformRect(normal_bbox));
+  const EpdfDrawnForm drawn =
+      EpdfFindDrawnForm(normal.Get(), /*opacity=*/std::nullopt);
+  CFX_FloatRect form_box = drawn.form->GetDict()->GetRectFor("BBox");
+  form_box.Normalize();
+  CFX_Matrix form_to_page = drawn.form_to_appearance;
+  form_to_page.Concat(placement);
+  *box = FSRectFFromCFXFloatRect(form_box);
+  *matrix = FSMatrixFromCFXMatrix(form_to_page);
   return true;
 }
 
@@ -5172,7 +5205,9 @@ EPDFAnnot_SetAppearanceFromPage(FPDF_ANNOTATION annot,
 }
 
 FPDF_EXPORT FPDF_DOCUMENT FPDF_CALLCONV
-EPDFAnnot_ExportAppearance(FPDF_ANNOTATION annot) {
+EPDFAnnot_ExportAppearance(FPDF_ANNOTATION annot,
+                           float degrees,
+                           const FS_RECTF* unrotated_box) {
   CPDF_AnnotContext* ctx = CPDFAnnotContextFromFPDFAnnotation(annot);
   IPDF_Page* annot_page = ctx ? ctx->GetPage() : nullptr;
   CPDF_Document* src_doc = annot_page ? annot_page->GetDocument() : nullptr;
@@ -5226,15 +5261,10 @@ EPDFAnnot_ExportAppearance(FPDF_ANNOTATION annot) {
   // artwork is then the same drawing at any size.
   box = GetFormDisplayBox(drawing->GetDict().Get());
 
-  // Our rotation metadata without our wrapper (another editor replaced the
-  // appearance): the data's `rotation` will be applied again on import, so
-  // it is taken out here, placed as ISO 32000-2 12.5.5 places it in /Rect and
-  // turned back in the unrotated box the data describes.
-  float rotate_deg = GetEmbedMetadataFloatFor(annot_dict, "Rotation");
-  rotate_deg = fmod(fmod(rotate_deg, 360.0f) + 360.0f, 360.0f);
-  const CFX_FloatRect unrotated =
-      GetEmbedMetadataRectFor(annot_dict, "UnrotatedRect");
-  if (rotate_deg > 0.01f && rotate_deg < 359.99f && !unrotated.IsEmpty()) {
+  // The rotation the data describes is applied again on import, so it is
+  // taken out here: the drawing placed as ISO 32000-2 12.5.5 places it in
+  // /Rect, turned back in its own box.
+  if (degrees != 0 && unrotated_box) {
     CFX_FloatRect rect = annot_dict->GetRectFor(pdfium::annotation::kRect);
     rect.Normalize();
     if (rect.IsEmpty() || box.IsEmpty()) {
@@ -5244,16 +5274,11 @@ EPDFAnnot_ExportAppearance(FPDF_ANNOTATION annot) {
     const float sy = rect.Height() / box.Height();
     placement = CFX_Matrix(sx, 0, 0, sy, rect.left - box.left * sx,
                            rect.bottom - box.bottom * sy);
-    const float theta = -rotate_deg * 3.14159265358979323846f / 180.0f;
-    const float cos_t = cosf(theta);
-    const float sin_t = sinf(theta);
-    const float cx = (unrotated.left + unrotated.right) / 2.0f;
-    const float cy = (unrotated.bottom + unrotated.top) / 2.0f;
-    placement.Concat(CFX_Matrix(cos_t, sin_t, -sin_t, cos_t,
-                                cx * (1.0f - cos_t) + cy * sin_t,
-                                cy * (1.0f - cos_t) - cx * sin_t));
-    box = unrotated;
-    box.Normalize();
+    CFX_FloatRect turned_box = CFXFloatRectFromFSRectF(*unrotated_box);
+    turned_box.Normalize();
+    placement.Concat(
+        fpdfdoc::TurnAbout(fpdfdoc::BoxCenter(turned_box), -degrees));
+    box = turned_box;
   }
   return ExportDrawingDocument(src_doc, std::move(drawing), box, placement);
 }

@@ -817,7 +817,8 @@ FPDFPageObj_SetMatrix(FPDF_PAGEOBJECT page_object, const FS_MATRIX* matrix) {
       return true;
     case CPDF_PageObject::Type::kImage:
       pPageObj->AsImage()->SetImageMatrix(cmatrix);
-      pPageObj->SetMatrixDirty(pPageObj->original_matrix() != cmatrix);
+      pPageObj->SetMatrixDirty(pPageObj->AsImage()->original_matrix() !=
+                               cmatrix);
       return true;
     case CPDF_PageObject::Type::kShading:
       return false;
@@ -960,19 +961,21 @@ FPDFPageObj_GetRotatedBounds(FPDF_PAGEOBJECT page_object,
   }
 
   CFX_Matrix matrix;
+  CFX_FloatRect bbox;
   switch (cpage_object->GetType()) {
     case CPDF_PageObject::Type::kText:
       matrix = cpage_object->AsText()->GetTextMatrix();
+      bbox = cpage_object->AsText()->GetOriginalRect();
       break;
     case CPDF_PageObject::Type::kImage:
       matrix = cpage_object->AsImage()->matrix();
+      bbox = cpage_object->AsImage()->GetOriginalRect();
       break;
     default:
       // TODO(crbug.com/42270854): Support more object types.
       return false;
   }
 
-  const CFX_FloatRect& bbox = cpage_object->GetOriginalRect();
   const CFX_PointF bottom_left = matrix.Transform({bbox.left, bbox.bottom});
   const CFX_PointF bottom_right = matrix.Transform({bbox.right, bbox.bottom});
   const CFX_PointF top_right = matrix.Transform({bbox.right, bbox.top});

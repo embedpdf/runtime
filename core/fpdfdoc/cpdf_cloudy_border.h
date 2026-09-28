@@ -17,17 +17,15 @@
 // Generates a cloudy (scalloped) border path for a rectangle annotation.
 // Writes PDF path operators (m, c, h) to |out|. The caller is responsible
 // for setting graphics state and paint operators.
-// |rect| is the annotation Rect, |rd| holds the /RD insets (0 if absent).
+// |box| is the square itself: the bumps reach out past it.
 void GenerateCloudyRectanglePath(fxcrt::ostringstream& out,
-                                 const CFX_FloatRect& rect,
-                                 const CFX_FloatRect& rd,
+                                 const CFX_FloatRect& box,
                                  float intensity,
                                  float line_width);
 
-// Same for an ellipse (Circle annotation).
+// Same for an ellipse (Circle annotation), |box| the ellipse's own box.
 void GenerateCloudyEllipsePath(fxcrt::ostringstream& out,
-                               const CFX_FloatRect& rect,
-                               const CFX_FloatRect& rd,
+                               const CFX_FloatRect& box,
                                float intensity,
                                float line_width);
 

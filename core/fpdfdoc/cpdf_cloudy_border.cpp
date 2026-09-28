@@ -591,48 +591,24 @@ void CloudyEllipseImpl(float left,
 // ── Public entry-points ──────────────────────────────────────────────────────
 
 void GenerateCloudyRectanglePath(fxcrt::ostringstream& out,
-                                 const CFX_FloatRect& rect,
-                                 const CFX_FloatRect& rd,
+                                 const CFX_FloatRect& box,
                                  float intensity,
                                  float line_width) {
-  bool has_rd =
-      rd.left != 0.0f || rd.bottom != 0.0f || rd.right != 0.0f || rd.top != 0.0f;
-
-  float inner_left, inner_bottom, inner_right, inner_top;
-  if (has_rd) {
-    inner_left = rect.left + rd.left;
-    inner_bottom = rect.bottom + rd.bottom;
-    inner_right = rect.right - rd.right;
-    inner_top = rect.top - rd.top;
-  } else {
-    float half_w = line_width / 2.0f;
-    inner_left = rect.left + half_w;
-    inner_bottom = rect.bottom + half_w;
-    inner_right = rect.right - half_w;
-    inner_top = rect.top - half_w;
-  }
-
-  std::vector<CFX_PointF> polygon = {{inner_left, inner_bottom},
-                                     {inner_right, inner_bottom},
-                                     {inner_right, inner_top},
-                                     {inner_left, inner_top},
-                                     {inner_left, inner_bottom}};
+  std::vector<CFX_PointF> polygon = {{box.left, box.bottom},
+                                     {box.right, box.bottom},
+                                     {box.right, box.top},
+                                     {box.left, box.top},
+                                     {box.left, box.bottom}};
 
   CloudyPolygonImpl(polygon, false, intensity, line_width, out);
   out << "h\n";
 }
 
 void GenerateCloudyEllipsePath(fxcrt::ostringstream& out,
-                               const CFX_FloatRect& rect,
-                               const CFX_FloatRect& rd,
+                               const CFX_FloatRect& box,
                                float intensity,
                                float line_width) {
-  float inner_left = rect.left + rd.left;
-  float inner_bottom = rect.bottom + rd.bottom;
-  float inner_right = rect.right - rd.right;
-  float inner_top = rect.top - rd.top;
-
-  CloudyEllipseImpl(inner_left, inner_bottom, inner_right, inner_top, intensity,
+  CloudyEllipseImpl(box.left, box.bottom, box.right, box.top, intensity,
                     line_width, out);
   out << "h\n";
 }

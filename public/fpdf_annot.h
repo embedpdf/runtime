@@ -1365,23 +1365,10 @@ EPDFAnnot_GetRectangleDifferences(FPDF_ANNOTATION annot,
                                   float* top);
 
 // Experimental EmbedPDF Extension API.
-// Set the rectangle differences (/RD) for a supported annotation.
-//
-//   annot            - handle to a square, circle, caret, free-text, or polygon
-//                      annotation.
-//   left, bottom,    - the native PDF /RD values for each side.
-//   right, top         PDFium core treats /RD as [left, bottom, right, top].
-//
-// Returns true on success, false on failure.
-FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV
-EPDFAnnot_SetRectangleDifferences(FPDF_ANNOTATION annot,
-                                  float left,
-                                  float bottom,
-                                  float right,
-                                  float top);
-
-// Experimental EmbedPDF Extension API.
 // Remove the rectangle differences (/RD) entry from a supported annotation.
+// Generating the appearance of a square, circle, caret or free text writes
+// /RD again when what it draws reaches past the shape (a cloudy border's
+// bumps, a callout's line): /Rect less /RD is the shape.
 //
 //   annot  - handle to a square, circle, caret, free-text, or polygon
 //            annotation.
@@ -1895,7 +1882,10 @@ FPDF_EXPORT unsigned long FPDF_CALLCONV EPDFAnnot_GetName(FPDF_ANNOTATION annot,
 // Experimental EmbedPDF Extension API.
 // Resize the normal appearance (/AP/N) of a Stamp to match the annotation's
 // /Rect using the specified fit policy. Updates the AP /BBox and the image's
-// CTM. Below full opacity (/CA < 1) the appearance is `/R0 gs /MWFOForm Do`
+// CTM. When our /EMBD_Metadata records a turn and the appearance isn't our
+// wrapper yet, the drawing wrapped is the form another app drew it in
+// (EPDFAnnot_GetAppearanceTransform), without the matrices that turn and place
+// it: our wrapper does the turn, so a stamp Acrobat turned is turned once. Below full opacity (/CA < 1) the appearance is `/R0 gs /MWFOForm Do`
 // over the resized form, the layer Acrobat writes: Acrobat replaces a layer
 // named so when its opacity changes, rather than painting over it. Our
 // wrapper is found again under a layer that paints /CA and under forms that
@@ -1957,6 +1947,28 @@ FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV EPDFAnnot_SetRotate(FPDF_ANNOTATION annot,
 // Returns true on success, false if annot is invalid or rotation is NULL.
 FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV EPDFAnnot_GetRotate(FPDF_ANNOTATION annot,
                                                         float* rotation);
+
+// Experimental EmbedPDF Extension API.
+// Where an annotation's normal appearance is drawn: the box of the form its
+// drawing is written in, and the matrix from that form to the page, as a
+// viewer places an appearance (ISO 32000-2 12.5.5: the /BBox through the
+// /Matrix, stretched onto /Rect). The form is found as a viewer reaches it:
+// through a layer that only paints an opacity and through forms that only draw
+// another form (moving it at most), so it is the one whose /Matrix turns the
+// drawing, when one does: a stamp Acrobat turned, our stamp wrapper, a turned
+// shape we generated. Nothing is decided here: a caller reads a turn, a scale
+// or a shift from the matrix.
+//
+//   annot  - handle to an annotation.
+//   box    - receives the form's /BBox.
+//   matrix - receives the matrix from the form to the page.
+//
+// Returns true on success; false when there is no normal appearance with a
+// box, or on invalid arguments.
+FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV
+EPDFAnnot_GetAppearanceTransform(FPDF_ANNOTATION annot,
+                                 FS_RECTF* box,
+                                 FS_MATRIX* matrix);
 
 // Experimental EmbedPDF Extension API.
 // Get the reply type (RT) of an annotation. This specifies how an annotation
@@ -2084,8 +2096,8 @@ EPDFAnnot_SetAppearanceFromPage(FPDF_ANNOTATION annot,
 //     /Rect with it, as ISO 32000-2 12.5.5 places any appearance. A layer
 //     that only paints the annotation's /CA (`/GS gs /Form Do`, as Acrobat
 //     writes it) is left out, one that paints another opacity is part of the
-//     drawing. With rotation metadata, the drawing is placed in /Rect, the
-//     rotation it describes is taken out, and the page is the unrotated box.
+//     drawing. With a `degrees` turn, the drawing is placed in /Rect, that
+//     turn is taken out, and the page is `unrotated_box`.
 //
 // The page is the canonical form of a drawing: its content is exactly
 // `/EPDFDRAWING Do`, the placement is folded into the form's /Matrix, and
@@ -2094,12 +2106,17 @@ EPDFAnnot_SetAppearanceFromPage(FPDF_ANNOTATION annot,
 // and EPDFDoc_ImportDrawing adopt the form as it is, so exporting what they
 // made gives the same bytes again. The source document is untouched.
 //
-//   annot - handle to an annotation with a normal appearance.
+//   annot         - handle to an annotation with a normal appearance.
+//   degrees       - the turn the annotation's data describes, counterclockwise
+//                   (the PDF convention); 0 for none.
+//   unrotated_box - the box it turns about, in page space; NULL for none.
 //
 // Returns a new document (the caller closes it with FPDF_CloseDocument()),
 // or NULL when the annotation has no normal appearance or on error.
 FPDF_EXPORT FPDF_DOCUMENT FPDF_CALLCONV
-EPDFAnnot_ExportAppearance(FPDF_ANNOTATION annot);
+EPDFAnnot_ExportAppearance(FPDF_ANNOTATION annot,
+                           float degrees,
+                           const FS_RECTF* unrotated_box);
 
 // Stamp drawings.
 //

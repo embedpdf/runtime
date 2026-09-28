@@ -8138,6 +8138,312 @@ TEST_F(FPDFAnnotEmbedderTest, RotatedCaretAppearanceCarriesTransform) {
   EXPECT_FLOAT_EQ(1.0f, upright_matrix.d);
 }
 
+namespace {
+
+// Renders `annot` turned back by `degrees` about `box` into a `width` x
+// `height` bitmap that `box`, in page space, fills.
+ScopedFPDFBitmap RenderUnturned(FPDF_PAGE page,
+                                FPDF_ANNOTATION annot,
+                                float degrees,
+                                const FS_RECTF& box,
+                                int width,
+                                int height) {
+  ScopedFPDFBitmap bitmap(FPDFBitmap_Create(width, height, /*alpha=*/1));
+  FPDFBitmap_FillRect(bitmap.get(), 0, 0, width, height, 0xFFFFFFFF);
+  // Display space runs down from the page's top edge.
+  const float page_height = FPDF_GetPageHeightF(page);
+  const float sx = width / (box.right - box.left);
+  const float sy = height / (box.top - box.bottom);
+  const FS_MATRIX to_bitmap = {sx, 0, 0, sy, -box.left * sx,
+                               -(page_height - box.top) * sy};
+  EXPECT_TRUE(EPDF_RenderAnnotBitmapUnrotated(
+      bitmap.get(), page, annot, FPDF_ANNOT_APPEARANCEMODE_NORMAL, degrees,
+      &box, &to_bitmap, 0));
+  return bitmap;
+}
+
+// The box around every pixel that isn't white: {left, top, right, bottom}.
+std::array<int, 4> InkBounds(FPDF_BITMAP bitmap) {
+  const int width = FPDFBitmap_GetWidth(bitmap);
+  const int height = FPDFBitmap_GetHeight(bitmap);
+  std::array<int, 4> bounds = {width, height, -1, -1};
+  for (int y = 0; y < height; ++y) {
+    for (int x = 0; x < width; ++x) {
+      if (GetPixelColor(bitmap, x, y) != 0xFFFFFFFFu) {
+        bounds[0] = std::min(bounds[0], x);
+        bounds[1] = std::min(bounds[1], y);
+        bounds[2] = std::max(bounds[2], x);
+        bounds[3] = std::max(bounds[3], y);
+      }
+    }
+  }
+  return bounds;
+}
+
+// The aspect of the drawing EPDFAnnot_ExportAppearance gives.
+float ExportedAspect(FPDF_ANNOTATION annot) {
+  ScopedFPDFDocument drawing(EPDFAnnot_ExportAppearance(annot, 0, nullptr));
+  FS_SIZEF size = {};
+  if (!drawing || !FPDF_GetPageSizeByIndexF(drawing.get(), 0, &size)) {
+    return 0;
+  }
+  return size.width / size.height;
+}
+
+}  // namespace
+
+TEST_F(FPDFAnnotEmbedderTest, AppearanceTransformOfAStampAcrobatTurned) {
+  // Acrobat's turned stamp: the drawing in its own box (/BBox), turned by
+  // its /Matrix and stretched evenly onto /Rect, which is the upright box
+  // around the turn.
+  ASSERT_TRUE(OpenDocument("stamp_rotated_acrobat.pdf"));
+  ScopedPage page = LoadScopedPage(0);
+  ASSERT_TRUE(page);
+  ScopedFPDFAnnotation stamp(FPDFPage_GetAnnot(page.get(), 0));
+  ASSERT_TRUE(stamp);
+  ASSERT_EQ(FPDF_ANNOT_STAMP, FPDFAnnot_GetSubtype(stamp.get()));
+
+  FS_RECTF box = {};
+  FS_MATRIX matrix = {};
+  ASSERT_TRUE(EPDFAnnot_GetAppearanceTransform(stamp.get(), &box, &matrix));
+  EXPECT_NEAR(0.0f, box.left, 1e-3f);
+  EXPECT_NEAR(906.89f, box.right, 1e-3f);
+  EXPECT_NEAR(319.96f, box.top, 1e-3f);
+  // A turn of -36 degrees times the stretch onto /Rect (0.342469).
+  EXPECT_NEAR(0.277060f, matrix.a, 1e-4f);
+  EXPECT_NEAR(-0.201297f, matrix.b, 1e-4f);
+  EXPECT_NEAR(0.201297f, matrix.c, 1e-4f);
+  EXPECT_NEAR(0.277060f, matrix.d, 1e-4f);
+  // The drawing's middle lands on /Rect's middle.
+  const CFX_PointF center =
+      CFXMatrixFromFSMatrix(matrix).Transform(CFX_PointF(906.89f / 2, 319.96f / 2));
+  EXPECT_NEAR(311.075f, center.x, 1e-2f);
+  EXPECT_NEAR(563.754f, center.y, 1e-2f);
+
+  // Turned back, the wide stamp draws wide, not as its near-square turn.
+  const FS_RECTF own_box = {155.784f, 618.542f, 466.366f, 508.966f};
+  ScopedFPDFBitmap bitmap =
+      RenderUnturned(page.get(), stamp.get(), /*degrees=*/324, own_box,
+                     /*width=*/621, /*height=*/219);
+  const std::array<int, 4> ink = InkBounds(bitmap.get());
+  ASSERT_GT(ink[2], ink[0]);
+  EXPECT_GT(ink[2] - ink[0], 2 * (ink[3] - ink[1]));
+}
+
+TEST_F(FPDFAnnotEmbedderTest, UnrotatedRenderUndoesATurnDrawnInTheStream) {
+  // A text box Acrobat added on a turned page: the frame is drawn upright in
+  // /Rect and the text turned inside it, so the appearance's /Matrix has no
+  // turn. Turned back a quarter about its 108 x 32 box, the frame lies along
+  // the box's edges: its orange border runs along the top and the left.
+  ASSERT_TRUE(OpenDocument("freetext_rotated_acrobat.pdf"));
+  ScopedPage page = LoadScopedPage(0);
+  ASSERT_TRUE(page);
+  ScopedFPDFAnnotation turned(FPDFPage_GetAnnot(page.get(), 3));
+  ASSERT_TRUE(turned);
+  ASSERT_EQ(FPDF_ANNOT_FREETEXT, FPDFAnnot_GetSubtype(turned.get()));
+  const FS_RECTF box = {233.423f, 341.423f, 341.423f, 309.413f};
+  ScopedFPDFBitmap bitmap = RenderUnturned(page.get(), turned.get(),
+                                           /*degrees=*/90, box,
+                                           /*width=*/216, /*height=*/64);
+  const auto is_orange = [](uint32_t argb) {
+    const int r = (argb >> 16) & 0xFF;
+    const int g = (argb >> 8) & 0xFF;
+    const int b = argb & 0xFF;
+    return r > 200 && g > 50 && g < 150 && b < 80;
+  };
+  EXPECT_TRUE(is_orange(GetPixelColor(bitmap.get(), 108, 1)));
+  EXPECT_TRUE(is_orange(GetPixelColor(bitmap.get(), 1, 32)));
+}
+
+TEST_F(FPDFAnnotEmbedderTest, RefitWrapsAStampAcrobatTurnedUpright) {
+  ASSERT_TRUE(OpenDocument("stamp_rotated_acrobat.pdf"));
+  ScopedPage page = LoadScopedPage(0);
+  ASSERT_TRUE(page);
+  ScopedFPDFAnnotation stamp(FPDFPage_GetAnnot(page.get(), 0));
+  ASSERT_TRUE(stamp);
+  // Unwrapped, its drawing is the turned form Acrobat drew: near-square.
+  EXPECT_LT(ExportedAspect(stamp.get()), 1.5f);
+
+  // The turn the engine read, in our keys, then a re-fit: the drawing is
+  // Acrobat's form without its turn, upright under our wrapper, which turns it.
+  const FS_RECTF own_box = {155.784f, 618.542f, 466.366f, 508.966f};
+  ASSERT_TRUE(EPDFAnnot_SetEmbedMetadataNumber(stamp.get(), "Rotation", -36));
+  ASSERT_TRUE(
+      EPDFAnnot_SetEmbedMetadataRect(stamp.get(), "UnrotatedRect", &own_box));
+  ASSERT_TRUE(
+      EPDFAnnot_UpdateAppearanceToRect(stamp.get(), EPDF_STAMP_FIT_STRETCH));
+
+  const auto expect_turned_once = [&stamp]() {
+    FS_RECTF box = {};
+    FS_MATRIX matrix = {};
+    ASSERT_TRUE(EPDFAnnot_GetAppearanceTransform(stamp.get(), &box, &matrix));
+    EXPECT_NEAR(0.809017f, matrix.a, 1e-4f);
+    EXPECT_NEAR(-0.587785f, matrix.b, 1e-4f);
+    // Its drawing is the wide stamp, upright.
+    EXPECT_NEAR(906.89f / 319.96f, ExportedAspect(stamp.get()), 0.01f);
+  };
+  expect_turned_once();
+
+  // A re-fit into a larger box turns it once more, not twice.
+  const FS_RECTF larger = {own_box.left - 20, own_box.top + 10,
+                           own_box.right + 20, own_box.bottom - 10};
+  ASSERT_TRUE(
+      EPDFAnnot_SetEmbedMetadataRect(stamp.get(), "UnrotatedRect", &larger));
+  ASSERT_TRUE(
+      EPDFAnnot_UpdateAppearanceToRect(stamp.get(), EPDF_STAMP_FIT_STRETCH));
+  expect_turned_once();
+}
+
+TEST_F(FPDFAnnotEmbedderTest, TurnedBoxRectIsTheUprightBoxAroundIt) {
+  ASSERT_TRUE(OpenDocument("hello_world.pdf"));
+  ScopedPage page = LoadScopedPage(0);
+  ASSERT_TRUE(page);
+  ScopedFPDFAnnotation square(
+      FPDFPage_CreateAnnot(page.get(), FPDF_ANNOT_SQUARE));
+  ASSERT_TRUE(square);
+  const FS_RECTF box = {/*left=*/100, /*top=*/300, /*right=*/300,
+                        /*bottom=*/100};
+  ASSERT_TRUE(EPDFAnnot_SetRect(square.get(), &box));
+  ASSERT_TRUE(
+      EPDFAnnot_SetEmbedMetadataNumber(square.get(), "Rotation", 30.0f));
+  ASSERT_TRUE(
+      EPDFAnnot_SetEmbedMetadataRect(square.get(), "UnrotatedRect", &box));
+  ASSERT_TRUE(EPDFAnnot_SetColor(square.get(), FPDFANNOT_COLORTYPE_Color, 0, 0,
+                                 255));
+  ASSERT_TRUE(EPDFAnnot_GenerateAppearance(square.get()));
+
+  // /Rect becomes the upright box around the turned square: 200 x 200 turned
+  // 30 degrees is 273.2 across, about (200, 200).
+  FS_RECTF rect = {};
+  ASSERT_TRUE(EPDFAnnot_GetRect(square.get(), &rect));
+  EXPECT_NEAR(63.397f, rect.left, 0.01f);
+  EXPECT_NEAR(336.603f, rect.top, 0.01f);
+  EXPECT_NEAR(336.603f, rect.right, 0.01f);
+  EXPECT_NEAR(63.397f, rect.bottom, 0.01f);
+  // Its border is drawn inside the square: nothing reaches past it.
+  EXPECT_FALSE(FPDFAnnot_HasKey(square.get(), "RD"));
+
+  // Another app moves it by /Rect alone: where it's drawn moves with /Rect.
+  const FS_RECTF moved = {rect.left + 50, rect.top, rect.right + 50,
+                          rect.bottom};
+  ASSERT_TRUE(EPDFAnnot_SetRect(square.get(), &moved));
+  FS_RECTF form_box = {};
+  FS_MATRIX matrix = {};
+  ASSERT_TRUE(
+      EPDFAnnot_GetAppearanceTransform(square.get(), &form_box, &matrix));
+  const CFX_PointF center =
+      CFXMatrixFromFSMatrix(matrix).Transform(CFX_PointF(200, 200));
+  EXPECT_NEAR(250.0f, center.x, 0.02f);
+  EXPECT_NEAR(200.0f, center.y, 0.02f);
+  EXPECT_NEAR(0.866025f, matrix.a, 1e-4f);
+  EXPECT_NEAR(0.5f, matrix.b, 1e-4f);
+}
+
+TEST_F(FPDFAnnotEmbedderTest, CloudyBumpsReachPastTheBoxIntoRect) {
+  ASSERT_TRUE(OpenDocument("hello_world.pdf"));
+  ScopedPage page = LoadScopedPage(0);
+  ASSERT_TRUE(page);
+  const FS_RECTF box = {/*left=*/100, /*top=*/200, /*right=*/300,
+                        /*bottom=*/100};
+  // The upright box around `box` turned 30 degrees: 200 x 100 about
+  // (200, 150).
+  const FS_RECTF turned = {/*left=*/88.397f, /*top=*/243.301f,
+                           /*right=*/311.603f, /*bottom=*/56.699f};
+  for (FPDF_ANNOTATION_SUBTYPE subtype :
+       {FPDF_ANNOT_SQUARE, FPDF_ANNOT_CIRCLE}) {
+    for (bool turn : {false, true}) {
+      SCOPED_TRACE(testing::Message()
+                   << "subtype " << subtype << (turn ? " turned" : ""));
+      ScopedFPDFAnnotation annot(FPDFPage_CreateAnnot(page.get(), subtype));
+      ASSERT_TRUE(annot);
+      ASSERT_TRUE(EPDFAnnot_SetRect(annot.get(), &box));
+      if (turn) {
+        ASSERT_TRUE(
+            EPDFAnnot_SetEmbedMetadataNumber(annot.get(), "Rotation", 30.0f));
+        ASSERT_TRUE(
+            EPDFAnnot_SetEmbedMetadataRect(annot.get(), "UnrotatedRect", &box));
+      }
+      ASSERT_TRUE(
+          EPDFAnnot_SetBorderStyle(annot.get(), FPDF_ANNOT_BS_SOLID, 2.0f));
+      ASSERT_TRUE(EPDFAnnot_SetBorderEffect(annot.get(), 1.0f));
+      ASSERT_TRUE(EPDFAnnot_GenerateAppearance(annot.get()));
+
+      // /Rect takes in the bumps, and /RD, in rectangle order, leads back to
+      // the upright box around the shape.
+      FS_RECTF rect = {};
+      ASSERT_TRUE(EPDFAnnot_GetRect(annot.get(), &rect));
+      float left = 0;
+      float bottom = 0;
+      float right = 0;
+      float top = 0;
+      ASSERT_TRUE(EPDFAnnot_GetRectangleDifferences(annot.get(), &left,
+                                                    &bottom, &right, &top));
+      EXPECT_GT(left, 1.0f);
+      EXPECT_GT(bottom, 1.0f);
+      EXPECT_GT(right, 1.0f);
+      EXPECT_GT(top, 1.0f);
+      const FS_RECTF& shape = turn ? turned : box;
+      EXPECT_NEAR(shape.left, rect.left + left, 0.01f);
+      EXPECT_NEAR(shape.bottom, rect.bottom + bottom, 0.01f);
+      EXPECT_NEAR(shape.right, rect.right - right, 0.01f);
+      EXPECT_NEAR(shape.top, rect.top - top, 0.01f);
+
+      // Drawn again, the shape and the room around it stay.
+      ASSERT_TRUE(EPDFAnnot_GenerateAppearance(annot.get()));
+      FS_RECTF again = {};
+      ASSERT_TRUE(EPDFAnnot_GetRect(annot.get(), &again));
+      EXPECT_NEAR(rect.left, again.left, 1e-3f);
+      EXPECT_NEAR(rect.bottom, again.bottom, 1e-3f);
+      EXPECT_NEAR(rect.right, again.right, 1e-3f);
+      EXPECT_NEAR(rect.top, again.top, 1e-3f);
+    }
+  }
+}
+
+TEST_F(FPDFAnnotEmbedderTest, CalloutRectHoldsItsLineAndArrow) {
+  ScopedFPDFDocument doc(FPDF_CreateNewDocument());
+  ASSERT_TRUE(doc);
+  ScopedFPDFPage page(FPDFPage_New(doc.get(), 0, 400, 400));
+  ASSERT_TRUE(page);
+  ScopedFPDFAnnotation annot(
+      FPDFPage_CreateAnnot(page.get(), FPDF_ANNOT_FREETEXT));
+  ASSERT_TRUE(annot);
+  const FS_RECTF box = {/*left=*/200, /*top=*/300, /*right=*/350,
+                        /*bottom=*/250};
+  ASSERT_TRUE(EPDFAnnot_SetRect(annot.get(), &box));
+  ScopedFPDFWideString contents = GetFPDFWideString(L"Note");
+  ASSERT_TRUE(
+      FPDFAnnot_SetStringValue(annot.get(), "Contents", contents.get()));
+  ASSERT_TRUE(EPDFAnnot_SetDefaultAppearance(annot.get(), FPDF_FONT_HELVETICA,
+                                             12.0f, 0, 0, 0));
+  ASSERT_TRUE(EPDFAnnot_SetIntent(annot.get(), "FreeTextCallout"));
+  const FS_POINTF line[] = {{50, 100}, {120, 150}, {200, 275}};
+  ASSERT_TRUE(EPDFAnnot_SetCalloutLine(annot.get(), line, 3));
+  ASSERT_TRUE(EPDFAnnot_SetLineEndings(annot.get(), FPDF_ANNOT_LE_None,
+                                       FPDF_ANNOT_LE_OpenArrow));
+  ASSERT_TRUE(EPDFAnnot_SetBorderStyle(annot.get(), FPDF_ANNOT_BS_SOLID, 2.0f));
+  ASSERT_TRUE(EPDFAnnot_GenerateAppearance(annot.get()));
+
+  // /Rect reaches past the arrow at the tip of the line, and /RD leads back
+  // to the text box.
+  FS_RECTF rect = {};
+  ASSERT_TRUE(EPDFAnnot_GetRect(annot.get(), &rect));
+  EXPECT_LT(rect.left, 50.0f);
+  EXPECT_LT(rect.bottom, 100.0f);
+  float left = 0;
+  float bottom = 0;
+  float right = 0;
+  float top = 0;
+  ASSERT_TRUE(EPDFAnnot_GetRectangleDifferences(annot.get(), &left, &bottom,
+                                                &right, &top));
+  EXPECT_NEAR(200.0f, rect.left + left, 1e-3f);
+  EXPECT_NEAR(250.0f, rect.bottom + bottom, 1e-3f);
+  EXPECT_FLOAT_EQ(0.0f, right);
+  EXPECT_FLOAT_EQ(0.0f, top);
+  EXPECT_FLOAT_EQ(350.0f, rect.right);
+  EXPECT_FLOAT_EQ(300.0f, rect.top);
+}
+
 TEST_F(FPDFAnnotEmbedderTest, EmbedSetRectPreservesRotatedAppearance) {
   ASSERT_TRUE(OpenDocument("hello_world.pdf"));
 
@@ -10751,7 +11057,7 @@ class EPDFStampResizeEmbedderTest : public EmbedderTest {
 
   // The export of `annot`, saved.
   std::string ExportedBytes(FPDF_ANNOTATION annot) {
-    ScopedFPDFDocument exported(EPDFAnnot_ExportAppearance(annot));
+    ScopedFPDFDocument exported(EPDFAnnot_ExportAppearance(annot, 0, nullptr));
     EXPECT_TRUE(exported);
     return exported ? SavedBytes(exported.get()) : std::string();
   }
@@ -10953,7 +11259,7 @@ TEST_F(EPDFStampResizeEmbedderTest,
   annot_dict()->RemoveFor("CA");
 
   {
-    ScopedFPDFDocument exported(EPDFAnnot_ExportAppearance(annot_.get()));
+    ScopedFPDFDocument exported(EPDFAnnot_ExportAppearance(annot_.get(), 0, nullptr));
     ASSERT_TRUE(exported);
     ScopedFPDFPage page(FPDF_LoadPage(exported.get(), 0));
     // Drawn as shown, in /Rect, the layer included.
@@ -11010,7 +11316,7 @@ TEST_F(EPDFStampResizeEmbedderTest, OurWrapperIsFoundUnderFormsThatOnlyDrawIt) {
 
   // A copy's drawing is ours, in its own box.
   {
-    ScopedFPDFDocument exported(EPDFAnnot_ExportAppearance(annot_.get()));
+    ScopedFPDFDocument exported(EPDFAnnot_ExportAppearance(annot_.get(), 0, nullptr));
     ASSERT_TRUE(exported);
     ScopedFPDFPage page(FPDF_LoadPage(exported.get(), 0));
     EXPECT_FLOAT_EQ(200.0f, FPDF_GetPageWidthF(page.get()));
@@ -11119,7 +11425,7 @@ TEST_F(EPDFStampResizeEmbedderTest, WrappingMovesTheDrawingsEntriesWithIt) {
   EXPECT_FALSE(wrapper_group->KeyExist("K"));
 
   // So a copy's drawing draws the same.
-  ScopedFPDFDocument exported(EPDFAnnot_ExportAppearance(annot_.get()));
+  ScopedFPDFDocument exported(EPDFAnnot_ExportAppearance(annot_.get(), 0, nullptr));
   ASSERT_TRUE(exported);
   ScopedFPDFPage page(FPDF_LoadPage(exported.get(), 0));
   auto exported_drawing = CPDFPageFromFPDFPage(page.get())
@@ -11185,7 +11491,7 @@ TEST_F(EPDFStampResizeEmbedderTest, ExportAppearanceOfOurWrapperIsTheDrawing) {
   annot_dict()->SetNewFor<CPDF_Number>("CA", 0.5f);
   ASSERT_TRUE(
       EPDFAnnot_UpdateAppearanceToRect(annot_.get(), EPDF_STAMP_FIT_CONTAIN));
-  ScopedFPDFDocument exported(EPDFAnnot_ExportAppearance(annot_.get()));
+  ScopedFPDFDocument exported(EPDFAnnot_ExportAppearance(annot_.get(), 0, nullptr));
   ASSERT_TRUE(exported);
   ASSERT_EQ(1, FPDF_GetPageCount(exported.get()));
   ScopedFPDFPage page(FPDF_LoadPage(exported.get(), 0));
@@ -11204,7 +11510,7 @@ TEST_F(EPDFStampResizeEmbedderTest, ExportAppearanceOfOurWrapperIsTheDrawing) {
 TEST_F(EPDFStampResizeEmbedderTest, ExportAppearanceLeavesAnOpacityLayerOut) {
   InstallOpacityLayer(pdf(), annot_dict().Get(), 0.3f);
   annot_dict()->SetNewFor<CPDF_Number>("CA", 0.3f);
-  ScopedFPDFDocument exported(EPDFAnnot_ExportAppearance(annot_.get()));
+  ScopedFPDFDocument exported(EPDFAnnot_ExportAppearance(annot_.get(), 0, nullptr));
   ASSERT_TRUE(exported);
   ScopedFPDFPage page(FPDF_LoadPage(exported.get(), 0));
   // Another producer's appearance: the drawing in its own box, 200 by 100,

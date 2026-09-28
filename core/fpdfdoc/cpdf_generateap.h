@@ -126,9 +126,8 @@ class CPDF_GenerateAP {
     std::optional<CPDF_AnnotFontMap::PreparedFontResources> resources;
     ByteString content;                         // the whole stream
     RetainPtr<CPDF_Dictionary> graphics_state;  // direct
-    CFX_Matrix matrix;
-    CFX_FloatRect bbox;
-    bool use_transform = false;
+    CFX_Matrix matrix;       // puts the form on the page; identity upright
+    CFX_FloatRect footprint;  // what it's drawn about, in the form's space
     ByteString da_alias;  // the /DR key the DA string should name
     float body_size = 0;  // the size laid out with (auto size resolved)
     bool degraded = false;

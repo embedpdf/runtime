@@ -1846,12 +1846,17 @@ EPDF_RenderAnnotBitmap(FPDF_BITMAP bitmap,
                        int flags);
 
 // Experimental EmbedPDF Extension API.
-// Renders the annotation's AP form content WITHOUT the AP stream's rotation
-// Matrix applied, using /EMBD_Metadata /UnrotatedRect (falling back to /Rect)
-// for the MatchRect mapping. This produces an unrotated bitmap suitable for UI
-// layers that apply CSS rotation separately.
+// Renders the annotation's appearance turned back upright: as the page shows
+// it, then turned back by `degrees` about the middle of `box`, whether the
+// turn is in the appearance's /Matrix or drawn in its stream. `matrix` maps
+// page space to the bitmap, so mapping `box` fills the bitmap with the
+// upright drawing, for UI layers that turn it themselves. With `degrees` 0
+// or no `box`, it renders as the page shows it.
 //
-// Same parameters as EPDF_RenderAnnotBitmap.
+//   bitmap, page, annot, appearanceMode, matrix, flags - as
+//            EPDF_RenderAnnotBitmap.
+//   degrees - the turn to take out, counterclockwise (the PDF convention).
+//   box     - the box it turns about, in page space, before turning.
 //
 // Returns true if the rendering was successful, false otherwise.
 FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV
@@ -1859,6 +1864,8 @@ EPDF_RenderAnnotBitmapUnrotated(FPDF_BITMAP bitmap,
                                 FPDF_PAGE page,
                                 FPDF_ANNOTATION annot,
                                 FPDF_ANNOT_APPEARANCEMODE appearanceMode,
+                                float degrees,
+                                const FS_RECTF* box,
                                 const FS_MATRIX* matrix,
                                 int flags);
 

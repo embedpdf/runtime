@@ -13,6 +13,8 @@ source_set("fpdfdoc") {
     "cpdf_action.h",
     "cpdf_annot.cpp",
     "cpdf_annot.h",
+    "cpdf_annot_rotation.cpp",
+    "cpdf_annot_rotation.h",
     # EmbedPDF: registered FreeText annotation fonts and per-layer subset
     # embedding. Keep these fork-owned files when rebasing from upstream PDFium.
     "cpdf_annotfontmap.cpp",

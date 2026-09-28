@@ -290,9 +290,8 @@ std::optional<EpdfOpacityLayer> EpdfFindOpacityLayer(const CPDF_Stream* ap,
   return FindOpacityLayer(ap, opacity);
 }
 
-std::optional<EpdfWrappedAppearance> EpdfFindWrappedAppearance(
-    const CPDF_Stream* ap,
-    std::optional<float> opacity) {
+EpdfDrawnForm EpdfFindDrawnForm(const CPDF_Stream* ap,
+                                std::optional<float> opacity) {
   RetainPtr<const CPDF_Stream> current = pdfium::WrapRetain(ap);
   // The /Matrix of the forms around `current`, innermost first.
   CFX_Matrix around;
@@ -300,23 +299,33 @@ std::optional<EpdfWrappedAppearance> EpdfFindWrappedAppearance(
     around = ap->GetDict()->GetMatrixFor("Matrix");
     current = std::move(layer->form);
   }
-  for (int depth = 0; current && depth < kMaxDepth; ++depth) {
-    if (RetainPtr<const CPDF_Stream> drawing = WrapperDrawing(current.Get())) {
-      CFX_Matrix wrapper_to_appearance =
-          current->GetDict()->GetMatrixFor("Matrix");
-      wrapper_to_appearance.Concat(around);
-      return EpdfWrappedAppearance{std::move(current), std::move(drawing),
-                                   wrapper_to_appearance};
-    }
+  for (int depth = 0; depth < kMaxDepth; ++depth) {
     RetainPtr<const CPDF_Stream> inner = PassThroughChild(current.Get());
-    if (inner) {
-      CFX_Matrix moved = current->GetDict()->GetMatrixFor("Matrix");
-      moved.Concat(around);
-      around = moved;
+    if (!inner) {
+      break;
     }
+    CFX_Matrix moved = current->GetDict()->GetMatrixFor("Matrix");
+    moved.Concat(around);
+    around = moved;
     current = std::move(inner);
   }
-  return std::nullopt;
+  CFX_Matrix form_to_appearance = current->GetDict()->GetMatrixFor("Matrix");
+  form_to_appearance.Concat(around);
+  return EpdfDrawnForm{std::move(current), form_to_appearance};
+}
+
+std::optional<EpdfWrappedAppearance> EpdfFindWrappedAppearance(
+    const CPDF_Stream* ap,
+    std::optional<float> opacity) {
+  // Our wrapper is never a form that adds nothing (it places its drawing), so
+  // it is where the walk ends, when there is one.
+  EpdfDrawnForm drawn = EpdfFindDrawnForm(ap, opacity);
+  RetainPtr<const CPDF_Stream> drawing = WrapperDrawing(drawn.form.Get());
+  if (!drawing) {
+    return std::nullopt;
+  }
+  return EpdfWrappedAppearance{std::move(drawn.form), std::move(drawing),
+                               drawn.form_to_appearance};
 }
 
 RetainPtr<CPDF_Stream> EpdfNewOpacityLayer(CPDF_Document* doc,

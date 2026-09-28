@@ -40,6 +40,20 @@ struct EpdfOpacityLayer {
 std::optional<EpdfOpacityLayer> EpdfFindOpacityLayer(const CPDF_Stream* ap,
                                                      float opacity);
 
+// The form an appearance's drawing is written in, as a viewer reaches it:
+// through a layer that paints `opacity` (a layer of any opacity without it)
+// and through forms that add nothing (a form that only draws another, moving
+// it at most), with the matrix from the form's space to the appearance's: its
+// own /Matrix and every one around it. The appearance itself when there is
+// nothing to look through. Our wrapper and a stamp Acrobat turned both end
+// here: the form whose /Matrix holds the turn.
+struct EpdfDrawnForm {
+  RetainPtr<const CPDF_Stream> form;
+  CFX_Matrix form_to_appearance;
+};
+EpdfDrawnForm EpdfFindDrawnForm(const CPDF_Stream* ap,
+                                std::optional<float> opacity);
+
 // Our wrapper in an appearance: at its top, or under what editors put around
 // it, a layer that paints `opacity` and forms that add nothing. Nothing else
 // is looked into. A layer that paints another opacity is part of the drawing:

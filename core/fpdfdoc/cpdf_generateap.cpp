@@ -24,6 +24,8 @@
 #include "core/fpdfapi/edit/cpdf_contentstream_write_utils.h"
 #include "core/fpdfapi/font/cpdf_font.h"
 #include "core/fpdfapi/page/cpdf_docpagedata.h"
+#include "core/fpdfapi/page/cpdf_form.h"
+#include "core/fpdfapi/page/cpdf_paintedbounds.h"
 #include "core/fpdfapi/parser/cpdf_array.h"
 #include "core/fpdfapi/parser/cpdf_boolean.h"
 #include "core/fpdfapi/parser/cpdf_dictionary.h"
@@ -38,6 +40,7 @@
 #include "core/fpdfdoc/cpdf_annot.h"
 #include "core/fpdfdoc/cpdf_annotfontmap.h"
 #include "core/fpdfdoc/cpdf_annotfontsubset.h"
+#include "core/fpdfdoc/cpdf_annot_rotation.h"
 #include "core/fpdfdoc/cpdf_cloudy_border.h"
 #include "core/fpdfdoc/cpdf_color_utils.h"
 #include "core/fpdfdoc/cpdf_defaultappearance.h"
@@ -578,25 +581,11 @@ AnnotationDimensionsAndColor GetAnnotationDimensionsAndColor(
 }
 
 constexpr char kEmbedMetadataKey[] = "EMBD_Metadata";
-constexpr char kEmbedMetadataRotationKey[] = "Rotation";
-constexpr char kEmbedMetadataUnrotatedRectKey[] = "UnrotatedRect";
 constexpr char kEmbedMetadataVerticalAlignmentKey[] = "VerticalAlignment";
 
 RetainPtr<const CPDF_Dictionary> GetEmbedMetadataDict(
     const CPDF_Dictionary* annot_dict) {
   return annot_dict ? annot_dict->GetDictFor(kEmbedMetadataKey) : nullptr;
-}
-
-float GetEmbedMetadataFloatFor(const CPDF_Dictionary* annot_dict,
-                               ByteStringView key) {
-  RetainPtr<const CPDF_Dictionary> metadata = GetEmbedMetadataDict(annot_dict);
-  return metadata ? metadata->GetFloatFor(key) : 0.0f;
-}
-
-CFX_FloatRect GetEmbedMetadataRectFor(const CPDF_Dictionary* annot_dict,
-                                      ByteStringView key) {
-  RetainPtr<const CPDF_Dictionary> metadata = GetEmbedMetadataDict(annot_dict);
-  return metadata ? metadata->GetRectFor(key) : CFX_FloatRect();
 }
 
 int GetEmbedMetadataIntegerFor(const CPDF_Dictionary* annot_dict,
@@ -605,64 +594,50 @@ int GetEmbedMetadataIntegerFor(const CPDF_Dictionary* annot_dict,
   return metadata ? metadata->GetIntegerFor(key) : 0;
 }
 
-// Rotation info for shape annotations (Square, Circle) using EmbedPDF's
-// /EMBD_Metadata rotation fields.
+// /RD as its four numbers, in rectangle order (left, bottom, right, top), as
+// Acrobat writes it and PDFium reads it.
+CFX_FloatRect GetRectDifferences(const CPDF_Dictionary* annot_dict) {
+  RetainPtr<const CPDF_Array> rd = annot_dict->GetArrayFor("RD");
+  if (!rd || rd->size() < 4) {
+    return CFX_FloatRect();
+  }
+  return CFX_FloatRect(rd->GetFloatAt(0), rd->GetFloatAt(1), rd->GetFloatAt(2),
+                       rd->GetFloatAt(3));
+}
+
+// Where a box kind (square, circle, free text, caret) is drawn: its shape's
+// box, and the turn that puts it on the page.
 struct ShapeRotationInfo {
-  CFX_FloatRect bbox;  // BBox for the AP stream (unrotated rect in page coords)
-  CFX_Matrix matrix;   // Transforms from local BBox space to page/AABB space
-  bool is_rotated;     // Whether rotation was applied
+  CFX_FloatRect bbox;  // The shape's own box, before any turn, in page space.
+  CFX_Matrix matrix;   // Turns the box about its middle; identity when upright.
+  bool is_rotated;     // Whether the box is turned.
 };
 
 ShapeRotationInfo GetShapeRotationInfo(const CPDF_Dictionary* annot_dict) {
   ShapeRotationInfo info;
   info.is_rotated = false;
   info.matrix = CFX_Matrix();
-  info.bbox = annot_dict->GetRectFor(pdfium::annotation::kRect);
+  // Upright, the shape is /Rect less /RD: /Rect also holds what the drawing
+  // adds around it (a cloudy border's bumps, a callout's line).
+  CFX_FloatRect rect = annot_dict->GetRectFor(pdfium::annotation::kRect);
+  rect.Normalize();
+  const CFX_FloatRect rd = GetRectDifferences(annot_dict);
+  const CFX_FloatRect shape(rect.left + rd.left, rect.bottom + rd.bottom,
+                            rect.right - rd.right, rect.top - rd.top);
+  info.bbox = shape.left <= shape.right && shape.bottom <= shape.top ? shape
+                                                                     : rect;
 
-  float rotate_deg =
-      GetEmbedMetadataFloatFor(annot_dict, kEmbedMetadataRotationKey);
-  // Normalize to [0, 360)
-  rotate_deg = fmod(fmod(rotate_deg, 360.0f) + 360.0f, 360.0f);
-  if (rotate_deg < 0.01f || rotate_deg > 359.99f) {
-    return info;  // No rotation
+  // The engine records the turn the annotation reads before it draws it.
+  const std::optional<fpdfdoc::AnnotRotation> rotation =
+      fpdfdoc::GetRecordedAnnotRotation(annot_dict);
+  if (!rotation) {
+    return info;
   }
-
-  CFX_FloatRect unrotated =
-      GetEmbedMetadataRectFor(annot_dict, kEmbedMetadataUnrotatedRectKey);
-  if (unrotated.IsEmpty()) {
-    return info;  // No unrotated rect stored -> no rotation in AP
-  }
-
   info.is_rotated = true;
-  info.bbox = unrotated;
-
-  const float theta = rotate_deg * 3.14159265358979323846f / 180.0f;
-  // Snap the trig to exact 0/±1 near quarter turns (the values `upright`
-  // authoring produces): float cos(90°) is ~-4.4e-8, which would otherwise
-  // leak near-zero noise into the emitted matrix numbers.
-  auto snap = [](float v) {
-    if (fabsf(v) < 1e-6f) {
-      return 0.0f;
-    }
-    if (fabsf(v - 1.0f) < 1e-6f) {
-      return 1.0f;
-    }
-    if (fabsf(v + 1.0f) < 1e-6f) {
-      return -1.0f;
-    }
-    return v;
-  };
-  const float cos_t = snap(cosf(theta));
-  const float sin_t = snap(sinf(theta));
-  const float cx = (unrotated.left + unrotated.right) / 2.0f;
-  const float cy = (unrotated.bottom + unrotated.top) / 2.0f;
-
-  // Matrix: rotate around center of unrotated rect
-  // M = T(cx, cy) * R(theta) * T(-cx, -cy)
-  info.matrix =
-      CFX_Matrix(cos_t, sin_t, -sin_t, cos_t, cx * (1.0f - cos_t) + cy * sin_t,
-                 cy * (1.0f - cos_t) - cx * sin_t);
-
+  info.bbox = rotation->box;
+  // Rotate about the centre of the unrotated box.
+  info.matrix = fpdfdoc::TurnAbout(fpdfdoc::BoxCenter(rotation->box),
+                                   rotation->degrees);
   return info;
 }
 
@@ -1256,15 +1231,6 @@ CloudyBorderInfo GetCloudyBorderInfo(const CPDF_Dictionary* annot_dict) {
   return info;
 }
 
-CFX_FloatRect GetRectDifferences(const CPDF_Dictionary* annot_dict) {
-  RetainPtr<const CPDF_Array> rd = annot_dict->GetArrayFor("RD");
-  if (!rd || rd->size() < 4) {
-    return CFX_FloatRect();
-  }
-  return CFX_FloatRect(rd->GetFloatAt(0), rd->GetFloatAt(1), rd->GetFloatAt(2),
-                       rd->GetFloatAt(3));
-}
-
 CPDF_Annot::LineEnding ReadCalloutLineEnding(
     const CPDF_Dictionary* annot_dict) {
   // Per spec (Table 174), FreeText /LE is a single Name.
@@ -1596,17 +1562,84 @@ bool GenerateAndSetAPDict(APGenerationTarget* target,
                         CFX_Matrix(), CFX_FloatRect());
 }
 
-// Overload that accepts explicit Matrix and BBox, used by rotation-aware
-// shape annotation generators (Square, Circle).
-bool GenerateAndSetAPDictWithTransform(APGenerationTarget* target,
-                                       const CPDF_Dictionary* annot_dict,
-                                       fxcrt::ostringstream* app_stream,
-                                       RetainPtr<CPDF_Dictionary> resource_dict,
-                                       const CFX_Matrix& matrix,
-                                       const CFX_FloatRect& bbox) {
-  return GenerateAPDict(target, annot_dict, app_stream,
-                        std::move(resource_dict),
-                        /*is_text_markup_annotation=*/false, matrix, bbox);
+// The box around what `content` paints in its own space, as a form with
+// `resources` draws it: parsed without a /Matrix and without the /BBox clip.
+CFX_FloatRect MeasurePaintedBox(CPDF_Document* doc,
+                                fxcrt::ostringstream* content,
+                                RetainPtr<CPDF_Dictionary> resources) {
+  auto stream =
+      pdfium::MakeRetain<CPDF_Stream>(pdfium::MakeRetain<CPDF_Dictionary>());
+  stream->SetDataFromStringstream(content);
+  CPDF_Form form(doc, std::move(resources), std::move(stream));
+  form.ParseContent();
+  return GetPaintedBounds(form);
+}
+
+// Points: how far a measured edge may sit past the shape it's drawn about and
+// still be that edge, as a border drawn inside the shape is.
+constexpr float kMeasureNoise = 1e-3f;
+
+// A box kind's appearance, drawn about `footprint` in the form's space (the
+// shape's box, or where a callout's turned text box reaches) and put on the
+// page by `matrix`. The form's /BBox is the box around the shape and what the
+// drawing adds (a cloudy border's bumps, a callout's line and arrow). A
+// persistent annotation's /Rect is where `matrix` puts that box, which places
+// the appearance at scale 1, and /RD is how far /Rect reaches past the
+// upright box around the shape, in rectangle order as Acrobat writes it;
+// none when the drawing stays inside the shape.
+bool GenerateAndSetBoxAPDict(APGenerationTarget* target,
+                             const CPDF_Dictionary* annot_dict,
+                             fxcrt::ostringstream* app_stream,
+                             RetainPtr<CPDF_Dictionary> resource_dict,
+                             const CFX_Matrix& matrix,
+                             const CFX_FloatRect& footprint) {
+  CFX_FloatRect shape = footprint;
+  shape.Normalize();
+  CFX_FloatRect frame = shape;
+  const CFX_FloatRect painted =
+      MeasurePaintedBox(target->doc, app_stream, resource_dict);
+  if (!painted.IsEmpty()) {
+    if (painted.left < shape.left - kMeasureNoise) {
+      frame.left = painted.left;
+    }
+    if (painted.bottom < shape.bottom - kMeasureNoise) {
+      frame.bottom = painted.bottom;
+    }
+    if (painted.right > shape.right + kMeasureNoise) {
+      frame.right = painted.right;
+    }
+    if (painted.top > shape.top + kMeasureNoise) {
+      frame.top = painted.top;
+    }
+  }
+  if (!GenerateAPDict(target, annot_dict, app_stream, std::move(resource_dict),
+                      /*is_text_markup_annotation=*/false, matrix, frame)) {
+    return false;
+  }
+  if (!target->IsPersistent()) {
+    return true;
+  }
+
+  CFX_FloatRect rect = matrix.TransformRect(frame);
+  rect.Normalize();
+  CFX_FloatRect upright = matrix.TransformRect(shape);
+  upright.Normalize();
+  CPDF_Dictionary* dict = target->persistent_annot_dict;
+  dict->SetRectFor(pdfium::annotation::kRect, rect);
+  const float differences[] = {upright.left - rect.left,
+                               upright.bottom - rect.bottom,
+                               rect.right - upright.right,
+                               rect.top - upright.top};
+  if (std::all_of(std::begin(differences), std::end(differences),
+                  [](float difference) { return difference == 0; })) {
+    dict->RemoveFor("RD");
+    return true;
+  }
+  RetainPtr<CPDF_Array> rd = dict->SetNewFor<CPDF_Array>("RD");
+  for (float difference : differences) {
+    rd->AppendNew<CPDF_Number>(difference);
+  }
+  return true;
 }
 
 bool GenerateAndSetAPDictWithBBox(APGenerationTarget* target,
@@ -1965,8 +1998,7 @@ bool GenerateCircleAP(APGenerationTarget* target,
   draw_rect.Normalize();
 
   if (cloudy_info.is_cloudy) {
-    CFX_FloatRect rd = GetRectDifferences(annot_dict);
-    GenerateCloudyEllipsePath(app_stream, draw_rect, rd, cloudy_info.intensity,
+    GenerateCloudyEllipsePath(app_stream, draw_rect, cloudy_info.intensity,
                               border_width);
   } else {
     if (is_stroke_rect) {
@@ -2001,17 +2033,9 @@ bool GenerateCircleAP(APGenerationTarget* target,
   auto gs_dict = GenerateExtGStateDict(*annot_dict, blend_name);
   auto resources_dict =
       GenerateResourcesDict(target->doc, std::move(gs_dict), nullptr);
-
-  if (rot_info.is_rotated) {
-    GenerateAndSetAPDictWithTransform(target, annot_dict, &app_stream,
-                                      std::move(resources_dict),
-                                      rot_info.matrix, rot_info.bbox);
-  } else {
-    GenerateAndSetAPDict(target, annot_dict, &app_stream,
-                         std::move(resources_dict),
-                         false /*IsTextMarkupAnnotation*/);
-  }
-  return true;
+  return GenerateAndSetBoxAPDict(target, annot_dict, &app_stream,
+                                 std::move(resources_dict), rot_info.matrix,
+                                 rot_info.bbox);
 }
 
 // ---- Rich text FreeText (Phase D)
@@ -2037,24 +2061,12 @@ CalloutEnvelope AppendCalloutEnvelope(fxcrt::ostringstream& appearance_stream,
   CFX_PointF conn =
       has_knee ? CFX_PointF(cl->GetFloatAt(4), cl->GetFloatAt(5)) : knee;
 
-  // (b) Compute text box from Rect + RD.
-  CFX_FloatRect rect = annot_dict->GetRectFor(pdfium::annotation::kRect);
-  rect.Normalize();
-  CFX_FloatRect rd = GetRectDifferences(annot_dict);
-  CFX_FloatRect text_box(rect.left + rd.left, rect.bottom + rd.bottom,
-                         rect.right - rd.right, rect.top - rd.top);
-
-  // (b') EmbedPDF upright tilt: for a callout the /EMBD_Metadata pair means
-  // the TEXT BOX only — `UnrotatedRect` is the logical text box, `Rotation`
-  // its tilt about the box centre. The /CL leader stays page-space, so the
-  // rotation is baked INLINE (a `q cm … Q` around the box + text below),
-  // never as the form /Matrix — /Rect keeps placing the whole appearance
-  // (RD then recovers the rotated box's AABB, the best axis-aligned box a
-  // viewer regenerating this AP can draw).
+  // (b) The text box: /Rect less /RD, or our keys' box when turned. For a
+  // callout the /EMBD_Metadata pair turns the TEXT BOX only, about its
+  // middle. The /CL leader stays page-space, so the rotation is baked INLINE
+  // (a `q cm … Q` around the box + text below), never as the form /Matrix.
   const ShapeRotationInfo box_rot = GetShapeRotationInfo(annot_dict);
-  if (box_rot.is_rotated) {
-    text_box = box_rot.bbox;
-  }
+  const CFX_FloatRect text_box = box_rot.bbox;
 
   // (c) Border width and colors.
   const float border_w = GetBorderWidth(annot_dict);
@@ -2582,6 +2594,10 @@ PrepareRichFreeTextAPInternal(CPDF_Document* doc,
     box = envelope.text_box;
     text_area = FreeTextPlate(box, envelope.border_w);
     inline_rotation = envelope.box_rot.is_rotated;
+    // The leader is drawn on the page as it is: the form stays upright, and
+    // the shape it's drawn about is where the turned text box reaches.
+    prepared->footprint =
+        inline_rotation ? envelope.box_rot.matrix.TransformRect(box) : box;
   } else {
     const BorderStyleInfo border_style_info =
         GetBorderStyleInfo(annot_dict->GetDictFor("BS"));
@@ -2603,9 +2619,8 @@ PrepareRichFreeTextAPInternal(CPDF_Document* doc,
     }
     box = rect;
     text_area = FreeTextPlate(box, border_style_info.width);
-    prepared->use_transform = rot_info.is_rotated;
     prepared->matrix = rot_info.matrix;
-    prepared->bbox = rot_info.bbox;
+    prepared->footprint = rot_info.bbox;
   }
   // An empty BOX is invalid input (nothing to draw at all); a valid box whose
   // border swallowed its plate still paints its envelope above — the text
@@ -2679,15 +2694,9 @@ bool PublishRichFreeTextAPToTarget(
       target->doc, std::move(prepared->graphics_state), std::move(font_dict));
   fxcrt::ostringstream stream;
   stream.write(prepared->content.c_str(), prepared->content.GetLength());
-  if (prepared->use_transform) {
-    GenerateAndSetAPDictWithTransform(target, annot_dict, &stream,
-                                      std::move(resources_dict),
-                                      prepared->matrix, prepared->bbox);
-  } else {
-    GenerateAndSetAPDict(target, annot_dict, &stream, std::move(resources_dict),
-                         /*is_text_markup_annotation=*/false);
-  }
-  return true;
+  return GenerateAndSetBoxAPDict(target, annot_dict, &stream,
+                                 std::move(resources_dict), prepared->matrix,
+                                 prepared->footprint);
 }
 
 // The generator's rich path: the annotation's own /RC (or /Contents) laid
@@ -3526,9 +3535,8 @@ bool GenerateSquareAP(APGenerationTarget* target,
   draw_rect.Normalize();
 
   if (cloudy_info.is_cloudy) {
-    CFX_FloatRect rd = GetRectDifferences(annot_dict);
-    GenerateCloudyRectanglePath(app_stream, draw_rect, rd,
-                                cloudy_info.intensity, border_width);
+    GenerateCloudyRectanglePath(app_stream, draw_rect, cloudy_info.intensity,
+                                border_width);
   } else {
     if (is_stroke_rect) {
       draw_rect.Deflate(border_width / 2, border_width / 2);
@@ -3543,17 +3551,9 @@ bool GenerateSquareAP(APGenerationTarget* target,
   auto gs_dict = GenerateExtGStateDict(*annot_dict, blend_name);
   auto resources_dict =
       GenerateResourcesDict(target->doc, std::move(gs_dict), nullptr);
-
-  if (rot_info.is_rotated) {
-    GenerateAndSetAPDictWithTransform(target, annot_dict, &app_stream,
-                                      std::move(resources_dict),
-                                      rot_info.matrix, rot_info.bbox);
-  } else {
-    GenerateAndSetAPDict(target, annot_dict, &app_stream,
-                         std::move(resources_dict),
-                         false /*IsTextMarkupAnnotation*/);
-  }
-  return true;
+  return GenerateAndSetBoxAPDict(target, annot_dict, &app_stream,
+                                 std::move(resources_dict), rot_info.matrix,
+                                 rot_info.bbox);
 }
 
 bool GenerateSquigglyAP(APGenerationTarget* target,
@@ -4779,18 +4779,10 @@ bool GenerateCaretAP(APGenerationTarget* target,
   CFX_FloatRect rect = rot_info.bbox;
   rect.Normalize();
 
-  float draw_left = rect.left;
-  float draw_bottom = rect.bottom;
-  float draw_right = rect.right;
-  float draw_top = rect.top;
-
-  RetainPtr<const CPDF_Array> rd_array = annot_dict->GetArrayFor("RD");
-  if (rd_array && rd_array->size() == 4) {
-    draw_left += rd_array->GetFloatAt(0);
-    draw_bottom += rd_array->GetFloatAt(1);
-    draw_right -= rd_array->GetFloatAt(2);
-    draw_top -= rd_array->GetFloatAt(3);
-  }
+  const float draw_left = rect.left;
+  const float draw_bottom = rect.bottom;
+  const float draw_right = rect.right;
+  const float draw_top = rect.top;
 
   float width = draw_right - draw_left;
   float height = draw_top - draw_bottom;
@@ -4813,16 +4805,9 @@ bool GenerateCaretAP(APGenerationTarget* target,
 
   auto gs_dict = GenerateExtGStateDict(*annot_dict, blend_name);
   auto resources_dict = GenerateResourcesDict(doc, std::move(gs_dict), nullptr);
-  if (rot_info.is_rotated) {
-    GenerateAndSetAPDictWithTransform(target, annot_dict, &app_stream,
-                                      std::move(resources_dict),
-                                      rot_info.matrix, rot_info.bbox);
-  } else {
-    GenerateAndSetAPDict(target, annot_dict, &app_stream,
-                         std::move(resources_dict),
-                         false /*IsTextMarkupAnnotation*/);
-  }
-  return true;
+  return GenerateAndSetBoxAPDict(target, annot_dict, &app_stream,
+                                 std::move(resources_dict), rot_info.matrix,
+                                 rot_info.bbox);
 }
 
 bool GenerateAnnotAPToTarget(APGenerationTarget* target,

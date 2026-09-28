@@ -206,13 +206,22 @@ RetainPtr<CPDF_Stream> CPDF_Annot::GetOrBuildEphemeralAP(AppearanceMode mode) {
 
   ephemeral_font_lifetime_ = std::move(generated->font_lifetime);
   ephemeral_normal_ap_ = std::move(generated->normal_stream);
-  // Dimension labels/leaders can extend /Rect. Use their generated envelope
-  // for drawing without persisting it, or the AP is squeezed into the old box.
+  // What the drawing adds can reach past /Rect: dimension labels and
+  // leaders, a box's cloudy border or callout. Draw in the generated
+  // envelope without persisting it, or the AP is squeezed into the old box.
   if (subtype_ == CPDF_Annot::Subtype::INK ||
       subtype_ == CPDF_Annot::Subtype::LINE ||
       subtype_ == CPDF_Annot::Subtype::POLYGON ||
-      subtype_ == CPDF_Annot::Subtype::POLYLINE) {
-    ephemeral_rect_ = ephemeral_normal_ap_->GetDict()->GetRectFor("BBox");
+      subtype_ == CPDF_Annot::Subtype::POLYLINE ||
+      subtype_ == CPDF_Annot::Subtype::SQUARE ||
+      subtype_ == CPDF_Annot::Subtype::CIRCLE ||
+      subtype_ == CPDF_Annot::Subtype::FREETEXT ||
+      subtype_ == CPDF_Annot::Subtype::CARET) {
+    RetainPtr<const CPDF_Dictionary> form = ephemeral_normal_ap_->GetDict();
+    CFX_FloatRect envelope =
+        form->GetMatrixFor("Matrix").TransformRect(form->GetRectFor("BBox"));
+    envelope.Normalize();
+    ephemeral_rect_ = envelope;
   }
   has_generated_ap_ = true;
   return ephemeral_normal_ap_;
