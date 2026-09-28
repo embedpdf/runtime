@@ -19,6 +19,7 @@
 #include "core/fpdfapi/page/cpdf_formobject.h"
 #include "core/fpdfapi/page/cpdf_page.h"
 #include "core/fpdfapi/page/cpdf_pageobjectholder.h"
+#include "core/fpdfapi/parser/cpdf_array.h"
 #include "core/fpdfapi/parser/cpdf_dictionary.h"
 #include "core/fpdfapi/parser/cpdf_document.h"
 #include "core/fpdfapi/parser/cpdf_number.h"
@@ -3901,10 +3902,9 @@ TEST_F(FPDFViewEmbedderTest, EPDFGetPageBoxByIndex) {
   ASSERT_TRUE(EPDF_GetPageBoxByIndex(document(), 0, EPDF_PAGE_BOX_MEDIA, &box));
   expect_rect(box, 0.0f, 300.0f, 200.0f, 0.0f);
 
-  ASSERT_TRUE(EPDF_GetPageBoxByIndex(document(), 0, EPDF_PAGE_BOX_CROP, &box));
-  expect_rect(box, 0.0f, 300.0f, 200.0f, 0.0f);
-
+  // No crop box and no bleed box: absent, with no default in their place.
   box = {-1.0f, -1.0f, -1.0f, -1.0f};
+  EXPECT_FALSE(EPDF_GetPageBoxByIndex(document(), 0, EPDF_PAGE_BOX_CROP, &box));
   EXPECT_FALSE(
       EPDF_GetPageBoxByIndex(document(), 0, EPDF_PAGE_BOX_BLEED, &box));
   expect_rect(box, -1.0f, -1.0f, -1.0f, -1.0f);
@@ -3929,6 +3929,42 @@ TEST_F(FPDFViewEmbedderTest, EPDFGetPageBoxByIndex) {
   expect_rect(box, 30.0f, 100.0f, 90.0f, 40.0f);
   ASSERT_TRUE(EPDF_GetPageBoxByIndex(document(), 0, EPDF_PAGE_BOX_ART, &box));
   expect_rect(box, 40.0f, 90.0f, 80.0f, 50.0f);
+
+  // Corners given the other way round come back in order.
+  page_dict->SetRectFor(pdfium::page_object::kCropBox,
+                        CFX_FloatRect(110.0f, 120.0f, 10.0f, 20.0f));
+  ASSERT_TRUE(EPDF_GetPageBoxByIndex(document(), 0, EPDF_PAGE_BOX_CROP, &box));
+  expect_rect(box, 10.0f, 120.0f, 110.0f, 20.0f);
+
+  // An empty box, or one that isn't four numbers, reads as absent.
+  page_dict->SetRectFor(pdfium::page_object::kCropBox, CFX_FloatRect());
+  EXPECT_FALSE(EPDF_GetPageBoxByIndex(document(), 0, EPDF_PAGE_BOX_CROP, &box));
+  auto three = page_dict->SetNewFor<CPDF_Array>(pdfium::page_object::kCropBox);
+  three->AppendNew<CPDF_Number>(10);
+  three->AppendNew<CPDF_Number>(20);
+  three->AppendNew<CPDF_Number>(110);
+  EXPECT_FALSE(EPDF_GetPageBoxByIndex(document(), 0, EPDF_PAGE_BOX_CROP, &box));
+
+  // Media and crop boxes are inherited from the page tree; bleed, trim and
+  // art boxes are not (ISO 32000-1 Table 30).
+  RetainPtr<CPDF_Dictionary> tree =
+      page_dict->GetMutableDictFor(pdfium::page_object::kParent);
+  ASSERT_TRUE(tree);
+  tree->SetRectFor(pdfium::page_object::kMediaBox,
+                   CFX_FloatRect(0.0f, 0.0f, 500.0f, 700.0f));
+  tree->SetRectFor(pdfium::page_object::kCropBox,
+                   CFX_FloatRect(20.0f, 30.0f, 480.0f, 680.0f));
+  tree->SetRectFor(pdfium::page_object::kBleedBox,
+                   CFX_FloatRect(0.0f, 0.0f, 500.0f, 700.0f));
+  page_dict->RemoveFor(pdfium::page_object::kMediaBox);
+  page_dict->RemoveFor(pdfium::page_object::kCropBox);
+  page_dict->RemoveFor(pdfium::page_object::kBleedBox);
+  ASSERT_TRUE(EPDF_GetPageBoxByIndex(document(), 0, EPDF_PAGE_BOX_MEDIA, &box));
+  expect_rect(box, 0.0f, 700.0f, 500.0f, 0.0f);
+  ASSERT_TRUE(EPDF_GetPageBoxByIndex(document(), 0, EPDF_PAGE_BOX_CROP, &box));
+  expect_rect(box, 20.0f, 680.0f, 480.0f, 30.0f);
+  EXPECT_FALSE(
+      EPDF_GetPageBoxByIndex(document(), 0, EPDF_PAGE_BOX_BLEED, &box));
 
   EXPECT_EQ(0u, doc->GetParsedPageCountForTesting());
 }

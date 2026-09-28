@@ -1098,22 +1098,6 @@ FPDF_EXPORT int FPDF_CALLCONV
 EPDF_GetPageRotationByIndex(FPDF_DOCUMENT document, int page_index);
 
 // Experimental EmbedPDF API.
-// Function: EPDF_GetPageSizeByIndexNormalized
-//          Get the ORIGINAL (non-rotated) size of the page at the given index.
-//          Unlike FPDF_GetPageSizeByIndexF, this does NOT swap width/height
-//          for 90/270 degree rotated pages. Does NOT load the page (lightweight).
-// Parameters:
-//          document    -   Handle to document. Returned by FPDF_LoadDocument().
-//          page_index  -   Page index, zero for the first page.
-//          size        -   Pointer to a FS_SIZEF to receive the page size (in points).
-// Return value:
-//          Non-zero for success. 0 for error.
-FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV
-EPDF_GetPageSizeByIndexNormalized(FPDF_DOCUMENT document,
-                                   int page_index,
-                                   FS_SIZEF* size);
-
-// Experimental EmbedPDF API.
 // Function: EPDF_GetPageBoxByIndex
 //          Get a page box at the given index without loading or parsing the page.
 // Parameters:
@@ -1122,11 +1106,14 @@ EPDF_GetPageSizeByIndexNormalized(FPDF_DOCUMENT document,
 //          box_type    -   The page box to query.
 //          box         -   Pointer to a FS_RECTF to receive the box (in points).
 // Return value:
-//          Non-zero for success. 0 for error or absent optional box.
+//          Non-zero for success. 0 for error, or when the box is absent, empty
+//          or not four numbers.
 // Comments:
-//          MediaBox is resolved through page-tree inheritance and falls back to
-//          PDFium's default page size when absent. CropBox falls back to
-//          MediaBox. BleedBox, TrimBox, and ArtBox return false when absent.
+//          The box as the file writes it, with its corners put in order.
+//          MediaBox and CropBox are resolved through page-tree inheritance;
+//          BleedBox, TrimBox and ArtBox are the page's own (ISO 32000-1 Table
+//          30). No defaults and no clipping to the media box: the caller
+//          applies those.
 FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV
 EPDF_GetPageBoxByIndex(FPDF_DOCUMENT document,
                        int page_index,

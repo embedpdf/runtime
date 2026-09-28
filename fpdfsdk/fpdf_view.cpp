@@ -1837,47 +1837,6 @@ static int GetInheritedPageRotation(const CPDF_Dictionary* page_dict) {
   return 0;
 }
 
-static CFX_FloatRect GetEffectiveMediaBox(const CPDF_Dictionary* page_dict) {
-  CFX_FloatRect media_box =
-      GetInheritedRect(page_dict, pdfium::page_object::kMediaBox);
-  if (media_box.IsEmpty()) {
-    media_box = CFX_FloatRect(0, 0, 612, 792);
-  }
-  return media_box;
-}
-
-FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV
-EPDF_GetPageSizeByIndexNormalized(FPDF_DOCUMENT document,
-                                  int page_index,
-                                  FS_SIZEF* size) {
-  if (!size) {
-    return false;
-  }
-
-  auto* pDoc = CPDFDocumentFromFPDFDocument(document);
-  if (!pDoc) {
-    return false;
-  }
-
-  RetainPtr<const CPDF_Dictionary> dict =
-      GetPageDictionaryByIndex(document, pDoc, page_index);
-  if (!dict) {
-    return false;
-  }
-
-  // Resolve MediaBox/CropBox via page tree inheritance (not just the page dict)
-  CFX_FloatRect mediabox = GetEffectiveMediaBox(dict.Get());
-  CFX_FloatRect cropbox =
-      GetInheritedRect(dict.Get(), pdfium::page_object::kCropBox);
-  CFX_FloatRect bbox = cropbox.IsEmpty() ? mediabox : cropbox;
-  bbox.Intersect(mediabox);
-
-  // Return original dimensions - NO swap for rotation
-  size->width = bbox.Width();
-  size->height = bbox.Height();
-  return true;
-}
-
 FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV
 EPDF_GetPageBoxByIndex(FPDF_DOCUMENT document,
                        int page_index,
@@ -1898,25 +1857,25 @@ EPDF_GetPageBoxByIndex(FPDF_DOCUMENT document,
     return false;
   }
 
+  // ISO 32000 lets a page inherit its media and crop boxes from the page
+  // tree, never its bleed, trim or art boxes.
   CFX_FloatRect rect;
   switch (box_type) {
     case EPDF_PAGE_BOX_MEDIA:
-      rect = GetEffectiveMediaBox(dict.Get());
-      break;
     case EPDF_PAGE_BOX_CROP:
-      rect = GetInheritedRect(dict.Get(), pdfium::page_object::kCropBox);
-      if (rect.IsEmpty()) {
-        rect = GetEffectiveMediaBox(dict.Get());
-      }
+      rect = GetInheritedRect(dict.Get(), GetPageBoxKey(box_type));
       break;
     case EPDF_PAGE_BOX_BLEED:
     case EPDF_PAGE_BOX_TRIM:
-    case EPDF_PAGE_BOX_ART:
-      rect = GetInheritedRect(dict.Get(), GetPageBoxKey(box_type));
-      if (rect.IsEmpty()) {
-        return false;
+    case EPDF_PAGE_BOX_ART: {
+      RetainPtr<const CPDF_Array> array =
+          dict->GetArrayFor(GetPageBoxKey(box_type));
+      if (array) {
+        rect = array->GetRect();
+        rect.Normalize();
       }
       break;
+    }
   }
 
   if (rect.IsEmpty()) {
