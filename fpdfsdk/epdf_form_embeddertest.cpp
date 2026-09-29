@@ -217,6 +217,13 @@ TEST_F(EPDFFormEmbedderTest, TextFormModel) {
   ASSERT_EQ(1, EPDFForm_CountFieldWidgets(model, 0));
   EXPECT_EQ(4u, EPDFForm_GetFieldWidgetObjNum(model, 0, 0));
   EXPECT_EQ(3u, EPDFForm_GetFieldWidgetPageObjNum(model, 0, 0));
+  FS_RECTF rect;
+  ASSERT_TRUE(EPDFForm_GetFieldWidgetRect(model, 0, 0, &rect));
+  EXPECT_FLOAT_EQ(100.0f, rect.left);
+  EXPECT_FLOAT_EQ(100.0f, rect.bottom);
+  EXPECT_FLOAT_EQ(200.0f, rect.right);
+  EXPECT_FLOAT_EQ(130.0f, rect.top);
+  EXPECT_FALSE(EPDFForm_GetFieldWidgetRect(model, 0, 1, &rect));
   EXPECT_EQ(0, EPDFForm_GetFieldIndexForWidget(model, 4u));
   EXPECT_EQ(0, EPDFForm_GetFieldIndexByObjNum(model, 4u));
   EPDFForm_CloseModel(model);

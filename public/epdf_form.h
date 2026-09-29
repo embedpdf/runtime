@@ -268,6 +268,16 @@ EPDFForm_GetFieldWidgetPageObjNum(EPDF_FORM_MODEL model,
                                   int widget_index);
 
 // Experimental EmbedPDF Extension API.
+// Copy the widget's /Rect, normalized (left < right, bottom < top), in PDF
+// user space into |rect|. Returns false for an index out of range or a
+// widget without a /Rect.
+FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV
+EPDFForm_GetFieldWidgetRect(EPDF_FORM_MODEL model,
+                            int field_index,
+                            int widget_index,
+                            FS_RECTF* rect);
+
+// Experimental EmbedPDF Extension API.
 // Copy the widget's on-state name (the non-"Off" key of its /AP /N
 // dictionary) into |buffer| as raw PDF name bytes, including the trailing
 // NUL. Only meaningful for checkbox and radio widgets; empty otherwise.

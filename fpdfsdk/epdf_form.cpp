@@ -61,6 +61,9 @@ using epdf::SweepPageWidgets;
 struct WidgetRecord {
   uint32_t objnum = 0;
   uint32_t page_objnum = 0;
+  // The widget's /Rect, normalized; `has_rect` is false when it has none.
+  CFX_FloatRect rect;
+  bool has_rect = false;
   ByteString on_state;
   WideString export_value;
   bool checked = false;
@@ -268,6 +271,11 @@ FieldRecord SnapshotField(
     WidgetRecord widget;
     widget.objnum = widget_dict->GetObjNum();
     widget.page_objnum = PageObjNumForWidget(widget_pages, widget_dict);
+    if (widget_dict->KeyExist("Rect")) {
+      widget.rect = widget_dict->GetRectFor("Rect");
+      widget.rect.Normalize();
+      widget.has_rect = true;
+    }
     if (IsToggleFamily(record.family)) {
       widget.on_state = control->GetOnStateName();
       widget.export_value = control->GetExportValue();
@@ -2016,6 +2024,20 @@ EPDFForm_GetFieldWidgetPageObjNum(EPDF_FORM_MODEL model,
   const WidgetRecord* widget =
       GetWidgetRecord(model, field_index, widget_index);
   return widget ? widget->page_objnum : 0;
+}
+
+FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV
+EPDFForm_GetFieldWidgetRect(EPDF_FORM_MODEL model,
+                            int field_index,
+                            int widget_index,
+                            FS_RECTF* rect) {
+  const WidgetRecord* widget =
+      GetWidgetRecord(model, field_index, widget_index);
+  if (!widget || !widget->has_rect || !rect) {
+    return false;
+  }
+  *rect = FSRectFFromCFXFloatRect(widget->rect);
+  return true;
 }
 
 FPDF_EXPORT unsigned long FPDF_CALLCONV
