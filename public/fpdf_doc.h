@@ -574,7 +574,8 @@ FPDF_EXPORT FPDF_DEST FPDF_CALLCONV EPDFDest_CreateXYZ(FPDF_PAGE page,
 // Notes:
 //  * The required parameter count depends on |view| and matches
 //  FPDFDest_GetView().
-//    Excess parameters are ignored; missing parameters default to 0.
+//    Excess parameters are ignored; a missing parameter is written as null
+//    (the viewer keeps its current value, ISO 32000 Table 151).
 //  * Use EPDFDest_CreateXYZ() for /XYZ destinations.
 FPDF_EXPORT FPDF_DEST FPDF_CALLCONV
 EPDFDest_CreateView(FPDF_PAGE page,
@@ -611,6 +612,14 @@ EPDFDest_CreateViewByObjectNumber(FPDF_DOCUMENT document,
                                   unsigned long view,
                                   const FS_FLOAT* params,
                                   unsigned long num_params);
+
+// Experimental EmbedPDF Extension API.
+// Which view parameters of |dest| are null, where the viewer keeps its
+// current value: bit i is set when parameter i of FPDFDest_GetView() is
+// null (FPDFDest_GetView() reports it as 0).
+//
+// Returns 0 for a NULL |dest|, or when no parameter is null.
+FPDF_EXPORT unsigned int FPDF_CALLCONV EPDFDest_GetViewNullParams(FPDF_DEST dest);
 
 // Experimental EmbedPDF Extension API.
 // Create a new *remote* destination array of the form [pageIndex /<View>
@@ -784,6 +793,19 @@ EPDFAction_CreateLaunch(FPDF_DOCUMENT document, FPDF_WIDESTRING file_path);
 //  * The returned action has /S /URI and /URI (byte string) set to |uri|.
 FPDF_EXPORT FPDF_ACTION FPDF_CALLCONV
 EPDFAction_CreateURI(FPDF_DOCUMENT document, FPDF_BYTESTRING uri);
+
+// Experimental EmbedPDF Extension API.
+// Create a "Named" action that runs the viewer action |name|, such as
+// NextPage, PrevPage, FirstPage or LastPage (ISO 32000 Table 211).
+//
+//   document - handle to the document that will own the action.
+//   name     - the action's name, without the leading slash.
+//
+// Returns a handle to the created (indirect) action dictionary, or NULL for
+// an empty |name| or on error. The name is written as given; which names
+// make sense is the caller's choice.
+FPDF_EXPORT FPDF_ACTION FPDF_CALLCONV
+EPDFAction_CreateNamed(FPDF_DOCUMENT document, FPDF_BYTESTRING name);
 
 // -----------------------------------------------------------------------------
 // Outlines / bookmarks

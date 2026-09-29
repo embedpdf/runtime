@@ -3044,11 +3044,8 @@ RetainPtr<const CPDF_Array> GetExplicitBorderDashArray(
     const CPDF_Dictionary* pAnnotDict) {
   RetainPtr<const CPDF_Dictionary> pBSDict = pAnnotDict->GetDictFor("BS");
   if (pBSDict) {
-    // /BS takes precedence over /Border. A missing or unrecognised /S uses
-    // the solid default, so no dash pattern applies.
-    if (pBSDict->GetNameFor("S") != "D") {
-      return nullptr;
-    }
+    // /BS takes precedence over /Border. Its /D is the pattern as stored,
+    // whatever /S says: only a dashed border draws it.
     return pBSDict->GetArrayFor("D");
   }
 
@@ -3126,9 +3123,8 @@ EPDFAnnot_SetBorderDashPattern(FPDF_ANNOTATION annot,
     return true;
   }
 
-  // --- Set branch ---
-  bs_dict->SetNewFor<CPDF_Name>("S", "D");
-
+  // --- Set branch --- (the pattern only: /S stays as it is, so a solid
+  // border with a pattern still draws solid)
   RetainPtr<CPDF_Array> d_array = bs_dict->GetMutableArrayFor("D");
   if (d_array) {
     d_array->Clear();

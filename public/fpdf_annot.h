@@ -1378,20 +1378,20 @@ FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV
 EPDFAnnot_ClearRectangleDifferences(FPDF_ANNOTATION annot);
 
 // Experimental EmbedPDF Extension API.
-// Get the number of entries in the dash pattern for a dashed border. This
-// function handles both the modern /BS dictionary and the legacy /Border
-// array.
+// Get the number of entries in the dash pattern a border stores: /BS /D
+// whatever the border's style (only a dashed border draws it), or the legacy
+// /Border array's dash array when there is no /BS.
 //
 //   annot  - handle to an annotation.
 //
 // Returns the number of entries in the dash pattern array, or 0 if the border
-// is not dashed or has no pattern.
+// stores none.
 FPDF_EXPORT unsigned long FPDF_CALLCONV
 EPDFAnnot_GetBorderDashPatternCount(FPDF_ANNOTATION annot);
 
 // Experimental EmbedPDF Extension API.
-// Get the dash pattern for a dashed border. This function handles both the
-// modern /BS dictionary and the legacy /Border array.
+// Get the dash pattern a border stores, as EPDFAnnot_GetBorderDashPatternCount()
+// counts it.
 //
 //   annot      - handle to an annotation.
 //   dash_array - a buffer to receive the dash pattern values.
@@ -1405,7 +1405,10 @@ EPDFAnnot_GetBorderDashPattern(FPDF_ANNOTATION annot,
                                unsigned long count);
 
 // Experimental EmbedPDF Extension API.
-// Sets (or replaces) the dash pattern on an annotation's border.
+// Sets (or replaces) the dash pattern on an annotation's border (/BS /D).
+// The border style (/BS /S) is left as it is: only a dashed border draws the
+// pattern. A NULL |dash_array| or a |count| of 0 removes the pattern, and a
+// dashed border then draws the default dash [3].
 //
 //   annot      - handle to an annotation.
 //   dash_array - the dash pattern to be set.

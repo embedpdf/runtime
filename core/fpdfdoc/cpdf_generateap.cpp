@@ -14,6 +14,7 @@
 #include <optional>
 #include <sstream>
 #include <utility>
+#include <vector>
 
 #include "constants/annotation_common.h"
 #include "constants/appearance.h"
@@ -63,14 +64,9 @@ namespace {
 
 constexpr char kGSDictName[] = "GS";
 
-struct CPVT_Dash {
-  CPVT_Dash(int32_t dash, int32_t gap, int32_t phase)
-      : dash(dash), gap(gap), phase(phase) {}
-
-  int32_t dash;
-  int32_t gap;
-  int32_t phase;
-};
+// ISO 32000-1 Table 166: a dashed border that names no /D dashes 3 on,
+// 3 off.
+constexpr float kDefaultDash = 3;
 
 enum class PaintOperation { kStroke, kFill };
 
@@ -448,12 +444,39 @@ void SetVtFontSize(float font_size, CPVT_VariableText& vt) {
   }
 }
 
+// A dash array's values, at most ten, as the dash operator takes them.
+std::vector<float> DashValues(const CPDF_Array* dash_array) {
+  std::vector<float> values;
+  if (!dash_array) {
+    return values;
+  }
+  const size_t count = std::min<size_t>(dash_array->size(), 10);
+  for (size_t i = 0; i < count; ++i) {
+    values.push_back(dash_array->GetFloatAt(i));
+  }
+  return values;
+}
+
+// The dash operator for |values|; empty when there are none.
+ByteString DashOperator(const std::vector<float>& values) {
+  if (values.empty()) {
+    return ByteString();
+  }
+  fxcrt::ostringstream dash_stream;
+  dash_stream << "[";
+  for (float value : values) {
+    WriteFloat(dash_stream, value) << " ";
+  }
+  dash_stream << "] 0 d\n";
+  return ByteString(dash_stream);
+}
+
 // ISO 32000-1:2008 spec, table 166.
 // ISO 32000-2:2020 spec, table 168.
 struct BorderStyleInfo {
   float width = 1;
   BorderStyle style = BorderStyle::kSolid;
-  CPVT_Dash dash_pattern{3, 0, 0};
+  std::vector<float> dash_pattern{kDefaultDash};
 };
 
 BorderStyleInfo GetBorderStyleInfo(const CPDF_Dictionary* border_style_dict) {
@@ -490,11 +513,10 @@ BorderStyleInfo GetBorderStyleInfo(const CPDF_Dictionary* border_style_dict) {
     }
   }
 
-  RetainPtr<const CPDF_Array> dash_array = border_style_dict->GetArrayFor("D");
-  if (dash_array) {
-    border_style_info.dash_pattern =
-        CPVT_Dash(dash_array->GetIntegerAt(0), dash_array->GetIntegerAt(1),
-                  dash_array->GetIntegerAt(2));
+  std::vector<float> dash =
+      DashValues(border_style_dict->GetArrayFor("D").Get());
+  if (!dash.empty()) {
+    border_style_info.dash_pattern = std::move(dash);
   }
 
   return border_style_info;
@@ -837,10 +859,10 @@ ByteString GenerateBorderAP(const CFX_FloatRect& rect,
       ByteString color_string =
           GenerateColorAP(border_color, PaintOperation::kStroke);
       if (color_string.GetLength() > 0) {
-        const auto& dash = border_style_info.dash_pattern;
         app_stream << color_string;
-        WriteFloat(app_stream, width) << " w [" << dash.dash << " " << dash.gap
-                                      << "] " << dash.phase << " d\n";
+        WriteFloat(app_stream, width) << " w\n"
+                                      << DashOperator(
+                                             border_style_info.dash_pattern);
         WritePoint(app_stream, {left + half_width, bottom + half_width})
             << " m\n";
         WritePoint(app_stream, {left + half_width, top - half_width}) << " l\n";
@@ -935,23 +957,6 @@ float GetBorderWidth(const CPDF_Dictionary* dict) {
   return 1.0f;
 }
 
-RetainPtr<const CPDF_Array> GetDashArray(const CPDF_Dictionary* dict) {
-  RetainPtr<const CPDF_Dictionary> border_style_dict = dict->GetDictFor("BS");
-  if (border_style_dict) {
-    return border_style_dict->GetByteStringFor("S") == "D"
-               ? border_style_dict->GetArrayFor("D")
-               : nullptr;
-  }
-
-  RetainPtr<const CPDF_Array> border_array =
-      dict->GetArrayFor(pdfium::annotation::kBorder);
-  if (border_array && border_array->size() == 4) {
-    return border_array->GetArrayAt(3);
-  }
-
-  return nullptr;
-}
-
 inline CPDF_Annot::VerticalAlignment GetVerticalAlign(
     const CPDF_Dictionary* annot_dict) {
   const int v = GetEmbedMetadataIntegerFor(annot_dict,
@@ -963,23 +968,28 @@ inline CPDF_Annot::VerticalAlignment GetVerticalAlign(
   return static_cast<CPDF_Annot::VerticalAlignment>(v);
 }
 
+// The dash operator a border draws with: a dashed /BS draws its /D, or the
+// default dash when it names none; a /Border draws its own dash array.
 ByteString GetDashPatternString(const CPDF_Dictionary* dict) {
-  RetainPtr<const CPDF_Array> dash_array = GetDashArray(dict);
-  if (!dash_array || dash_array->IsEmpty()) {
-    return ByteString();
+  RetainPtr<const CPDF_Dictionary> border_style_dict = dict->GetDictFor("BS");
+  if (border_style_dict) {
+    if (border_style_dict->GetByteStringFor("S") != "D") {
+      return ByteString();
+    }
+    std::vector<float> dash =
+        DashValues(border_style_dict->GetArrayFor("D").Get());
+    if (dash.empty()) {
+      dash.push_back(kDefaultDash);
+    }
+    return DashOperator(dash);
   }
 
-  // Support maximum of ten elements in the dash array.
-  size_t dash_arrayCount = std::min<size_t>(dash_array->size(), 10);
-  fxcrt::ostringstream dash_stream;
-
-  dash_stream << "[";
-  for (size_t i = 0; i < dash_arrayCount; ++i) {
-    WriteFloat(dash_stream, dash_array->GetFloatAt(i)) << " ";
+  RetainPtr<const CPDF_Array> border_array =
+      dict->GetArrayFor(pdfium::annotation::kBorder);
+  if (border_array && border_array->size() == 4) {
+    return DashOperator(DashValues(border_array->GetArrayAt(3).Get()));
   }
-  dash_stream << "] 0 d\n";
-
-  return ByteString(dash_stream);
+  return ByteString();
 }
 
 ByteString GetPopupContentsString(CPDF_Document* doc,
@@ -1264,6 +1274,133 @@ ByteString IconDesignOnto(CFX_FloatRect rect) {
   return ByteString(out);
 }
 
+void AppendEllipsePath(fxcrt::ostringstream& app_stream,
+                       const CFX_FloatRect& bounds);
+
+// Appends the glyph of a note icon other than Comment, drawn in the icon's
+// 20x20 design square: the fill and stroke colours are already set.
+void AppendNoteGlyph(fxcrt::ostringstream& app_stream,
+                     const CFX_FloatRect& rect,
+                     CPDF_Annot::Icon icon,
+                     const CFX_Color& stroke_color,
+                     float half_width) {
+  CFX_FloatRect box = rect;
+  box.Deflate(half_width, half_width);
+  auto at = [&](float x, float y) {
+    return CFX_PointF(box.left + x / 20 * box.Width(),
+                      box.bottom + y / 20 * box.Height());
+  };
+  auto move = [&](float x, float y) {
+    WritePoint(app_stream, at(x, y)) << " m\n";
+  };
+  auto line = [&](float x, float y) {
+    WritePoint(app_stream, at(x, y)) << " l\n";
+  };
+  auto curve = [&](float x1, float y1, float x2, float y2, float x3,
+                   float y3) {
+    WritePoint(app_stream, at(x1, y1)) << " ";
+    WritePoint(app_stream, at(x2, y2)) << " ";
+    WritePoint(app_stream, at(x3, y3)) << " c\n";
+  };
+  auto rectangle = [&](float x1, float y1, float x2, float y2) {
+    move(x1, y1);
+    line(x2, y1);
+    line(x2, y2);
+    line(x1, y2);
+    app_stream << "h\n";
+  };
+  auto ellipse = [&](float x1, float y1, float x2, float y2) {
+    const CFX_PointF low = at(x1, y1);
+    const CFX_PointF high = at(x2, y2);
+    AppendEllipsePath(app_stream, CFX_FloatRect(low.x, low.y, high.x, high.y));
+  };
+
+  switch (icon) {
+    case CPDF_Annot::Icon::kText_Note: {
+      // A page with its top right corner folded over, and three lines.
+      move(3.5f, 1);
+      line(3.5f, 19);
+      line(12.5f, 19);
+      line(16.5f, 15);
+      line(16.5f, 1);
+      app_stream << "h\nB\n";
+      move(12.5f, 19);
+      line(12.5f, 15);
+      line(16.5f, 15);
+      for (float y : {12.0f, 8.5f, 5.0f}) {
+        move(6, y);
+        line(14, y);
+      }
+      app_stream << "S\n";
+      break;
+    }
+    case CPDF_Annot::Icon::kText_Help: {
+      // A disc with a question mark in the contrast colour.
+      ellipse(1, 1, 19, 19);
+      app_stream << "B\n1 J\n1 j\n";
+      WriteFloat(app_stream, 1.8f) << " w\n";
+      move(7.2f, 12.8f);
+      curve(7.2f, 15.2f, 8.6f, 16.2f, 10.2f, 16.2f);
+      curve(11.9f, 16.2f, 13, 15.1f, 13, 13.6f);
+      curve(13, 11.6f, 10.2f, 11.3f, 10.2f, 9);
+      line(10.2f, 7.8f);
+      app_stream << "S\n";
+      app_stream << GenerateColorAP(stroke_color, PaintOperation::kFill);
+      ellipse(9, 4, 11.4f, 6.4f);
+      app_stream << "f\n";
+      break;
+    }
+    case CPDF_Annot::Icon::kText_Key: {
+      // Its ring (even-odd punches the hole), shaft and two teeth.
+      ellipse(1.5f, 8.5f, 10.5f, 17.5f);
+      ellipse(4.2f, 11.2f, 7.8f, 14.8f);
+      rectangle(10.5f, 11.8f, 18.5f, 14.2f);
+      rectangle(13.5f, 8.8f, 15, 11.8f);
+      rectangle(16.5f, 9.8f, 18.5f, 11.8f);
+      app_stream << "B*\n";
+      break;
+    }
+    case CPDF_Annot::Icon::kText_NewParagraph: {
+      // A triangle pointing up over a line: a new paragraph starts here.
+      move(3, 8);
+      line(17, 8);
+      line(10, 18);
+      app_stream << "h\n";
+      rectangle(3, 2, 17, 5);
+      app_stream << "B*\n";
+      break;
+    }
+    case CPDF_Annot::Icon::kText_Paragraph: {
+      // The pilcrow as one outline: two stems and the bowl on the left.
+      move(15.5f, 18);
+      line(15.5f, 2);
+      line(13.7f, 2);
+      line(13.7f, 16.2f);
+      line(11.8f, 16.2f);
+      line(11.8f, 2);
+      line(10, 2);
+      line(10, 9.6f);
+      curve(6.6f, 9.6f, 4, 11.4f, 4, 13.8f);
+      curve(4, 16.2f, 6.6f, 18, 10, 18);
+      app_stream << "h\nB\n";
+      break;
+    }
+    case CPDF_Annot::Icon::kText_Insert: {
+      // A caret.
+      move(2.5f, 3);
+      line(10, 17);
+      line(17.5f, 3);
+      line(14.3f, 3);
+      line(10, 11.2f);
+      line(5.7f, 3);
+      app_stream << "h\nB\n";
+      break;
+    }
+    default:
+      NOTREACHED();
+  }
+}
+
 ByteString GenerateTextSymbolAP(const CFX_FloatRect& rect,
                                 const CPDF_Dictionary& annot_dict) {
   fxcrt::ostringstream app_stream;
@@ -1284,6 +1421,23 @@ ByteString GenerateTextSymbolAP(const CFX_FloatRect& rect,
                                ? CFX_Color(CFX_Color::Type::kRGB, 1, 1, 1)
                                : CFX_Color(CFX_Color::Type::kRGB, 0, 0, 0);
 
+  // /Name picks the glyph. Absent or foreign names mean Note, the
+  // ISO 32000 default icon for text annotations.
+  CPDF_Annot::Icon icon =
+      CPDF_Annot::StringToIcon(annot_dict.GetNameFor("Name"));
+  switch (icon) {
+    case CPDF_Annot::Icon::kText_Comment:
+    case CPDF_Annot::Icon::kText_Key:
+    case CPDF_Annot::Icon::kText_Help:
+    case CPDF_Annot::Icon::kText_NewParagraph:
+    case CPDF_Annot::Icon::kText_Paragraph:
+    case CPDF_Annot::Icon::kText_Insert:
+      break;
+    default:
+      icon = CPDF_Annot::Icon::kText_Note;
+      break;
+  }
+
   app_stream << GenerateColorAP(fill_color, PaintOperation::kFill);
   app_stream << GenerateColorAP(stroke_color, PaintOperation::kStroke);
 
@@ -1291,6 +1445,13 @@ ByteString GenerateTextSymbolAP(const CFX_FloatRect& rect,
   app_stream << kBorderWidth << " w\n";
 
   static constexpr float kHalfWidth = kBorderWidth / 2.0f;
+
+  if (icon != CPDF_Annot::Icon::kText_Comment) {
+    AppendNoteGlyph(app_stream, rect, icon, stroke_color, kHalfWidth);
+    return ByteString(app_stream);
+  }
+
+  // Comment: a speech balloon with three lines of text.
   static constexpr int kTipDelta = 4;
 
   CFX_FloatRect outer_rect1 = rect;

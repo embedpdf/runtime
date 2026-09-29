@@ -17,6 +17,7 @@
 #include "core/fpdfapi/parser/cpdf_number.h"
 #include "core/fpdfapi/parser/cpdf_reference.h"
 #include "core/fpdfapi/parser/cpdf_string.h"
+#include "core/fpdfdoc/cpdf_dest.h"
 #include "core/fxcrt/compiler_specific.h"
 #include "core/fxcrt/retain_ptr.h"
 #include "core/fxcrt/widestring.h"
@@ -209,15 +210,19 @@ namespace {
     "Unknown", "XYZ", "Fit", "FitH", "FitV", "FitR", "FitB", "FitBH", "FitBV"};
   constexpr uint8_t kViewMaxParams[] = {0, 3, 0, 1, 1, 4, 0, 1, 1};
 
-  // Non-XYZ: write N numeric params, padding with 0.0 up to |need|.
+  // Non-XYZ: write N numeric params, padding with null up to |need|: a
+  // missing /FitH top keeps the viewer's current one.
   static inline void AppendNonXYZParams(CPDF_Array* arr,
                                         const FS_FLOAT* params,
                                         unsigned long num_params,
                                         uint8_t need) {
     const unsigned long use = std::min<unsigned long>(num_params, need);
     for (unsigned long i = 0; i < need; ++i) {
-      const float v = (i < use && params) ? static_cast<float>(params[i]) : 0.0f;
-      arr->AppendNew<CPDF_Number>(v);
+      if (i < use && params) {
+        arr->AppendNew<CPDF_Number>(static_cast<float>(params[i]));
+      } else {
+        arr->AppendNew<CPDF_Null>();
+      }
     }
   }
 
@@ -496,6 +501,23 @@ EPDFDest_CreateViewByObjectNumber(FPDF_DOCUMENT fdoc,
   return FPDFDestFromCPDFArray(arr.Get());
 }
 
+FPDF_EXPORT unsigned int FPDF_CALLCONV
+EPDFDest_GetViewNullParams(FPDF_DEST dest) {
+  const CPDF_Array* arr = CPDFArrayFromFPDFDest(dest);
+  if (!arr)
+    return 0;
+
+  CPDF_Dest destination(pdfium::WrapRetain(arr));
+  const size_t count = destination.GetNumParams();
+  unsigned int mask = 0;
+  for (size_t i = 0; i < count; ++i) {
+    RetainPtr<const CPDF_Object> param = arr->GetDirectObjectAt(2 + i);
+    if (!param || param->IsNull())
+      mask |= 1u << i;
+  }
+  return mask;
+}
+
 FPDF_EXPORT FPDF_ACTION FPDF_CALLCONV
 EPDFAction_CreateGoTo(FPDF_DOCUMENT document, FPDF_DEST dest) {
   CPDF_Document* pDoc = CPDFDocumentFromFPDFDocument(document);
@@ -612,6 +634,19 @@ EPDFAction_CreateURI(FPDF_DOCUMENT document, FPDF_BYTESTRING uri) {
   action->SetNewFor<CPDF_Name>("S", "URI");
   // Store as a byte string (UTF-8 as provided by caller).
   action->SetNewFor<CPDF_String>("URI", ByteString(uri));
+
+  return FPDFActionFromCPDFDictionary(action.Get());
+}
+
+FPDF_EXPORT FPDF_ACTION FPDF_CALLCONV
+EPDFAction_CreateNamed(FPDF_DOCUMENT document, FPDF_BYTESTRING name) {
+  CPDF_Document* pDoc = CPDFDocumentFromFPDFDocument(document);
+  if (!pDoc || !name || !name[0])
+    return nullptr;
+
+  RetainPtr<CPDF_Dictionary> action = pDoc->NewIndirect<CPDF_Dictionary>();
+  action->SetNewFor<CPDF_Name>("S", "Named");
+  action->SetNewFor<CPDF_Name>("N", ByteString(name));
 
   return FPDFActionFromCPDFDictionary(action.Get());
 }

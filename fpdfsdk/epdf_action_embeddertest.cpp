@@ -563,6 +563,17 @@ TEST_F(EPDFActionEmbedderTest, DestinationsByPageObjectNumber) {
   ASSERT_EQ(1ul, num_params);
   EXPECT_FLOAT_EQ(400.0f, params[0]);
 
+  // A missing top is written as null: the viewer keeps its own.
+  FPDF_DEST fit_h_no_top = EPDFDest_CreateViewByObjectNumber(
+      document.get(), second_obj_num, PDFDEST_VIEW_FITH, nullptr, 0);
+  ASSERT_TRUE(fit_h_no_top);
+  const CPDF_Array* no_top = CPDFArrayFromFPDFDest(fit_h_no_top);
+  ASSERT_EQ(3u, no_top->size());
+  EXPECT_TRUE(no_top->GetDirectObjectAt(2)->IsNull());
+  EXPECT_EQ(1u, EPDFDest_GetViewNullParams(fit_h_no_top));
+  EXPECT_EQ(0u, EPDFDest_GetViewNullParams(fit_h));
+  EXPECT_EQ(0u, EPDFDest_GetViewNullParams(nullptr));
+
   // Only a page's dictionary is a destination page.
   const uint32_t catalog_obj_num = doc->GetRoot()->GetObjNum();
   EXPECT_FALSE(EPDFDest_CreateXYZByObjectNumber(
@@ -571,6 +582,22 @@ TEST_F(EPDFActionEmbedderTest, DestinationsByPageObjectNumber) {
                                                  PDFDEST_VIEW_FIT, nullptr, 0));
   EXPECT_FALSE(EPDFDest_CreateViewByObjectNumber(
       document.get(), second_obj_num, PDFDEST_VIEW_XYZ, nullptr, 0));
+}
+
+TEST_F(EPDFActionEmbedderTest, CreateNamedWritesTheName) {
+  ScopedFPDFDocument document(FPDF_CreateNewDocument());
+  ASSERT_TRUE(document);
+
+  FPDF_ACTION next = EPDFAction_CreateNamed(document.get(), "NextPage");
+  ASSERT_TRUE(next);
+  const CPDF_Dictionary* dict = CPDFDictionaryFromFPDFAction(next);
+  EXPECT_EQ("Named", dict->GetNameFor("S"));
+  EXPECT_EQ("NextPage", dict->GetNameFor("N"));
+  EXPECT_NE(0u, dict->GetObjNum());
+
+  EXPECT_FALSE(EPDFAction_CreateNamed(document.get(), ""));
+  EXPECT_FALSE(EPDFAction_CreateNamed(document.get(), nullptr));
+  EXPECT_FALSE(EPDFAction_CreateNamed(nullptr, "NextPage"));
 }
 
 TEST_F(EPDFActionEmbedderTest, NodeFilePathAndNamePayloadsFromSyntheticDicts) {

@@ -9902,15 +9902,58 @@ TEST_F(FPDFAnnotEmbedderTest, BorderStyleResolutionUsesISOPrecedence) {
   EXPECT_FLOAT_EQ(4.0f, dash_values[0]);
   EXPECT_FLOAT_EQ(1.0f, dash_values[1]);
 
-  // Unknown /BS styles are required to use the solid default.
+  // Unknown /BS styles are required to use the solid default; the pattern
+  // /D stores still reads, and draws only on a dashed border.
   border_style->SetNewFor<CPDF_Name>("S", "Unknown");
   expect_style(FPDF_ANNOT_BS_SOLID, 0.0f);
-  EXPECT_EQ(0u, EPDFAnnot_GetBorderDashPatternCount(annot.get()));
+  EXPECT_EQ(2u, EPDFAnnot_GetBorderDashPatternCount(annot.get()));
 
   float invalid_width = 42.0f;
   EXPECT_EQ(FPDF_ANNOT_BS_UNKNOWN,
             EPDFAnnot_GetBorderStyle(nullptr, &invalid_width));
   EXPECT_FLOAT_EQ(0.0f, invalid_width);
+}
+
+TEST_F(FPDFAnnotEmbedderTest, DashedBorderDrawsItsDashOrTheDefault) {
+  ScopedFPDFDocument doc(FPDF_CreateNewDocument());
+  ASSERT_TRUE(doc);
+  ScopedFPDFPage page(FPDFPage_New(doc.get(), 0, 200, 200));
+  ASSERT_TRUE(page);
+
+  auto appearance_of = [&](int subtype, FPDF_ANNOT_BORDER_STYLE style,
+                           const std::vector<float>& dash) {
+    ScopedFPDFAnnotation annot(FPDFPage_CreateAnnot(page.get(), subtype));
+    EXPECT_TRUE(annot);
+    const FS_RECTF rect{/*left=*/10.0f, /*top=*/90.0f, /*right=*/90.0f,
+                        /*bottom=*/10.0f};
+    EXPECT_TRUE(FPDFAnnot_SetRect(annot.get(), &rect));
+    EXPECT_TRUE(EPDFAnnot_SetBorderStyle(annot.get(), style, 2.0f));
+    if (!dash.empty()) {
+      EXPECT_TRUE(EPDFAnnot_SetBorderDashPattern(annot.get(), dash.data(),
+                                                 dash.size()));
+    }
+    // The pattern alone never makes a border dashed.
+    float width = 0;
+    EXPECT_EQ(style, EPDFAnnot_GetBorderStyle(annot.get(), &width));
+    EXPECT_TRUE(EPDFAnnot_GenerateAppearance(annot.get()));
+    return GetNormalAppearanceStreamBytes(annot.get());
+  };
+
+  // A dashed border without /D draws ISO 32000's default dash, 3 on 3 off.
+  EXPECT_TRUE(appearance_of(FPDF_ANNOT_SQUARE, FPDF_ANNOT_BS_DASHED, {})
+                  .Find("[3 ] 0 d")
+                  .has_value());
+  EXPECT_TRUE(appearance_of(FPDF_ANNOT_CIRCLE, FPDF_ANNOT_BS_DASHED, {})
+                  .Find("[3 ] 0 d")
+                  .has_value());
+  // Its own /D, as given.
+  EXPECT_TRUE(appearance_of(FPDF_ANNOT_SQUARE, FPDF_ANNOT_BS_DASHED, {4, 1.5f})
+                  .Find("[4 1.5 ] 0 d")
+                  .has_value());
+  // A solid border keeps drawing solid with a pattern set.
+  EXPECT_FALSE(appearance_of(FPDF_ANNOT_SQUARE, FPDF_ANNOT_BS_SOLID, {4, 1})
+                   .Find("] 0 d")
+                   .has_value());
 }
 
 TEST_F(FPDFAnnotEmbedderTest, AnnotationJavaScript) {
@@ -10378,6 +10421,42 @@ TEST_F(FPDFAnnotEmbedderTest, GenerateTextAppearanceFillsItsRect) {
     return appearance.substr(appearance.find(L" cm\n"));
   };
   EXPECT_EQ(after_matrix(usual), after_matrix(big));
+}
+
+TEST_F(FPDFAnnotEmbedderTest, GenerateTextAppearancePerIcon) {
+  ScopedFPDFDocument doc(FPDF_CreateNewDocument());
+  ASSERT_TRUE(doc);
+  ScopedFPDFPage page(FPDFPage_New(doc.get(), 0, 400, 400));
+  ASSERT_TRUE(page);
+
+  auto make_appearance = [&](const char* icon) {
+    ScopedFPDFAnnotation annot(
+        FPDFPage_CreateAnnot(page.get(), FPDF_ANNOT_TEXT));
+    EXPECT_TRUE(annot);
+    const FS_RECTF rect{10.0f, 30.0f, 30.0f, 10.0f};
+    EXPECT_TRUE(FPDFAnnot_SetRect(annot.get(), &rect));
+    if (icon) {
+      EXPECT_TRUE(EPDFAnnot_SetName(annot.get(), icon));
+    }
+    EXPECT_TRUE(EPDFAnnot_GenerateAppearance(annot.get()));
+    return GetNormalAppearance(annot.get());
+  };
+
+  const std::vector<const char*> names = {
+      "Comment", "Key", "Note", "Help", "NewParagraph", "Paragraph", "Insert"};
+  std::vector<std::wstring> glyphs;
+  for (const char* name : names) {
+    glyphs.push_back(make_appearance(name));
+  }
+  // Each icon draws its own glyph.
+  for (size_t i = 0; i < glyphs.size(); ++i) {
+    for (size_t j = i + 1; j < glyphs.size(); ++j) {
+      EXPECT_NE(glyphs[i], glyphs[j]) << names[i] << " vs " << names[j];
+    }
+  }
+  // An absent or foreign /Name draws Note, the ISO 32000 default.
+  EXPECT_EQ(glyphs[2], make_appearance(nullptr));
+  EXPECT_EQ(glyphs[2], make_appearance("Star"));
 }
 
 TEST_F(FPDFAnnotEmbedderTest, GenerateFileAttachmentAppearancePerIcon) {
