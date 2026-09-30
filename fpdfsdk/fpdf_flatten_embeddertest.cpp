@@ -146,13 +146,14 @@ TEST_F(FPDFFlattenEmbedderTest,
   ASSERT_TRUE(page);
 
   ASSERT_EQ(FLATTEN_SUCCESS, EPDFPage_Flatten(page.get(), FLAT_NORMALDISPLAY));
-  // Loading a regular PDFium page synthesizes a default appearance for the
-  // Text annotation (object 6), so it is paintable here as well.
-  EXPECT_EQ(2, FPDFPage_GetAnnotCount(page.get()));
+  // The Text annotation (object 6) has no appearance, and loading the page
+  // draws its icon in memory without writing one: like every annotation with
+  // nothing to paint, it stays.
+  EXPECT_EQ(3, FPDFPage_GetAnnotCount(page.get()));
   EXPECT_FALSE(EPDFPage_GetAnnotByObjectNumber(page.get(), 4u));
   EXPECT_FALSE(EPDFPage_GetAnnotByObjectNumber(page.get(), 13u));
   EXPECT_FALSE(EPDFPage_GetAnnotByObjectNumber(page.get(), 16u));
-  for (unsigned int object_number : {5u, 9u}) {
+  for (unsigned int object_number : {5u, 6u, 9u}) {
     ScopedFPDFAnnotation annotation(
         EPDFPage_GetAnnotByObjectNumber(page.get(), object_number));
     EXPECT_TRUE(annotation) << object_number;

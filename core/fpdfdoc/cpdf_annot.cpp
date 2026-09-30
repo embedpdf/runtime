@@ -245,6 +245,13 @@ void CPDF_Annot::ClearCachedAP() {
       (CanGenerateEphemeralAP() && ShouldGenerateAP());
 }
 
+std::optional<CFX_FloatRect> CPDF_Annot::GetDrawingRect(AppearanceMode mode) {
+  if (!GetAnnotAP(annot_dict_.Get(), mode) && !GetOrBuildEphemeralAP(mode)) {
+    return std::nullopt;
+  }
+  return GetRect();
+}
+
 CPDF_Annot::Subtype CPDF_Annot::GetSubtype() const {
   return subtype_;
 }

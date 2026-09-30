@@ -5555,6 +5555,31 @@ EPDFAnnot_HasAppearanceStream(FPDF_ANNOTATION annot,
   return !!GetAnnotAP(pAnnotDict, mode);
 }
 
+FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV
+EPDFAnnot_GetDrawingRect(FPDF_ANNOTATION annot,
+                         FPDF_ANNOT_APPEARANCEMODE appearanceMode,
+                         FS_RECTF* rect) {
+  CPDF_AnnotContext* context = CPDFAnnotContextFromFPDFAnnotation(annot);
+  if (!context || !rect) {
+    return false;
+  }
+  RetainPtr<CPDF_Dictionary> dict = context->GetMutableAnnotDict();
+  CPDF_Document* doc = context->GetPage()->GetDocument();
+  if (!dict || !doc) {
+    return false;
+  }
+  // Generating only when drawn: asking where it draws writes nothing.
+  CPDF_Annot drawn(std::move(dict), doc,
+                   CPDF_Annot::MissingAppearance::kGenerateWhenDrawn);
+  std::optional<CFX_FloatRect> box = drawn.GetDrawingRect(
+      static_cast<CPDF_Annot::AppearanceMode>(appearanceMode));
+  if (!box.has_value()) {
+    return false;
+  }
+  *rect = FSRectFFromCFXFloatRect(box.value());
+  return true;
+}
+
 static ByteString GetMKColorKey(EPDF_MK_COLORTYPE type) {
   switch (type) {
     case EPDF_MK_COLOR_BG:

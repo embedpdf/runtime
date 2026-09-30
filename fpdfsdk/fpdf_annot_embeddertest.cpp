@@ -15,6 +15,7 @@
 #include <array>
 #include <cctype>
 #include <chrono>
+#include <cmath>
 #include <cstdint>
 #include <filesystem>
 #include <fstream>
@@ -1018,6 +1019,171 @@ TEST_F(FPDFAnnotEmbedderTest, LineRectHoldsItsArrowhead) {
   EXPECT_GT(rect.top, 500.5f);
   // No /RD on a line.
   EXPECT_FALSE(FPDFAnnot_HasKey(annot.get(), "RD"));
+}
+
+TEST_F(FPDFAnnotEmbedderTest, LineRectIsWhatItsStrokePaints) {
+  ScopedFPDFDocument doc(FPDF_CreateNewDocument());
+  ASSERT_TRUE(doc);
+  ScopedFPDFPage page(FPDFPage_New(doc.get(), 0, 600, 600));
+  ASSERT_TRUE(page);
+
+  // A line's ends are butt caps: the stroke stops at each end, and reaches
+  // half its width across the line, and no further.
+  ScopedFPDFAnnotation level(FPDFPage_CreateAnnot(page.get(), FPDF_ANNOT_LINE));
+  ASSERT_TRUE(level);
+  const FS_POINTF level_start{100, 400};
+  const FS_POINTF level_end{300, 400};
+  ASSERT_TRUE(EPDFAnnot_SetLine(level.get(), &level_start, &level_end));
+  ASSERT_TRUE(FPDFAnnot_SetBorder(level.get(), 0.0f, 0.0f, 4.0f));
+  ASSERT_TRUE(EPDFAnnot_GenerateAppearance(level.get()));
+  FS_RECTF rect;
+  ASSERT_TRUE(FPDFAnnot_GetRect(level.get(), &rect));
+  EXPECT_FLOAT_EQ(100.0f, rect.left);
+  EXPECT_FLOAT_EQ(402.0f, rect.top);
+  EXPECT_FLOAT_EQ(300.0f, rect.right);
+  EXPECT_FLOAT_EQ(398.0f, rect.bottom);
+
+  // A slanted line's width runs across it: at a 3-4-5 slope, half a width of
+  // 2 is 1.2 across x and 1.6 across y at each end.
+  ScopedFPDFAnnotation slanted(
+      FPDFPage_CreateAnnot(page.get(), FPDF_ANNOT_LINE));
+  ASSERT_TRUE(slanted);
+  const FS_POINTF slanted_start{100, 400};
+  const FS_POINTF slanted_end{300, 550};
+  ASSERT_TRUE(EPDFAnnot_SetLine(slanted.get(), &slanted_start, &slanted_end));
+  ASSERT_TRUE(FPDFAnnot_SetBorder(slanted.get(), 0.0f, 0.0f, 4.0f));
+  ASSERT_TRUE(EPDFAnnot_GenerateAppearance(slanted.get()));
+  ASSERT_TRUE(FPDFAnnot_GetRect(slanted.get(), &rect));
+  EXPECT_NEAR(98.8f, rect.left, 1e-4);
+  EXPECT_NEAR(551.6f, rect.top, 1e-4);
+  EXPECT_NEAR(301.2f, rect.right, 1e-4);
+  EXPECT_NEAR(398.4f, rect.bottom, 1e-4);
+}
+
+TEST_F(FPDFAnnotEmbedderTest, PolylineKneePastTheMiterLimitIsBeveled) {
+  ScopedFPDFDocument doc(FPDF_CreateNewDocument());
+  ASSERT_TRUE(doc);
+  ScopedFPDFPage page(FPDFPage_New(doc.get(), 0, 600, 600));
+  ASSERT_TRUE(page);
+  ScopedFPDFAnnotation annot(
+      FPDFPage_CreateAnnot(page.get(), FPDF_ANNOT_POLYLINE));
+  ASSERT_TRUE(annot);
+  // A knee this sharp is past the miter limit: the renderer bevels it, so
+  // the stroke reaches no further than its two segments' edges there.
+  static constexpr FS_POINTF kVertices[] = {{100, 300}, {300, 310}, {100, 320}};
+  ASSERT_TRUE(
+      EPDFAnnot_SetVertices(annot.get(), kVertices, std::size(kVertices)));
+  ASSERT_TRUE(FPDFAnnot_SetBorder(annot.get(), 0.0f, 0.0f, 4.0f));
+  ASSERT_TRUE(EPDFAnnot_GenerateAppearance(annot.get()));
+  FS_RECTF rect;
+  ASSERT_TRUE(FPDFAnnot_GetRect(annot.get(), &rect));
+  // Half a width of 2 across a segment of slope 1/20.
+  EXPECT_NEAR(300.0f + 2.0f / std::hypot(20.0f, 1.0f), rect.right, 1e-4);
+  // The open ends stop where they are.
+  EXPECT_NEAR(100.0f - 2.0f / std::hypot(20.0f, 1.0f), rect.left, 1e-4);
+}
+
+TEST_F(FPDFAnnotEmbedderTest, DrawingAnnotationsWithoutAppearancesWritesNone) {
+  ScopedFPDFDocument doc(FPDF_CreateNewDocument());
+  ASSERT_TRUE(doc);
+  ScopedFPDFPage page(FPDFPage_New(doc.get(), 0, 300, 300));
+  ASSERT_TRUE(page);
+  // A note and a file attachment draw their icon onto /Rect, a bordered link
+  // its border, a caret its mark: each drawn in memory, none written.
+  static constexpr FPDF_ANNOTATION_SUBTYPE kKinds[] = {
+      FPDF_ANNOT_TEXT, FPDF_ANNOT_FILEATTACHMENT, FPDF_ANNOT_LINK,
+      FPDF_ANNOT_CARET};
+  std::vector<ScopedFPDFAnnotation> annots;
+  float left = 20;
+  for (FPDF_ANNOTATION_SUBTYPE kind : kKinds) {
+    ScopedFPDFAnnotation annot(FPDFPage_CreateAnnot(page.get(), kind));
+    ASSERT_TRUE(annot) << kind;
+    const FS_RECTF rect{/*left=*/left, /*top=*/60, /*right=*/left + 20,
+                        /*bottom=*/40};
+    ASSERT_TRUE(FPDFAnnot_SetRect(annot.get(), &rect));
+    ASSERT_TRUE(FPDFAnnot_SetBorder(annot.get(), 0.0f, 0.0f, 1.0f));
+    ASSERT_FALSE(FPDFAnnot_HasKey(annot.get(), "AP")) << kind;
+    annots.push_back(std::move(annot));
+    left += 40;
+  }
+
+  ScopedFPDFBitmap bitmap(FPDFBitmap_Create(300, 300, /*alpha=*/0));
+  FPDFBitmap_FillRect(bitmap.get(), 0, 0, 300, 300, 0xFFFFFFFF);
+  FPDF_RenderPageBitmap(bitmap.get(), page.get(), 0, 0, 300, 300,
+                        /*rotate=*/0, FPDF_ANNOT);
+  for (const ScopedFPDFAnnotation& annot : annots) {
+    EXPECT_FALSE(FPDFAnnot_HasKey(annot.get(), "AP"))
+        << FPDFAnnot_GetSubtype(annot.get());
+  }
+  // The note's icon is drawn all the same, in its /Rect (rows 240..260).
+  bool drawn = false;
+  for (int y = 240; y < 260 && !drawn; ++y) {
+    for (int x = 20; x < 40 && !drawn; ++x) {
+      drawn = GetPixelColor(bitmap.get(), x, y) != 0xFFFFFFFFu;
+    }
+  }
+  EXPECT_TRUE(drawn);
+}
+
+TEST_F(FPDFAnnotEmbedderTest, DrawingRectIsWhereTheAppearanceIsDrawn) {
+  ScopedFPDFDocument doc(FPDF_CreateNewDocument());
+  ASSERT_TRUE(doc);
+  ScopedFPDFPage page(FPDFPage_New(doc.get(), 0, 600, 600));
+  ASSERT_TRUE(page);
+
+  // A line with no appearance and a /Rect with no height, as another app may
+  // write one: drawn in memory, its box takes in the stroke and arrowhead,
+  // and its /Rect stays as it is.
+  ScopedFPDFAnnotation line(FPDFPage_CreateAnnot(page.get(), FPDF_ANNOT_LINE));
+  ASSERT_TRUE(line);
+  const FS_POINTF start{100, 400};
+  const FS_POINTF end{300, 400};
+  ASSERT_TRUE(EPDFAnnot_SetLine(line.get(), &start, &end));
+  ASSERT_TRUE(EPDFAnnot_SetLineEndings(line.get(), FPDF_ANNOT_LE_None,
+                                       FPDF_ANNOT_LE_ClosedArrow));
+  ASSERT_TRUE(FPDFAnnot_SetBorder(line.get(), 0.0f, 0.0f, 2.0f));
+  const FS_RECTF tight{/*left=*/100, /*top=*/400, /*right=*/300,
+                       /*bottom=*/400};
+  ASSERT_TRUE(FPDFAnnot_SetRect(line.get(), &tight));
+  FS_RECTF drawn;
+  ASSERT_TRUE(EPDFAnnot_GetDrawingRect(
+      line.get(), FPDF_ANNOT_APPEARANCEMODE_NORMAL, &drawn));
+  EXPECT_FLOAT_EQ(100.0f, drawn.left);  // the butt end
+  EXPECT_GE(drawn.right, 300.0f);       // the arrowhead's tip
+  EXPECT_GT(drawn.top, 401.0f);         // its wings, past the stroke
+  EXPECT_LT(drawn.bottom, 399.0f);
+  FS_RECTF rect;
+  ASSERT_TRUE(FPDFAnnot_GetRect(line.get(), &rect));
+  EXPECT_FLOAT_EQ(400.0f, rect.top);
+  EXPECT_FLOAT_EQ(400.0f, rect.bottom);
+  EXPECT_FALSE(FPDFAnnot_HasKey(line.get(), "AP"));
+
+  // A stored appearance is drawn where /Rect puts it.
+  ASSERT_TRUE(EPDFAnnot_GenerateAppearance(line.get()));
+  ASSERT_TRUE(EPDFAnnot_GetDrawingRect(
+      line.get(), FPDF_ANNOT_APPEARANCEMODE_NORMAL, &drawn));
+  ASSERT_TRUE(FPDFAnnot_GetRect(line.get(), &rect));
+  EXPECT_FLOAT_EQ(rect.left, drawn.left);
+  EXPECT_FLOAT_EQ(rect.top, drawn.top);
+  EXPECT_FLOAT_EQ(rect.right, drawn.right);
+  EXPECT_FLOAT_EQ(rect.bottom, drawn.bottom);
+
+  // A popup with no appearance: PDFium draws one only by generating it into
+  // the file, so there is nothing to draw, and rendering it writes nothing.
+  ScopedFPDFAnnotation popup(
+      FPDFPage_CreateAnnot(page.get(), FPDF_ANNOT_POPUP));
+  ASSERT_TRUE(popup);
+  const FS_RECTF box{/*left=*/100, /*top=*/300, /*right=*/200,
+                     /*bottom=*/200};
+  ASSERT_TRUE(FPDFAnnot_SetRect(popup.get(), &box));
+  EXPECT_FALSE(EPDFAnnot_GetDrawingRect(
+      popup.get(), FPDF_ANNOT_APPEARANCEMODE_NORMAL, &drawn));
+  ScopedFPDFBitmap bitmap(FPDFBitmap_Create(100, 100, /*alpha=*/1));
+  const FS_MATRIX identity{1, 0, 0, 1, 0, 0};
+  EXPECT_FALSE(EPDF_RenderAnnotBitmap(bitmap.get(), page.get(), popup.get(),
+                                      FPDF_ANNOT_APPEARANCEMODE_NORMAL,
+                                      &identity, 0));
+  EXPECT_FALSE(FPDFAnnot_HasKey(popup.get(), "AP"));
 }
 
 TEST_F(FPDFAnnotEmbedderTest, CloudyPolygonRectHoldsItsBumps) {

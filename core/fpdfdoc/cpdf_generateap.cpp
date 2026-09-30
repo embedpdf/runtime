@@ -358,16 +358,20 @@ static BlendMode DefaultBlendModeFor(CPDF_Annot::Subtype subtype) {
 
 bool SupportsEphemeralAnnotAP(CPDF_Annot::Subtype subtype) {
   switch (subtype) {
+    case CPDF_Annot::Subtype::CARET:
     case CPDF_Annot::Subtype::CIRCLE:
+    case CPDF_Annot::Subtype::FILEATTACHMENT:
     case CPDF_Annot::Subtype::FREETEXT:
     case CPDF_Annot::Subtype::HIGHLIGHT:
     case CPDF_Annot::Subtype::INK:
     case CPDF_Annot::Subtype::LINE:
+    case CPDF_Annot::Subtype::LINK:
     case CPDF_Annot::Subtype::POLYGON:
     case CPDF_Annot::Subtype::POLYLINE:
     case CPDF_Annot::Subtype::SQUARE:
     case CPDF_Annot::Subtype::SQUIGGLY:
     case CPDF_Annot::Subtype::STRIKEOUT:
+    case CPDF_Annot::Subtype::TEXT:
     case CPDF_Annot::Subtype::UNDERLINE:
     case CPDF_Annot::Subtype::WIDGET:
       return true;
@@ -3510,7 +3514,7 @@ bool GenerateInkAP(APGenerationTarget* target,
                                     std::move(resources_dict), points);
 }
 
-bool GenerateTextAP(CPDF_Document* doc,
+bool GenerateTextAP(APGenerationTarget* target,
                     CPDF_Dictionary* annot_dict,
                     const ByteString& blend_name) {
   fxcrt::ostringstream app_stream;
@@ -3522,13 +3526,15 @@ bool GenerateTextAP(CPDF_Document* doc,
   app_stream << GenerateTextSymbolAP(kIconDesign, *annot_dict);
 
   auto gs_dict = GenerateExtGStateDict(*annot_dict, blend_name);
-  auto resources_dict = GenerateResourcesDict(doc, std::move(gs_dict), nullptr);
-  GenerateAndSetAPDict(doc, annot_dict, &app_stream, std::move(resources_dict),
+  auto resources_dict =
+      GenerateResourcesDict(target->doc, std::move(gs_dict), nullptr);
+  GenerateAndSetAPDict(target, annot_dict, &app_stream,
+                       std::move(resources_dict),
                        false /*IsTextMarkupAnnotation*/);
   return true;
 }
 
-bool GenerateFileAttachmentAP(CPDF_Document* doc,
+bool GenerateFileAttachmentAP(APGenerationTarget* target,
                               CPDF_Dictionary* annot_dict,
                               const ByteString& blend_name) {
   fxcrt::ostringstream app_stream;
@@ -3539,8 +3545,10 @@ bool GenerateFileAttachmentAP(CPDF_Document* doc,
   app_stream << GenerateFileAttachmentSymbolAP(kIconDesign, *annot_dict);
 
   auto gs_dict = GenerateExtGStateDict(*annot_dict, blend_name);
-  auto resources_dict = GenerateResourcesDict(doc, std::move(gs_dict), nullptr);
-  GenerateAndSetAPDict(doc, annot_dict, &app_stream, std::move(resources_dict),
+  auto resources_dict =
+      GenerateResourcesDict(target->doc, std::move(gs_dict), nullptr);
+  GenerateAndSetAPDict(target, annot_dict, &app_stream,
+                       std::move(resources_dict),
                        false /*IsTextMarkupAnnotation*/);
   return true;
 }
@@ -3794,7 +3802,7 @@ bool GenerateStrikeOutAP(APGenerationTarget* target,
   return true;
 }
 
-bool GenerateLinkAP(CPDF_Document* doc,
+bool GenerateLinkAP(APGenerationTarget* target,
                     CPDF_Dictionary* annot_dict,
                     const ByteString& blend_name) {
   // Get border width - default to 1 if not specified
@@ -3844,8 +3852,10 @@ bool GenerateLinkAP(CPDF_Document* doc,
   }
 
   auto gs_dict = GenerateExtGStateDict(*annot_dict, blend_name);
-  auto resources_dict = GenerateResourcesDict(doc, std::move(gs_dict), nullptr);
-  GenerateAndSetAPDict(doc, annot_dict, &app_stream, std::move(resources_dict),
+  auto resources_dict =
+      GenerateResourcesDict(target->doc, std::move(gs_dict), nullptr);
+  GenerateAndSetAPDict(target, annot_dict, &app_stream,
+                       std::move(resources_dict),
                        /*is_text_markup_annotation=*/false);
   return true;
 }
@@ -4966,6 +4976,14 @@ bool GenerateAnnotAPToTarget(APGenerationTarget* target,
       return GenerateStrikeOutAP(target, annot_dict, blend_name);
     case CPDF_Annot::Subtype::UNDERLINE:
       return GenerateUnderlineAP(target, annot_dict, blend_name);
+    case CPDF_Annot::Subtype::TEXT:
+      return GenerateTextAP(target, annot_dict, blend_name);
+    case CPDF_Annot::Subtype::FILEATTACHMENT:
+      return GenerateFileAttachmentAP(target, annot_dict, blend_name);
+    case CPDF_Annot::Subtype::LINK:
+      return GenerateLinkAP(target, annot_dict, blend_name);
+    case CPDF_Annot::Subtype::CARET:
+      return GenerateCaretAP(target, annot_dict, blend_name);
     default:
       return false;
   }
@@ -4995,16 +5013,8 @@ bool CPDF_GenerateAP::GenerateAnnotAP(CPDF_Document* doc,
       return GenerateFreeTextAP(&target, annot_dict, blend_name);
     case CPDF_Annot::Subtype::POPUP:
       return GeneratePopupAP(doc, annot_dict, blend_name);
-    case CPDF_Annot::Subtype::TEXT:
-      return GenerateTextAP(doc, annot_dict, blend_name);
-    case CPDF_Annot::Subtype::FILEATTACHMENT:
-      return GenerateFileAttachmentAP(doc, annot_dict, blend_name);
-    case CPDF_Annot::Subtype::LINK:
-      return GenerateLinkAP(doc, annot_dict, blend_name);
     case CPDF_Annot::Subtype::REDACT:
       return GenerateRedactAP(doc, annot_dict, blend_name);
-    case CPDF_Annot::Subtype::CARET:
-      return GenerateCaretAP(&target, annot_dict, blend_name);
     default:
       return false;
   }

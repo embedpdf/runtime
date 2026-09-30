@@ -1272,9 +1272,16 @@ EPDF_RenderAnnotBitmap(FPDF_BITMAP bitmap,
     return false;
   }
 
-  // Instantiate CPDF_Annot using its public constructor.
+  // Instantiate CPDF_Annot using its public constructor. A render never
+  // writes: an annotation with no appearance that PDFium can't draw in
+  // memory draws nothing, rather than getting one generated into the file.
   auto pAnnot = std::make_unique<CPDF_Annot>(
-      pdfium::WrapRetain(const_cast<CPDF_Dictionary*>(pAnnotDict)), pDoc);
+      pdfium::WrapRetain(const_cast<CPDF_Dictionary*>(pAnnotDict)), pDoc,
+      CPDF_Annot::MissingAppearance::kGenerateWhenDrawn);
+  if (!pAnnot->GetDrawingRect(
+          static_cast<CPDF_Annot::AppearanceMode>(appearanceMode))) {
+    return false;
+  }
 
   // ---------------------------------------------------------------- bitmaps
   RetainPtr<CFX_DIBitmap> pBitmap(CFXDIBitmapFromFPDFBitmap(bitmap));
@@ -1336,8 +1343,14 @@ EPDF_RenderAnnotBitmapUnrotated(FPDF_BITMAP bitmap,
     return false;
   }
 
+  // A render never writes (as EPDF_RenderAnnotBitmap).
   auto pAnnot = std::make_unique<CPDF_Annot>(
-      pdfium::WrapRetain(const_cast<CPDF_Dictionary*>(pAnnotDict)), pDoc);
+      pdfium::WrapRetain(const_cast<CPDF_Dictionary*>(pAnnotDict)), pDoc,
+      CPDF_Annot::MissingAppearance::kGenerateWhenDrawn);
+  if (!pAnnot->GetDrawingRect(
+          static_cast<CPDF_Annot::AppearanceMode>(appearanceMode))) {
+    return false;
+  }
 
   // Get the AP form for the requested mode.
   // Note: we skip ShouldDrawAnnotation/GenerateAPIfNeeded (private) because

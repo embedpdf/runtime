@@ -216,6 +216,14 @@ class CPDF_Annot {
 
   bool IsHidden() const;
 
+  // Where the appearance for `mode` is drawn, in page space, without writing
+  // anything: a stored appearance is fitted into /Rect; with none, the normal
+  // appearance PDFium draws in memory takes its own box, which can reach past
+  // /Rect. Nothing when there is nothing to draw without writing one (a
+  // hidden annotation, or a kind PDFium draws only by generating an
+  // appearance into the file).
+  std::optional<CFX_FloatRect> GetDrawingRect(AppearanceMode mode);
+
   bool DrawAppearance(CPDF_Page* pPage,
                       CFX_RenderDevice* pDevice,
                       const CFX_Matrix& mtUser2Device,

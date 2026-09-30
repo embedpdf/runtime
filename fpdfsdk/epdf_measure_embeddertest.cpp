@@ -526,7 +526,8 @@ TEST_F(EPDFMeasureEmbedderTest, LineAppearanceLeadersInlineGapAndStableBounds) {
             ap.find(L"100 130 m 300 130 l S"));  // inline gap
   FS_RECTF before, after;
   ASSERT_TRUE(FPDFAnnot_GetRect(a.get(), &before));
-  EXPECT_GT(before.top, 135);
+  // The leaders reach 135, and their butt ends stop there.
+  EXPECT_FLOAT_EQ(135, before.top);
   ASSERT_TRUE(EPDFAnnot_GenerateAppearance(a.get()));
   ASSERT_TRUE(FPDFAnnot_GetRect(a.get(), &after));
   EXPECT_FLOAT_EQ(before.top, after.top);
@@ -566,8 +567,9 @@ TEST_F(EPDFMeasureEmbedderTest, ShortDistanceOmitsShaftAndBoundsCanShrink) {
   EXPECT_NE(std::wstring::npos, appearance.find(L"130 85 m 150 85 l S"));
   FS_RECTF original;
   ASSERT_TRUE(FPDFAnnot_GetRect(annot.get(), &original));
-  EXPECT_LT(original.left, 80);
-  EXPECT_GT(original.right, 150);
+  // The stubs reach 80 and 150, and their butt ends stop there.
+  EXPECT_FLOAT_EQ(80, original.left);
+  EXPECT_FLOAT_EQ(150, original.right);
 
   EPDF_CAPTION_OFFSET offset{100, -150};
   ASSERT_TRUE(EPDFAnnot_SetLineCaption(annot.get(), true, EPDF_CAPTION_INLINE,

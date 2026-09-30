@@ -2302,6 +2302,24 @@ EPDFAnnot_HasAppearanceStream(FPDF_ANNOTATION annot,
                               FPDF_ANNOT_APPEARANCEMODE appearanceMode);
 
 // Experimental EmbedPDF Extension API.
+// Get where an annotation's appearance for the given mode is drawn, in page
+// space, without writing anything. A stored appearance is fitted into /Rect.
+// With none, the normal appearance PDFium draws in memory takes its own box,
+// which can reach past /Rect; it is never written to the file.
+//
+//   annot          - handle to an annotation.
+//   appearanceMode - one of FPDF_ANNOT_APPEARANCEMODE_*.
+//   rect           - receives the box.
+//
+// Returns false, and leaves `rect` alone, when there is nothing to draw
+// without writing an appearance: a hidden annotation, or a kind PDFium draws
+// only by generating one into the file.
+FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV
+EPDFAnnot_GetDrawingRect(FPDF_ANNOTATION annot,
+                         FPDF_ANNOT_APPEARANCEMODE appearanceMode,
+                         FS_RECTF* rect);
+
+// Experimental EmbedPDF Extension API.
 // Color types for the MK (appearance characteristics) dictionary on widget
 // annotations.  BC = border color, BG = background color.
 typedef enum {

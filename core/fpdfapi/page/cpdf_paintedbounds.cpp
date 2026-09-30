@@ -114,19 +114,32 @@ std::vector<double> Turns(double p0, double p1, double p2, double p3) {
   return turns;
 }
 
-// The curve `p0..p3`, not its control points.
+// Where a curve turns in the holder's space: the point, and the axis its
+// tangent runs across there (an extreme across x has an upright tangent).
+struct CurveTurn {
+  CFX_PointF at;
+  bool across_x;
+};
+
+// The curve `p0..p3`, not its control points; each point where it turns is
+// kept in `turns`.
 void AddBezier(const CFX_PointF& p0,
                const CFX_PointF& p1,
                const CFX_PointF& p2,
                const CFX_PointF& p3,
-               Bounds* bounds) {
+               Bounds* bounds,
+               std::vector<CurveTurn>* turns) {
   bounds->Add(p0);
   bounds->Add(p3);
   for (double t : Turns(p0.x, p1.x, p2.x, p3.x)) {
-    bounds->Add(BezierAt(p0, p1, p2, p3, t));
+    const CFX_PointF at = BezierAt(p0, p1, p2, p3, t);
+    bounds->Add(at);
+    turns->push_back({at, true});
   }
   for (double t : Turns(p0.y, p1.y, p2.y, p3.y)) {
-    bounds->Add(BezierAt(p0, p1, p2, p3, t));
+    const CFX_PointF at = BezierAt(p0, p1, p2, p3, t);
+    bounds->Add(at);
+    turns->push_back({at, false});
   }
 }
 
@@ -194,10 +207,32 @@ void AddSquareCap(const CFX_PointF& end,
   bounds->Add(matrix.Transform(end + along - across));
 }
 
-// A path's subpaths, and its center line, in the holder's space.
+// The stroke's two edges at `point`, across `direction`.
+void AddAcross(const CFX_PointF& point,
+               const CFX_PointF& direction,
+               float half_width,
+               const CFX_Matrix& matrix,
+               Bounds* bounds) {
+  const CFX_PointF across(-direction.y * half_width, direction.x * half_width);
+  bounds->Add(matrix.Transform(point + across));
+  bounds->Add(matrix.Transform(point - across));
+}
+
+// The pen at `at` (in the holder's space): a circle of the half width in the
+// path's space, reaching `reach_x` and `reach_y` in the holder's.
+void AddPen(const CFX_PointF& at, float reach_x, float reach_y, Bounds* bounds) {
+  bounds->Add(CFX_PointF(at.x - reach_x, at.y));
+  bounds->Add(CFX_PointF(at.x + reach_x, at.y));
+  bounds->Add(CFX_PointF(at.x, at.y - reach_y));
+  bounds->Add(CFX_PointF(at.x, at.y + reach_y));
+}
+
+// A path's subpaths, its center line, and where its curves turn, in the
+// holder's space.
 std::vector<Subpath> WalkPath(const std::vector<CFX_Path::Point>& points,
                               const CFX_Matrix& matrix,
-                              Bounds* line) {
+                              Bounds* line,
+                              std::vector<CurveTurn>* turns) {
   std::vector<Subpath> subpaths;
   for (size_t i = 0; i < points.size(); ++i) {
     const CFX_Path::Point& point = points[i];
@@ -222,7 +257,7 @@ std::vector<Subpath> WalkPath(const std::vector<CFX_Path::Point>& points,
       const CFX_PointF control2 = points[i + 1].point_;
       const CFX_PointF to = points[i + 2].point_;
       AddBezier(matrix.Transform(from), matrix.Transform(control1),
-                matrix.Transform(control2), matrix.Transform(to), line);
+                matrix.Transform(control2), matrix.Transform(to), line, turns);
       subpath.Append(to, FirstDirection(from, {control1, control2, to}),
                      -1.0f * FirstDirection(to, {control2, control1, from}));
       i += 2;
@@ -241,6 +276,8 @@ std::vector<Subpath> WalkPath(const std::vector<CFX_Path::Point>& points,
   return subpaths;
 }
 
+// The box around what a path paints: its fill, and its stroke as the
+// renderer draws it (see the header).
 std::optional<CFX_FloatRect> PaintedPathBounds(const CPDF_PathObject& object) {
   const bool fills = !object.has_no_filltype();
   const bool strokes = object.stroke();
@@ -249,8 +286,9 @@ std::optional<CFX_FloatRect> PaintedPathBounds(const CPDF_PathObject& object) {
   }
   const CFX_Matrix matrix = object.matrix();
   Bounds line;
+  std::vector<CurveTurn> turns;
   const std::vector<Subpath> subpaths =
-      WalkPath(object.path().GetPoints(), matrix, &line);
+      WalkPath(object.path().GetPoints(), matrix, &line, &turns);
   if (!line.box().has_value()) {
     return std::nullopt;
   }
@@ -266,48 +304,63 @@ std::optional<CFX_FloatRect> PaintedPathBounds(const CPDF_PathObject& object) {
   // the holder's.
   const float reach_x = half_width * std::hypot(matrix.a, matrix.c);
   const float reach_y = half_width * std::hypot(matrix.b, matrix.d);
-  box.left -= reach_x;
-  box.right += reach_x;
-  box.bottom -= reach_y;
-  box.top += reach_y;
-
-  // What reaches past the pen: miter tips and square caps.
-  Bounds past;
-  const bool miters =
-      state.GetLineJoin() == CFX_GraphStateData::LineJoin::kMiter;
-  const bool square_caps =
-      state.GetLineCap() == CFX_GraphStateData::LineCap::kSquare;
+  const CFX_GraphStateData::LineCap cap = state.GetLineCap();
+  const CFX_GraphStateData::LineJoin join = state.GetLineJoin();
   const float miter_limit = state.GetMiterLimit();
+  Bounds stroke;
   for (const Subpath& subpath : subpaths) {
     const std::vector<Segment>& segments = subpath.segments;
     if (segments.empty()) {
       continue;
     }
-    if (miters) {
-      for (size_t k = 0; k + 1 < segments.size(); ++k) {
-        if (std::optional<CFX_PointF> tip =
-                MiterTip(segments[k].to, segments[k].arriving,
-                         segments[k + 1].leaving, half_width, miter_limit)) {
-          past.Add(matrix.Transform(tip.value()));
-        }
-      }
-      if (subpath.closed) {
-        if (std::optional<CFX_PointF> tip =
-                MiterTip(segments.back().to, segments.back().arriving,
-                         segments.front().leaving, half_width, miter_limit)) {
-          past.Add(matrix.Transform(tip.value()));
-        }
-      }
+    // Each segment is its width across it, from end to end.
+    for (const Segment& segment : segments) {
+      AddAcross(segment.from, segment.leaving, half_width, matrix, &stroke);
+      AddAcross(segment.to, segment.arriving, half_width, matrix, &stroke);
     }
-    if (square_caps && !subpath.closed) {
+    // Where two segments meet, as the join paints it.
+    auto add_join = [&](const Segment& in, const Segment& out) {
+      if (join == CFX_GraphStateData::LineJoin::kRound) {
+        AddPen(matrix.Transform(in.to), reach_x, reach_y, &stroke);
+      } else if (join == CFX_GraphStateData::LineJoin::kMiter) {
+        if (std::optional<CFX_PointF> tip = MiterTip(
+                in.to, in.arriving, out.leaving, half_width, miter_limit)) {
+          stroke.Add(matrix.Transform(tip.value()));
+        }
+      }
+    };
+    for (size_t k = 0; k + 1 < segments.size(); ++k) {
+      add_join(segments[k], segments[k + 1]);
+    }
+    if (subpath.closed) {
+      add_join(segments.back(), segments.front());
+      continue;
+    }
+    // An open subpath's two ends, as the cap paints them.
+    if (cap == CFX_GraphStateData::LineCap::kRound) {
+      AddPen(matrix.Transform(segments.front().from), reach_x, reach_y,
+             &stroke);
+      AddPen(matrix.Transform(segments.back().to), reach_x, reach_y, &stroke);
+    } else if (cap == CFX_GraphStateData::LineCap::kSquare) {
       AddSquareCap(segments.front().from, -1.0f * segments.front().leaving,
-                   half_width, matrix, &past);
+                   half_width, matrix, &stroke);
       AddSquareCap(segments.back().to, segments.back().arriving, half_width,
-                   matrix, &past);
+                   matrix, &stroke);
     }
   }
-  if (past.box().has_value()) {
-    box.Union(past.box().value());
+  // A curve's own extremes: the tangent runs across the axis there, so the
+  // stroke reaches the half width past them.
+  for (const CurveTurn& turn : turns) {
+    if (turn.across_x) {
+      stroke.Add(CFX_PointF(turn.at.x - reach_x, turn.at.y));
+      stroke.Add(CFX_PointF(turn.at.x + reach_x, turn.at.y));
+    } else {
+      stroke.Add(CFX_PointF(turn.at.x, turn.at.y - reach_y));
+      stroke.Add(CFX_PointF(turn.at.x, turn.at.y + reach_y));
+    }
+  }
+  if (stroke.box().has_value()) {
+    box.Union(stroke.box().value());
   }
   return box;
 }
