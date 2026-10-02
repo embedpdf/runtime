@@ -430,6 +430,21 @@ ByteString StringFromFontNameAndSize(const ByteString& font_name,
   return ByteString(font_stream);
 }
 
+// EmbedPDF: the font part of a /DA string, "/Helv 0 Tf".
+// StringFromFontNameAndSize is for content streams, where a size of 0 would
+// draw invisible text, so it writes nothing for it. In /DA a size of 0 means
+// auto-size (ISO 32000, variable text), and the font must still be named:
+// without it nothing can draw the text. Empty when there is no font name.
+ByteString DefaultAppearanceFontPart(const ByteString& font_name,
+                                     float font_size) {
+  fxcrt::ostringstream font_stream;
+  if (font_name.GetLength() > 0 && font_size >= 0) {
+    font_stream << "/" << font_name << " ";
+    WriteFloat(font_stream, font_size) << " Tf";
+  }
+  return ByteString(font_stream);
+}
+
 ByteString GetFontSetString(IPVT_FontMap* font_map,
                             int32_t font_index,
                             float font_size) {
@@ -3979,10 +3994,15 @@ void AppendRedactLabelForRegion(CPDF_AnnotFontMap& map,
   CPVT_VariableText vt(&provider);
   vt.SetPlateRect(region);
   vt.SetAlignment(annot_dict->GetIntegerFor("Q"));
-  vt.SetMultiLine(true);
-  vt.SetAutoReturn(true);
 
   const bool repeat = annot_dict->GetBooleanFor("Repeat", false);
+  // A label shown once at auto-size (0) fits the region on one line: CPVT
+  // auto-sizes multi-line text only up to 12pt (the rule for multi-line form
+  // fields), which would leave a large region mostly empty. A label at a set
+  // size, or a repeated one, wraps to the region.
+  const bool fit_one_line = !repeat && FXSYS_IsFloatZero(da_font_size);
+  vt.SetMultiLine(!fit_one_line);
+  vt.SetAutoReturn(!fit_one_line);
   // CPVT auto-sizing fits ALL text into the plate, so it cannot combine with
   // /Repeat (more repetitions would only shrink the font); pin a concrete
   // size for the repeat case when /DA asks for auto (size 0).
@@ -4086,8 +4106,13 @@ bool AppendRedactOverlayOps(CPDF_Document* doc,
   std::optional<DefaultAppearanceInfo> da_info =
       form_dict ? GetDefaultAppearanceInfo(annot_dict, form_dict.Get())
                 : std::nullopt;
+  // A /DA without a Tf parses as a font with no name: Helvetica too (files
+  // from other producers, and marks written before /DA kept the font at
+  // auto-size).
   const ByteString font_name =
-      da_info.has_value() ? da_info.value().font_name : ByteString("Helv");
+      da_info.has_value() && !da_info.value().font_name.IsEmpty()
+          ? da_info.value().font_name
+          : ByteString("Helv");
   const float da_font_size =
       da_info.has_value() ? da_info.value().font_size : 0.0f;
 
@@ -5192,12 +5217,14 @@ bool CPDF_GenerateAP::UpdateDefaultAppearance(CPDF_Document* doc,
     }
   }
 
-  ByteString da_font_part = StringFromFontNameAndSize(resource_key, font_size);
+  ByteString da_font_part = DefaultAppearanceFontPart(resource_key, font_size);
+  if (da_font_part.IsEmpty()) {
+    return false;
+  }
   ByteString da_color_part = GenerateColorAP(color, PaintOperation::kFill);
   // EmbedPDF: Strip trailing newlines and write color before font.
   // See comment in GenerateDefaultAppearanceWithColor for rationale.
   da_color_part.TrimBack('\n');
-  da_font_part.TrimBack('\n');
 
   annot_dict->SetNewFor<CPDF_String>("DA", da_color_part + " " + da_font_part);
   return true;
@@ -5230,10 +5257,12 @@ bool CPDF_GenerateAP::UpdateDefaultAppearanceRegisteredFont(
     return false;
   }
 
-  ByteString da_font_part = StringFromFontNameAndSize(resource_key, font_size);
+  ByteString da_font_part = DefaultAppearanceFontPart(resource_key, font_size);
+  if (da_font_part.IsEmpty()) {
+    return false;
+  }
   ByteString da_color_part = GenerateColorAP(color, PaintOperation::kFill);
   da_color_part.TrimBack('\n');
-  da_font_part.TrimBack('\n');
 
   annot_dict->SetNewFor<CPDF_String>("DA", da_color_part + " " + da_font_part);
   return true;

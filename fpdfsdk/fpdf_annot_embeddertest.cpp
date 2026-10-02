@@ -9738,7 +9738,131 @@ TEST_F(FPDFAnnotEmbedderTest, GenerateRedactAppearanceBakesLabelIntoOverlay) {
                             buffer.data(), length_bytes));
   std::wstring rollover = GetPlatformWString(buffer.data());
   EXPECT_NE(std::wstring::npos, rollover.find(L" re f"));  // /IC fill
+  EXPECT_NE(std::wstring::npos, rollover.find(L"Tf"));     // label font
   EXPECT_NE(std::wstring::npos, rollover.find(L"Tj"));     // label text
+}
+
+// A /DA size of 0 means auto-size, and the font is still named: without it no
+// viewer can draw the text.
+TEST_F(FPDFAnnotEmbedderTest, SetDefaultAppearanceKeepsFontAtAutoSize) {
+  ScopedFPDFDocument doc(FPDF_CreateNewDocument());
+  ASSERT_TRUE(doc);
+  ScopedFPDFPage page(FPDFPage_New(doc.get(), 0, 200, 200));
+  ASSERT_TRUE(page);
+
+  ScopedFPDFAnnotation annot =
+      CreateRedactAnnot(page.get(), {20, 150, 180, 50});
+  ASSERT_TRUE(annot);
+  ASSERT_TRUE(EPDFAnnot_SetDefaultAppearance(annot.get(), FPDF_FONT_HELVETICA,
+                                             0.0f, /*R=*/255, /*G=*/255,
+                                             /*B=*/255));
+
+  CPDF_AnnotContext* context = CPDFAnnotContextFromFPDFAnnotation(annot.get());
+  EXPECT_EQ("1 1 1 rg /Helv 0 Tf",
+            context->GetAnnotDict()->GetByteStringFor("DA"));
+
+  FPDF_STANDARD_FONT font = FPDF_FONT_UNKNOWN;
+  float font_size = -1.0f;
+  unsigned int r = 0;
+  unsigned int g = 0;
+  unsigned int b = 0;
+  ASSERT_TRUE(EPDFAnnot_GetDefaultAppearance(annot.get(), &font, &font_size, &r,
+                                             &g, &b));
+  EXPECT_EQ(FPDF_FONT_HELVETICA, font);
+  EXPECT_EQ(0.0f, font_size);
+}
+
+// The engine's path: the label at auto-size, baked into /RO, then applied.
+TEST_F(FPDFAnnotEmbedderTest, ApplyRedactionBurnsInAutoSizedLabel) {
+  ScopedFPDFDocument doc(FPDF_CreateNewDocument());
+  ASSERT_TRUE(doc);
+  ScopedFPDFPage page(FPDFPage_New(doc.get(), 0, 200, 200));
+  ASSERT_TRUE(page);
+
+  {
+    ScopedFPDFAnnotation annot =
+        CreateRedactAnnot(page.get(), {20, 150, 180, 50});
+    ASSERT_TRUE(annot);
+    ASSERT_TRUE(FPDFAnnot_SetColor(annot.get(),
+                                   FPDFANNOT_COLORTYPE_InteriorColor,
+                                   /*R=*/0, /*G=*/0, /*B=*/0, /*A=*/255));
+    ScopedFPDFWideString text = GetFPDFWideString(L"SECRET");
+    ASSERT_TRUE(EPDFAnnot_SetOverlayText(annot.get(), text.get()));
+    ASSERT_TRUE(EPDFAnnot_SetDefaultAppearance(annot.get(),
+                                               FPDF_FONT_HELVETICA, 0.0f,
+                                               /*R=*/255, /*G=*/255,
+                                               /*B=*/255));
+    ASSERT_TRUE(EPDFAnnot_GenerateAppearance(annot.get()));
+    ASSERT_TRUE(EPDFAnnot_ApplyRedaction(page.get(), annot.get(), nullptr));
+  }
+  ASSERT_TRUE(FPDFPage_GenerateContent(page.get()));
+
+  EXPECT_NE(std::wstring::npos, ExtractPageText(page.get()).find(L"SECRET"));
+  ScopedFPDFBitmap bitmap = RenderPageOnWhite(page.get(), 200, 200);
+  EXPECT_GT(CountInkPixels(bitmap.get(), 20, 50, 180, 150, 0xFF000000u), 0);
+  // Fitted to the region on one line ("SECRET" fits its 160pt width at
+  // 35pt), not capped at 12pt: its capitals reach below the first 12pt line.
+  EXPECT_GT(CountInkPixels(bitmap.get(), 20, 62, 180, 74, 0xFF000000u), 0);
+}
+
+// /Repeat at auto-size tiles the label at the fallback size, so the bottom
+// half of the region carries ink too.
+TEST_F(FPDFAnnotEmbedderTest, ApplyRedactionRepeatsAutoSizedLabel) {
+  ScopedFPDFDocument doc(FPDF_CreateNewDocument());
+  ASSERT_TRUE(doc);
+  ScopedFPDFPage page(FPDFPage_New(doc.get(), 0, 200, 200));
+  ASSERT_TRUE(page);
+
+  {
+    ScopedFPDFAnnotation annot =
+        CreateRedactAnnot(page.get(), {20, 150, 180, 50});
+    ASSERT_TRUE(annot);
+    ASSERT_TRUE(FPDFAnnot_SetColor(annot.get(),
+                                   FPDFANNOT_COLORTYPE_InteriorColor,
+                                   /*R=*/0, /*G=*/0, /*B=*/0, /*A=*/255));
+    ScopedFPDFWideString text = GetFPDFWideString(L"SECRET");
+    ASSERT_TRUE(EPDFAnnot_SetOverlayText(annot.get(), text.get()));
+    ASSERT_TRUE(EPDFAnnot_SetOverlayTextRepeat(annot.get(), true));
+    ASSERT_TRUE(EPDFAnnot_SetDefaultAppearance(annot.get(),
+                                               FPDF_FONT_HELVETICA, 0.0f,
+                                               /*R=*/255, /*G=*/255,
+                                               /*B=*/255));
+    ASSERT_TRUE(EPDFAnnot_GenerateAppearance(annot.get()));
+    ASSERT_TRUE(EPDFAnnot_ApplyRedaction(page.get(), annot.get(), nullptr));
+  }
+  ASSERT_TRUE(FPDFPage_GenerateContent(page.get()));
+
+  ScopedFPDFBitmap bitmap = RenderPageOnWhite(page.get(), 200, 200);
+  EXPECT_GT(CountInkPixels(bitmap.get(), 20, 50, 180, 100, 0xFF000000u), 0);
+  EXPECT_GT(CountInkPixels(bitmap.get(), 20, 100, 180, 150, 0xFF000000u), 0);
+}
+
+// A /DA that names no font (another producer, or a mark written before /DA
+// kept the font at auto-size) still draws the label, in Helvetica.
+TEST_F(FPDFAnnotEmbedderTest, ApplyRedactionLabelWithoutDaFontUsesHelvetica) {
+  ScopedFPDFDocument doc(FPDF_CreateNewDocument());
+  ASSERT_TRUE(doc);
+  ScopedFPDFPage page(FPDFPage_New(doc.get(), 0, 200, 200));
+  ASSERT_TRUE(page);
+
+  {
+    ScopedFPDFAnnotation annot =
+        CreateRedactAnnot(page.get(), {20, 150, 180, 50});
+    ASSERT_TRUE(annot);
+    ASSERT_TRUE(FPDFAnnot_SetColor(annot.get(),
+                                   FPDFANNOT_COLORTYPE_InteriorColor,
+                                   /*R=*/0, /*G=*/0, /*B=*/0, /*A=*/255));
+    ScopedFPDFWideString text = GetFPDFWideString(L"SECRET");
+    ASSERT_TRUE(EPDFAnnot_SetOverlayText(annot.get(), text.get()));
+    ScopedFPDFWideString da = GetFPDFWideString(L"1 1 1 rg");
+    ASSERT_TRUE(FPDFAnnot_SetStringValue(annot.get(), "DA", da.get()));
+    ASSERT_TRUE(EPDFAnnot_ApplyRedaction(page.get(), annot.get(), nullptr));
+  }
+  ASSERT_TRUE(FPDFPage_GenerateContent(page.get()));
+
+  EXPECT_NE(std::wstring::npos, ExtractPageText(page.get()).find(L"SECRET"));
+  ScopedFPDFBitmap bitmap = RenderPageOnWhite(page.get(), 200, 200);
+  EXPECT_GT(CountInkPixels(bitmap.get(), 20, 50, 180, 150, 0xFF000000u), 0);
 }
 
 TEST_F(FPDFAnnotEmbedderTest, PolygonAnnotation) {
