@@ -73,7 +73,7 @@ class CPDF_Form final : public CPDF_PageObjectHolder,
 
   // EmbedPDF: starts the parse ParseContent() makes and leaves the rest to
   // ContinueParse(), for a form parsed after the content that placed it
-  // (CPDF_StreamContentParser::DeferNestedForms()).
+  // (CPDF_StreamContentParser::ParseDeferredForms()).
   void StartParseContent(const CPDF_AllStates* pGraphicStates,
                          RecursionState* recursion_state);
 

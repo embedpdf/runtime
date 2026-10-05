@@ -16,6 +16,7 @@
 #include "build/build_config.h"
 #include "constants/page_object.h"
 #include "core/fpdfapi/page/cpdf_annotcontext.h"
+#include "core/fpdfapi/page/cpdf_contentparser.h"
 #include "core/fpdfapi/page/cpdf_decodedimagestore.h"
 #include "core/fpdfapi/page/cpdf_docpagedata.h"
 #include "core/fpdfapi/page/cpdf_form.h"
@@ -70,6 +71,7 @@
 #include "fpdfsdk/cpdfsdk_helpers.h"
 #include "fpdfsdk/cpdfsdk_pageview.h"
 #include "fpdfsdk/cpdfsdk_renderpage.h"
+#include "fpdfsdk/epdf_budget_pause.h"
 #include "fxjs/ijs_runtime.h"
 #include "public/epdf_named_pages.h"
 #include "public/fpdf_formfill.h"
@@ -736,6 +738,22 @@ namespace {
 // overridden to 0 so all subsequent operations use normalized 0-degree
 // coordinates (the intrinsic rotation is surfaced separately via
 // EPDF_GetPageRotateByIndex). Returns nullptr on any failure.
+// EmbedPDF: the page at `page_index`, which the caller checked, not parsed
+// yet.
+RetainPtr<CPDF_Page> NewPage(CPDF_Document* doc, int page_index) {
+  RetainPtr<const CPDF_Dictionary> const_dict =
+      doc->GetPageDictionary(page_index);
+  RetainPtr<CPDF_Dictionary> dict =
+      pdfium::WrapRetain(const_cast<CPDF_Dictionary*>(const_dict.Get()));
+  if (!dict) {
+    return nullptr;
+  }
+
+  auto pPage = pdfium::MakeRetain<CPDF_Page>(doc, std::move(dict));
+  pPage->AddPageImageCache();
+  return pPage;
+}
+
 FPDF_PAGE LoadPageByValidatedIndex(FPDF_DOCUMENT document,
                                    CPDF_Document* doc,
                                    int page_index,
@@ -751,16 +769,10 @@ FPDF_PAGE LoadPageByValidatedIndex(FPDF_DOCUMENT document,
   }
 #endif  // PDF_ENABLE_XFA
 
-  RetainPtr<const CPDF_Dictionary> const_dict =
-      doc->GetPageDictionary(page_index);
-  RetainPtr<CPDF_Dictionary> dict =
-      pdfium::WrapRetain(const_cast<CPDF_Dictionary*>(const_dict.Get()));
-  if (!dict) {
+  RetainPtr<CPDF_Page> pPage = NewPage(doc, page_index);
+  if (!pPage) {
     return nullptr;
   }
-
-  auto pPage = pdfium::MakeRetain<CPDF_Page>(doc, std::move(dict));
-  pPage->AddPageImageCache();
   pPage->ParseContent();
 
   // Force rotation to 0 - this re-runs UpdateDimensions() so page_size_ and
@@ -892,11 +904,61 @@ EPDFDoc_SetPageRotationByObjectNumber(FPDF_DOCUMENT document,
   return true;
 }
 
+FPDF_EXPORT FPDF_PAGE FPDF_CALLCONV
+EPDFDoc_StartLoadPageByObjectNumber(FPDF_DOCUMENT document,
+                                    unsigned int obj_num,
+                                    FPDF_BOOL normalized) {
+  auto* doc = CPDFDocumentFromFPDFDocument(document);
+  if (!doc || obj_num == 0) {
+    return nullptr;
+  }
+  const int page_index = doc->GetPageIndex(obj_num);
+  if (page_index < 0 || page_index >= FPDF_GetPageCount(document)) {
+    return nullptr;
+  }
+#ifdef PDF_ENABLE_XFA
+  if (doc->GetExtension()) {
+    return nullptr;
+  }
+#endif  // PDF_ENABLE_XFA
+
+  RetainPtr<CPDF_Page> page = NewPage(doc, page_index);
+  if (!page) {
+    return nullptr;
+  }
+  // The parser reads the page's box, which rotation doesn't change, so the
+  // rotation can be normalized before the parse as well as after it.
+  if (normalized) {
+    page->SetRotationOverride(0);
+  }
+  CPDF_DocumentViewScope document_view(doc);
+  page->StartParse(std::make_unique<CPDF_ContentParser>(page.Get()));
+  return FPDFPageFromIPDFPage(page.Leak());
+}
+
+FPDF_EXPORT int FPDF_CALLCONV EPDFPage_ContinueLoad(FPDF_PAGE page,
+                                                    int budget_ms) {
+  CPDF_Page* pdf_page = CPDFPageFromFPDFPageAsIs(page);
+  if (!pdf_page || pdf_page->GetParseState() ==
+                       CPDF_PageObjectHolder::ParseState::kNotParsed) {
+    return -1;
+  }
+  if (pdf_page->GetParseState() ==
+      CPDF_PageObjectHolder::ParseState::kParsing) {
+    CPDF_DocumentViewScope document_view(pdf_page->GetDocument());
+    EPDF_BudgetPause pause(budget_ms);
+    pdf_page->ContinueParse(&pause);
+  }
+  return pdf_page->GetParseState() == CPDF_PageObjectHolder::ParseState::kParsed
+             ? 1
+             : 0;
+}
+
 FPDF_EXPORT unsigned int FPDF_CALLCONV
 EPDFPage_GetObjectNumber(FPDF_PAGE page) {
   // Note: CPDFPageFromFPDFPage() returns null for XFA pages, so this function
   // returns 0 for XFA pages (documented in the header).
-  CPDF_Page* pPage = CPDFPageFromFPDFPage(page);
+  CPDF_Page* pPage = CPDFPageFromFPDFPageAsIs(page);
   if (!pPage) {
     return 0;
   }

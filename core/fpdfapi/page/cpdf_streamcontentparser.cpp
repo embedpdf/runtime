@@ -854,21 +854,14 @@ void CPDF_StreamContentParser::AddForm(RetainPtr<CPDF_Stream> pStream,
   if (recursion_state_->content_versions) {
     recursion_state_->content_versions->AddFormStream(form->GetParsedStream());
   }
-  if (!defer_forms_) {
-    form->ParseContent(status.get(), nullptr, recursion_state_);
-  }
 
   CFX_Matrix matrix =
       cur_states_->current_transformation_matrix() * mt_content_to_user_;
   auto pFormObj = std::make_unique<CPDF_FormObject>(GetCurrentStreamIndex(),
                                                     std::move(form), matrix);
   pFormObj->SetResourceName(name);
-  if (defer_forms_) {
-    deferred_forms_.emplace_back(pFormObj.get(), std::move(status),
-                                 recursion_state_->parsed_set);
-  } else {
-    FinishForm(pFormObj.get());
-  }
+  deferred_forms_.emplace_back(pFormObj.get(), std::move(status),
+                               recursion_state_->parsed_set);
   SetGraphicStates(pFormObj.get(), true, true, true);
   AppendObject(std::move(pFormObj));
 }

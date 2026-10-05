@@ -235,6 +235,15 @@ FPDF_DOCUMENT FPDFDocumentFromCPDFDocument(CPDF_Document* doc) {
 }
 
 CPDF_Page* CPDFPageFromFPDFPage(FPDF_PAGE page) {
+  CPDF_Page* pdf_page = CPDFPageFromFPDFPageAsIs(page);
+  if (pdf_page && pdf_page->GetParseState() ==
+                      CPDF_PageObjectHolder::ParseState::kParsing) {
+    pdf_page->ParseContent();
+  }
+  return pdf_page;
+}
+
+CPDF_Page* CPDFPageFromFPDFPageAsIs(FPDF_PAGE page) {
   return page ? IPDFPageFromFPDFPage(page)->AsPDFPage() : nullptr;
 }
 

@@ -495,56 +495,11 @@ uint32_t EstimateFlateUncompressBufferSize(uint32_t orig_size,
 
 DataAndBytesConsumed FlateUncompress(pdfium::span<const uint8_t> src_buf,
                                      uint32_t orig_size) {
-  std::unique_ptr<z_stream, FlateDeleter> context(FlateInit());
-  if (!context) {
-    return {DataVector<uint8_t>(), 0u};
+  // EmbedPDF: whole buffers at a time, as this always has.
+  FlateUncompressor uncompressor(src_buf, orig_size);
+  while (uncompressor.Continue(std::numeric_limits<size_t>::max())) {
   }
-
-  FlateInput(context.get(), src_buf);
-
-  const uint32_t buf_size =
-      EstimateFlateUncompressBufferSize(orig_size, src_buf.size());
-  uint32_t last_buf_size = buf_size;
-  DataVector<uint8_t> guess_buf(buf_size);
-  std::vector<DataVector<uint8_t>> result_tmp_bufs;
-  {
-    DataVector<uint8_t> cur_buf = std::move(guess_buf);
-    while (true) {
-      bool ret = FlateOutput(context.get(), cur_buf);
-      uint32_t avail_buf_size = FlateGetAvailOut(context.get());
-      if (!ret || avail_buf_size != 0) {
-        last_buf_size = buf_size - avail_buf_size;
-        result_tmp_bufs.push_back(std::move(cur_buf));
-        break;
-      }
-      result_tmp_bufs.push_back(std::move(cur_buf));
-      cur_buf = DataVector<uint8_t>(buf_size);
-    }
-  }
-
-  // The TotalOut size returned from the library may not be big enough to
-  // handle the content the library returns. We can only handle items
-  // up to 4GB in size.
-  const uint32_t dest_size = FlateGetPossiblyTruncatedTotalOut(context.get());
-  const uint32_t bytes_consumed =
-      FlateGetPossiblyTruncatedTotalIn(context.get());
-  if (result_tmp_bufs.size() == 1) {
-    CHECK_LE(dest_size, buf_size);
-    result_tmp_bufs.front().resize(dest_size);
-    return {std::move(result_tmp_bufs.front()), bytes_consumed};
-  }
-
-  DataVector<uint8_t> result_buf(dest_size);
-  auto result_span = pdfium::span(result_buf);
-  for (size_t i = 0; i < result_tmp_bufs.size(); i++) {
-    DataVector<uint8_t> tmp_buf = std::move(result_tmp_bufs[i]);
-    const uint32_t tmp_buf_size =
-        i + 1 < result_tmp_bufs.size() ? buf_size : last_buf_size;
-    size_t cp_size = std::min<size_t>(tmp_buf_size, result_span.size());
-    result_span =
-        fxcrt::spancpy(result_span, pdfium::span(tmp_buf).first(cp_size));
-  }
-  return {std::move(result_buf), bytes_consumed};
+  return uncompressor.TakeResult();
 }
 
 enum class PredictorType : uint8_t { kNone, kFlate, kPng };
@@ -776,6 +731,111 @@ size_t FlatePredictorScanlineDecoder::CopyAndAdvanceLine(size_t bytes_to_go) {
 }
 
 }  // namespace
+
+void FlateUncompressor::ContextDeleter::operator()(z_stream_s* context) const {
+  FlateEnd(context);
+}
+
+FlateUncompressor::FlateUncompressor(pdfium::span<const uint8_t> src_buf,
+                                     uint32_t orig_size)
+    : context_(FlateInit()),
+      buf_size_(EstimateFlateUncompressBufferSize(orig_size, src_buf.size())),
+      last_buf_size_(buf_size_) {
+  if (context_) {
+    FlateInput(context_.get(), src_buf);
+    cur_buf_ = DataVector<uint8_t>(buf_size_);
+  }
+}
+
+FlateUncompressor::~FlateUncompressor() = default;
+
+bool FlateUncompressor::Continue(size_t max_bytes) {
+  if (done_) {
+    return false;
+  }
+  if (!context_) {
+    done_ = true;
+    return false;
+  }
+  max_bytes = std::max<size_t>(max_bytes, 1);
+  if (!inflated_) {
+    Inflate(max_bytes);
+    return true;
+  }
+  Join(max_bytes);
+  return !done_;
+}
+
+// Inflating a buffer in pieces gives the bytes inflating it at once does.
+void FlateUncompressor::Inflate(size_t max_bytes) {
+  const size_t piece = std::min(max_bytes, cur_buf_.size() - cur_filled_);
+  const bool ret = FlateOutput(
+      context_.get(), pdfium::span(cur_buf_).subspan(cur_filled_, piece));
+  const uint32_t avail_buf_size = FlateGetAvailOut(context_.get());
+  cur_filled_ += piece - avail_buf_size;
+  if (!ret || avail_buf_size != 0) {
+    last_buf_size_ = pdfium::checked_cast<uint32_t>(cur_filled_);
+    result_tmp_bufs_.push_back(std::move(cur_buf_));
+    inflated_ = true;
+    // The TotalOut size returned from the library may not be big enough to
+    // handle the content the library returns. We can only handle items
+    // up to 4GB in size.
+    dest_size_ = FlateGetPossiblyTruncatedTotalOut(context_.get());
+    if (result_tmp_bufs_.size() == 1) {
+      CHECK_LE(dest_size_, buf_size_);
+      result_ = std::move(result_tmp_bufs_.front());
+      result_.resize(dest_size_);
+      result_tmp_bufs_.clear();
+      done_ = true;
+    } else {
+      result_.reserve(dest_size_);
+    }
+    return;
+  }
+  if (cur_filled_ == cur_buf_.size()) {
+    result_tmp_bufs_.push_back(std::move(cur_buf_));
+    cur_buf_ = DataVector<uint8_t>(buf_size_);
+    cur_filled_ = 0;
+  }
+}
+
+// Joins the buffers into one, up to `max_bytes` at a time, freeing each once
+// it is copied.
+void FlateUncompressor::Join(size_t max_bytes) {
+  size_t budget = max_bytes;
+  while (next_buf_ < result_tmp_bufs_.size() && result_.size() < dest_size_) {
+    DataVector<uint8_t>& tmp_buf = result_tmp_bufs_[next_buf_];
+    const size_t tmp_buf_size =
+        next_buf_ + 1 < result_tmp_bufs_.size() ? buf_size_ : last_buf_size_;
+    const size_t copied = result_.size() - joined_before_next_;
+    const size_t left_in_buf =
+        std::min(tmp_buf_size, dest_size_ - joined_before_next_) - copied;
+    const size_t piece = std::min(left_in_buf, budget);
+    result_.insert(result_.end(), tmp_buf.begin() + copied,
+                   tmp_buf.begin() + copied + piece);
+    budget -= piece;
+    if (piece == left_in_buf) {
+      DataVector<uint8_t>().swap(tmp_buf);
+      ++next_buf_;
+      joined_before_next_ = result_.size();
+    }
+    if (budget == 0) {
+      break;
+    }
+  }
+  if (next_buf_ >= result_tmp_bufs_.size() || result_.size() >= dest_size_) {
+    result_tmp_bufs_.clear();
+    done_ = true;
+  }
+}
+
+DataAndBytesConsumed FlateUncompressor::TakeResult() {
+  CHECK(done_);
+  if (!context_) {
+    return {DataVector<uint8_t>(), 0u};
+  }
+  return {std::move(result_), FlateGetPossiblyTruncatedTotalIn(context_.get())};
+}
 
 // static
 std::unique_ptr<ScanlineDecoder> FlateModule::CreateDecoder(

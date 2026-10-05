@@ -54,7 +54,15 @@ class SkCanvas;
 // Conversions to/from underlying types.
 IPDF_Page* IPDFPageFromFPDFPage(FPDF_PAGE page);
 FPDF_PAGE FPDFPageFromIPDFPage(IPDF_Page* page);
+// The page behind `page`. A page still loading in slices
+// (EPDFDoc_StartLoadPageByObjectNumber()) finishes its load first: no call
+// that reads a page sees half of one.
 CPDF_Page* CPDFPageFromFPDFPage(FPDF_PAGE page);
+
+// EmbedPDF: the page behind `page` as it is, perhaps still loading. Only for
+// the calls that work on a page mid-load: continuing its load, measuring it,
+// and asking what it is.
+CPDF_Page* CPDFPageFromFPDFPageAsIs(FPDF_PAGE page);
 FPDF_DOCUMENT FPDFDocumentFromCPDFDocument(CPDF_Document* doc);
 CPDF_Document* CPDFDocumentFromFPDFDocument(FPDF_DOCUMENT doc);
 

@@ -2113,6 +2113,49 @@ FPDF_EXPORT unsigned int FPDF_CALLCONV
 EPDFPage_GetObjectNumber(FPDF_PAGE page);
 
 // Experimental EmbedPDF Extension API.
+// Starts loading a page by its PDF indirect object number, in slices: makes
+// the page and parses nothing yet. Continue the load with
+// EPDFPage_ContinueLoad() until it returns 1; FPDF_ClosePage() between slices
+// abandons it.
+//
+// Until the load ends, a call that reads the page - render, text, objects,
+// annotations, content generation - first finishes it in one go, so no call
+// sees half a page. EPDFPage_ContinueLoad(), EPDFPage_GetParsedSize() (the
+// size parsed so far), EPDFPage_IsContentCurrent(), EPDFPage_IsValid(),
+// EPDFPage_GetObjectNumber(), the page's size and FPDF_ClosePage() leave it
+// loading.
+//
+//   document   - handle to the document.
+//   obj_num    - the indirect object number of the page dictionary.
+//   normalized - true to load it as
+//                EPDFDoc_LoadPageByObjectNumberNormalized() does, with its
+//                rotation normalized to 0 degrees.
+//
+// Returns a handle to the page, or NULL if the object number does not
+// correspond to a page. Close it with FPDF_ClosePage().
+FPDF_EXPORT FPDF_PAGE FPDF_CALLCONV
+EPDFDoc_StartLoadPageByObjectNumber(FPDF_DOCUMENT document,
+                                    unsigned int obj_num,
+                                    FPDF_BOOL normalized);
+
+// Experimental EmbedPDF Extension API.
+// Parses more of a page that EPDFDoc_StartLoadPageByObjectNumber() started,
+// pausing once `budget_ms` milliseconds have passed; 0 parses one step. A step
+// is about 100 objects, a form's start or a content stream's decoding, so a
+// slice can run over its budget by one step. The parse pauses inside forms
+// too: a page drawn inside one huge form loads in slices like any other.
+// Loading in slices or in one go (FPDF_LoadPage()) gives the same page.
+//
+//   page      - handle to the page.
+//   budget_ms - how long to parse before pausing.
+//
+// Returns 1 once the page is loaded (at once for a page already loaded), 0
+// when the budget ran out first, and -1 when `page` is NULL or wasn't loaded
+// as a page.
+FPDF_EXPORT int FPDF_CALLCONV EPDFPage_ContinueLoad(FPDF_PAGE page,
+                                                    int budget_ms);
+
+// Experimental EmbedPDF Extension API.
 // What a page's parsed content costs in memory (EPDFPage_GetParsedSize()).
 typedef struct EPDF_PAGE_PARSED_SIZE_ {
   // Every page object, the objects inside forms included.

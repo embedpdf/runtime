@@ -69,15 +69,13 @@ class CPDF_StreamContentParser {
                  const std::vector<uint32_t>& stream_start_offsets);
   CPDF_PageObjectHolder* GetPageObjectHolder() const { return object_holder_; }
 
-  // EmbedPDF: a form this parser meets is placed at once and parsed after
-  // the parser's own content, by ParseDeferredForms(), instead of inside the
-  // step that met it. Its content goes into its own form object, so the
-  // objects come out the same.
-  void DeferNestedForms() { defer_forms_ = true; }
-
-  // EmbedPDF: parses the forms this parser deferred, in the order it placed
-  // them, each completely - the forms inside it included - before the next.
-  // Returns false when `pause` stopped it first; call again to go on.
+  // EmbedPDF: a form this parser meets is placed at once, and parsed after
+  // the parser's own content instead of inside the step that met it, so a
+  // parse can pause inside a form (CPDF_ContentParser's forms stage). Its
+  // content goes into its own form object, so the objects come out the same.
+  // This parses the forms placed, in the order they were placed, each
+  // completely - the forms inside it included - before the next. Returns
+  // false when `pause` stopped it first; call again to go on.
   bool ParseDeferredForms(PauseIndicatorIface* pause);
 
   CPDF_AllStates* GetCurStates() const { return cur_states_.get(); }
@@ -278,7 +276,7 @@ class CPDF_StreamContentParser {
   // The merged stream offset at which the last |syntax_| started parsing.
   uint32_t start_parse_offset_ = 0;
 
-  // EmbedPDF: a form placed and not yet parsed (DeferNestedForms()).
+  // EmbedPDF: a form placed and not yet parsed (ParseDeferredForms()).
   struct DeferredForm {
     DeferredForm(CPDF_FormObject* object,
                  std::unique_ptr<CPDF_AllStates> states,
@@ -295,7 +293,6 @@ class CPDF_StreamContentParser {
     // and the parsers around it, which wait for the forms they placed.
     std::set<const uint8_t*> enclosing;
   };
-  bool defer_forms_ = false;
   std::deque<DeferredForm> deferred_forms_;
 };
 

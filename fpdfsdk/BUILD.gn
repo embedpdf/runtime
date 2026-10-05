@@ -45,6 +45,8 @@ source_set("fpdfsdk") {
     "epdf_measure.cpp",
     "epdf_page_content_helpers.cpp",
     "epdf_page_content_helpers.h",
+    # EmbedPDF: the time budget of sliced renders and page loads.
+    "epdf_budget_pause.h",
     # EmbedPDF: what a parsed page costs, and whether it is still current.
     "epdf_page_residency.cpp",
     "epdf_png_shim.cpp",
@@ -197,9 +199,9 @@ pdfium_embeddertest_source_set("embeddertests") {
     # EmbedPDF: covers what a parsed page costs and whether it is current
     # (EPDFPage_GetParsedSize, EPDFPage_IsContentCurrent).
     "epdf_page_residency_embeddertest.cpp",
-    # EmbedPDF: covers nested forms parsed after the content that places them
-    # (CPDF_ContentParser::SetDeferNestedForms).
-    "epdf_deferred_forms_embeddertest.cpp",
+    # EmbedPDF: covers pages loaded in slices
+    # (EPDFDoc_StartLoadPageByObjectNumber, EPDFPage_ContinueLoad).
+    "epdf_sliced_load_embeddertest.cpp",
     # EmbedPDF: covers the /Names /Pages and /Templates name-tree APIs.
     "epdf_named_pages_embeddertest.cpp",
     "epdf_redact_embeddertest.cpp",

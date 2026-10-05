@@ -733,7 +733,7 @@ EPDFLayer_IsObjectPromoted(FPDF_DOCUMENT layer, unsigned long obj_num) {
 }
 
 FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV EPDFPage_IsValid(FPDF_PAGE page) {
-  CPDF_Page* pdf_page = CPDFPageFromFPDFPage(page);
+  CPDF_Page* pdf_page = CPDFPageFromFPDFPageAsIs(page);
   CPDF_Document* doc = pdf_page ? pdf_page->GetDocument() : nullptr;
   if (!doc) {
     return false;

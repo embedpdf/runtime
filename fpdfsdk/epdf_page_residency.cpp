@@ -11,7 +11,7 @@
 
 FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV
 EPDFPage_GetParsedSize(FPDF_PAGE page, EPDF_PAGE_PARSED_SIZE* size) {
-  const CPDF_Page* pdf_page = CPDFPageFromFPDFPage(page);
+  const CPDF_Page* pdf_page = CPDFPageFromFPDFPageAsIs(page);
   if (!pdf_page || !size) {
     return false;
   }
@@ -26,6 +26,6 @@ EPDFPage_GetParsedSize(FPDF_PAGE page, EPDF_PAGE_PARSED_SIZE* size) {
 }
 
 FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV EPDFPage_IsContentCurrent(FPDF_PAGE page) {
-  const CPDF_Page* pdf_page = CPDFPageFromFPDFPage(page);
+  const CPDF_Page* pdf_page = CPDFPageFromFPDFPageAsIs(page);
   return pdf_page && pdf_page->IsContentCurrent();
 }

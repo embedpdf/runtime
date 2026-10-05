@@ -20,6 +20,11 @@
 
 class CPDF_Dictionary;
 class CPDF_Stream;
+class PauseIndicatorIface;
+
+namespace fxcodec {
+class FlateUncompressor;
+}  // namespace fxcodec
 
 class CPDF_StreamAcc final : public Retainable {
  public:
@@ -32,6 +37,13 @@ class CPDF_StreamAcc final : public Retainable {
   void LoadAllDataFilteredWithEstimatedSize(uint32_t estimated_size);
   void LoadAllDataImageAcc(uint32_t estimated_size);
   void LoadAllDataRaw();
+
+  // EmbedPDF: loads the data LoadAllDataFiltered() loads, in steps. A stream
+  // whose one filter is FlateDecode, without parameters - a content stream,
+  // typically, which can inflate to tens of megabytes - inflates a megabyte
+  // at a time, pausing when `pause` asks; any other stream loads in one go.
+  // Returns true once loaded; call again until it does.
+  bool LoadAllDataFilteredInSteps(PauseIndicatorIface* pause);
 
   RetainPtr<const CPDF_Stream> GetStream() const;
   RetainPtr<const CPDF_Dictionary> GetImageParam() const;
@@ -56,6 +68,11 @@ class CPDF_StreamAcc final : public Retainable {
   // Returns the raw data from `stream_`, or no data on failure.
   DataVector<uint8_t> ReadRawStream() const;
 
+  // EmbedPDF: for LoadAllDataFilteredInSteps(). Starts inflating, or returns
+  // false for a stream that doesn't inflate in steps.
+  bool StartInflating();
+  void FinishInflating();
+
   bool is_owned() const {
     return std::holds_alternative<DataVector<uint8_t>>(data_);
   }
@@ -65,6 +82,14 @@ class CPDF_StreamAcc final : public Retainable {
   // Needs to outlive `data_` when the data is not owned.
   RetainPtr<const CPDF_Stream> const stream_;
   std::variant<pdfium::raw_span<const uint8_t>, DataVector<uint8_t>> data_;
+
+  // EmbedPDF: a load in steps, and while it inflates, the raw bytes it
+  // inflates (the stream's own, or a copy when it reads them from a file).
+  enum class StepLoad : uint8_t { kNotStarted, kInflating, kLoaded };
+  StepLoad step_load_ = StepLoad::kNotStarted;
+  std::unique_ptr<fxcodec::FlateUncompressor> uncompressor_;
+  std::variant<pdfium::raw_span<const uint8_t>, DataVector<uint8_t>>
+      inflate_src_;
 };
 
 #endif  // CORE_FPDFAPI_PARSER_CPDF_STREAM_ACC_H_

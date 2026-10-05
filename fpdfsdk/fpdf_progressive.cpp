@@ -6,8 +6,6 @@
 
 #include "public/fpdf_progressive.h"
 
-#include <algorithm>
-#include <chrono>
 #include <memory>
 #include <utility>
 
@@ -15,12 +13,12 @@
 #include "core/fpdfapi/render/cpdf_pagerendercontext.h"
 #include "core/fpdfapi/render/cpdf_progressiverenderer.h"
 #include "core/fxcrt/fx_coordinates.h"
-#include "core/fxcrt/pauseindicator_iface.h"
 #include "core/fxge/cfx_defaultrenderdevice.h"
 #include "core/fxge/dib/cfx_dibitmap.h"
 #include "fpdfsdk/cpdfsdk_helpers.h"
 #include "fpdfsdk/cpdfsdk_pauseadapter.h"
 #include "fpdfsdk/cpdfsdk_renderpage.h"
+#include "fpdfsdk/epdf_budget_pause.h"
 #include "public/fpdfview.h"
 
 // These checks are here because core/ and public/ cannot depend on each other.
@@ -39,21 +37,6 @@ namespace {
 int ToFPDFStatus(CPDF_ProgressiveRenderer::Status status) {
   return static_cast<int>(status);
 }
-
-// Asks to pause once a time budget has passed.
-class BudgetPause final : public PauseIndicatorIface {
- public:
-  explicit BudgetPause(int budget_ms)
-      : deadline_(std::chrono::steady_clock::now() +
-                  std::chrono::milliseconds(std::max(budget_ms, 0))) {}
-
-  bool NeedToPauseNow() override {
-    return std::chrono::steady_clock::now() >= deadline_;
-  }
-
- private:
-  const std::chrono::steady_clock::time_point deadline_;
-};
 
 // The status of a render after one of its slices. A render that ended hands
 // the bitmap back in the alpha form it came in.
@@ -252,7 +235,7 @@ EPDF_RenderPageBitmapWithMatrix_Start(FPDF_BITMAP bitmap,
     transform_matrix *= CFXMatrixFromFSMatrix(*matrix);
   }
 
-  BudgetPause pause(budget_ms);
+  EPDF_BudgetPause pause(budget_ms);
   CPDFSDK_StartRenderPage(context, pPage, transform_matrix,
                           clipping_rect.ToFxRect(), flags, &pause);
   return SliceStatus(context);
@@ -275,7 +258,7 @@ FPDF_EXPORT int FPDF_CALLCONV EPDF_RenderPage_Continue(FPDF_PAGE page,
     return ToFPDFStatus(context->renderer_->GetStatus());
   }
 
-  BudgetPause pause(budget_ms);
+  EPDF_BudgetPause pause(budget_ms);
   context->renderer_->Continue(&pause);
   return SliceStatus(context);
 }
