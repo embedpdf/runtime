@@ -91,7 +91,10 @@ unsigned long GetStreamMaybeCopyAndReturnLengthImpl(
   }
 
   pdfium::span<const uint8_t> stream_data_span = stream_acc->GetSpan();
-  if (!buffer.empty() && buffer.size() <= stream_data_span.size()) {
+  // EmbedPDF: copy when the buffer is large enough, as every caller's API
+  // documents. The comparison was inverted: a larger buffer came back
+  // unfilled (with success), and a smaller one failed fxcrt::Copy()'s CHECK.
+  if (!buffer.empty() && buffer.size() >= stream_data_span.size()) {
     fxcrt::Copy(stream_data_span, buffer);
   }
   return pdfium::checked_cast<unsigned long>(stream_data_span.size());

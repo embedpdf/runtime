@@ -97,6 +97,34 @@ TEST_F(FPDFAttachmentEmbedderTest, ExtractAttachments) {
   EXPECT_EQ(kCheckSumW, GetPlatformWString(buf.data()));
 }
 
+// EmbedPDF: the buffer contract FPDFAttachment_GetFile() documents. A buffer
+// large enough is filled; a smaller one is left alone and only the size is
+// reported. (The size check was inverted: a larger buffer came back unfilled,
+// and a smaller one failed a CHECK.)
+TEST_F(FPDFAttachmentEmbedderTest, GetFileHonoursTheBufferContract) {
+  ScopedFPDFDocument doc(FPDF_CreateNewDocument());
+  ScopedFPDFWideString name = GetFPDFWideString(L"a.txt");
+  FPDF_ATTACHMENT file = FPDFDoc_AddAttachment(doc.get(), name.get());
+  ASSERT_TRUE(file);
+  ASSERT_TRUE(FPDFAttachment_SetFile(file, doc.get(), "hello", 5));
+
+  unsigned long size = 0;
+  char exact[5] = {};
+  ASSERT_TRUE(FPDFAttachment_GetFile(file, exact, sizeof(exact), &size));
+  EXPECT_EQ(5u, size);
+  EXPECT_EQ("hello", std::string(exact, size));
+
+  char larger[16] = {};
+  ASSERT_TRUE(FPDFAttachment_GetFile(file, larger, sizeof(larger), &size));
+  EXPECT_EQ(5u, size);
+  EXPECT_EQ("hello", std::string(larger, size));
+
+  char smaller[3] = {'x', 'x', 'x'};
+  ASSERT_TRUE(FPDFAttachment_GetFile(file, smaller, sizeof(smaller), &size));
+  EXPECT_EQ(5u, size);
+  EXPECT_EQ("xxx", std::string(smaller, sizeof(smaller)));  // untouched
+}
+
 TEST_F(FPDFAttachmentEmbedderTest, NoAttachmentToExtract) {
   // Open a file with no attachments.
   ASSERT_TRUE(OpenDocument("hello_world.pdf"));
