@@ -43,17 +43,20 @@ constexpr FX_FILESIZE kReservedDeltaHeadroom = 16 * 1024 * 1024;
 constexpr FX_FILESIZE kSafeNotionalStartOffsetMax =
     0xffffffff - kReservedDeltaHeadroom;
 // A layer artifact: a header, the layer's raw delta, and (version 2) its
-// birth list. Version 1 had no birth list: it reads as a layer that promoted
-// nothing, which is what every version-1 layer is.
+// birth list. Version 2's header also carries the layer's last object number:
+// the numbers it has handed out, deleted ones included, so a reopened layer
+// never hands one out again (fork plan rule 7) - the delta only carries the
+// objects that still exist. Version 1 had neither: it reads as a layer that
+// promoted nothing, which is what every version-1 layer is.
 constexpr char kLayerArtifactMagic[] = "EPDFLYR1";
 constexpr uint32_t kLayerArtifactVersion = 2;
 constexpr size_t kSha256DigestSize = 32;
 constexpr size_t kLayerArtifactHeaderSizeV1 =
     8 + sizeof(uint32_t) + sizeof(uint32_t) + sizeof(uint64_t) * 3 +
     kSha256DigestSize * 2;
-// Version 2 adds the birth list's size.
+// Version 2 adds the birth list's size and the last object number.
 constexpr size_t kLayerArtifactHeaderSize =
-    kLayerArtifactHeaderSizeV1 + sizeof(uint64_t);
+    kLayerArtifactHeaderSizeV1 + sizeof(uint64_t) * 2;
 
 // One byte range of a reader the runtime keeps open: the delta inside an
 // artifact file, read in place. Its underlying stream is the file, which is
@@ -264,7 +267,8 @@ FPDF_DOCUMENT OpenLayerWithDeltaStream(
     EPDF_BASE_DOCUMENT base,
     RetainPtr<IFX_SeekableReadStream> delta_stream,
     EPDFLayerOpenStatus* out_status,
-    std::map<uint32_t, CPDF_PageBirths> births = {}) {
+    std::map<uint32_t, CPDF_PageBirths> births = {},
+    uint32_t last_object_number = 0) {
   SetOpenStatus(out_status, EPDFLayerOpenStatus_kOpenFailed);
   // Not while a layer transaction is open on this thread: the open
   // generation is the thread's, so nothing could write the new layer.
@@ -282,8 +286,8 @@ FPDF_DOCUMENT OpenLayerWithDeltaStream(
   if (status != EPDFLayerOpenStatus_kSuccess) {
     return nullptr;
   }
-  // The births name objects the delta carries, so they load after it.
-  if (!births.empty() && !layer->LoadBirths(std::move(births))) {
+  // What the artifact adds to its delta, checked against the delta.
+  if (!layer->RestoreArtifactState(std::move(births), last_object_number)) {
     SetOpenStatus(out_status, EPDFLayerOpenStatus_kMalformedDelta);
     return nullptr;
   }
@@ -334,7 +338,8 @@ std::vector<uint8_t> BuildLayerArtifactHeader(
     CPDF_BaseDocument* base_doc,
     uint64_t delta_size,
     const std::array<uint8_t, kSha256DigestSize>& delta_sha,
-    uint64_t births_size) {
+    uint64_t births_size,
+    uint32_t last_object_number) {
   std::vector<uint8_t> artifact;
   artifact.reserve(kLayerArtifactHeaderSize);
   artifact.insert(artifact.end(), kLayerArtifactMagic, kLayerArtifactMagic + 8);
@@ -349,6 +354,7 @@ std::vector<uint8_t> BuildLayerArtifactHeader(
   artifact.insert(artifact.end(), base_sha.begin(), base_sha.end());
   artifact.insert(artifact.end(), delta_sha.begin(), delta_sha.end());
   AppendUint64LE(&artifact, births_size);
+  AppendUint64LE(&artifact, last_object_number);
   return artifact;
 }
 
@@ -451,7 +457,8 @@ struct LayerArtifactHeader {
   uint64_t raw_base_size = 0;
   uint64_t layer_append_base_offset = 0;
   uint64_t delta_size = 0;
-  uint64_t births_size = 0;  // 0 in version 1
+  uint64_t births_size = 0;         // 0 in version 1
+  uint64_t last_object_number = 0;  // 0 in version 1
   std::array<uint8_t, kSha256DigestSize> base_sha = {};
   std::array<uint8_t, kSha256DigestSize> delta_sha = {};
 };
@@ -496,6 +503,12 @@ std::optional<LayerArtifactHeader> ReadLayerArtifactHeader(
   cursor += kSha256DigestSize;
   if (version >= 2) {
     header.births_size = ReadUint64LE(bytes.data() + cursor);
+    cursor += sizeof(uint64_t);
+    header.last_object_number = ReadUint64LE(bytes.data() + cursor);
+    if (header.last_object_number > std::numeric_limits<uint32_t>::max()) {
+      SetOpenStatus(out_status, EPDFLayerOpenStatus_kMalformedDelta);
+      return std::nullopt;
+    }
   }
 
   if (header.raw_base_size !=
@@ -631,7 +644,8 @@ EPDFLayer_OpenLayerArtifact(EPDF_BASE_DOCUMENT base,
 
   return OpenLayerWithDeltaStream(
       base, pdfium::MakeRetain<OwnedReadOnlyMemoryStream>(std::move(delta)),
-      out_status, std::move(*births));
+      out_status, std::move(*births),
+      static_cast<uint32_t>(header->last_object_number));
 }
 
 FPDF_EXPORT FPDF_DOCUMENT FPDF_CALLCONV
@@ -702,8 +716,9 @@ EPDFLayer_OpenLayerArtifactFromPath(EPDF_BASE_DOCUMENT base,
     SetOpenStatus(out_status, EPDFLayerOpenStatus_kMalformedDelta);
     return nullptr;
   }
-  return OpenLayerWithDeltaStream(base, std::move(delta_stream), out_status,
-                                  std::move(*births));
+  return OpenLayerWithDeltaStream(
+      base, std::move(delta_stream), out_status, std::move(*births),
+      static_cast<uint32_t>(header->last_object_number));
 }
 
 FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV
@@ -999,8 +1014,9 @@ bool SaveLayerArtifactImpl(FPDF_DOCUMENT layer,
 
   const std::vector<uint8_t> births =
       SerializeBirths(layer_doc->GetCommittedBirths());
-  const std::vector<uint8_t> header = BuildLayerArtifactHeader(
-      base_doc, delta_writer.size, *delta_sha, births.size());
+  const std::vector<uint8_t> header =
+      BuildLayerArtifactHeader(base_doc, delta_writer.size, *delta_sha,
+                               births.size(), layer_doc->GetLastObjNum());
   if (!WriteBytes(file_write, pdfium::span<const uint8_t>(header)) ||
       !delta_writer.ReplayTo(file_write) ||
       !WriteBytes(file_write, pdfium::span<const uint8_t>(births))) {
@@ -1083,7 +1099,7 @@ void* SaveLayerArtifactToOwnedBufferImpl(FPDF_DOCUMENT layer,
       SerializeBirths(layer_doc->GetCommittedBirths());
   std::vector<uint8_t> artifact = BuildLayerArtifactHeader(
       base_doc, static_cast<uint64_t>(delta_writer.data.size()), *delta_sha,
-      births.size());
+      births.size(), layer_doc->GetLastObjNum());
   artifact.reserve(kLayerArtifactHeaderSize + delta_writer.data.size() +
                    births.size());
   artifact.insert(artifact.end(), delta_writer.data.begin(),

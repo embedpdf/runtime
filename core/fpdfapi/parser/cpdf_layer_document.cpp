@@ -22,6 +22,7 @@
 #include "core/fpdfapi/parser/cpdf_write_generation.h"
 #include "core/fpdfapi/render/cpdf_docrenderdata.h"
 #include "core/fxcrt/check.h"
+#include "core/fxcrt/containers/contains.h"
 #include "core/fxcrt/fx_stream.h"
 #include "core/fxcrt/notreached.h"
 
@@ -443,9 +444,13 @@ bool CPDF_LayerDocument::CommitTransaction() {
   }
   std::unique_ptr<CPDF_LayerTransaction> tx = std::move(transaction_);
   CPDF_WriteGeneration::SetCurrent(0);
-  // The committed versions this commit replaces or deletes: nobody can reach
-  // them afterwards, so derived caches must not keep them alive.
+  // What nobody can reach after this commit, so derived caches must not keep
+  // it alive: the committed versions it replaces or deletes, and the objects
+  // it made and deleted again itself.
   std::vector<RetainPtr<const CPDF_Object>> unreachable;
+  for (RetainPtr<CPDF_Object>& object : tx->dropped) {
+    unreachable.push_back(std::move(object));
+  }
   for (auto& [objnum, object] : tx->written) {
     if (RetainPtr<CPDF_Object> old = FindLocalIndirectObject(objnum)) {
       unreachable.push_back(std::move(old));
@@ -615,19 +620,47 @@ std::optional<std::pair<uint32_t, uint32_t>> CPDF_LayerDocument::FindBirthName(
   return it->second;
 }
 
-bool CPDF_LayerDocument::LoadBirths(
-    std::map<uint32_t, CPDF_PageBirths> births) {
+bool CPDF_LayerDocument::RestoreArtifactState(
+    std::map<uint32_t, CPDF_PageBirths> births,
+    uint32_t last_object_number) {
   if (transaction_ || !births_.empty()) {
     return false;
   }
-  // Every birth must name an object this layer has: the artifact's delta
-  // carries what the promotion made.
+  // Numbers first: the delta carries only the objects that still exist, so
+  // its highest is no high-water mark. The artifact's is, and can't be lower.
+  if (last_object_number != 0) {
+    if (last_object_number < GetLastObjNum()) {
+      return false;
+    }
+    SetLastObjNum(last_object_number);
+  }
+  // A birth outlives its object: an annotation promoted and later deleted
+  // keeps its birth, so its birth name says "deleted" instead of falling back
+  // to whatever sits at its old position. So the object may be gone; what
+  // every real birth still satisfies is checked instead. Its page is a base
+  // page with an inline annotation at the birth index, and its object number
+  // is one this layer handed out - above the base's, up to the last - and a
+  // dictionary, if it still resolves.
+  const uint32_t base_last = base_->GetLastObjNum();
   for (const auto& [page_objnum, page_births] : births) {
+    std::optional<std::vector<uint32_t>> inline_positions =
+        page_objnum ? GetBaseInlineAnnotPositions(page_objnum) : std::nullopt;
+    if (!inline_positions) {
+      return false;
+    }
     for (const auto& [birth_index, objnum] : page_births) {
-      if (!page_objnum || !objnum || !FindLocalIndirectObject(objnum)) {
+      if (objnum <= base_last || objnum > GetLastObjNum() ||
+          !pdfium::Contains(*inline_positions, birth_index)) {
+        return false;
+      }
+      RetainPtr<const CPDF_Object> born = FindLocalIndirectObject(objnum);
+      if (born && !born->IsDictionary()) {
         return false;
       }
     }
+  }
+  if (births.empty()) {
+    return true;
   }
   for (auto& [page_objnum, page_births] : births) {
     AddCommittedBirths(page_objnum, std::move(page_births));

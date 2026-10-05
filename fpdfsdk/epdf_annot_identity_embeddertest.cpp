@@ -420,33 +420,84 @@ TEST_F(EPDFAnnotIdentityEmbedderTest, BirthsSurviveTheArtifact) {
     EXPECT_EQ(static_cast<int>(births[2]), ObjectNumber(c.get()));
   }
 
-  // The header's last 8 bytes are the births' size, little-endian; the
+  // Version 2's header ends with the births' size and the last object
+  // number, 8 bytes each, little-endian, after version 1's 104 bytes; the
   // births are the artifact's tail.
-  const size_t header_size = 112;
+  const size_t v1_header_size = 104;
+  const size_t header_size = v1_header_size + 16;
   uint64_t births_size = 0;
   for (int i = 7; i >= 0; --i) {
-    births_size = (births_size << 8) |
-                  static_cast<uint8_t>(artifact[header_size - 8 + i]);
+    births_size =
+        (births_size << 8) | static_cast<uint8_t>(artifact[v1_header_size + i]);
   }
   ASSERT_GT(births_size, 0u);
 
-  // A birth that names an object the delta doesn't carry: refused.
+  // A birth naming a number this layer never handed out (above its last
+  // object number): refused.
   std::string corrupt = artifact;
   corrupt[corrupt.size() - 4] = '\x7f';  // the last birth's object number
   status = EPDFLayerOpenStatus_kSuccess;
   EXPECT_FALSE(OpenArtifact(&corrupt, &status));
   EXPECT_EQ(EPDFLayerOpenStatus_kMalformedDelta, status);
 
-  // Version 1: the same header without the births' size, and no births.
+  // Version 1: version 2's header without its two fields, and no births.
   std::string v1 =
-      artifact.substr(0, header_size - 8) +
+      artifact.substr(0, v1_header_size) +
       artifact.substr(header_size, artifact.size() - header_size -
                                        static_cast<size_t>(births_size));
-  v1[8] = 1;                                    // version
-  v1[12] = static_cast<char>(header_size - 8);  // header size (104)
+  v1[8] = 1;                                   // version
+  v1[12] = static_cast<char>(v1_header_size);  // header size
   status = EPDFLayerOpenStatus_kOpenFailed;
   ScopedFPDFDocument old = OpenArtifact(&v1, &status);
   ASSERT_TRUE(old);
   EXPECT_EQ(EPDFLayerOpenStatus_kSuccess, status);
   EXPECT_FALSE(EPDFLayer_IsPagePromoted(old.get(), kFirstPage));
+}
+
+// A promoted inline annotation that is deleted keeps its birth: its birth
+// name now names a deleted annotation, not whichever entry sits at its old
+// position. The artifact carries that birth, and a reopen loads it even
+// though its object is gone - and never hands that object number out again.
+TEST_F(EPDFAnnotIdentityEmbedderTest, DeletedBirthsSurviveTheArtifact) {
+  std::string artifact;
+  unsigned long deleted = 0;
+  {
+    ScopedFPDFDocument doc = OpenLayer();
+    ASSERT_TRUE(doc);
+    ASSERT_TRUE(EPDFLayer_BeginTransaction(doc.get()));
+    ASSERT_EQ(3, EPDFPage_PromoteInlineAnnotsRaw(doc.get(), 0));
+    ASSERT_TRUE(EPDFLayer_CommitTransaction(doc.get()));
+    // C: the highest number promotion handed out, so after a reopen only
+    // the artifact's last object number keeps it from being handed out to
+    // the next new annotation.
+    deleted = EPDFLayer_GetBirthObjectNumber(doc.get(), kFirstPage, 3);
+    ASSERT_NE(0u, deleted);
+    ScopedFPDFPage page(FPDF_LoadPage(doc.get(), 0));
+    ASSERT_TRUE(EPDFLayer_BeginTransaction(doc.get()));
+    ASSERT_TRUE(EPDFPage_RemoveAnnot(page.get(), 3));
+    ASSERT_TRUE(EPDFLayer_CommitTransaction(doc.get()));
+    ASSERT_EQ(3, FPDFPage_GetAnnotCount(page.get()));
+    ClearString();
+    ASSERT_TRUE(EPDFLayer_SaveLayerArtifact(doc.get(), this, nullptr));
+    artifact = GetString();
+  }
+
+  EPDFLayerOpenStatus status = EPDFLayerOpenStatus_kOpenFailed;
+  ScopedFPDFDocument reopened = OpenArtifact(&artifact, &status);
+  ASSERT_TRUE(reopened);
+  EXPECT_EQ(EPDFLayerOpenStatus_kSuccess, status);
+  EXPECT_TRUE(EPDFLayer_IsPagePromoted(reopened.get(), kFirstPage));
+  // The birth still names the deleted object, which doesn't resolve.
+  EXPECT_EQ(deleted,
+            EPDFLayer_GetBirthObjectNumber(reopened.get(), kFirstPage, 3));
+  EXPECT_FALSE(CPDFDocumentFromFPDFDocument(reopened.get())
+                   ->GetIndirectObject(static_cast<uint32_t>(deleted)));
+  // An inline handle made on the base before the delete would resolve
+  // through the birth to nothing; a new object never takes the number.
+  ScopedFPDFPage page(FPDF_LoadPage(reopened.get(), 0));
+  EXPECT_EQ((std::vector<std::string>{"A", "Obj", "B"}),
+            ContentsOf(page.get()));
+  ScopedFPDFAnnotation created =
+      NewAnnot(page.get(), FPDF_ANNOT_SQUARE, {150, 280, 200, 230});
+  EXPECT_GT(static_cast<unsigned long>(ObjectNumber(created.get())), deleted);
 }

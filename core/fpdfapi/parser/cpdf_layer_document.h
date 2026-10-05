@@ -86,11 +86,16 @@ class CPDF_LayerDocument final : public CPDF_Document {
   std::optional<std::pair<uint32_t, uint32_t>> FindBirthName(
       uint32_t objnum) const;
   // The committed births, for the layer artifact (saving is refused inside
-  // a transaction), and loading them back after the artifact's delta.
+  // a transaction).
   const std::map<uint32_t, CPDF_PageBirths>& GetCommittedBirths() const {
     return births_;
   }
-  bool LoadBirths(std::map<uint32_t, CPDF_PageBirths> births);
+  // What a layer artifact carries besides its delta, restored once the delta
+  // is ingested: the last object number the layer had handed out (0 when the
+  // artifact predates it), so none is handed out again, and the births.
+  // False when they don't fit the delta: a malformed artifact.
+  bool RestoreArtifactState(std::map<uint32_t, CPDF_PageBirths> births,
+                            uint32_t last_object_number);
 
   // The layer's own version of |objnum|: written in the open transaction,
   // else committed (unless the transaction hid it), else null - and then the

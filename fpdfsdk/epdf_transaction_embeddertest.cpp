@@ -17,10 +17,14 @@
 #include <string>
 #include <vector>
 
+#include "core/fpdfapi/font/cpdf_font.h"
 #include "core/fpdfapi/page/cpdf_annotcontext.h"
+#include "core/fpdfapi/page/cpdf_docpagedata.h"
 #include "core/fpdfapi/page/cpdf_page.h"
+#include "core/fpdfapi/parser/cpdf_dictionary.h"
 #include "core/fpdfapi/parser/cpdf_document.h"
 #include "core/fpdfapi/parser/cpdf_layer_document.h"
+#include "core/fpdfapi/parser/cpdf_name.h"
 #include "core/fpdfapi/parser/cpdf_stream.h"
 #include "core/fpdfdoc/cpdf_annot.h"
 #include "fpdfsdk/cpdfsdk_helpers.h"
@@ -844,5 +848,30 @@ TEST_F(EPDFTransactionEmbedderTest, CostBesideALargeImage) {
   for (const Row& row : rows) {
     SCOPED_TRACE(row.name);
     EXPECT_LT(row.stats.stream_bytes_copied, 1024u * 1024u);
+  }
+}
+
+// L4 at commit: an object created, cached and deleted inside a transaction
+// is unreachable after the commit as much as after an abort, so the caches
+// forget it either way.
+TEST_F(EPDFTransactionEmbedderTest, CachesForgetObjectsDroppedInsideIt) {
+  for (bool commit : {false, true}) {
+    SCOPED_TRACE(commit ? "commit" : "abort");
+    ScopedFPDFDocument doc = Open();
+    ASSERT_TRUE(doc);
+    CPDF_LayerDocument* layer = LayerOf(doc.get());
+    ASSERT_TRUE(layer->BeginTransaction());
+    RetainPtr<CPDF_Dictionary> dict = layer->NewIndirect<CPDF_Dictionary>();
+    dict->SetNewFor<CPDF_Name>("Type", "Font");
+    dict->SetNewFor<CPDF_Name>("Subtype", "Type1");
+    dict->SetNewFor<CPDF_Name>("BaseFont", "Helvetica");
+    RetainPtr<CPDF_Font> font =
+        CPDF_DocPageData::FromDocument(layer)->GetFont(dict);
+    ASSERT_TRUE(font);
+    ASSERT_FALSE(font->HasOneRef());  // the cache holds it
+    layer->DeleteIndirectObject(dict->GetObjNum());
+    ASSERT_TRUE(commit ? layer->CommitTransaction()
+                       : layer->AbortTransaction());
+    EXPECT_TRUE(font->HasOneRef());
   }
 }
