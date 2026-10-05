@@ -2157,13 +2157,15 @@ FPDF_EXPORT int FPDF_CALLCONV EPDFPage_ContinueLoad(FPDF_PAGE page,
 
 // Experimental EmbedPDF Extension API.
 // What a page's parsed content costs in memory (EPDFPage_GetParsedSize()).
+// Every count is 64 bits, so the struct is laid out the same on every
+// platform: 40 bytes, the counts at 0, 8, 16 and 24, `complete` at 32.
 typedef struct EPDF_PAGE_PARSED_SIZE_ {
   // Every page object, the objects inside forms included.
-  unsigned long objects;
+  unsigned long long objects;
   // The points of the paths, a geometry several paths share counted once.
-  unsigned long path_points;
+  unsigned long long path_points;
   // The character codes of the text objects.
-  unsigned long text_chars;
+  unsigned long long text_chars;
   // An estimate of the bytes the objects hold, on the safe side: their own
   // sizes, points, codes, positions and inline images. Fonts, cached images
   // and the states objects share belong to the document and are not counted.
