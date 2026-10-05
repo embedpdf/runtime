@@ -64,10 +64,15 @@ CPDF_Stream::CPDF_Stream(RetainPtr<IFX_SeekableReadStream> file,
 
 CPDF_Stream::CPDF_Stream(DataVector<uint8_t> data,
                          RetainPtr<CPDF_Dictionary> dict)
-    : data_(std::move(data)), dict_(std::move(dict)) {
+    : CPDF_Stream(pdfium::MakeRetain<CFX_SharedBytes>(std::move(data)),
+                  std::move(dict)) {}
+
+CPDF_Stream::CPDF_Stream(RetainPtr<const CFX_SharedBytes> bytes,
+                         RetainPtr<CPDF_Dictionary> dict)
+    : data_(std::move(bytes)), dict_(std::move(dict)) {
   CHECK(dict_->IsInline());
-  SetLengthInDict(
-      pdfium::checked_cast<int>(std::get<DataVector<uint8_t>>(data_).size()));
+  SetLengthInDict(pdfium::checked_cast<int>(
+      std::get<RetainPtr<const CFX_SharedBytes>>(data_)->size()));
 }
 
 CPDF_Stream::~CPDF_Stream() {
@@ -145,6 +150,12 @@ RetainPtr<CPDF_Object> CPDF_Stream::CloneForHolderNonCyclic(
   // the clone its own buffer the moment it is written. Anything else - a
   // view over a caller's callbacks in a document that may close first - is
   // copied, as CloneNonCyclic always does.
+  // In-memory bytes are immutable and shared by construction: the copy
+  // shares them, and a write gives it a new buffer.
+  if (IsMemoryBased()) {
+    return pdfium::MakeRetain<CPDF_Stream>(
+        std::get<RetainPtr<const CFX_SharedBytes>>(data_), std::move(pNewDict));
+  }
   RetainPtr<IFX_SeekableReadStream> view = BackingView();
   if (view && (view->IsSelfContained() ||
                (holder && holder->SharesBackingStorageWith(this)))) {
@@ -219,7 +230,7 @@ void CPDF_Stream::TakeData(DataVector<uint8_t> data) {
   DCHECK_PDF_GRAPH_MUTABLE_FOR(this);
   DCHECK_PDF_WRITABLE(this);
   const int size = pdfium::checked_cast<int>(data.size());
-  data_ = std::move(data);
+  data_ = pdfium::MakeRetain<CFX_SharedBytes>(std::move(data));
   SetLengthInDict(size);
 }
 
@@ -292,12 +303,12 @@ size_t CPDF_Stream::GetRawSize() const {
     return pdfium::checked_cast<size_t>(
         std::get<RetainPtr<IFX_SeekableReadStream>>(data_)->GetSize());
   }
-  return std::get<DataVector<uint8_t>>(data_).size();
+  return std::get<RetainPtr<const CFX_SharedBytes>>(data_)->size();
 }
 
 pdfium::span<const uint8_t> CPDF_Stream::GetInMemoryRawData() const {
   DCHECK(IsMemoryBased());
-  return std::get<DataVector<uint8_t>>(data_);
+  return std::get<RetainPtr<const CFX_SharedBytes>>(data_)->span();
 }
 
 void CPDF_Stream::SetLengthInDict(int length) {

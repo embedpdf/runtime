@@ -14,6 +14,7 @@
 #include <variant>
 
 #include "core/fpdfapi/parser/cpdf_object.h"
+#include "core/fxcrt/cfx_shared_bytes.h"
 #include "core/fxcrt/data_vector.h"
 #include "core/fxcrt/fx_string_wrappers.h"
 #include "core/fxcrt/retain_ptr.h"
@@ -71,7 +72,7 @@ class CPDF_Stream final : public CPDF_Object {
   // from memory or from the view, without loading the whole stream.
   bool ReadRawBlock(pdfium::span<uint8_t> buffer, FX_FILESIZE offset) const;
   bool IsMemoryBased() const {
-    return std::holds_alternative<DataVector<uint8_t>>(data_);
+    return std::holds_alternative<RetainPtr<const CFX_SharedBytes>>(data_);
   }
   bool HasFilter() const;
 
@@ -95,6 +96,9 @@ class CPDF_Stream final : public CPDF_Object {
   // Takes `data`.
   // `dict` must be non-null and be a direct object.
   CPDF_Stream(DataVector<uint8_t> data, RetainPtr<CPDF_Dictionary> dict);
+  // EmbedPDF: shares `bytes` (a copy's source's). `dict` as above.
+  CPDF_Stream(RetainPtr<const CFX_SharedBytes> bytes,
+              RetainPtr<CPDF_Dictionary> dict);
   ~CPDF_Stream() override;
 
   const CPDF_Dictionary* GetDictInternal() const override;
@@ -109,7 +113,12 @@ class CPDF_Stream final : public CPDF_Object {
 
   void SetLengthInDict(int length);
 
-  std::variant<RetainPtr<IFX_SeekableReadStream>, DataVector<uint8_t>> data_;
+  // EmbedPDF: in-memory bytes are shared and immutable (CFX_SharedBytes): a
+  // copy for a holder shares them, and SetData()/TakeData() give this stream
+  // a new buffer instead of writing into the shared one.
+  std::variant<RetainPtr<IFX_SeekableReadStream>,
+               RetainPtr<const CFX_SharedBytes>>
+      data_;
   RetainPtr<CPDF_Dictionary> dict_;
 };
 

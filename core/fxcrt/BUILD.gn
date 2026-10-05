@@ -42,6 +42,7 @@ source_set("fxcrt") {
     "cfx_read_only_span_stream.h",
     "cfx_seekablestreamproxy.cpp",
     "cfx_seekablestreamproxy.h",
+    "cfx_shared_bytes.h",
     "cfx_timer.cpp",
     "cfx_timer.h",
     "check.h",

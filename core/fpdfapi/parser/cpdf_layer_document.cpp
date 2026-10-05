@@ -326,9 +326,16 @@ RetainPtr<CPDF_Object> CPDF_LayerDocument::GetMutableIndirectObject(
   copy->SetGenNum(current->GetGenNum());
   copy->StampWriteGeneration(tx.generation);
   ++tx.stats.objects_copied;
-  if (const CPDF_Stream* stream = current->AsStream();
-      stream && stream->IsMemoryBased()) {
-    tx.stats.stream_bytes_copied += stream->GetRawSize();
+  // Bytes count only when the copy holds bytes of its own: in-memory bytes
+  // are shared with the source, and so is a view the layer may share.
+  if (const CPDF_Stream* to = copy->AsStream(); to && to->IsMemoryBased()) {
+    const CPDF_Stream* from = current->AsStream();
+    const bool shared =
+        from->IsMemoryBased() &&
+        from->GetInMemoryRawData().data() == to->GetInMemoryRawData().data();
+    if (!shared) {
+      tx.stats.stream_bytes_copied += to->GetRawSize();
+    }
   }
   tx.written[objnum] = copy;
   tx.hidden.erase(objnum);

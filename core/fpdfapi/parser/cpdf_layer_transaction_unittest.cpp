@@ -510,9 +510,47 @@ TEST_F(CPDFLayerTransactionTest, CachesForgetUnreachableVersions) {
   EXPECT_FALSE(replacement->HasOneRef());  // it is the committed version now
 }
 
+// T3: a stream's copy shares its in-memory bytes with the version it was
+// copied from, until it is written: then it gets bytes of its own, and the
+// version it came from never changes.
+TEST_F(CPDFLayerTransactionTest, StreamCopiesShareBytesUntilWritten) {
+  const uint8_t before[] = {'a', 'b', 'c'};
+  const uint8_t after[] = {'x', 'y', 'z', 'w'};
+  for (bool commit : {false, true}) {
+    SCOPED_TRACE(commit ? "commit" : "abort");
+    auto committed = layer()->NewIndirect<CPDF_Stream>(
+        DataVector<uint8_t>(std::begin(before), std::end(before)),
+        layer()->New<CPDF_Dictionary>());
+    const uint32_t objnum = committed->GetObjNum();
+
+    ASSERT_TRUE(layer()->BeginTransaction());
+    RetainPtr<CPDF_Stream> copy =
+        ToStream(layer()->GetMutableIndirectObject(objnum));
+    ASSERT_NE(committed.Get(), copy.Get());
+    EXPECT_EQ(committed->GetInMemoryRawData().data(),
+              copy->GetInMemoryRawData().data());
+    EXPECT_EQ(0u, layer()->GetTransactionStats().stream_bytes_copied);
+
+    copy->SetData(after);
+    EXPECT_NE(committed->GetInMemoryRawData().data(),
+              copy->GetInMemoryRawData().data());
+    EXPECT_EQ(3u, committed->GetRawSize());
+    EXPECT_EQ('a', committed->GetInMemoryRawData()[0]);
+    EXPECT_EQ(3, committed->GetDict()->GetIntegerFor("Length"));
+    ASSERT_TRUE(commit ? layer()->CommitTransaction()
+                       : layer()->AbortTransaction());
+
+    RetainPtr<const CPDF_Stream> effective =
+        ToStream(layer()->GetIndirectObject(objnum));
+    EXPECT_EQ(commit ? 4u : 3u, effective->GetRawSize());
+    EXPECT_EQ(commit ? 'x' : 'a', effective->GetInMemoryRawData()[0]);
+  }
+}
+
 // G6: what a transaction costs beside a large image in the layer. The copy
 // is per indirect object, so an edit that doesn't touch the image never pays
-// for it; one that does (today) copies its bytes.
+// for it; one that opens the image costs its dictionary, since the copy
+// shares the image's bytes (T3).
 TEST_F(CPDFLayerTransactionTest, CostBesideALargeImage) {
   constexpr size_t kImageBytes = 100u * 1024 * 1024;
   uint32_t image_objnum = 0;
@@ -556,8 +594,8 @@ TEST_F(CPDFLayerTransactionTest, CostBesideALargeImage) {
   const auto aborted_us = micros(Clock::now() - t0);
   EXPECT_EQ(3, MarkerOf(layer(), kAnnot));
 
-  // An edit to the image's dictionary copies the stream, bytes included,
-  // until streams share immutable bytes (T3).
+  // An edit to the image's dictionary copies the dictionary; the copy shares
+  // the image's bytes.
   t0 = Clock::now();
   ASSERT_TRUE(layer()->BeginTransaction());
   SetMarker(layer(), image_objnum, 5);
@@ -565,8 +603,18 @@ TEST_F(CPDFLayerTransactionTest, CostBesideALargeImage) {
   const auto image_us = micros(Clock::now() - t0);
   const CPDF_LayerTransactionStats touched = layer()->GetTransactionStats();
   EXPECT_EQ(1u, touched.objects_copied);
-  EXPECT_EQ(kImageBytes, touched.stream_bytes_copied);
+  EXPECT_EQ(0u, touched.stream_bytes_copied);
   EXPECT_EQ(0, MarkerOf(layer(), image_objnum));
+
+  t0 = Clock::now();
+  ASSERT_TRUE(layer()->BeginTransaction());
+  SetMarker(layer(), image_objnum, 6);
+  ASSERT_TRUE(layer()->CommitTransaction());
+  const auto image_commit_us = micros(Clock::now() - t0);
+  EXPECT_EQ(0u, layer()->GetTransactionStats().stream_bytes_copied);
+  EXPECT_EQ(6, MarkerOf(layer(), image_objnum));
+  EXPECT_EQ(kImageBytes,
+            ToStream(layer()->GetIndirectObject(image_objnum))->GetRawSize());
 
   std::cout << "\n[layer transaction cost beside a 100 MB in-memory image]\n"
             << "  plain edit, no transaction:      " << plain_us << " us\n"
@@ -576,7 +624,9 @@ TEST_F(CPDFLayerTransactionTest, CostBesideALargeImage) {
             << "  unrelated edit, begin..abort:    " << aborted_us << " us\n"
             << "  image dict edit, begin..abort:   " << image_us
             << " us (objects copied " << touched.objects_copied
-            << ", stream bytes " << touched.stream_bytes_copied << ")\n";
+            << ", stream bytes " << touched.stream_bytes_copied << ")\n"
+            << "  image dict edit, begin..commit:  " << image_commit_us
+            << " us\n";
 }
 
 }  // namespace
