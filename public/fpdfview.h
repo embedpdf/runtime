@@ -2112,6 +2112,55 @@ EPDFDoc_SetPageRotationByObjectNumber(FPDF_DOCUMENT document,
 FPDF_EXPORT unsigned int FPDF_CALLCONV
 EPDFPage_GetObjectNumber(FPDF_PAGE page);
 
+// Experimental EmbedPDF Extension API.
+// What a page's parsed content costs in memory (EPDFPage_GetParsedSize()).
+typedef struct EPDF_PAGE_PARSED_SIZE_ {
+  // Every page object, the objects inside forms included.
+  unsigned long objects;
+  // The points of the paths, a geometry several paths share counted once.
+  unsigned long path_points;
+  // The character codes of the text objects.
+  unsigned long text_chars;
+  // An estimate of the bytes the objects hold, on the safe side: their own
+  // sizes, points, codes, positions and inline images. Fonts, cached images
+  // and the states objects share belong to the document and are not counted.
+  unsigned long long estimated_bytes;
+  // False while the page is still parsing: the size of what it has parsed.
+  FPDF_BOOL complete;
+} EPDF_PAGE_PARSED_SIZE;
+
+// Experimental EmbedPDF Extension API.
+// Gets what |page|'s parsed content costs in memory, counted while it parsed,
+// and counted again after its objects changed.
+//
+//   page - handle to the page.
+//   size - receives the size.
+//
+// Returns false, and leaves |size| alone, when |page| or |size| is null.
+FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV
+EPDFPage_GetParsedSize(FPDF_PAGE page, EPDF_PAGE_PARSED_SIZE* size);
+
+// Experimental EmbedPDF Extension API.
+// Returns whether |page|'s parsed objects still match its document: the page's
+// boxes, its rotation, its content streams and the stream of every form placed
+// on it are the versions the objects were parsed from, or last generated into
+// (FPDFPage_GenerateContent()). A page that no longer matches renders what its
+// content was: load it again.
+//
+// A layer makes a new version of an object for every write inside a
+// transaction (EPDFLayer_BeginTransaction()), and an abort brings back the one
+// before, so a page loaded before a transaction is current after an abort and
+// after a commit that left its content alone. A write outside a transaction,
+// and every write to a document without a layer, changes objects in place,
+// which this can't see: close the pages such a write changes.
+//
+// Cheap: it compares only after the layer changed since the last call.
+//
+//   page - handle to the page.
+//
+// Returns false when |page| is null.
+FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV EPDFPage_IsContentCurrent(FPDF_PAGE page);
+
 #ifdef __cplusplus
 }
 #endif

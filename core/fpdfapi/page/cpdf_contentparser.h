@@ -41,6 +41,13 @@ class CPDF_ContentParser {
                      CPDF_Form::RecursionState* recursion_state);
   ~CPDF_ContentParser();
 
+  // EmbedPDF: whether parsers made from now on, on this thread, parse nested
+  // forms after the content that places them, in a stage of their own that
+  // can pause (CPDF_StreamContentParser::DeferNestedForms()), instead of
+  // inside the step that meets them. Off by default: an experiment until the
+  // corpus renders the same with it.
+  static void SetDeferNestedForms(bool defer);
+
   CPDF_PageObjectHolder::CTMMap TakeAllCTMs();
 
   // Returns whether to continue or not.
@@ -51,6 +58,7 @@ class CPDF_ContentParser {
     kGetContent = 1,
     kPrepareContent,
     kParse,
+    kParseForms,
     kCheckClip,
     kComplete,
   };
@@ -58,6 +66,7 @@ class CPDF_ContentParser {
   Stage GetContent();
   Stage PrepareContent();
   Stage Parse();
+  Stage ParseForms(PauseIndicatorIface* pPause);
   Stage CheckClip();
 
   void HandlePageContentStream(const CPDF_Stream* pStream);

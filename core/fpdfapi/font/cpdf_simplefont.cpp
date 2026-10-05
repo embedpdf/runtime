@@ -9,6 +9,7 @@
 #include <algorithm>
 #include <array>
 #include <iterator>
+#include <optional>
 #include <utility>
 
 #include "constants/font_encodings.h"
@@ -17,6 +18,7 @@
 #include "core/fpdfapi/parser/cpdf_name.h"
 #include "core/fxcrt/fx_codepage.h"
 #include "core/fxge/cfx_face.h"
+#include "core/fxge/cfx_substfont.h"
 #include "core/fxge/fx_font.h"
 
 namespace {
@@ -101,6 +103,21 @@ void CPDF_SimpleFont::LoadCharMetrics(int charcode) {
           char_bbox_[charcode].right * char_width_[charcode] / TT_Width;
       char_bbox_[charcode].left =
           char_bbox_[charcode].left * char_width_[charcode] / TT_Width;
+    }
+  }
+
+  // EmbedPDF: a built-in generic font standing in for one the document doesn't
+  // embed draws each glyph with its design set to the glyph's width here and
+  // the substitute's weight (CFX_Face::RenderGlyph), so the glyph's bounds
+  // are those of the glyph drawn, not of the face's default design.
+  const CFX_SubstFont* subst_font = font_.GetSubstFont();
+  if (subst_font && subst_font->IsBuiltInGenericFont()) {
+    const int dest_width =
+        char_width_[charcode] == 0xffff ? 0 : char_width_[charcode];
+    std::optional<FX_RECT> drawn =
+        face->GetDrawnGlyphBBox(glyph_index, dest_width, subst_font);
+    if (drawn.has_value()) {
+      char_bbox_[charcode] = drawn.value();
     }
   }
 }

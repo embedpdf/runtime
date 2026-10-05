@@ -21,12 +21,24 @@
 #include "core/fpdfapi/parser/cpdf_stream_acc.h"
 #include "core/fxcrt/check.h"
 #include "core/fxcrt/check_op.h"
+#include "core/fxcrt/epdf_tls.h"
 #include "core/fxcrt/fixed_size_data_vector.h"
 #include "core/fxcrt/fx_safe_types.h"
 #include "core/fxcrt/pauseindicator_iface.h"
 #include "core/fxcrt/span_util.h"
 #include "core/fxcrt/stl_util.h"
 #include "core/fxge/cfx_fillrenderoptions.h"
+
+namespace {
+
+EPDF_TLS bool g_defer_nested_forms = false;
+
+}  // namespace
+
+// static
+void CPDF_ContentParser::SetDeferNestedForms(bool defer) {
+  g_defer_nested_forms = defer;
+}
 
 CPDF_ContentParser::CPDF_ContentParser(CPDF_Page* pPage)
     : current_stage_(Stage::kGetContent), page_object_holder_(pPage) {
@@ -35,6 +47,12 @@ CPDF_ContentParser::CPDF_ContentParser(CPDF_Page* pPage)
     current_stage_ = Stage::kComplete;
     return;
   }
+
+  // EmbedPDF: the page's parse, nested forms included, counts what it adds
+  // and records the versions of the streams it reads.
+  pPage->StartContentRecords();
+  recursion_state_.parsed_size = pPage->mutable_parsed_size();
+  recursion_state_.content_versions = pPage->mutable_content_versions();
 
   RetainPtr<const CPDF_Object> pContent =
       pPage->GetDict()->GetDirectObjectFor(pdfium::page_object::kContents);
@@ -104,6 +122,9 @@ CPDF_ContentParser::CPDF_ContentParser(
       pParentMatrix, page_object_holder_,
       pdfium::WrapRetain(const_cast<CPDF_Dictionary*>(pResources.Get())),
       form_bbox, pGraphicStates, recursion_state);
+  if (g_defer_nested_forms) {
+    parser_->DeferNestedForms();
+  }
   parser_->GetCurStates()->set_current_transformation_matrix(form_matrix);
   parser_->GetCurStates()->set_parent_matrix(form_matrix);
   if (ClipPath.HasRef()) {
@@ -150,6 +171,13 @@ bool CPDF_ContentParser::Continue(PauseIndicatorIface* pPause) {
     }
   }
 
+  if (current_stage_ == Stage::kParseForms) {
+    current_stage_ = ParseForms(pPause);
+    if (current_stage_ == Stage::kParseForms) {
+      return true;
+    }
+  }
+
   if (current_stage_ == Stage::kCheckClip) {
     current_stage_ = CheckClip();
   }
@@ -166,6 +194,7 @@ CPDF_ContentParser::Stage CPDF_ContentParser::GetContent() {
           pdfium::page_object::kContents);
   RetainPtr<const CPDF_Stream> pStreamObj = ToStream(
       pContent ? pContent->GetDirectObjectAt(current_offset_) : nullptr);
+  recursion_state_.content_versions->AddContentStream(pStreamObj);
   stream_array_[current_offset_] =
       pdfium::MakeRetain<CPDF_StreamAcc>(std::move(pStreamObj));
   stream_array_[current_offset_]->LoadAllDataFiltered();
@@ -222,10 +251,13 @@ CPDF_ContentParser::Stage CPDF_ContentParser::Parse() {
         pdfium::WrapRetain(const_cast<CPDF_Dictionary*>(
             page_object_holder_->GetResources().Get())),
         page_object_holder_->GetBBox(), nullptr, &recursion_state_);
+    if (g_defer_nested_forms) {
+      parser_->DeferNestedForms();
+    }
     parser_->GetCurStates()->mutable_color_state().SetDefault();
   }
   if (current_offset_ >= GetData().size()) {
-    return Stage::kCheckClip;
+    return Stage::kParseForms;
   }
 
   if (stream_segment_offsets_.empty()) {
@@ -236,6 +268,16 @@ CPDF_ContentParser::Stage CPDF_ContentParser::Parse() {
   current_offset_ += parser_->Parse(GetData(), current_offset_, kParseStepLimit,
                                     stream_segment_offsets_);
   return Stage::kParse;
+}
+
+// The forms the content placed and left for now: clip checking needs their
+// bounds, and so does the holder of this content when it is itself a form.
+CPDF_ContentParser::Stage CPDF_ContentParser::ParseForms(
+    PauseIndicatorIface* pPause) {
+  if (parser_ && !parser_->ParseDeferredForms(pPause)) {
+    return Stage::kParseForms;
+  }
+  return Stage::kCheckClip;
 }
 
 CPDF_ContentParser::Stage CPDF_ContentParser::CheckClip() {
@@ -275,6 +317,8 @@ CPDF_ContentParser::Stage CPDF_ContentParser::CheckClip() {
 }
 
 void CPDF_ContentParser::HandlePageContentStream(const CPDF_Stream* pStream) {
+  recursion_state_.content_versions->AddContentStream(
+      pdfium::WrapRetain(pStream));
   single_stream_ =
       pdfium::MakeRetain<CPDF_StreamAcc>(pdfium::WrapRetain(pStream));
   single_stream_->LoadAllDataFiltered();

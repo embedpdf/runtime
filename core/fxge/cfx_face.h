@@ -111,6 +111,13 @@ class CFX_Face final : public Retainable, public Observable {
                     int dest_width,
                     int weight,
                     const CFX_SubstFont* subst_font);
+  // EmbedPDF: the bounds of `glyph_index`, in thousandths of an em, as
+  // drawing it for `subst_font` with `dest_width` draws it: a built-in generic
+  // font takes the design that gives the glyph that width and the
+  // substitute's weight. Leaves the face's design as it was.
+  std::optional<FX_RECT> GetDrawnGlyphBBox(uint32_t glyph_index,
+                                           int dest_width,
+                                           const CFX_SubstFont* subst_font);
   ByteString GetGlyphName(uint32_t glyph_index);
 
   int GetCharIndex(uint32_t code);

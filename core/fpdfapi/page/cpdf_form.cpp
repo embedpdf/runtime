@@ -92,12 +92,30 @@ void CPDF_Form::ParseContentInternal(const CPDF_AllStates* pGraphicStates,
   }
 
   if (GetParseState() == ParseState::kNotParsed) {
-    StartParse(std::make_unique<CPDF_ContentParser>(
-        std::move(stream), this, pGraphicStates, pParentMatrix, pType3Char,
-        recursion_state ? recursion_state : &recursion_state_));
+    StartParseContentInternal(std::move(stream), pGraphicStates, pParentMatrix,
+                              pType3Char, recursion_state);
   }
   DCHECK_EQ(GetParseState(), ParseState::kParsing);
   ContinueParse(nullptr);
+}
+
+void CPDF_Form::StartParseContent(const CPDF_AllStates* pGraphicStates,
+                                  RecursionState* recursion_state) {
+  CPDF_DocumentViewScope document_view(GetDocument());
+  RetainPtr<const CPDF_Stream> stream = GetStream();
+  DCHECK_EQ(GetParseState(), ParseState::kNotParsed);
+  StartParseContentInternal(std::move(stream), pGraphicStates, nullptr, nullptr,
+                            recursion_state);
+}
+
+void CPDF_Form::StartParseContentInternal(RetainPtr<const CPDF_Stream> stream,
+                                          const CPDF_AllStates* pGraphicStates,
+                                          const CFX_Matrix* pParentMatrix,
+                                          CPDF_Type3Char* pType3Char,
+                                          RecursionState* recursion_state) {
+  StartParse(std::make_unique<CPDF_ContentParser>(
+      std::move(stream), this, pGraphicStates, pParentMatrix, pType3Char,
+      recursion_state ? recursion_state : &recursion_state_));
 }
 
 bool CPDF_Form::HasPageObjects() const {
@@ -199,6 +217,10 @@ RetainPtr<const CPDF_Stream> CPDF_Form::GetStream() const {
           /*reset_parsed_content=*/true);
     }
   }
+  return form_stream_;
+}
+
+RetainPtr<const CPDF_Stream> CPDF_Form::GetParsedStream() const {
   return form_stream_;
 }
 

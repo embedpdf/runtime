@@ -13,7 +13,9 @@
 #include <utility>
 #include "core/fpdfapi/parser/cpdf_measure_storage.h"
 
+#include "core/fpdfapi/page/cpdf_contentversions.h"
 #include "core/fpdfapi/page/cpdf_pageobjectholder.h"
+#include "core/fpdfapi/page/cpdf_parsedsize.h"
 #include "core/fpdfapi/page/ipdf_page.h"
 #include "core/fxcrt/fx_coordinates.h"
 #include "core/fxcrt/fx_memory.h"
@@ -114,6 +116,32 @@ class CPDF_Page final : public IPDF_Page, public CPDF_PageObjectHolder {
   void ClearView();
   void UpdateDimensions();
 
+  // EmbedPDF: what the page's parsed objects cost, nested forms included.
+  // While the page parses, it is what the parse has added so far; once it has
+  // parsed, the objects are counted again after they change.
+  const CPDF_ParsedSize& GetParsedSize() const;
+
+  // EmbedPDF: whether the page's parsed objects still match the document:
+  // the document resolves the page's boxes, rotation, /Contents streams and
+  // the stream of every form placed on it to what the objects were parsed
+  // from or last generated into. Only versions are compared (see
+  // CPDF_ContentVersions): a write outside a layer transaction edits objects
+  // in place, and this can't see it.
+  bool IsContentCurrent() const;
+
+  // EmbedPDF: what the content parser fills while it parses this page. It
+  // starts both from empty (StartContentRecords()).
+  void StartContentRecords();
+  CPDF_ParsedSize* mutable_parsed_size() { return &parsed_size_; }
+  CPDF_ContentVersions* mutable_content_versions() {
+    return &content_versions_;
+  }
+
+  // EmbedPDF: after content was generated from this page's objects. A page
+  // that matched the document before matches what was written: its content
+  // versions are recorded again. The objects are counted again.
+  void ContentGenerated(bool was_current);
+
  private:
   std::unique_ptr<CPDF_MeasureStorage> measure_storage_;
   CPDF_Page(CPDF_Document* document, RetainPtr<CPDF_Dictionary> pPageDict);
@@ -137,6 +165,21 @@ class CPDF_Page final : public IPDF_Page, public CPDF_PageObjectHolder {
   std::unique_ptr<RenderContextIface> render_context_;
   ObservedPtr<View> view_;
   std::optional<int> rotation_override_;  // EmbedPDF: rotation normalization
+
+  // EmbedPDF: the page's boxes and rotation as the last UpdateDimensions()
+  // read them, the content versions of its objects, and the last check of
+  // them, valid while the document's overlay epoch is the same.
+  CFX_FloatRect read_mediabox_;
+  CFX_FloatRect read_cropbox_;
+  int read_rotation_ = 0;
+  CPDF_ContentVersions content_versions_;
+  mutable uint64_t content_checked_epoch_ = 0;
+  mutable bool content_current_ = true;
+
+  // EmbedPDF: the count of the parsed objects, and the holder's edit count
+  // it was made at.
+  mutable CPDF_ParsedSize parsed_size_;
+  mutable uint64_t parsed_size_edits_ = 0;
 };
 
 #endif  // CORE_FPDFAPI_PAGE_CPDF_PAGE_H_

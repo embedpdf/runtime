@@ -336,6 +336,38 @@ class ScopedFaceTransform {
   UnownedPtr<FXFT_FaceRec> const rec_;
 };
 
+// EmbedPDF: keeps the design of a variation face (a multiple master or
+// variable font) and gives it back when it goes out of scope. A face is shared
+// by every font and document that uses it, so a design chosen to draw one
+// glyph must not outlive the call that draws it: glyph metrics read later
+// would depend on whatever was drawn last.
+class ScopedFaceVariation {
+ public:
+  FX_STACK_ALLOCATED();
+
+  // Keeps nothing when `active` is false: the face isn't adjusted.
+  ScopedFaceVariation(FXFT_FaceRec* rec, bool active)
+      : rec_(active ? rec : nullptr) {
+    if (rec_ &&
+        FT_Get_MM_Blend_Coordinates(rec_, static_cast<FT_UInt>(design_.size()),
+                                    design_.data()) != 0) {
+      rec_ = nullptr;
+    }
+  }
+
+  ~ScopedFaceVariation() {
+    if (rec_) {
+      FT_Set_MM_Blend_Coordinates(rec_, static_cast<FT_UInt>(design_.size()),
+                                  design_.data());
+    }
+  }
+
+ private:
+  UnownedPtr<FXFT_FaceRec> rec_;
+  // More than any font has axes; FreeType ignores the excess.
+  std::array<FT_Fixed, 16> design_ = {};
+};
+
 }  // namespace
 
 // static
@@ -525,10 +557,15 @@ std::unique_ptr<CFX_GlyphBitmap> CFX_Face::RenderGlyph(
         ft_matrix.xy -= ft_matrix.xx * skew / 100;
       }
     }
-    if (pSubstFont->IsBuiltInGenericFont()) {
-      font->GetFace()->AdjustVariationParams(glyph_index, dest_width,
-                                             font->GetSubstFont()->weight_);
-    }
+  }
+
+  const bool adjust_variation =
+      pSubstFont && pSubstFont->IsBuiltInGenericFont();
+  ScopedFaceVariation scoped_variation(font->GetFace()->GetRec(),
+                                       adjust_variation);
+  if (adjust_variation) {
+    font->GetFace()->AdjustVariationParams(glyph_index, dest_width,
+                                           pSubstFont->weight_);
   }
 
   ScopedFaceTransform scoped_transform(GetRec(), &ft_matrix);
@@ -640,9 +677,12 @@ std::unique_ptr<CFX_Path> CFX_Face::LoadGlyphPath(
         ft_matrix.xy -= ft_matrix.xx * skew / 100;
       }
     }
-    if (subst_font->IsBuiltInGenericFont()) {
-      AdjustVariationParams(glyph_index, dest_width, subst_font->weight_);
-    }
+  }
+  const bool adjust_variation =
+      subst_font && subst_font->IsBuiltInGenericFont();
+  ScopedFaceVariation scoped_variation(rec, adjust_variation);
+  if (adjust_variation) {
+    AdjustVariationParams(glyph_index, dest_width, subst_font->weight_);
   }
   ScopedFaceTransform scoped_transform(GetRec(), &ft_matrix);
   int load_flags = FT_LOAD_NO_BITMAP;
@@ -698,11 +738,14 @@ int CFX_Face::GetGlyphWidth(uint32_t glyph_index,
                             int dest_width,
                             int weight,
                             const CFX_SubstFont* subst_font) {
-  if (subst_font && subst_font->IsBuiltInGenericFont()) {
+  FXFT_FaceRec* rec = GetRec();
+  const bool adjust_variation =
+      subst_font && subst_font->IsBuiltInGenericFont();
+  ScopedFaceVariation scoped_variation(rec, adjust_variation);
+  if (adjust_variation) {
     AdjustVariationParams(glyph_index, dest_width, weight);
   }
 
-  FXFT_FaceRec* rec = GetRec();
   int err = FT_Load_Glyph(
       rec, glyph_index, FT_LOAD_NO_SCALE | FT_LOAD_IGNORE_GLOBAL_ADVANCE_WIDTH);
   if (err) {
@@ -716,6 +759,22 @@ int CFX_Face::GetGlyphWidth(uint32_t glyph_index,
   }
 
   return static_cast<int>(EM_ADJUST(GetUnitsPerEm(), horizontal_advance));
+}
+
+std::optional<FX_RECT> CFX_Face::GetDrawnGlyphBBox(
+    uint32_t glyph_index,
+    int dest_width,
+    const CFX_SubstFont* subst_font) {
+  const bool adjust_variation =
+      subst_font && subst_font->IsBuiltInGenericFont();
+  ScopedFaceVariation scoped_variation(GetRec(), adjust_variation);
+  if (adjust_variation) {
+    AdjustVariationParams(glyph_index, dest_width, subst_font->weight_);
+  }
+  if (LoadGlyph(glyph_index, /*scale=*/false) != 0) {
+    return std::nullopt;
+  }
+  return GetGlyphBBox();
 }
 
 ByteString CFX_Face::GetGlyphName(uint32_t glyph_index) {

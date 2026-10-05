@@ -89,6 +89,11 @@ class CPDF_PageObjectHolder {
   void ContinueParse(PauseIndicatorIface* pPause);
   ParseState GetParseState() const { return parse_state_; }
 
+  // EmbedPDF: moves whenever the objects change once parsed: an object added
+  // or removed, or content generated from edited objects.
+  uint64_t GetObjectEdits() const { return object_edits_; }
+  void NoteObjectsEdited() { ++object_edits_; }
+
   CPDF_Document* GetDocument() const { return document_; }
   virtual RetainPtr<const CPDF_Dictionary> GetDict() const;
   RetainPtr<CPDF_Dictionary> GetMutableDict();
@@ -193,6 +198,7 @@ class CPDF_PageObjectHolder {
  private:
   bool background_alpha_needed_ = false;
   ParseState parse_state_ = ParseState::kNotParsed;
+  uint64_t object_edits_ = 0;
   UnownedPtr<CPDF_Document> document_;
   std::vector<CFX_FloatRect> mask_bounding_boxes_;
   std::unique_ptr<CPDF_ContentParser> parser_;

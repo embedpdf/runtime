@@ -15,13 +15,16 @@
 #include "core/fpdfapi/font/cpdf_font.h"
 #include "core/fpdfapi/page/cpdf_pageobjectholder.h"
 #include "core/fxcrt/retain_ptr.h"
+#include "core/fxcrt/unowned_ptr.h"
 
 class CFX_Matrix;
 class CPDF_AllStates;
+class CPDF_ContentVersions;
 class CPDF_Dictionary;
 class CPDF_Document;
 class CPDF_Stream;
 class CPDF_Type3Char;
+struct CPDF_ParsedSize;
 
 class CPDF_Form final : public CPDF_PageObjectHolder,
                         public CPDF_Font::FormIface {
@@ -31,6 +34,11 @@ class CPDF_Form final : public CPDF_PageObjectHolder,
     ~RecursionState();
 
     std::set<const uint8_t*> parsed_set;
+    // EmbedPDF: set when the parse fills a page, and shared by the parses of
+    // the forms on it: they count what they add and record the versions of
+    // the streams they read (CPDF_Page::StartContentRecords()).
+    UnownedPtr<CPDF_ParsedSize> parsed_size;
+    UnownedPtr<CPDF_ContentVersions> content_versions;
   };
 
   // Helper method to choose the first non-null resources dictionary.
@@ -63,8 +71,19 @@ class CPDF_Form final : public CPDF_PageObjectHolder,
                     const CFX_Matrix* pParentMatrix,
                     RecursionState* recursion_state);
 
+  // EmbedPDF: starts the parse ParseContent() makes and leaves the rest to
+  // ContinueParse(), for a form parsed after the content that placed it
+  // (CPDF_StreamContentParser::DeferNestedForms()).
+  void StartParseContent(const CPDF_AllStates* pGraphicStates,
+                         RecursionState* recursion_state);
+
   // Never returns nullptr.
   RetainPtr<const CPDF_Stream> GetStream() const;
+
+  // EmbedPDF: the stream version the form's objects were parsed from or last
+  // written to, without looking for a newer one: GetStream() does, and drops
+  // the parsed objects when it finds one.
+  RetainPtr<const CPDF_Stream> GetParsedStream() const;
 
   // Rebinds this parsed form to a private clone of its backing stream. Call
   // before serializing per-placement edits so another use of the same Form
@@ -82,6 +101,11 @@ class CPDF_Form final : public CPDF_PageObjectHolder,
                             const CFX_Matrix* pParentMatrix,
                             CPDF_Type3Char* pType3Char,
                             RecursionState* recursion_state);
+  void StartParseContentInternal(RetainPtr<const CPDF_Stream> stream,
+                                 const CPDF_AllStates* pGraphicStates,
+                                 const CFX_Matrix* pParentMatrix,
+                                 CPDF_Type3Char* pType3Char,
+                                 RecursionState* recursion_state);
 
   RecursionState recursion_state_;
   RetainPtr<CPDF_Dictionary> const fallback_resources_;

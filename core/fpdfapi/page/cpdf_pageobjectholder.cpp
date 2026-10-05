@@ -472,6 +472,9 @@ void CPDF_PageObjectHolder::AppendPageObject(
   pPageObj->held_ = true;
   page_object_list_.push_back(std::move(pPageObj));
   object_groups_.reset();
+  if (parse_state_ == ParseState::kParsed) {
+    NoteObjectsEdited();
+  }
 }
 
 bool CPDF_PageObjectHolder::InsertPageObjectAtIndex(
@@ -488,6 +491,7 @@ bool CPDF_PageObjectHolder::InsertPageObjectAtIndex(
   page_object_list_.insert(UNSAFE_TODO(page_object_list_.begin() + index),
                            std::move(page_obj));
   object_groups_.reset();
+  NoteObjectsEdited();
   return true;
 }
 
@@ -503,6 +507,7 @@ std::unique_ptr<CPDF_PageObject> CPDF_PageObjectHolder::RemovePageObject(
   page_object_list_.erase(it);
   result->held_ = false;
   object_groups_.reset();
+  NoteObjectsEdited();
 
   int32_t content_stream = pPageObj->GetContentStream();
   if (content_stream >= 0) {
@@ -521,5 +526,6 @@ bool CPDF_PageObjectHolder::ErasePageObjectAtIndex(size_t index) {
   // std::deque::iterator::operator++() has not been marked as unsafe yet.
   page_object_list_.erase(UNSAFE_TODO(page_object_list_.begin() + index));
   object_groups_.reset();
+  NoteObjectsEdited();
   return true;
 }

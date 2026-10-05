@@ -6,11 +6,15 @@
 
 #include "core/fpdfapi/page/cpdf_page.h"
 
+#include <limits>
 #include <set>
 #include <utility>
+#include <vector>
 
 #include "constants/page_object.h"
 #include "core/fpdfapi/page/cpdf_contentparser.h"
+#include "core/fpdfapi/page/cpdf_form.h"
+#include "core/fpdfapi/page/cpdf_formobject.h"
 #include "core/fpdfapi/page/cpdf_pageimagecache.h"
 #include "core/fpdfapi/page/cpdf_pageobject.h"
 #include "core/fpdfapi/parser/cpdf_array.h"
@@ -18,9 +22,17 @@
 #include "core/fpdfapi/parser/cpdf_document.h"
 #include "core/fpdfapi/parser/cpdf_document_view_scope.h"
 #include "core/fpdfapi/parser/cpdf_object.h"
+#include "core/fpdfapi/parser/cpdf_stream.h"
 #include "core/fxcrt/check.h"
 #include "core/fxcrt/check_op.h"
 #include "core/fxcrt/containers/contains.h"
+
+namespace {
+
+// A content check made at no epoch: the next one compares again.
+constexpr uint64_t kContentUnchecked = std::numeric_limits<uint64_t>::max();
+
+}  // namespace
 
 CPDF_Page::CPDF_Page(CPDF_Document* document,
                      RetainPtr<CPDF_Dictionary> pPageDict)
@@ -41,6 +53,7 @@ CPDF_Page::CPDF_Page(CPDF_Document* document,
   UpdateDimensions();
   transparency_.SetIsolated();
   LoadTransparencyInfo();
+  content_checked_epoch_ = document ? document->GetOverlayEpoch() : 0;
 }
 
 CPDF_Page::~CPDF_Page() = default;
@@ -92,6 +105,72 @@ void CPDF_Page::ParseContent() {
 
   DCHECK_EQ(GetParseState(), ParseState::kParsing);
   ContinueParse(nullptr);
+}
+
+const CPDF_ParsedSize& CPDF_Page::GetParsedSize() const {
+  if (GetParseState() == ParseState::kParsed &&
+      parsed_size_edits_ != GetObjectEdits()) {
+    parsed_size_ = CPDF_ParsedSize::Of(*this);
+    parsed_size_edits_ = GetObjectEdits();
+  }
+  return parsed_size_;
+}
+
+bool CPDF_Page::IsContentCurrent() const {
+  CPDF_Document* document = GetDocument();
+  if (!document) {
+    return true;
+  }
+  // Nothing makes a version without moving the epoch.
+  const uint64_t epoch = document->GetOverlayEpoch();
+  if (content_checked_epoch_ == epoch) {
+    return content_current_;
+  }
+
+  CPDF_DocumentViewScope document_view(document);
+  content_current_ = GetBox(pdfium::page_object::kMediaBox) == read_mediabox_ &&
+                     GetBox(pdfium::page_object::kCropBox) == read_cropbox_ &&
+                     GetOriginalRotation() == read_rotation_ &&
+                     content_versions_.Match(document, GetDict().Get());
+  content_checked_epoch_ = epoch;
+  return content_current_;
+}
+
+void CPDF_Page::StartContentRecords() {
+  parsed_size_ = CPDF_ParsedSize();
+  parsed_size_edits_ = GetObjectEdits();
+  content_versions_.Clear();
+  content_checked_epoch_ = GetDocument()->GetOverlayEpoch();
+  content_current_ = true;
+}
+
+void CPDF_Page::ContentGenerated(bool was_current) {
+  NoteObjectsEdited();
+  if (!was_current) {
+    return;
+  }
+
+  // The generator wrote this page's /Contents and the stream of every form it
+  // regenerated; every other form still holds the version it was parsed from,
+  // which matched.
+  CPDF_DocumentViewScope document_view(GetDocument());
+  content_versions_.Clear();
+  for (auto& stream : CPDF_ContentVersions::ContentStreamsOf(GetDict().Get())) {
+    content_versions_.AddContentStream(std::move(stream));
+  }
+  std::vector<const CPDF_PageObjectHolder*> holders = {this};
+  while (!holders.empty()) {
+    const CPDF_PageObjectHolder* holder = holders.back();
+    holders.pop_back();
+    for (const auto& object : *holder) {
+      if (const CPDF_FormObject* form_object = object->AsForm()) {
+        content_versions_.AddFormStream(form_object->form()->GetParsedStream());
+        holders.push_back(form_object->form());
+      }
+    }
+  }
+  content_checked_epoch_ = GetDocument()->GetOverlayEpoch();
+  content_current_ = true;
 }
 
 RetainPtr<CPDF_Object> CPDF_Page::GetMutablePageAttr(ByteStringView name) {
@@ -326,6 +405,12 @@ void CPDF_Page::UpdateDimensions() {
 
   page_size_.width = bbox_.Width();
   page_size_.height = bbox_.Height();
+
+  // EmbedPDF: what this page now shows, for IsContentCurrent().
+  read_mediabox_ = GetBox(pdfium::page_object::kMediaBox);
+  read_cropbox_ = GetBox(pdfium::page_object::kCropBox);
+  read_rotation_ = GetOriginalRotation();
+  content_checked_epoch_ = kContentUnchecked;
 
   switch (GetPageRotation()) {
     case 0:

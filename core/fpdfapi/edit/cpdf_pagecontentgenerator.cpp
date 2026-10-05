@@ -389,6 +389,11 @@ void CPDF_PageContentGenerator::GenerateContent() {
   // Resource/reference traversal must see this layer's promoted page-tree
   // objects, including ancestors changed by redaction resource cleanup.
   CPDF_DocumentViewScope document_view(document_);
+  // EmbedPDF: a page that matches the document now matches what this writes.
+  CPDF_Page* page = obj_holder_->IsPage()
+                        ? static_cast<CPDF_Page*>(obj_holder_.get())
+                        : nullptr;
+  const bool page_was_current = page && page->IsContentCurrent();
   std::map<int32_t, fxcrt::ostringstream> new_stream_data =
       GenerateModifiedStreams();
   // If no streams were regenerated or removed, nothing to do here.
@@ -411,6 +416,9 @@ void CPDF_PageContentGenerator::GenerateContent() {
 
   UpdateContentStreams(std::move(new_stream_data));
   UpdateResourcesDict(regenerated_all_streams);
+  if (page) {
+    page->ContentGenerated(page_was_current);
+  }
 }
 
 int32_t CPDF_PageContentGenerator::CountExistingContentStreams() {
