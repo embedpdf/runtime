@@ -105,6 +105,7 @@ class CPDF_Stream final : public CPDF_Object {
       CPDF_IndirectObjectHolder* holder,
       std::set<const CPDF_Object*>* pVisited) const override;
   void FreezeChildren(std::set<const CPDF_Object*>* visited) override;
+  void StampWriteGenerationOfChildren(uint32_t generation) override;
 
   void SetLengthInDict(int length);
 

@@ -12,6 +12,7 @@
 
 #include "core/fpdfapi/parser/cpdf_encryptor.h"
 #include "core/fpdfapi/parser/cpdf_read_only_graph_guard.h"
+#include "core/fpdfapi/parser/cpdf_write_generation.h"
 #include "core/fpdfapi/parser/fpdf_parser_decode.h"
 #include "core/fxcrt/check.h"
 #include "core/fxcrt/data_vector.h"
@@ -59,7 +60,7 @@ ByteString CPDF_String::GetString() const {
 
 void CPDF_String::SetString(const ByteString& str) {
   DCHECK_PDF_GRAPH_MUTABLE_FOR(this);
-  DCHECK(!IsFrozen());
+  DCHECK_PDF_WRITABLE(this);
   data_ = str;
 }
 

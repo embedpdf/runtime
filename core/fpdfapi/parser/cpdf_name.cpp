@@ -6,6 +6,7 @@
 
 #include "core/fpdfapi/parser/cpdf_name.h"
 
+#include "core/fpdfapi/parser/cpdf_write_generation.h"
 #include "core/fpdfapi/parser/fpdf_parser_decode.h"
 #include "core/fpdfapi/parser/fpdf_parser_utility.h"
 #include "core/fxcrt/check.h"
@@ -33,7 +34,7 @@ ByteString CPDF_Name::GetString() const {
 }
 
 void CPDF_Name::SetString(const ByteString& str) {
-  DCHECK(!IsFrozen());
+  DCHECK_PDF_WRITABLE(this);
   name_ = str;
 }
 

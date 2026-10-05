@@ -14,10 +14,27 @@
 #include "core/fpdfapi/parser/cpdf_dictionary.h"
 #include "core/fpdfapi/parser/cpdf_document.h"
 #include "core/fpdfapi/parser/cpdf_document_view_scope.h"
+#include "core/fpdfapi/parser/cpdf_layer_document.h"
 #include "core/fpdfapi/parser/cpdf_object.h"
+#include "core/fpdfapi/parser/cpdf_reference.h"
 #include "core/fpdfapi/parser/cpdf_stream.h"
 #include "core/fxcrt/check.h"
 #include "core/fxcrt/check_op.h"
+
+namespace {
+
+// Whether |annots| references object |objnum|.
+bool AnnotsReference(const CPDF_Array* annots, uint32_t objnum) {
+  for (size_t i = 0; annots && i < annots->size(); ++i) {
+    RetainPtr<const CPDF_Reference> ref = ToReference(annots->GetObjectAt(i));
+    if (ref && ref->GetRefObjNum() == objnum) {
+      return true;
+    }
+  }
+  return false;
+}
+
+}  // namespace
 
 CPDF_AnnotContext::CPDF_AnnotContext(RetainPtr<CPDF_Dictionary> pAnnotDict,
                                      IPDF_Page* pPage,
@@ -28,7 +45,24 @@ CPDF_AnnotContext::CPDF_AnnotContext(RetainPtr<CPDF_Dictionary> pAnnotDict,
   DCHECK(annot_dict_);
   DCHECK(page_);
   DCHECK(page_->AsPDFPage());
-  annot_dict_epoch_ = page_->GetDocument()->GetOverlayEpoch();
+  CPDF_Document* doc = page_->GetDocument();
+  annot_dict_epoch_ = doc->GetOverlayEpoch();
+  RetainPtr<const CPDF_Dictionary> page_dict = page_->AsPDFPage()->GetDict();
+  page_objnum_ = page_dict ? page_dict->GetObjNum() : 0;
+  objnum_ = annot_dict_->GetObjNum();
+  if (objnum_ != 0) {
+    was_member_ =
+        AnnotsReference(page_->AsPDFPage()->GetAnnotsArray().Get(), objnum_);
+    return;
+  }
+  // Inline: on a page a layer hasn't promoted, the position it sits at is
+  // its birth index (creates append and updates edit in place, and
+  // anything that would move an entry promotes the page first).
+  const CPDF_LayerDocument* layer = CPDF_LayerDocument::FromDocument(doc);
+  if (layer && annot_index_ >= 0 && page_objnum_ &&
+      !layer->IsPagePromoted(page_objnum_)) {
+    birth_index_ = annot_index_;
+  }
 }
 
 CPDF_AnnotContext::~CPDF_AnnotContext() = default;
@@ -71,7 +105,12 @@ RetainPtr<CPDF_Dictionary> CPDF_AnnotContext::GetMutableAnnotDict() {
     return annot_dict_;
   }
 
-  if (annot_dict_->IsFrozen()) {
+  // Inline: the dictionary is part of its owner (the page, or an indirect
+  // /Annots array). When it can't be written in place - it is frozen, or a
+  // layer transaction is open and it belongs to a committed version - open
+  // the owner for writing (which copies it up in a transaction) and take the
+  // dictionary from the owner's version.
+  if (!annot_dict_->IsWritable()) {
     EnsureMutableBackingForAnnotDict();
   }
   annot_dict_epoch_ = doc->GetOverlayEpoch();
@@ -81,6 +120,11 @@ RetainPtr<CPDF_Dictionary> CPDF_AnnotContext::GetMutableAnnotDict() {
 const CPDF_Dictionary* CPDF_AnnotContext::GetAnnotDict() const {
   RefreshAnnotDictIfNeeded();
   return annot_dict_.Get();
+}
+
+bool CPDF_AnnotContext::IsValid() const {
+  RefreshAnnotDictIfNeeded();
+  return valid_;
 }
 
 void CPDF_AnnotContext::RefreshAnnotDictIfNeeded() const {
@@ -96,36 +140,111 @@ void CPDF_AnnotContext::RefreshAnnotDictIfNeeded() const {
   }
 
   CPDF_DocumentViewScope document_view(doc);
-  const uint32_t objnum = annot_dict_->GetObjNum();
-  if (objnum != 0) {
-    RetainPtr<const CPDF_Object> effective = doc->GetIndirectObject(objnum);
-    const CPDF_Dictionary* effective_dict =
-        effective ? effective->AsDictionary() : nullptr;
-    if (effective_dict && effective_dict != annot_dict_.Get()) {
-      annot_dict_ = pdfium::WrapRetain(
-          const_cast<CPDF_Dictionary*>(effective_dict));
-      annot_form_.reset();
-    }
-  } else if (annot_index_ >= 0) {
-    RetainPtr<const CPDF_Array> annots = page->GetAnnotsArray();
-    RetainPtr<const CPDF_Dictionary> effective =
-        annots && static_cast<size_t>(annot_index_) < annots->size()
-            ? annots->GetDictAt(static_cast<size_t>(annot_index_))
-            : nullptr;
-    if (effective && effective.Get() != annot_dict_.Get()) {
-      annot_dict_ =
-          pdfium::WrapRetain(const_cast<CPDF_Dictionary*>(effective.Get()));
-      annot_form_.reset();
-    }
+  RetainPtr<const CPDF_Dictionary> effective = ResolveIdentity();
+  // Invalid keeps the last version, so code already inside an API call
+  // never meets a null dictionary; the API boundary checks IsValid().
+  valid_ = !!effective;
+  if (effective && effective.Get() != annot_dict_.Get()) {
+    annot_dict_ =
+        pdfium::WrapRetain(const_cast<CPDF_Dictionary*>(effective.Get()));
+    annot_form_.reset();
   }
   annot_dict_epoch_ = current_epoch;
 }
 
-void CPDF_AnnotContext::EnsureMutableBackingForAnnotDict() {
-  CHECK_GE(annot_index_, 0);
+RetainPtr<const CPDF_Dictionary> CPDF_AnnotContext::ResolveIdentity() const {
   CPDF_Page* page = page_->AsPDFPage();
-  RetainPtr<CPDF_Dictionary> page_dict = page->GetMutableDict();
-  RetainPtr<CPDF_Array> annots = page_dict->GetMutableArrayFor("Annots");
+  CPDF_Document* doc = page->GetDocument();
+  // A deleted page takes its annotations with it.
+  if (page_objnum_ && doc->GetPageIndex(page_objnum_) < 0) {
+    return nullptr;
+  }
+  RetainPtr<const CPDF_Array> annots = page->GetAnnotsArray();
+
+  // The identity is what the handle was made with, never the version it
+  // resolved to last: after an aborted promotion, the object that version
+  // was is gone, and the annotation is inline at its birth index again.
+  uint32_t objnum = objnum_;
+  if (birth_index_ >= 0) {
+    // Born inline: promoted since (the birth list knows its object), or
+    // still at its birth index.
+    const CPDF_LayerDocument* layer = CPDF_LayerDocument::FromDocument(doc);
+    objnum = layer ? layer->FindBirth(page_objnum_,
+                                      static_cast<uint32_t>(birth_index_))
+                   : 0;
+    if (objnum == 0) {
+      RetainPtr<const CPDF_Object> entry =
+          annots && static_cast<size_t>(birth_index_) < annots->size()
+              ? annots->GetObjectAt(static_cast<size_t>(birth_index_))
+              : nullptr;
+      return entry && entry->IsInline() ? ToDictionary(entry) : nullptr;
+    }
+  }
+
+  if (objnum != 0) {
+    RetainPtr<const CPDF_Dictionary> effective =
+        ToDictionary(doc->GetIndirectObject(objnum));
+    if (!effective) {
+      return nullptr;  // created in an aborted transaction, or deleted
+    }
+    // A base annotation keeps resolving after it is deleted (rule 6): only
+    // its page stops referencing it.
+    if (AnnotsReference(annots.Get(), objnum)) {
+      was_member_ = true;
+    } else if (was_member_) {
+      return nullptr;
+    }
+    return effective;
+  }
+
+  // Inline without a birth name (not a layer, or added inline later): by
+  // the index it was found at, as before.
+  if (annot_index_ >= 0) {
+    RetainPtr<const CPDF_Dictionary> effective =
+        annots && static_cast<size_t>(annot_index_) < annots->size()
+            ? annots->GetDictAt(static_cast<size_t>(annot_index_))
+            : nullptr;
+    if (effective) {
+      return effective;
+    }
+  }
+  return annot_dict_;
+}
+
+void CPDF_AnnotContext::EnsureMutableBackingForAnnotDict() {
+  CPDF_Page* page = page_->AsPDFPage();
+  if (annot_index_ < 0) {
+    // Made without its index (an annotation just appended, or reached through
+    // a link): find it in the page's /Annots by identity.
+    RetainPtr<const CPDF_Array> annots = page->GetAnnotsArray();
+    for (size_t i = 0; annots && i < annots->size(); ++i) {
+      if (annots->GetDictAt(i).Get() == annot_dict_.Get()) {
+        annot_index_ = static_cast<int>(i);
+        break;
+      }
+    }
+    if (annot_index_ < 0 && !annot_dict_->IsFrozen()) {
+      // Not in /Annots under this identity any more: nothing to open. The
+      // write lands on this dictionary, as it always did; if that is a
+      // committed version inside a transaction, the generation check reports
+      // it. Locating it after its owner was copied needs the birth list (fork
+      // plan T2, rule L3).
+      return;
+    }
+  }
+  CHECK_GE(annot_index_, 0);
+  // The owner is the indirect object holding the dictionary: an indirect
+  // /Annots array if the page has one (the page itself stays as it is), else
+  // the page.
+  RetainPtr<CPDF_Array> annots;
+  RetainPtr<const CPDF_Reference> annots_ref =
+      ToReference(page->GetDict()->GetObjectFor("Annots"));
+  if (annots_ref) {
+    annots = ToArray(page->GetDocument()->GetMutableIndirectObject(
+        annots_ref->GetRefObjNum()));
+  } else {
+    annots = page->GetMutableDict()->GetMutableArrayFor("Annots");
+  }
   CHECK(annots);
   annot_dict_ = annots->GetMutableDictAt(annot_index_);
   CHECK(annot_dict_);

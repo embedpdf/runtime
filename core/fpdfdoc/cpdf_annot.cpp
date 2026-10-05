@@ -22,6 +22,7 @@
 #include "core/fpdfapi/parser/cpdf_boolean.h"
 #include "core/fpdfapi/parser/cpdf_dictionary.h"
 #include "core/fpdfapi/parser/cpdf_document.h"
+#include "core/fpdfapi/parser/cpdf_reference.h"
 #include "core/fpdfapi/parser/cpdf_stream.h"
 #include "core/fpdfapi/parser/fpdf_parser_utility.h"
 #include "core/fpdfapi/render/cpdf_rendercontext.h"
@@ -293,6 +294,54 @@ RetainPtr<CPDF_Stream> GetAnnotAPNoFallback(const CPDF_Dictionary* pAnnotDict,
                                             CPDF_Annot::AppearanceMode eMode) {
   DCHECK(pAnnotDict);
   return GetAnnotAPInternal(pAnnotDict, eMode, false);
+}
+
+RetainPtr<CPDF_Stream> GetMutableAnnotAP(CPDF_Dictionary* pAnnotDict,
+                                         CPDF_Annot::AppearanceMode eMode) {
+  DCHECK(pAnnotDict);
+  // Read first: which entry, and which state of an appearance subdictionary,
+  // exactly as GetAnnotAP() decides it. Then take that one for writing.
+  RetainPtr<const CPDF_Stream> readable =
+      GetAnnotAPInternal(pAnnotDict, eMode, true);
+  if (!readable) {
+    return nullptr;
+  }
+  RetainPtr<CPDF_Dictionary> ap =
+      pAnnotDict->GetMutableDictFor(pdfium::annotation::kAP);
+  if (!ap) {
+    return nullptr;
+  }
+  const char* ap_entry = "N";
+  if (eMode == CPDF_Annot::AppearanceMode::kDown) {
+    ap_entry = "D";
+  } else if (eMode == CPDF_Annot::AppearanceMode::kRollover) {
+    ap_entry = "R";
+  }
+  if (!ap->KeyExist(ap_entry)) {
+    ap_entry = "N";
+  }
+  if (RetainPtr<CPDF_Stream> stream = ap->GetMutableStreamFor(ap_entry)) {
+    return stream;
+  }
+  // An appearance subdictionary: the state GetAnnotAP() chose is the one
+  // whose stream has the same object number.
+  RetainPtr<CPDF_Dictionary> states = ap->GetMutableDictFor(ap_entry);
+  if (!states) {
+    return nullptr;
+  }
+  ByteString chosen;
+  {
+    CPDF_DictionaryLocker locker(states);
+    for (const auto& [state, value] : locker) {
+      RetainPtr<const CPDF_Reference> ref = ToReference(value);
+      if (ref && ref->GetRefObjNum() == readable->GetObjNum()) {
+        chosen = state;
+        break;
+      }
+    }
+  }
+  return chosen.IsEmpty() ? nullptr
+                          : states->GetMutableStreamFor(chosen.AsStringView());
 }
 
 CPDF_Form* CPDF_Annot::GetAPForm(CPDF_Page* pPage, AppearanceMode mode) {

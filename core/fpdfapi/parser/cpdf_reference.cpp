@@ -9,6 +9,7 @@
 #include "core/fpdfapi/parser/cpdf_dictionary.h"
 #include "core/fpdfapi/parser/cpdf_indirect_object_holder.h"
 #include "core/fpdfapi/parser/cpdf_write_context.h"
+#include "core/fpdfapi/parser/cpdf_write_generation.h"
 #include "core/fxcrt/check_op.h"
 #include "core/fxcrt/containers/contains.h"
 #include "core/fxcrt/fx_stream.h"
@@ -90,6 +91,7 @@ const CPDF_Object* CPDF_Reference::FastGetDirect() const {
 }
 
 void CPDF_Reference::SetRef(CPDF_IndirectObjectHolder* doc, uint32_t objnum) {
+  DCHECK_PDF_WRITABLE(this);
   obj_list_ = doc;
   ref_obj_num_ = objnum;
 }

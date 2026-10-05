@@ -17,6 +17,7 @@
 #include "core/fpdfapi/parser/cpdf_reference.h"
 #include "core/fpdfapi/parser/cpdf_stream.h"
 #include "core/fpdfapi/parser/cpdf_string.h"
+#include "core/fpdfapi/parser/cpdf_write_generation.h"
 #include "core/fxcrt/check.h"
 #include "core/fxcrt/containers/contains.h"
 #include "core/fxcrt/fx_stream.h"
@@ -88,6 +89,12 @@ RetainPtr<CPDF_Object> CPDF_Array::CloneForHolderNonCyclic(
 void CPDF_Array::FreezeChildren(std::set<const CPDF_Object*>* visited) {
   for (const auto& object : objects_) {
     object->FreezeForHolder(visited);
+  }
+}
+
+void CPDF_Array::StampWriteGenerationOfChildren(uint32_t generation) {
+  for (const auto& object : objects_) {
+    object->StampWriteGeneration(generation);
   }
 }
 
@@ -242,7 +249,7 @@ RetainPtr<const CPDF_String> CPDF_Array::GetStringAt(size_t index) const {
 
 void CPDF_Array::Clear() {
   CHECK(!IsLocked());
-  DCHECK(!IsFrozen());
+  DCHECK_PDF_WRITABLE(this);
   DCHECK_PDF_GRAPH_MUTABLE_FOR(this);
   objects_.clear();
 }
@@ -250,7 +257,7 @@ void CPDF_Array::Clear() {
 void CPDF_Array::RemoveAt(size_t index) {
   CHECK(!IsLocked());
   if (index < objects_.size()) {
-    DCHECK(!IsFrozen());
+    DCHECK_PDF_WRITABLE(this);
     DCHECK_PDF_GRAPH_MUTABLE_FOR(this);
     objects_.erase(objects_.begin() + index);
   }
@@ -268,7 +275,7 @@ void CPDF_Array::ConvertToIndirectObjectAt(size_t index,
   }
 
   DCHECK_PDF_GRAPH_MUTABLE_FOR(this);
-  DCHECK(!IsFrozen());
+  DCHECK_PDF_WRITABLE(this);
   pHolder->AddIndirectObject(objects_[index]);
   objects_[index] = objects_[index]->MakeReference(pHolder);
 }
@@ -296,7 +303,9 @@ CPDF_Object* CPDF_Array::SetAtInternal(size_t index,
   }
 
   DCHECK_PDF_GRAPH_MUTABLE_FOR(this);
-  DCHECK(!IsFrozen());
+  DCHECK_PDF_WRITABLE(this);
+  // EmbedPDF: a detached child joins its owner's write generation.
+  pObj->StampWriteGeneration(write_generation());
   CPDF_Object* pRet = pObj.Get();
   objects_[index] = std::move(pObj);
   return pRet;
@@ -313,7 +322,8 @@ CPDF_Object* CPDF_Array::InsertAtInternal(size_t index,
   }
 
   DCHECK_PDF_GRAPH_MUTABLE_FOR(this);
-  DCHECK(!IsFrozen());
+  DCHECK_PDF_WRITABLE(this);
+  pObj->StampWriteGeneration(write_generation());
   CPDF_Object* pRet = pObj.Get();
   objects_.insert(objects_.begin() + index, std::move(pObj));
   return pRet;
@@ -325,7 +335,8 @@ CPDF_Object* CPDF_Array::AppendInternal(RetainPtr<CPDF_Object> pObj) {
   CHECK(pObj->IsInline());
   CHECK(!pObj->IsStream());
   DCHECK_PDF_GRAPH_MUTABLE_FOR(this);
-  DCHECK(!IsFrozen());
+  DCHECK_PDF_WRITABLE(this);
+  pObj->StampWriteGeneration(write_generation());
   CPDF_Object* pRet = pObj.Get();
   objects_.push_back(std::move(pObj));
   return pRet;

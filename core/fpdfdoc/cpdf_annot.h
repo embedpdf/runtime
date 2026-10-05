@@ -279,4 +279,13 @@ RetainPtr<CPDF_Stream> GetAnnotAP(const CPDF_Dictionary* pAnnotDict,
 RetainPtr<CPDF_Stream> GetAnnotAPNoFallback(const CPDF_Dictionary* pAnnotDict,
                                             CPDF_Annot::AppearanceMode eMode);
 
+// EmbedPDF: GetAnnotAP() for writing. The same stream, reached through the
+// mutable accessors, so every indirect step goes through the document's
+// write door and a layer transaction copies the stream (and an indirect /AP
+// dictionary) up before it is written. GetAnnotAP() is for reading only.
+// |pAnnotDict| must itself be the writable version (from
+// CPDF_AnnotContext::GetMutableAnnotDict()).
+RetainPtr<CPDF_Stream> GetMutableAnnotAP(CPDF_Dictionary* pAnnotDict,
+                                         CPDF_Annot::AppearanceMode eMode);
+
 #endif  // CORE_FPDFDOC_CPDF_ANNOT_H_

@@ -142,6 +142,12 @@ class CPDF_PageObjectHolder {
   bool HasDirtyStreams() const { return !dirty_streams_.empty(); }
   std::set<int32_t> TakeDirtyStreams();
 
+  // EmbedPDF: the name caches below remember which resource name the
+  // content generator gave a font, graphics state or colour space. A cached
+  // name counts only while the resources still define it: an aborted layer
+  // transaction drops the names it added, and generated content must never
+  // use a name nothing defines.
+  bool ResourcesDefine(ByteStringView category, const ByteString& name) const;
   std::optional<ByteString> GraphicsMapSearch(const GraphicsData& gd);
   void GraphicsMapInsert(const GraphicsData& gd, const ByteString& str);
 

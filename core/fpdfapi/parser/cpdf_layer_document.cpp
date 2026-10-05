@@ -7,6 +7,7 @@
 #include <utility>
 
 #include "core/fpdfapi/page/cpdf_docpagedata.h"
+#include "core/fpdfapi/parser/cpdf_array.h"
 #include "core/fpdfapi/parser/cpdf_base_document.h"
 #include "core/fpdfapi/parser/cpdf_concat_read_stream.h"
 #include "core/fpdfapi/parser/cpdf_cross_ref_table.h"
@@ -15,7 +16,10 @@
 #include "core/fpdfapi/parser/cpdf_object.h"
 #include "core/fpdfapi/parser/cpdf_parse_only_holder.h"
 #include "core/fpdfapi/parser/cpdf_parser.h"
+#include "core/fpdfapi/parser/cpdf_read_only_graph_guard.h"
+#include "core/fpdfapi/parser/cpdf_reference.h"
 #include "core/fpdfapi/parser/cpdf_stream.h"
+#include "core/fpdfapi/parser/cpdf_write_generation.h"
 #include "core/fpdfapi/render/cpdf_docrenderdata.h"
 #include "core/fxcrt/check.h"
 #include "core/fxcrt/fx_stream.h"
@@ -79,6 +83,9 @@ CPDF_LayerDocument::CPDF_LayerDocument(
 }
 
 CPDF_LayerDocument::~CPDF_LayerDocument() {
+  // Closing inside a transaction drops it, and closes its generation on this
+  // thread with it.
+  AbortTransaction();
 #if DCHECK_IS_ON()
   base_->UnregisterLiveLayer(this);
 #endif
@@ -109,7 +116,7 @@ CPDF_Parser* CPDF_LayerDocument::GetParser() const {
 
 const CPDF_Dictionary* CPDF_LayerDocument::GetRoot() const {
   const uint32_t root_objnum = base_->GetParser()->GetRootObjNum();
-  if (RetainPtr<CPDF_Object> local = FindLocalIndirectObject(root_objnum)) {
+  if (RetainPtr<CPDF_Object> local = FindLayerVersion(root_objnum)) {
     // The returned pointer is owned by this layer's indirect object holder.
     // Const root reads must see the effective overlay after delta ingest even
     // when the mutable root cache has been invalidated.
@@ -178,9 +185,35 @@ uint32_t CPDF_LayerDocument::GetUserPermissions(bool get_owner_perms) const {
   return base_->GetUserPermissions(get_owner_perms);
 }
 
+// "Promoted" means "this layer has its own version", in an open transaction
+// too: cache routing (CanUseFallbackForObject) and the image rebind follow it.
 RetainPtr<CPDF_Object> CPDF_LayerDocument::FindPromotedObject(
     uint32_t objnum) const {
+  return FindLayerVersion(objnum);
+}
+
+RetainPtr<CPDF_Object> CPDF_LayerDocument::FindLayerVersion(
+    uint32_t objnum) const {
+  if (transaction_) {
+    auto it = transaction_->written.find(objnum);
+    if (it != transaction_->written.end()) {
+      return it->second;
+    }
+    if (transaction_->hidden.contains(objnum)) {
+      return nullptr;  // the committed version is hidden; the base may answer
+    }
+  }
   return FindLocalIndirectObject(objnum);
+}
+
+bool CPDF_LayerDocument::IsVersionOf(uint32_t objnum,
+                                     const CPDF_Object* object) const {
+  if (!object || !objnum) {
+    return false;
+  }
+  return FindLayerVersion(objnum).Get() == object ||
+         FindLocalIndirectObject(objnum).Get() == object ||
+         GetBaseTwin(objnum).Get() == object;
 }
 
 // The base's frozen object, only for an object the base's cross-reference
@@ -259,22 +292,417 @@ RetainPtr<CPDF_Object> CPDF_LayerDocument::ParseIndirectObject(
 
 RetainPtr<CPDF_Object> CPDF_LayerDocument::GetMutableIndirectObject(
     uint32_t objnum) {
-  if (RetainPtr<CPDF_Object> local = FindLocalIndirectObject(objnum)) {
-    return local;
+  if (!transaction_) {
+    if (RetainPtr<CPDF_Object> local = FindLocalIndirectObject(objnum)) {
+      return local;
+    }
+    return PromoteFromBase(objnum);
   }
-  return PromoteFromBase(objnum);
+
+  // Inside a transaction everything below it is read-only: the first write to
+  // an object copies the version a read sees (the committed layer's, or the
+  // frozen base's) up into the transaction, and every later write reuses it.
+  CPDF_LayerTransaction& tx = *transaction_;
+  auto it = tx.written.find(objnum);
+  if (it != tx.written.end()) {
+    return it->second;
+  }
+  if (!objnum || objnum == CPDF_Object::kInvalidObjNum) {
+    return nullptr;
+  }
+  RetainPtr<const CPDF_Object> current = FindLayerVersion(objnum);
+  if (!current) {
+    current = base_->GetFrozenObjectForLayer(objnum);
+  }
+  if (!current) {
+    return nullptr;
+  }
+  RetainPtr<CPDF_Object> copy = current->CloneForHolder(this);
+  if (!copy) {
+    return nullptr;
+  }
+  copy->SetObjNum(objnum);
+  copy->SetGenNum(current->GetGenNum());
+  copy->StampWriteGeneration(tx.generation);
+  ++tx.stats.objects_copied;
+  if (const CPDF_Stream* stream = current->AsStream();
+      stream && stream->IsMemoryBased()) {
+    tx.stats.stream_bytes_copied += stream->GetRawSize();
+  }
+  tx.written[objnum] = copy;
+  tx.hidden.erase(objnum);
+  tx.touched.insert(objnum);
+  ++overlay_epoch_;
+  InvalidateCachedDictsFor(objnum);
+  return copy;
 }
 
 void CPDF_LayerDocument::DeleteIndirectObject(uint32_t objnum) {
-  if (FindLocalIndirectObject(objnum)) {
+  // Every delete moves the epoch, even one that leaves a base object
+  // resolving: its caller just stopped referencing it, and handles that
+  // check membership (CPDF_AnnotContext) must look again.
+  ++overlay_epoch_;
+  if (!transaction_) {
+    if (FindLocalIndirectObject(objnum)) {
+      CPDF_Document::DeleteIndirectObject(objnum);
+    }
+    return;
+  }
+  // A delete removes the layer's own versions. An object that exists in the
+  // base keeps resolving to its base version - a layer can only stop
+  // referencing it - exactly as outside a transaction.
+  CPDF_LayerTransaction& tx = *transaction_;
+  auto written = tx.written.find(objnum);
+  const bool had_copy = written != tx.written.end();
+  if (had_copy) {
+    tx.dropped.push_back(std::move(written->second));
+    tx.written.erase(written);
+  }
+  const bool committed = !!FindLocalIndirectObject(objnum);
+  if (committed) {
+    tx.hidden.insert(objnum);
+  }
+  if (had_copy || committed) {
+    tx.touched.insert(objnum);
+    InvalidateCachedDictsFor(objnum);
+  }
+}
+
+uint32_t CPDF_LayerDocument::AddIndirectObject(RetainPtr<CPDF_Object> object) {
+  if (!transaction_) {
+    object->StampWriteGeneration(CPDF_WriteGeneration::kCommitted);
+    return CPDF_Document::AddIndirectObject(std::move(object));
+  }
+  DCHECK_PDF_HOLDER_MUTABLE();
+  CHECK(!object->GetObjNum());
+  object->StampWriteGeneration(transaction_->generation);
+  const uint32_t objnum = GetLastObjNum() + 1;
+  SetLastObjNum(objnum);
+  object->SetObjNum(objnum);
+  ++transaction_->stats.objects_added;
+  transaction_->written[objnum] = std::move(object);
+  transaction_->touched.insert(objnum);
+  ++overlay_epoch_;
+  return objnum;
+}
+
+bool CPDF_LayerDocument::ReplaceIndirectObjectIfHigherGeneration(
+    uint32_t objnum,
+    RetainPtr<CPDF_Object> object) {
+  if (!transaction_) {
+    if (object) {
+      object->StampWriteGeneration(CPDF_WriteGeneration::kCommitted);
+    }
+    return CPDF_Document::ReplaceIndirectObjectIfHigherGeneration(
+        objnum, std::move(object));
+  }
+  DCHECK(objnum);
+  if (!object || objnum == CPDF_Object::kInvalidObjNum) {
+    return false;
+  }
+  RetainPtr<const CPDF_Object> current = FindLayerVersion(objnum);
+  if (!current && !transaction_->hidden.contains(objnum)) {
+    current = base_->GetFrozenObjectForLayer(objnum);
+  }
+  if (current && object->GetGenNum() <= current->GetGenNum()) {
+    return false;
+  }
+  DCHECK_PDF_HOLDER_MUTABLE();
+  object->SetObjNum(objnum);
+  object->StampWriteGeneration(transaction_->generation);
+  transaction_->written[objnum] = std::move(object);
+  transaction_->hidden.erase(objnum);
+  transaction_->touched.insert(objnum);
+  if (objnum > GetLastObjNum()) {
+    SetLastObjNum(objnum);
+  }
+  ++overlay_epoch_;
+  InvalidateCachedDictsFor(objnum);
+  return true;
+}
+
+bool CPDF_LayerDocument::BeginTransaction() {
+  // One transaction per thread: the open generation is per thread, so a
+  // second layer can't open one while another layer's is open.
+  if (transaction_ || ingest_status_ != OpenStatus::kSuccess ||
+      open_checkpoints_ > 0 || CPDF_WriteGeneration::Current() != 0) {
+    return false;
+  }
+  transaction_ = std::make_unique<CPDF_LayerTransaction>();
+  transaction_->object_mark = GetLastObjNum();
+  transaction_->generation = CPDF_WriteGeneration::Next();
+  CPDF_WriteGeneration::SetCurrent(transaction_->generation);
+  transaction_->root_before = GetCachedRootDict();
+  transaction_->info_before = GetCachedInfoDict();
+  return true;
+}
+
+bool CPDF_LayerDocument::CommitTransaction() {
+  if (!transaction_) {
+    return false;
+  }
+  std::unique_ptr<CPDF_LayerTransaction> tx = std::move(transaction_);
+  CPDF_WriteGeneration::SetCurrent(0);
+  // The committed versions this commit replaces or deletes: nobody can reach
+  // them afterwards, so derived caches must not keep them alive.
+  std::vector<RetainPtr<const CPDF_Object>> unreachable;
+  for (auto& [objnum, object] : tx->written) {
+    if (RetainPtr<CPDF_Object> old = FindLocalIndirectObject(objnum)) {
+      unreachable.push_back(std::move(old));
+    }
+    // Copies and new objects were stamped when stored, and attaching stamps
+    // detached children; this only catches a child stored without a setter.
+    object->StampWriteGeneration(tx->generation);
+    AddPromotedObject(objnum, std::move(object));  // replaces the old version
+  }
+  for (uint32_t objnum : tx->hidden) {
+    if (RetainPtr<CPDF_Object> old = FindLocalIndirectObject(objnum)) {
+      unreachable.push_back(std::move(old));
+    }
     CPDF_Document::DeleteIndirectObject(objnum);
-    ++overlay_epoch_;
+  }
+  ForgetDerivedDataOf(unreachable);
+  for (auto& [page_objnum, births] : tx->births) {
+    AddCommittedBirths(page_objnum, std::move(births));
+  }
+  last_transaction_stats_ = tx->stats;
+  ++overlay_epoch_;
+  return true;
+}
+
+bool CPDF_LayerDocument::AbortTransaction() {
+  if (!transaction_) {
+    return false;
+  }
+  std::unique_ptr<CPDF_LayerTransaction> tx = std::move(transaction_);
+  CPDF_WriteGeneration::SetCurrent(0);
+  if (tx->page_list_before) {
+    layer_page_list_ = std::move(*tx->page_list_before);
+  }
+  // The caches point at what they did at begin: committed or base versions,
+  // which the transaction never wrote.
+  SetCachedRootDict(std::move(tx->root_before));
+  SetCachedInfoDict(std::move(tx->info_before));
+  // Object numbers are not given back: anything that remembers a number from
+  // this transaction must never meet a later object under it.
+  std::vector<RetainPtr<const CPDF_Object>> unreachable;
+  for (auto& [objnum, object] : tx->written) {
+    unreachable.push_back(std::move(object));
+  }
+  for (RetainPtr<CPDF_Object>& object : tx->dropped) {
+    unreachable.push_back(std::move(object));
+  }
+  ForgetDerivedDataOf(unreachable);
+  last_transaction_stats_ = tx->stats;
+  ++overlay_epoch_;
+  // tx->written and tx->hidden are dropped with tx. Nothing is undone.
+  return true;
+}
+
+int CPDF_LayerDocument::PromotePageAnnots(int page_index) {
+  if (page_index < 0 || static_cast<size_t>(page_index) >= GetPageListSize()) {
+    return -1;
+  }
+  const uint32_t page_objnum = GetPageObjNumAt(page_index);
+  RetainPtr<const CPDF_Dictionary> page = GetPageDictionary(page_index);
+  if (!page_objnum || !page) {
+    return -1;
+  }
+
+  // Read first: a page with nothing inline is promoted without a write.
+  RetainPtr<const CPDF_Array> annots = page->GetArrayFor("Annots");
+  bool has_inline = false;
+  for (size_t i = 0; annots && i < annots->size() && !has_inline; ++i) {
+    RetainPtr<const CPDF_Object> entry = annots->GetObjectAt(i);
+    has_inline = entry && entry->IsInline() && entry->IsDictionary();
+  }
+
+  std::map<uint32_t, uint32_t> moved;  // position -> its new object
+  if (has_inline) {
+    // Open the owner of the entries: an indirect /Annots array, or the page.
+    RetainPtr<const CPDF_Reference> ref =
+        ToReference(page->GetObjectFor("Annots"));
+    RetainPtr<CPDF_Array> mutable_annots;
+    if (ref) {
+      mutable_annots = ToArray(GetMutableIndirectObject(ref->GetRefObjNum()));
+    } else if (RetainPtr<CPDF_Dictionary> mutable_page =
+                   GetMutablePageDictionary(page_index)) {
+      mutable_annots = mutable_page->GetMutableArrayFor("Annots");
+    }
+    if (!mutable_annots) {
+      return -1;
+    }
+    for (size_t i = 0; i < mutable_annots->size(); ++i) {
+      RetainPtr<const CPDF_Object> entry = mutable_annots->GetObjectAt(i);
+      if (!entry || !entry->IsInline() || !entry->IsDictionary()) {
+        continue;
+      }
+      mutable_annots->ConvertToIndirectObjectAt(i, this);
+      RetainPtr<const CPDF_Reference> now =
+          ToReference(mutable_annots->GetObjectAt(i));
+      CHECK(now);
+      moved[static_cast<uint32_t>(i)] = now->GetRefObjNum();
+    }
+  }
+
+  // Births, once per page, for a page whose base version has inline
+  // annotations: where each one went. The page has kept every one at its
+  // birth index until now - creates append and updates edit in place - so
+  // the position each moved from is its birth index. (A page with none has
+  // no birth names to record, and promoting it changes nothing.)
+  if (!IsPagePromoted(page_objnum)) {
+    std::optional<std::vector<uint32_t>> base_inline =
+        GetBaseInlineAnnotPositions(page_objnum);
+    if (base_inline && !base_inline->empty()) {
+      CPDF_PageBirths births;
+      for (uint32_t position : *base_inline) {
+        auto it = moved.find(position);
+        if (it != moved.end()) {
+          births[position] = it->second;
+        }
+      }
+      if (transaction_) {
+        transaction_->births[page_objnum] = std::move(births);
+      } else {
+        AddCommittedBirths(page_objnum, std::move(births));
+      }
+      ++overlay_epoch_;
+    }
+  }
+  return static_cast<int>(moved.size());
+}
+
+bool CPDF_LayerDocument::IsPagePromoted(uint32_t page_objnum) const {
+  return (transaction_ && transaction_->births.contains(page_objnum)) ||
+         births_.contains(page_objnum);
+}
+
+uint32_t CPDF_LayerDocument::FindBirth(uint32_t page_objnum,
+                                       uint32_t birth_index) const {
+  const CPDF_PageBirths* births = nullptr;
+  if (transaction_) {
+    auto it = transaction_->births.find(page_objnum);
+    if (it != transaction_->births.end()) {
+      births = &it->second;
+    }
+  }
+  if (!births) {
+    auto it = births_.find(page_objnum);
+    if (it == births_.end()) {
+      return 0;
+    }
+    births = &it->second;
+  }
+  auto it = births->find(birth_index);
+  return it != births->end() ? it->second : 0;
+}
+
+std::optional<std::pair<uint32_t, uint32_t>> CPDF_LayerDocument::FindBirthName(
+    uint32_t objnum) const {
+  if (transaction_) {
+    for (const auto& [page_objnum, births] : transaction_->births) {
+      for (const auto& [birth_index, born] : births) {
+        if (born == objnum) {
+          return std::make_pair(page_objnum, birth_index);
+        }
+      }
+    }
+  }
+  auto it = birth_names_.find(objnum);
+  if (it == birth_names_.end()) {
+    return std::nullopt;
+  }
+  return it->second;
+}
+
+bool CPDF_LayerDocument::LoadBirths(
+    std::map<uint32_t, CPDF_PageBirths> births) {
+  if (transaction_ || !births_.empty()) {
+    return false;
+  }
+  // Every birth must name an object this layer has: the artifact's delta
+  // carries what the promotion made.
+  for (const auto& [page_objnum, page_births] : births) {
+    for (const auto& [birth_index, objnum] : page_births) {
+      if (!page_objnum || !objnum || !FindLocalIndirectObject(objnum)) {
+        return false;
+      }
+    }
+  }
+  for (auto& [page_objnum, page_births] : births) {
+    AddCommittedBirths(page_objnum, std::move(page_births));
+  }
+  ++overlay_epoch_;
+  return true;
+}
+
+void CPDF_LayerDocument::AddCommittedBirths(uint32_t page_objnum,
+                                            CPDF_PageBirths births) {
+  DCHECK(!births_.contains(page_objnum));  // written once per page
+  for (const auto& [birth_index, objnum] : births) {
+    birth_names_[objnum] = {page_objnum, birth_index};
+  }
+  births_[page_objnum] = std::move(births);
+}
+
+std::optional<std::vector<uint32_t>>
+CPDF_LayerDocument::GetBaseInlineAnnotPositions(uint32_t page_objnum) const {
+  // Read the base's own page, through the base's frozen view: references in
+  // it resolve to base objects, never to this layer's versions.
+  CPDF_DocumentViewScope frozen_view(base_.Get());
+  RetainPtr<const CPDF_Dictionary> page =
+      ToDictionary(GetBaseTwin(page_objnum));
+  if (!page) {
+    return std::nullopt;
+  }
+  std::vector<uint32_t> positions;
+  RetainPtr<const CPDF_Array> annots = page->GetArrayFor("Annots");
+  for (size_t i = 0; annots && i < annots->size(); ++i) {
+    RetainPtr<const CPDF_Object> entry = annots->GetObjectAt(i);
+    if (entry && entry->IsInline() && entry->IsDictionary()) {
+      positions.push_back(static_cast<uint32_t>(i));
+    }
+  }
+  return positions;
+}
+
+std::vector<uint32_t>& CPDF_LayerDocument::MutablePageList() {
+  if (transaction_ && !transaction_->page_list_before) {
+    transaction_->page_list_before = layer_page_list_;
+  }
+  return layer_page_list_;
+}
+
+void CPDF_LayerDocument::ForgetDerivedDataOf(
+    const std::vector<RetainPtr<const CPDF_Object>>& versions) {
+  CPDF_DocPageData* page_data = CPDF_DocPageData::FromDocument(this);
+  CPDF_DocRenderData* render_data = CPDF_DocRenderData::FromDocument(this);
+  for (const RetainPtr<const CPDF_Object>& version : versions) {
+    if (page_data) {
+      page_data->ForgetObjectTree(version.Get());
+    }
+    if (render_data) {
+      render_data->ForgetObjectTree(version.Get());
+    }
+  }
+}
+
+void CPDF_LayerDocument::InvalidateCachedDictsFor(uint32_t objnum) {
+  CPDF_Parser* parser = base_->GetParser();
+  if (!parser) {
+    return;
+  }
+  if (parser->GetRootObjNum() == objnum) {
+    InvalidateCachedRootDict();
+  }
+  if (parser->GetInfoObjNum() == objnum) {
+    InvalidateCachedInfoDict();
   }
 }
 
 const CPDF_Object* CPDF_LayerDocument::GetIndirectObjectInternal(
     uint32_t objnum) const {
-  if (RetainPtr<CPDF_Object> local = FindLocalIndirectObject(objnum)) {
+  if (RetainPtr<CPDF_Object> local = FindLayerVersion(objnum)) {
     return local.Get();
   }
   return base_->GetFrozenObjectForLayer(objnum).Get();
@@ -291,22 +719,25 @@ uint32_t CPDF_LayerDocument::GetPageObjNumAt(size_t index) const {
 }
 
 void CPDF_LayerDocument::SetPageObjNumAt(size_t index, uint32_t objnum) {
-  CHECK_LT(index, layer_page_list_.size());
-  layer_page_list_[index] = objnum;
+  std::vector<uint32_t>& pages = MutablePageList();
+  CHECK_LT(index, pages.size());
+  pages[index] = objnum;
 }
 
 void CPDF_LayerDocument::InsertPageObjNum(size_t index, uint32_t objnum) {
-  CHECK_LE(index, layer_page_list_.size());
-  layer_page_list_.insert(layer_page_list_.begin() + index, objnum);
+  std::vector<uint32_t>& pages = MutablePageList();
+  CHECK_LE(index, pages.size());
+  pages.insert(pages.begin() + index, objnum);
 }
 
 void CPDF_LayerDocument::ErasePageObjNum(size_t index) {
-  CHECK_LT(index, layer_page_list_.size());
-  layer_page_list_.erase(layer_page_list_.begin() + index);
+  std::vector<uint32_t>& pages = MutablePageList();
+  CHECK_LT(index, pages.size());
+  pages.erase(pages.begin() + index);
 }
 
 void CPDF_LayerDocument::ResizePageList(size_t size) {
-  layer_page_list_.resize(size);
+  MutablePageList().resize(size);
 }
 
 size_t CPDF_LayerDocument::GetPageListSize() const {
@@ -412,6 +843,7 @@ void CPDF_LayerDocument::IngestCurrentDelta() {
       return;
     }
     clone->SetGenNum(info.gennum);
+    clone->StampWriteGeneration(CPDF_WriteGeneration::kCommitted);
     twin->SetGenNum(info.gennum);
     loaded_twins_[objnum] = std::move(twin);
     AddPromotedObject(objnum, std::move(clone));
@@ -474,6 +906,7 @@ RetainPtr<CPDF_Object> CPDF_LayerDocument::PromoteFromBase(uint32_t objnum) {
     return nullptr;
   }
   clone->SetGenNum(base_object->GetGenNum());
+  clone->StampWriteGeneration(CPDF_WriteGeneration::kCommitted);
   AddPromotedObject(objnum, clone);
   ++overlay_epoch_;
 

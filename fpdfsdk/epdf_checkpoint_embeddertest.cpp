@@ -12,14 +12,9 @@
 #include <string>
 #include <vector>
 
-#include "core/fpdfapi/parser/cpdf_array.h"
-#include "core/fpdfapi/parser/cpdf_dictionary.h"
 #include "core/fpdfapi/parser/cpdf_document.h"
-#include "core/fpdfapi/parser/cpdf_reference.h"
-#include "core/fpdfapi/parser/cpdf_stream.h"
-#include "core/fpdfapi/parser/cpdf_stream_acc.h"
-#include "core/fpdfapi/parser/cpdf_string.h"
 #include "fpdfsdk/cpdfsdk_helpers.h"
+#include "fpdfsdk/epdf_edit_test_util.h"
 #include "public/cpp/fpdf_scopers.h"
 #include "public/epdf_checkpoint.h"
 #include "public/epdf_font.h"
@@ -35,49 +30,6 @@
 #include "testing/utils/path_service.h"
 
 namespace {
-
-// An 8 × 8 red PNG and the same in blue.
-constexpr uint8_t kRedPng[] = {
-    0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0x00, 0x00, 0x00, 0x0d,
-    0x49, 0x48, 0x44, 0x52, 0x00, 0x00, 0x00, 0x08, 0x00, 0x00, 0x00, 0x08,
-    0x08, 0x02, 0x00, 0x00, 0x00, 0x4b, 0x6d, 0x29, 0xdc, 0x00, 0x00, 0x00,
-    0x12, 0x49, 0x44, 0x41, 0x54, 0x78, 0x9c, 0x63, 0xf8, 0xcf, 0xc0, 0x80,
-    0x15, 0x61, 0x17, 0x1d, 0xb4, 0x12, 0x00, 0x28, 0xff, 0x3f, 0xc1, 0x6e,
-    0xec, 0xdf, 0x61, 0x00, 0x00, 0x00, 0x00, 0x49, 0x45, 0x4e, 0x44, 0xae,
-    0x42, 0x60, 0x82};
-constexpr uint8_t kBluePng[] = {
-    0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0x00, 0x00, 0x00, 0x0d,
-    0x49, 0x48, 0x44, 0x52, 0x00, 0x00, 0x00, 0x08, 0x00, 0x00, 0x00, 0x08,
-    0x08, 0x02, 0x00, 0x00, 0x00, 0x4b, 0x6d, 0x29, 0xdc, 0x00, 0x00, 0x00,
-    0x10, 0x49, 0x44, 0x41, 0x54, 0x78, 0x9c, 0x63, 0x60, 0x60, 0xf8, 0x8f,
-    0x03, 0x0d, 0x29, 0x09, 0x00, 0xa9, 0x70, 0x3f, 0xc1, 0x14, 0xca, 0xea,
-    0x73, 0x00, 0x00, 0x00, 0x00, 0x49, 0x45, 0x4e, 0x44, 0xae, 0x42, 0x60,
-    0x82};
-
-// A PDF of the given object bodies, numbered from 1, with a classic xref.
-std::string MakePdf(const std::vector<std::string>& objects) {
-  std::string pdf = "%PDF-1.7\n";
-  std::vector<size_t> offsets;
-  for (size_t i = 0; i < objects.size(); ++i) {
-    offsets.push_back(pdf.size());
-    pdf += std::to_string(i + 1) + " 0 obj\n" + objects[i] + "\nendobj\n";
-  }
-  const size_t xref = pdf.size();
-  pdf += "xref\n0 " + std::to_string(objects.size() + 1) +
-         "\n0000000000 65535 f \n";
-  for (size_t offset : offsets) {
-    std::string number = std::to_string(offset);
-    pdf += std::string(10 - number.size(), '0') + number + " 00000 n \n";
-  }
-  pdf += "trailer\n<< /Size " + std::to_string(objects.size() + 1) +
-         " /Root 1 0 R >>\nstartxref\n" + std::to_string(xref) + "\n%%EOF\n";
-  return pdf;
-}
-
-std::string Stream(const std::string& data) {
-  return "<< /Length " + std::to_string(data.size()) + " >>\nstream\n" + data +
-         "\nendstream";
-}
 
 // Two pages: the first has an indirect /Annots holding one square, the second
 // has no /Annots. With `with_form`, the catalog has a form dictionary whose
@@ -116,134 +68,6 @@ std::string MakeDrawingDocument() {
       "/Resources << >> >>",
       Stream("1 0 0 rg 0 0 60 50 re f 0 0 1 rg 60 0 40 50 re f"),
   });
-}
-
-void Write(std::ostringstream& out, const CPDF_Object* object);
-
-void WriteValue(std::ostringstream& out, const CPDF_Object* value) {
-  if (!value->IsInline()) {
-    out << " " << value->GetObjNum() << " R";
-    return;
-  }
-  Write(out, value);
-}
-
-// An object as text, streams with their raw bytes, so two graphs compare by
-// value.
-void Write(std::ostringstream& out, const CPDF_Object* object) {
-  switch (object->GetType()) {
-    case CPDF_Object::kNullobj:
-      out << " null";
-      break;
-    case CPDF_Object::kBoolean:
-    case CPDF_Object::kNumber:
-      out << " " << object->GetString();
-      break;
-    case CPDF_Object::kString:
-      out << " " << object->AsString()->EncodeString();
-      break;
-    case CPDF_Object::kName:
-      out << " /" << object->GetString();
-      break;
-    case CPDF_Object::kReference:
-      out << " " << object->AsReference()->GetRefObjNum() << " R";
-      break;
-    case CPDF_Object::kArray: {
-      const CPDF_Array* array = object->AsArray();
-      out << " [";
-      for (size_t i = 0; i < array->size(); ++i) {
-        WriteValue(out, array->GetObjectAt(i).Get());
-      }
-      out << " ]";
-      break;
-    }
-    case CPDF_Object::kDictionary: {
-      CPDF_DictionaryLocker locker(object->AsDictionary());
-      out << " <<";
-      for (const auto& entry : locker) {
-        out << " /" << entry.first;
-        WriteValue(out, entry.second.Get());
-      }
-      out << " >>";
-      break;
-    }
-    case CPDF_Object::kStream: {
-      const CPDF_Stream* stream = object->AsStream();
-      Write(out, stream->GetDict().Get());
-      auto access = pdfium::MakeRetain<CPDF_StreamAcc>(pdfium::WrapRetain(stream));
-      access->LoadAllDataRaw();
-      pdfium::span<const uint8_t> bytes = access->GetSpan();
-      out << " stream " << std::string(bytes.begin(), bytes.end());
-      break;
-    }
-  }
-}
-
-// Every indirect object, by number, from 1 to the last.
-std::map<uint32_t, std::string> ObjectGraph(CPDF_Document* doc) {
-  std::map<uint32_t, std::string> graph;
-  for (uint32_t number = 1; number <= doc->GetLastObjNum(); ++number) {
-    RetainPtr<CPDF_Object> object = doc->GetOrParseIndirectObject(number);
-    if (!object) {
-      continue;
-    }
-    std::ostringstream out;
-    Write(out, object.Get());
-    graph[number] = out.str();
-  }
-  return graph;
-}
-
-// A save with the digits of its /ID blanked: every save writes a new one.
-std::string WithoutFileId(std::string bytes) {
-  size_t at = 0;
-  while ((at = bytes.find("/ID", at)) != std::string::npos) {
-    size_t close = bytes.find(']', at);
-    if (close == std::string::npos) {
-      break;
-    }
-    bool in_hex = false;
-    for (size_t i = at + 3; i < close; ++i) {
-      if (bytes[i] == '<') {
-        in_hex = true;
-      } else if (bytes[i] == '>') {
-        in_hex = false;
-      } else if (in_hex) {
-        bytes[i] = '0';
-      }
-    }
-    at = close;
-  }
-  return bytes;
-}
-
-ScopedFPDFAnnotation NewAnnot(FPDF_PAGE page,
-                              FPDF_ANNOTATION_SUBTYPE subtype,
-                              const FS_RECTF& rect) {
-  ScopedFPDFAnnotation annot(EPDFPage_CreateAnnot(page, subtype));
-  EXPECT_TRUE(annot);
-  if (annot) {
-    EXPECT_TRUE(FPDFAnnot_SetRect(annot.get(), &rect));
-  }
-  return annot;
-}
-
-// A stamp drawn from a PNG, as the stamp writer makes one.
-void AddPngStamp(FPDF_DOCUMENT doc,
-                 FPDF_PAGE page,
-                 pdfium::span<const uint8_t> png,
-                 const FS_RECTF& rect) {
-  ScopedFPDFAnnotation stamp = NewAnnot(page, FPDF_ANNOT_STAMP, rect);
-  FPDF_PAGEOBJECT image = FPDFPageObj_NewImageObj(doc);
-  ASSERT_TRUE(image);
-  ASSERT_TRUE(
-      EPDFImageObj_SetPng(nullptr, 0, image, png.data(), png.size()));
-  const FS_MATRIX matrix{rect.right - rect.left, 0, 0,
-                         rect.top - rect.bottom, rect.left, rect.bottom};
-  ASSERT_TRUE(FPDFPageObj_SetMatrix(image, &matrix));
-  ASSERT_TRUE(FPDFAnnot_AppendObject(stamp.get(), image));
-  ASSERT_TRUE(
-      EPDFAnnot_UpdateAppearanceToRect(stamp.get(), EPDF_STAMP_FIT_STRETCH));
 }
 
 // What an import writes: a stamp from a PDF with an opacity layer, a PNG
@@ -324,18 +148,6 @@ void ImportEverything(FPDF_DOCUMENT doc,
                                                 FPDF_ANNOT));
   EXPECT_TRUE(EmbedderTest::RenderPageWithFlags(second.get(), nullptr,
                                                 FPDF_ANNOT));
-}
-
-// The colour at a point of a page rendered with its annotations, as 0xRRGGBB.
-uint32_t ColorAt(FPDF_PAGE page, int x, int y_from_bottom) {
-  ScopedFPDFBitmap bitmap =
-      EmbedderTest::RenderPageWithFlags(page, nullptr, FPDF_ANNOT);
-  const int height = FPDFBitmap_GetHeight(bitmap.get());
-  const int stride = FPDFBitmap_GetStride(bitmap.get());
-  const auto* pixels =
-      static_cast<const uint8_t*>(FPDFBitmap_GetBuffer(bitmap.get()));
-  const uint8_t* pixel = pixels + (height - 1 - y_from_bottom) * stride + x * 4;
-  return (pixel[2] << 16) | (pixel[1] << 8) | pixel[0];
 }
 
 }  // namespace

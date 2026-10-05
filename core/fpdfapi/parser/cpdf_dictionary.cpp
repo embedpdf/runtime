@@ -18,6 +18,7 @@
 #include "core/fpdfapi/parser/cpdf_reference.h"
 #include "core/fpdfapi/parser/cpdf_stream.h"
 #include "core/fpdfapi/parser/cpdf_string.h"
+#include "core/fpdfapi/parser/cpdf_write_generation.h"
 #include "core/fpdfapi/parser/fpdf_parser_utility.h"
 #include "core/fxcrt/check.h"
 #include "core/fxcrt/containers/contains.h"
@@ -98,6 +99,12 @@ void CPDF_Dictionary::FreezeChildren(std::set<const CPDF_Object*>* visited) {
   CPDF_DictionaryLocker locker(this);
   for (const auto& item : locker) {
     item.second->FreezeForHolder(visited);
+  }
+}
+
+void CPDF_Dictionary::StampWriteGenerationOfChildren(uint32_t generation) {
+  for (const auto& item : map_) {
+    item.second->StampWriteGeneration(generation);
   }
 }
 
@@ -316,7 +323,7 @@ void CPDF_Dictionary::SetFor(const ByteString& key,
 CPDF_Object* CPDF_Dictionary::SetForInternal(const ByteString& key,
                                              RetainPtr<CPDF_Object> pObj) {
   CHECK(!IsLocked());
-  DCHECK(!IsFrozen());
+  DCHECK_PDF_WRITABLE(this);
   DCHECK_PDF_GRAPH_MUTABLE_FOR(this);
   if (!pObj) {
     map_.erase(key);
@@ -324,6 +331,8 @@ CPDF_Object* CPDF_Dictionary::SetForInternal(const ByteString& key,
   }
   CHECK(pObj->IsInline());
   CHECK(!pObj->IsStream());
+  // EmbedPDF: a detached child joins its owner's write generation.
+  pObj->StampWriteGeneration(write_generation());
   CPDF_Object* pRet = pObj.Get();
   map_[MaybeIntern(key)] = std::move(pObj);
   return pRet;
@@ -339,7 +348,7 @@ void CPDF_Dictionary::ConvertToIndirectObjectFor(
   }
 
   DCHECK_PDF_GRAPH_MUTABLE_FOR(this);
-  DCHECK(!IsFrozen());
+  DCHECK_PDF_WRITABLE(this);
   pHolder->AddIndirectObject(it->second);
   it->second = it->second->MakeReference(pHolder);
 }
@@ -350,7 +359,7 @@ RetainPtr<CPDF_Object> CPDF_Dictionary::RemoveFor(ByteStringView key) {
   if (it == map_.end()) {
     return RetainPtr<CPDF_Object>();
   }
-  DCHECK(!IsFrozen());
+  DCHECK_PDF_WRITABLE(this);
   DCHECK_PDF_GRAPH_MUTABLE_FOR(this);
   auto node = map_.extract(it);
   return std::move(node.mapped());
@@ -370,7 +379,7 @@ void CPDF_Dictionary::ReplaceKey(const ByteString& oldkey,
   }
 
   DCHECK_PDF_GRAPH_MUTABLE_FOR(this);
-  DCHECK(!IsFrozen());
+  DCHECK_PDF_WRITABLE(this);
   map_[MaybeIntern(newkey)] = std::move(old_it->second);
   map_.erase(old_it);
 }

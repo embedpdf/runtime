@@ -181,6 +181,15 @@ pdfium_embeddertest_source_set("embeddertests") {
     "epdf_annot_raw_embeddertest.cpp",
     # EmbedPDF: covers checkpoints and their rollback (epdf_checkpoint.h).
     "epdf_checkpoint_embeddertest.cpp",
+    # EmbedPDF: helpers for tests that compare a document before and after
+    # writes.
+    "epdf_edit_test_util.cpp",
+    "epdf_edit_test_util.h",
+    # EmbedPDF: covers layer transactions (EPDFLayer_BeginTransaction).
+    "epdf_transaction_embeddertest.cpp",
+    # EmbedPDF: covers annotation identity: handle lifetimes, promotion and
+    # the birth list (EPDFPage_PromoteInlineAnnotsRaw).
+    "epdf_annot_identity_embeddertest.cpp",
     # EmbedPDF: covers the /Names /Pages and /Templates name-tree APIs.
     "epdf_named_pages_embeddertest.cpp",
     "epdf_redact_embeddertest.cpp",

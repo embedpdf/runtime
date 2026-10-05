@@ -135,7 +135,10 @@ RetainPtr<CPDF_Dictionary> GetOrCreateMarkParamsDict(FPDF_DOCUMENT document,
     pParams = doc->New<CPDF_Dictionary>();
     pMarkItem->SetDirectDict(pParams);
   }
-  return pParams;
+  // EmbedPDF: a mark that names a property list points into the resources;
+  // inside a layer transaction that may be a committed version, which must
+  // not be written in place. Inline marks (parsed, detached) always can be.
+  return pParams->IsWritable() ? pParams : nullptr;
 }
 
 bool PageObjectContainsMark(CPDF_PageObject* pPageObj,
@@ -688,7 +691,7 @@ FPDFPageObjMark_RemoveParam(FPDF_PAGEOBJECT page_object,
   }
 
   RetainPtr<CPDF_Dictionary> pParams = GetMarkParamDict(mark);
-  if (!pParams) {
+  if (!pParams || !pParams->IsWritable()) {  // see GetOrCreateMarkParamsDict
     return false;
   }
 

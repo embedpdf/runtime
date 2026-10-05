@@ -9,6 +9,7 @@
 #include <sstream>
 
 #include "core/fpdfapi/edit/cpdf_contentstream_write_utils.h"
+#include "core/fpdfapi/parser/cpdf_write_generation.h"
 #include "core/fxcrt/check.h"
 #include "core/fxcrt/fx_stream.h"
 #include "core/fxcrt/fx_string_wrappers.h"
@@ -56,7 +57,7 @@ CPDF_Number* CPDF_Number::AsMutableNumber() {
 }
 
 void CPDF_Number::SetString(const ByteString& str) {
-  DCHECK(!IsFrozen());
+  DCHECK_PDF_WRITABLE(this);
   number_ = FX_Number(str.AsStringView());
 }
 

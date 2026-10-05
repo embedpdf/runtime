@@ -58,11 +58,15 @@ class CPDF_IndirectObjectHolder {
   }
 
   // Always Retains |pObj|, returns its new object number.
-  uint32_t AddIndirectObject(RetainPtr<CPDF_Object> pObj);
+  // EmbedPDF: virtual, so a layer document can route a new object into an
+  // open transaction instead of its committed objects.
+  virtual uint32_t AddIndirectObject(RetainPtr<CPDF_Object> pObj);
 
   // If higher generation number, retains |pObj| and returns true.
-  bool ReplaceIndirectObjectIfHigherGeneration(uint32_t objnum,
-                                               RetainPtr<CPDF_Object> pObj);
+  // EmbedPDF: virtual for the same reason as AddIndirectObject().
+  virtual bool ReplaceIndirectObjectIfHigherGeneration(
+      uint32_t objnum,
+      RetainPtr<CPDF_Object> pObj);
 
   uint32_t GetLastObjNum() const { return last_obj_num_; }
   void SetLastObjNum(uint32_t objnum) { last_obj_num_ = objnum; }

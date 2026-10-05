@@ -11,6 +11,7 @@
 #include "core/fpdfapi/parser/cpdf_dictionary.h"
 #include "core/fpdfapi/parser/cpdf_document.h"
 #include "core/fpdfapi/parser/cpdf_document_view_scope.h"
+#include "core/fpdfapi/parser/cpdf_layer_document.h"
 #include "core/fpdfapi/parser/cpdf_reference.h"
 #include "core/fxcrt/unowned_ptr.h"
 #include "fpdfsdk/cpdfsdk_helpers.h"
@@ -22,6 +23,9 @@ class EpdfCheckpoint {
  public:
   explicit EpdfCheckpoint(CPDF_Document* doc)
       : doc_(doc), mark_(doc->GetLastObjNum()) {
+    if (CPDF_LayerDocument* layer = CPDF_LayerDocument::FromDocument(doc_)) {
+      layer->NoteCheckpointBegun();
+    }
     CPDF_DocumentViewScope document_view(doc_);
     const CPDF_Dictionary* root = doc_->GetRoot();
     if (!root) {
@@ -41,6 +45,12 @@ class EpdfCheckpoint {
     RetainPtr<const CPDF_Dictionary> fonts = resources->GetDictFor("Font");
     if (fonts) {
       Record(fonts->GetObjNum());
+    }
+  }
+
+  ~EpdfCheckpoint() {
+    if (CPDF_LayerDocument* layer = CPDF_LayerDocument::FromDocument(doc_)) {
+      layer->NoteCheckpointEnded();
     }
   }
 
@@ -202,6 +212,12 @@ FPDF_EXPORT EPDF_CHECKPOINT FPDF_CALLCONV
 EPDFDoc_BeginCheckpoint(FPDF_DOCUMENT document) {
   CPDF_Document* doc = CPDFDocumentFromFPDFDocument(document);
   if (!doc) {
+    return nullptr;
+  }
+  // Never inside a layer transaction: it already makes writes all or
+  // nothing, and a rollback's writes would land in it.
+  const CPDF_LayerDocument* layer = CPDF_LayerDocument::FromDocument(doc);
+  if (layer && layer->InTransaction()) {
     return nullptr;
   }
   return reinterpret_cast<EPDF_CHECKPOINT>(new EpdfCheckpoint(doc));

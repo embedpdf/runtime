@@ -8,6 +8,7 @@
 #include <cstdlib>
 #include <cstring>
 #include <limits>
+#include <map>
 #include <memory>
 #include <optional>
 #include <string>
@@ -16,9 +17,12 @@
 
 #include "core/fdrm/fx_crypt_sha.h"
 #include "core/fpdfapi/edit/cpdf_creator.h"
+#include "core/fpdfapi/page/cpdf_page.h"
 #include "core/fpdfapi/parser/cpdf_base_document.h"
+#include "core/fpdfapi/parser/cpdf_document_view_scope.h"
 #include "core/fpdfapi/parser/cpdf_layer_document.h"
 #include "core/fpdfapi/parser/cpdf_parser.h"
+#include "core/fpdfapi/parser/cpdf_write_generation.h"
 #include "core/fxcrt/cfx_fileaccess_stream.h"
 #include "core/fxcrt/data_vector.h"
 #include "core/fxcrt/numerics/safe_conversions.h"
@@ -31,15 +35,25 @@
 
 namespace {
 
+CPDF_LayerDocument* LayerFromFPDFDocument(FPDF_DOCUMENT layer) {
+  return CPDF_LayerDocument::FromDocument(CPDFDocumentFromFPDFDocument(layer));
+}
+
 constexpr FX_FILESIZE kReservedDeltaHeadroom = 16 * 1024 * 1024;
 constexpr FX_FILESIZE kSafeNotionalStartOffsetMax =
     0xffffffff - kReservedDeltaHeadroom;
+// A layer artifact: a header, the layer's raw delta, and (version 2) its
+// birth list. Version 1 had no birth list: it reads as a layer that promoted
+// nothing, which is what every version-1 layer is.
 constexpr char kLayerArtifactMagic[] = "EPDFLYR1";
-constexpr uint32_t kLayerArtifactVersion = 1;
+constexpr uint32_t kLayerArtifactVersion = 2;
 constexpr size_t kSha256DigestSize = 32;
-constexpr size_t kLayerArtifactHeaderSize =
+constexpr size_t kLayerArtifactHeaderSizeV1 =
     8 + sizeof(uint32_t) + sizeof(uint32_t) + sizeof(uint64_t) * 3 +
     kSha256DigestSize * 2;
+// Version 2 adds the birth list's size.
+constexpr size_t kLayerArtifactHeaderSize =
+    kLayerArtifactHeaderSizeV1 + sizeof(uint64_t);
 
 // One byte range of a reader the runtime keeps open: the delta inside an
 // artifact file, read in place. Its underlying stream is the file, which is
@@ -249,9 +263,12 @@ void SetSaveStatus(EPDFLayerSaveStatus* out_status,
 FPDF_DOCUMENT OpenLayerWithDeltaStream(
     EPDF_BASE_DOCUMENT base,
     RetainPtr<IFX_SeekableReadStream> delta_stream,
-    EPDFLayerOpenStatus* out_status) {
+    EPDFLayerOpenStatus* out_status,
+    std::map<uint32_t, CPDF_PageBirths> births = {}) {
   SetOpenStatus(out_status, EPDFLayerOpenStatus_kOpenFailed);
-  if (!base) {
+  // Not while a layer transaction is open on this thread: the open
+  // generation is the thread's, so nothing could write the new layer.
+  if (!base || CPDF_WriteGeneration::Current() != 0) {
     return nullptr;
   }
 
@@ -263,6 +280,11 @@ FPDF_DOCUMENT OpenLayerWithDeltaStream(
   const EPDFLayerOpenStatus status = ToPublicStatus(layer->ingest_status());
   SetOpenStatus(out_status, status);
   if (status != EPDFLayerOpenStatus_kSuccess) {
+    return nullptr;
+  }
+  // The births name objects the delta carries, so they load after it.
+  if (!births.empty() && !layer->LoadBirths(std::move(births))) {
+    SetOpenStatus(out_status, EPDFLayerOpenStatus_kMalformedDelta);
     return nullptr;
   }
 
@@ -311,7 +333,8 @@ void AppendUint64LE(std::vector<uint8_t>* buffer, uint64_t value) {
 std::vector<uint8_t> BuildLayerArtifactHeader(
     CPDF_BaseDocument* base_doc,
     uint64_t delta_size,
-    const std::array<uint8_t, kSha256DigestSize>& delta_sha) {
+    const std::array<uint8_t, kSha256DigestSize>& delta_sha,
+    uint64_t births_size) {
   std::vector<uint8_t> artifact;
   artifact.reserve(kLayerArtifactHeaderSize);
   artifact.insert(artifact.end(), kLayerArtifactMagic, kLayerArtifactMagic + 8);
@@ -325,7 +348,29 @@ std::vector<uint8_t> BuildLayerArtifactHeader(
       base_doc->GetRawBaseSha256();
   artifact.insert(artifact.end(), base_sha.begin(), base_sha.end());
   artifact.insert(artifact.end(), delta_sha.begin(), delta_sha.end());
+  AppendUint64LE(&artifact, births_size);
   return artifact;
+}
+
+// The birth list as bytes, little-endian: the page count; then per page its
+// object number and entry count, and per entry the birth index and the
+// object it became.
+std::vector<uint8_t> SerializeBirths(
+    const std::map<uint32_t, CPDF_PageBirths>& births) {
+  std::vector<uint8_t> bytes;
+  if (births.empty()) {
+    return bytes;
+  }
+  AppendUint32LE(&bytes, static_cast<uint32_t>(births.size()));
+  for (const auto& [page_objnum, page_births] : births) {
+    AppendUint32LE(&bytes, page_objnum);
+    AppendUint32LE(&bytes, static_cast<uint32_t>(page_births.size()));
+    for (const auto& [birth_index, objnum] : page_births) {
+      AppendUint32LE(&bytes, birth_index);
+      AppendUint32LE(&bytes, objnum);
+    }
+  }
+  return bytes;
 }
 
 bool WriteBytes(FPDF_FILEWRITE* file_write, pdfium::span<const uint8_t> bytes) {
@@ -355,6 +400,123 @@ uint64_t ReadUint64LE(const uint8_t* data) {
     value |= static_cast<uint64_t>(data[i]) << (i * 8);
   }
   return value;
+}
+
+// SerializeBirths(), read back. Null when the bytes aren't exactly that.
+std::optional<std::map<uint32_t, CPDF_PageBirths>> ParseBirths(
+    pdfium::span<const uint8_t> bytes) {
+  std::map<uint32_t, CPDF_PageBirths> births;
+  if (bytes.empty()) {
+    return births;
+  }
+  size_t cursor = 0;
+  auto read = [&](uint32_t* value) {
+    if (bytes.size() - cursor < sizeof(uint32_t)) {
+      return false;
+    }
+    *value = ReadUint32LE(bytes.subspan(cursor).data());
+    cursor += sizeof(uint32_t);
+    return true;
+  };
+  uint32_t page_count = 0;
+  if (!read(&page_count)) {
+    return std::nullopt;
+  }
+  for (uint32_t page = 0; page < page_count; ++page) {
+    uint32_t page_objnum = 0;
+    uint32_t entry_count = 0;
+    if (!read(&page_objnum) || !read(&entry_count) ||
+        births.contains(page_objnum)) {
+      return std::nullopt;
+    }
+    CPDF_PageBirths& page_births = births[page_objnum];
+    for (uint32_t entry = 0; entry < entry_count; ++entry) {
+      uint32_t birth_index = 0;
+      uint32_t objnum = 0;
+      if (!read(&birth_index) || !read(&objnum) ||
+          !page_births.emplace(birth_index, objnum).second) {
+        return std::nullopt;
+      }
+    }
+  }
+  if (cursor != bytes.size()) {
+    return std::nullopt;
+  }
+  return births;
+}
+
+// A layer artifact's header, either version.
+struct LayerArtifactHeader {
+  uint32_t size = 0;  // the bytes before the delta
+  uint64_t raw_base_size = 0;
+  uint64_t layer_append_base_offset = 0;
+  uint64_t delta_size = 0;
+  uint64_t births_size = 0;  // 0 in version 1
+  std::array<uint8_t, kSha256DigestSize> base_sha = {};
+  std::array<uint8_t, kSha256DigestSize> delta_sha = {};
+};
+
+// Reads the header at the start of |bytes|, which hold at least the header
+// (or the whole artifact, if it is shorter). |total_size| is the artifact's
+// size. Checks it is this layer's base's and that the parts add up.
+std::optional<LayerArtifactHeader> ReadLayerArtifactHeader(
+    pdfium::span<const uint8_t> bytes,
+    uint64_t total_size,
+    CPDF_BaseDocument* base_doc,
+    EPDFLayerOpenStatus* out_status) {
+  constexpr size_t kPrefix = 8 + sizeof(uint32_t) * 2;
+  if (bytes.size() < kPrefix || memcmp(bytes.data(), kLayerArtifactMagic, 8)) {
+    SetOpenStatus(out_status, EPDFLayerOpenStatus_kMalformedDelta);
+    return std::nullopt;
+  }
+  const uint32_t version = ReadUint32LE(bytes.data() + 8);
+  LayerArtifactHeader header;
+  header.size = ReadUint32LE(bytes.data() + 12);
+  const size_t expected_size =
+      version == 1 ? kLayerArtifactHeaderSizeV1 : kLayerArtifactHeaderSize;
+  if ((version != 1 && version != kLayerArtifactVersion) ||
+      header.size != expected_size) {
+    SetOpenStatus(out_status, EPDFLayerOpenStatus_kBaseLayerMismatch);
+    return std::nullopt;
+  }
+  if (bytes.size() < header.size) {
+    SetOpenStatus(out_status, EPDFLayerOpenStatus_kMalformedDelta);
+    return std::nullopt;
+  }
+  size_t cursor = kPrefix;
+  header.raw_base_size = ReadUint64LE(bytes.data() + cursor);
+  cursor += sizeof(uint64_t);
+  header.layer_append_base_offset = ReadUint64LE(bytes.data() + cursor);
+  cursor += sizeof(uint64_t);
+  header.delta_size = ReadUint64LE(bytes.data() + cursor);
+  cursor += sizeof(uint64_t);
+  memcpy(header.base_sha.data(), bytes.data() + cursor, kSha256DigestSize);
+  cursor += kSha256DigestSize;
+  memcpy(header.delta_sha.data(), bytes.data() + cursor, kSha256DigestSize);
+  cursor += kSha256DigestSize;
+  if (version >= 2) {
+    header.births_size = ReadUint64LE(bytes.data() + cursor);
+  }
+
+  if (header.raw_base_size !=
+          static_cast<uint64_t>(base_doc->GetRawBaseSize()) ||
+      header.layer_append_base_offset !=
+          static_cast<uint64_t>(base_doc->GetLayerAppendBaseOffset()) ||
+      header.delta_size > total_size - header.size) {
+    SetOpenStatus(out_status, EPDFLayerOpenStatus_kBaseLayerMismatch);
+    return std::nullopt;
+  }
+  if (header.births_size > total_size - header.size - header.delta_size ||
+      header.size + header.delta_size + header.births_size != total_size) {
+    SetOpenStatus(out_status, EPDFLayerOpenStatus_kMalformedDelta);
+    return std::nullopt;
+  }
+  if (memcmp(base_doc->GetRawBaseSha256().data(), header.base_sha.data(),
+             kSha256DigestSize) != 0) {
+    SetOpenStatus(out_status, EPDFLayerOpenStatus_kBaseLayerMismatch);
+    return std::nullopt;
+  }
+  return header;
 }
 
 void* CopyToOwnedBuffer(pdfium::span<const uint8_t> data,
@@ -438,70 +600,38 @@ EPDFLayer_OpenLayerArtifact(EPDF_BASE_DOCUMENT base,
   RetainPtr<IFX_SeekableReadStream> artifact_stream =
       pdfium::MakeRetain<CPDFSDK_CustomAccess>(pFileAccess);
   DataVector<uint8_t> artifact = ReadStreamToVector(artifact_stream.Get());
-  if (artifact.size() < kLayerArtifactHeaderSize) {
-    SetOpenStatus(out_status, EPDFLayerOpenStatus_kMalformedDelta);
+  const std::optional<LayerArtifactHeader> header =
+      ReadLayerArtifactHeader(artifact, artifact.size(), base_doc, out_status);
+  if (!header) {
     return nullptr;
   }
 
-  const uint8_t* data = artifact.data();
-  if (memcmp(data, kLayerArtifactMagic, 8) != 0) {
-    SetOpenStatus(out_status, EPDFLayerOpenStatus_kMalformedDelta);
-    return nullptr;
-  }
-  size_t cursor = 8;
-  const uint32_t version = ReadUint32LE(data + cursor);
-  cursor += sizeof(uint32_t);
-  const uint32_t header_size = ReadUint32LE(data + cursor);
-  cursor += sizeof(uint32_t);
-  const uint64_t raw_base_size = ReadUint64LE(data + cursor);
-  cursor += sizeof(uint64_t);
-  const uint64_t layer_append_base_offset = ReadUint64LE(data + cursor);
-  cursor += sizeof(uint64_t);
-  const uint64_t delta_size = ReadUint64LE(data + cursor);
-  cursor += sizeof(uint64_t);
-  const uint8_t* base_sha = data + cursor;
-  cursor += kSha256DigestSize;
-  const uint8_t* delta_sha = data + cursor;
-  cursor += kSha256DigestSize;
-
-  if (version != kLayerArtifactVersion ||
-      header_size != kLayerArtifactHeaderSize ||
-      raw_base_size != static_cast<uint64_t>(base_doc->GetRawBaseSize()) ||
-      layer_append_base_offset !=
-          static_cast<uint64_t>(base_doc->GetLayerAppendBaseOffset()) ||
-      delta_size > artifact.size() - header_size) {
-    SetOpenStatus(out_status, EPDFLayerOpenStatus_kBaseLayerMismatch);
-    return nullptr;
-  }
-  if (header_size + delta_size != artifact.size()) {
-    SetOpenStatus(out_status, EPDFLayerOpenStatus_kMalformedDelta);
-    return nullptr;
-  }
-
-  if (memcmp(base_doc->GetRawBaseSha256().data(), base_sha,
-             kSha256DigestSize) != 0) {
-    SetOpenStatus(out_status, EPDFLayerOpenStatus_kBaseLayerMismatch);
-    return nullptr;
-  }
-
+  const size_t delta_offset = header->size;
   DataVector<uint8_t> delta;
-  delta.resize(static_cast<size_t>(delta_size));
+  delta.resize(static_cast<size_t>(header->delta_size));
   if (!delta.empty()) {
-    memcpy(delta.data(), artifact.data() + header_size, delta.size());
+    memcpy(delta.data(), artifact.data() + delta_offset, delta.size());
   }
   std::optional<std::array<uint8_t, kSha256DigestSize>> actual_delta_sha =
       ComputeDeltaSha256(
           pdfium::MakeRetain<OwnedReadOnlyMemoryStream>(delta).Get(),
           delta.size());
-  if (!actual_delta_sha ||
-      memcmp(actual_delta_sha->data(), delta_sha, kSha256DigestSize) != 0) {
+  if (!actual_delta_sha || *actual_delta_sha != header->delta_sha) {
+    SetOpenStatus(out_status, EPDFLayerOpenStatus_kMalformedDelta);
+    return nullptr;
+  }
+  std::optional<std::map<uint32_t, CPDF_PageBirths>> births =
+      ParseBirths(pdfium::span<const uint8_t>(artifact).subspan(
+          delta_offset + delta.size(),
+          static_cast<size_t>(header->births_size)));
+  if (!births) {
     SetOpenStatus(out_status, EPDFLayerOpenStatus_kMalformedDelta);
     return nullptr;
   }
 
   return OpenLayerWithDeltaStream(
       base, pdfium::MakeRetain<OwnedReadOnlyMemoryStream>(std::move(delta)),
-      out_status);
+      out_status, std::move(*births));
 }
 
 FPDF_EXPORT FPDF_DOCUMENT FPDF_CALLCONV
@@ -526,70 +656,54 @@ EPDFLayer_OpenLayerArtifactFromPath(EPDF_BASE_DOCUMENT base,
     return nullptr;
   }
   const FX_FILESIZE file_size = file->GetSize();
-  if (file_size < static_cast<FX_FILESIZE>(kLayerArtifactHeaderSize)) {
-    SetOpenStatus(out_status, EPDFLayerOpenStatus_kMalformedDelta);
+  if (file_size < 0) {
     return nullptr;
   }
-
-  std::array<uint8_t, kLayerArtifactHeaderSize> header;
-  if (!file->ReadBlockAtOffset(pdfium::span(header), 0)) {
+  // The header is at most kLayerArtifactHeaderSize bytes; a version-1 file
+  // with a tiny delta can be shorter than that.
+  std::array<uint8_t, kLayerArtifactHeaderSize> header_bytes = {};
+  const size_t header_read = static_cast<size_t>(std::min<FX_FILESIZE>(
+      file_size, static_cast<FX_FILESIZE>(header_bytes.size())));
+  if (!file->ReadBlockAtOffset(pdfium::span(header_bytes).first(header_read),
+                               0)) {
     return nullptr;
   }
-  const uint8_t* data = header.data();
-  if (memcmp(data, kLayerArtifactMagic, 8) != 0) {
-    SetOpenStatus(out_status, EPDFLayerOpenStatus_kMalformedDelta);
-    return nullptr;
-  }
-  size_t cursor = 8;
-  const uint32_t version = ReadUint32LE(data + cursor);
-  cursor += sizeof(uint32_t);
-  const uint32_t header_size = ReadUint32LE(data + cursor);
-  cursor += sizeof(uint32_t);
-  const uint64_t raw_base_size = ReadUint64LE(data + cursor);
-  cursor += sizeof(uint64_t);
-  const uint64_t layer_append_base_offset = ReadUint64LE(data + cursor);
-  cursor += sizeof(uint64_t);
-  const uint64_t delta_size = ReadUint64LE(data + cursor);
-  cursor += sizeof(uint64_t);
-  const uint8_t* base_sha = data + cursor;
-  cursor += kSha256DigestSize;
-  const uint8_t* delta_sha = data + cursor;
-  cursor += kSha256DigestSize;
-
-  if (version != kLayerArtifactVersion ||
-      header_size != kLayerArtifactHeaderSize ||
-      raw_base_size != static_cast<uint64_t>(base_doc->GetRawBaseSize()) ||
-      layer_append_base_offset !=
-          static_cast<uint64_t>(base_doc->GetLayerAppendBaseOffset()) ||
-      delta_size > static_cast<uint64_t>(file_size) - header_size) {
-    SetOpenStatus(out_status, EPDFLayerOpenStatus_kBaseLayerMismatch);
-    return nullptr;
-  }
-  if (header_size + delta_size != static_cast<uint64_t>(file_size)) {
-    SetOpenStatus(out_status, EPDFLayerOpenStatus_kMalformedDelta);
-    return nullptr;
-  }
-  if (memcmp(base_doc->GetRawBaseSha256().data(), base_sha,
-             kSha256DigestSize) != 0) {
-    SetOpenStatus(out_status, EPDFLayerOpenStatus_kBaseLayerMismatch);
+  const std::optional<LayerArtifactHeader> header = ReadLayerArtifactHeader(
+      pdfium::span<const uint8_t>(header_bytes).first(header_read),
+      static_cast<uint64_t>(file_size), base_doc, out_status);
+  if (!header) {
     return nullptr;
   }
 
   RetainPtr<IFX_SeekableReadStream> delta_stream;
-  if (delta_size > 0) {
+  if (header->delta_size > 0) {
     delta_stream = pdfium::MakeRetain<FileRangeReadStream>(
-        file, static_cast<FX_FILESIZE>(header_size),
-        static_cast<FX_FILESIZE>(delta_size));
+        file, static_cast<FX_FILESIZE>(header->size),
+        static_cast<FX_FILESIZE>(header->delta_size));
     std::optional<std::array<uint8_t, kSha256DigestSize>> actual_delta_sha =
         ComputeDeltaSha256(delta_stream.Get(),
-                           static_cast<FX_FILESIZE>(delta_size));
-    if (!actual_delta_sha ||
-        memcmp(actual_delta_sha->data(), delta_sha, kSha256DigestSize) != 0) {
+                           static_cast<FX_FILESIZE>(header->delta_size));
+    if (!actual_delta_sha || *actual_delta_sha != header->delta_sha) {
       SetOpenStatus(out_status, EPDFLayerOpenStatus_kMalformedDelta);
       return nullptr;
     }
   }
-  return OpenLayerWithDeltaStream(base, std::move(delta_stream), out_status);
+  // The birth list is small: read it whole.
+  DataVector<uint8_t> births_bytes(static_cast<size_t>(header->births_size));
+  if (!births_bytes.empty() &&
+      !file->ReadBlockAtOffset(
+          births_bytes,
+          static_cast<FX_FILESIZE>(header->size + header->delta_size))) {
+    return nullptr;
+  }
+  std::optional<std::map<uint32_t, CPDF_PageBirths>> births =
+      ParseBirths(births_bytes);
+  if (!births) {
+    SetOpenStatus(out_status, EPDFLayerOpenStatus_kMalformedDelta);
+    return nullptr;
+  }
+  return OpenLayerWithDeltaStream(base, std::move(delta_stream), out_status,
+                                  std::move(*births));
 }
 
 FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV
@@ -601,6 +715,83 @@ EPDFLayer_IsObjectPromoted(FPDF_DOCUMENT layer, unsigned long obj_num) {
   CPDF_LayerDocument* layer_doc = CPDF_LayerDocument::FromDocument(document);
   return layer_doc &&
          layer_doc->IsObjectPromoted(static_cast<uint32_t>(obj_num));
+}
+
+FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV EPDFPage_IsValid(FPDF_PAGE page) {
+  CPDF_Page* pdf_page = CPDFPageFromFPDFPage(page);
+  CPDF_Document* doc = pdf_page ? pdf_page->GetDocument() : nullptr;
+  if (!doc) {
+    return false;
+  }
+  CPDF_DocumentViewScope document_view(doc);
+  RetainPtr<const CPDF_Dictionary> dict = pdf_page->GetDict();
+  const uint32_t objnum = dict ? dict->GetObjNum() : 0;
+  return objnum && doc->GetPageIndex(objnum) >= 0 &&
+         doc->GetIndirectObject(objnum);
+}
+
+FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV
+EPDFLayer_IsPagePromoted(FPDF_DOCUMENT layer, unsigned long page_obj_num) {
+  CPDF_LayerDocument* layer_doc = LayerFromFPDFDocument(layer);
+  return layer_doc && page_obj_num <= std::numeric_limits<uint32_t>::max() &&
+         layer_doc->IsPagePromoted(static_cast<uint32_t>(page_obj_num));
+}
+
+FPDF_EXPORT unsigned long FPDF_CALLCONV
+EPDFLayer_GetBirthObjectNumber(FPDF_DOCUMENT layer,
+                               unsigned long page_obj_num,
+                               unsigned long birth_index) {
+  CPDF_LayerDocument* layer_doc = LayerFromFPDFDocument(layer);
+  if (!layer_doc || page_obj_num > std::numeric_limits<uint32_t>::max() ||
+      birth_index > std::numeric_limits<uint32_t>::max()) {
+    return 0;
+  }
+  return layer_doc->FindBirth(static_cast<uint32_t>(page_obj_num),
+                              static_cast<uint32_t>(birth_index));
+}
+
+FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV
+EPDFLayer_GetBirthName(FPDF_DOCUMENT layer,
+                       unsigned long obj_num,
+                       unsigned long* page_obj_num,
+                       unsigned long* birth_index) {
+  CPDF_LayerDocument* layer_doc = LayerFromFPDFDocument(layer);
+  if (!layer_doc || !page_obj_num || !birth_index ||
+      obj_num > std::numeric_limits<uint32_t>::max()) {
+    return false;
+  }
+  std::optional<std::pair<uint32_t, uint32_t>> name =
+      layer_doc->FindBirthName(static_cast<uint32_t>(obj_num));
+  if (!name) {
+    return false;
+  }
+  *page_obj_num = name->first;
+  *birth_index = name->second;
+  return true;
+}
+
+FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV
+EPDFLayer_BeginTransaction(FPDF_DOCUMENT layer) {
+  CPDF_LayerDocument* layer_doc = LayerFromFPDFDocument(layer);
+  return layer_doc && layer_doc->BeginTransaction();
+}
+
+FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV
+EPDFLayer_CommitTransaction(FPDF_DOCUMENT layer) {
+  CPDF_LayerDocument* layer_doc = LayerFromFPDFDocument(layer);
+  return layer_doc && layer_doc->CommitTransaction();
+}
+
+FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV
+EPDFLayer_AbortTransaction(FPDF_DOCUMENT layer) {
+  CPDF_LayerDocument* layer_doc = LayerFromFPDFDocument(layer);
+  return layer_doc && layer_doc->AbortTransaction();
+}
+
+FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV
+EPDFLayer_IsInTransaction(FPDF_DOCUMENT layer) {
+  CPDF_LayerDocument* layer_doc = LayerFromFPDFDocument(layer);
+  return layer_doc && layer_doc->InTransaction();
 }
 
 FPDF_EXPORT unsigned long FPDF_CALLCONV
@@ -669,7 +860,7 @@ bool SaveDeltaImpl(FPDF_DOCUMENT layer,
   SetChanged(out_changed_since_load, false);
   CPDF_Document* document = CPDFDocumentFromFPDFDocument(layer);
   CPDF_LayerDocument* layer_doc = CPDF_LayerDocument::FromDocument(document);
-  if (!layer_doc || !file_write) {
+  if (!layer_doc || !file_write || layer_doc->InTransaction()) {
     return false;
   }
 
@@ -806,10 +997,13 @@ bool SaveLayerArtifactImpl(FPDF_DOCUMENT layer,
     return false;
   }
 
-  const std::vector<uint8_t> header =
-      BuildLayerArtifactHeader(base_doc, delta_writer.size, *delta_sha);
+  const std::vector<uint8_t> births =
+      SerializeBirths(layer_doc->GetCommittedBirths());
+  const std::vector<uint8_t> header = BuildLayerArtifactHeader(
+      base_doc, delta_writer.size, *delta_sha, births.size());
   if (!WriteBytes(file_write, pdfium::span<const uint8_t>(header)) ||
-      !delta_writer.ReplayTo(file_write)) {
+      !delta_writer.ReplayTo(file_write) ||
+      !WriteBytes(file_write, pdfium::span<const uint8_t>(births))) {
     return false;
   }
 
@@ -885,11 +1079,16 @@ void* SaveLayerArtifactToOwnedBufferImpl(FPDF_DOCUMENT layer,
     return nullptr;
   }
 
+  const std::vector<uint8_t> births =
+      SerializeBirths(layer_doc->GetCommittedBirths());
   std::vector<uint8_t> artifact = BuildLayerArtifactHeader(
-      base_doc, static_cast<uint64_t>(delta_writer.data.size()), *delta_sha);
-  artifact.reserve(kLayerArtifactHeaderSize + delta_writer.data.size());
+      base_doc, static_cast<uint64_t>(delta_writer.data.size()), *delta_sha,
+      births.size());
+  artifact.reserve(kLayerArtifactHeaderSize + delta_writer.data.size() +
+                   births.size());
   artifact.insert(artifact.end(), delta_writer.data.begin(),
                   delta_writer.data.end());
+  artifact.insert(artifact.end(), births.begin(), births.end());
 
   SetSaveStatus(out_status, EPDFLayerSaveStatus_kSuccess);
   return CopyToOwnedBuffer(pdfium::span(artifact), out_size);

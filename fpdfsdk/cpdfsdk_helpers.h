@@ -121,10 +121,11 @@ inline FPDF_ANNOTATION FPDFAnnotationFromCPDFAnnotContext(
     CPDF_AnnotContext* annot) {
   return reinterpret_cast<FPDF_ANNOTATION>(annot);
 }
-inline CPDF_AnnotContext* CPDFAnnotContextFromFPDFAnnotation(
-    FPDF_ANNOTATION annot) {
-  return reinterpret_cast<CPDF_AnnotContext*>(annot);
-}
+// EmbedPDF: null for a handle whose annotation is gone (see
+// CPDF_AnnotContext::IsValid()), so every entry point that checks for null
+// fails cleanly. Closing a handle is the one thing an invalid handle allows,
+// and FPDFPage_CloseAnnot() casts directly.
+CPDF_AnnotContext* CPDFAnnotContextFromFPDFAnnotation(FPDF_ANNOTATION annot);
 
 inline FPDF_ATTACHMENT FPDFAttachmentFromCPDFObject(CPDF_Object* attachment) {
   return reinterpret_cast<FPDF_ATTACHMENT>(attachment);

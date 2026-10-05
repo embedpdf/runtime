@@ -27,6 +27,7 @@
 #include "core/fpdfapi/parser/cpdf_dictionary.h"
 #include "core/fpdfapi/parser/cpdf_name.h"
 #include "core/fpdfapi/parser/cpdf_number.h"
+#include "core/fpdfapi/parser/cpdf_object_walker.h"
 #include "core/fpdfapi/parser/cpdf_reference.h"
 #include "core/fpdfapi/parser/cpdf_stream.h"
 #include "core/fpdfapi/parser/cpdf_stream_acc.h"
@@ -238,6 +239,24 @@ RetainPtr<CPDF_Font> CPDF_DocPageData::GetFont(
 
 void CPDF_DocPageData::ForgetEphemeralFont(const CPDF_Dictionary* font_dict) {
   font_map_.erase(pdfium::WrapRetain(font_dict));
+}
+
+void CPDF_DocPageData::ForgetObjectTree(const CPDF_Object* root) {
+  CPDF_ObjectWalker walker(pdfium::WrapRetain(root));
+  while (RetainPtr<const CPDF_Object> object = walker.GetNext()) {
+    pattern_map_.erase(object);
+    if (RetainPtr<const CPDF_Dictionary> dict = ToDictionary(object)) {
+      font_map_.erase(dict);
+    } else if (RetainPtr<const CPDF_Array> array = ToArray(object)) {
+      color_space_map_.erase(array);
+    } else if (RetainPtr<const CPDF_Stream> stream = ToStream(object)) {
+      font_file_map_.erase(stream);
+      icc_profile_map_.erase(stream);
+      std::erase_if(hash_icc_profile_map_, [&stream](const auto& entry) {
+        return entry.second == stream;
+      });
+    }
+  }
 }
 
 RetainPtr<CPDF_Font> CPDF_DocPageData::GetStandardFont(

@@ -1224,6 +1224,20 @@ FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV FPDFAnnot_SetURI(FPDF_ANNOTATION annot,
 FPDF_EXPORT FPDF_ATTACHMENT FPDF_CALLCONV
 FPDFAnnot_GetFileAttachment(FPDF_ANNOTATION annot);
 
+// Experimental EmbedPDF Extension API.
+// FPDFAnnot_GetFileAttachment() for writing: the attachment as the document
+// opens it for writing, so a layer transaction copies it up first. Use this
+// to change an attachment the document already has; the handle
+// FPDFAnnot_GetFileAttachment() returns is for reading, and inside a layer
+// transaction the FPDFAttachment_Set*() and EPDFAttachment_Set*() calls
+// refuse it.
+//
+//   annot - handle to a file annotation.
+//
+// Returns the handle to the attachment object, or NULL on failure.
+FPDF_EXPORT FPDF_ATTACHMENT FPDF_CALLCONV
+EPDFAnnot_GetFileAttachmentForWrite(FPDF_ANNOTATION annot);
+
 // Experimental API.
 // Add an embedded file with |name| to |annot|.
 //
@@ -1842,6 +1856,39 @@ EPDFPage_CreateAnnotRaw(FPDF_DOCUMENT doc,
 FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV EPDFPage_RemoveAnnotRaw(FPDF_DOCUMENT doc,
                                                             int page_index,
                                                             int index);
+
+// Experimental EmbedPDF Extension API.
+// Promote a page: move every inline annotation dictionary in its /Annots
+// into its own indirect object, in place - same content, same order. On a
+// layer, the first promotion of a page the base has also records the page's
+// births: where each inline annotation the base has went (see
+// EPDFLayer_GetBirthObjectNumber()), in the open transaction if there is one.
+//
+// An inline annotation's permanent name is its position in the base page's
+// /Annots (its birth index), and it resolves by position only while every
+// one sits at its birth position. So promote a page before any write that
+// would move an existing entry of its /Annots: a delete, a reorder, a
+// flatten, a redaction, an insertion at a position.
+//
+//   doc        - handle to a document.
+//   page_index - the index of the page.
+//
+// Returns how many annotations moved (0 when none was inline), or -1.
+FPDF_EXPORT int FPDF_CALLCONV EPDFPage_PromoteInlineAnnotsRaw(FPDF_DOCUMENT doc,
+                                                              int page_index);
+
+// Experimental EmbedPDF Extension API.
+// Whether |annot| still names an annotation: its object resolves, it is in
+// its page's /Annots (if it ever was), and its page is in the document. A
+// handle to an annotation that was deleted, or created in an aborted layer
+// transaction, is invalid; an abort that brings an annotation back makes its
+// handle valid again. Every other call on an invalid handle fails;
+// FPDFPage_CloseAnnot() still closes it.
+//
+//   annot - handle to an annotation.
+//
+// Returns true if the handle is valid.
+FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV EPDFAnnot_IsValid(FPDF_ANNOTATION annot);
 
 // Experimental EmbedPDF Extension API.
 // Set the /Name entry of an annotation: the icon name of a text, file

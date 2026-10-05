@@ -45,6 +45,8 @@ class CPDF_DocRenderData : public CPDF_Document::RenderDataIface {
   RetainPtr<CPDF_Type3Cache> GetCachedType3(CPDF_Type3Font* font);
   RetainPtr<CPDF_TransferFunc> GetTransferFunc(
       RetainPtr<const CPDF_Object> obj);
+  // EmbedPDF: CPDF_DocPageData::ForgetObjectTree() for this cache.
+  void ForgetObjectTree(const CPDF_Object* root);
 
 #if BUILDFLAG(IS_WIN)
   CFX_PSFontTracker* GetPSFontTracker();

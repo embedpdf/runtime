@@ -12,6 +12,7 @@
 #include <set>
 #include <type_traits>
 
+#include "core/fpdfapi/parser/cpdf_write_generation.h"
 #include "core/fxcrt/fx_string.h"
 #include "core/fxcrt/retain_ptr.h"
 
@@ -83,7 +84,20 @@ class CPDF_Object : public Retainable {
 
   void Freeze();
   void FreezeForHolder(std::set<const CPDF_Object*>* visited);
-  bool IsFrozen() const { return frozen_; }
+  bool IsFrozen() const {
+    return write_generation_ == CPDF_WriteGeneration::kFrozen;
+  }
+
+  // EmbedPDF: which layer transaction may write this object (see
+  // CPDF_WriteGeneration): 0 while detached, kFrozen once frozen.
+  uint32_t write_generation() const { return write_generation_; }
+  // Gives `generation` to this object and to every direct child below it
+  // that is still detached (0). A reference is a direct child; what it refers
+  // to is not. A nonzero generation is never changed.
+  void StampWriteGeneration(uint32_t generation);
+  // Whether a write is allowed now: not frozen, and, while a layer
+  // transaction is open on this thread, detached or that transaction's own.
+  bool IsWritable() const;
 
   // Create a deep copy of the object except any reference object be
   // copied to the object it points to directly.
@@ -136,6 +150,7 @@ class CPDF_Object : public Retainable {
       CPDF_IndirectObjectHolder* holder) const;
 
   virtual void FreezeChildren(std::set<const CPDF_Object*>* visited);
+  virtual void StampWriteGenerationOfChildren(uint32_t generation);
 
   RetainPtr<const CPDF_Object> GetDirect() const;  // Wraps virtual method.
   virtual RetainPtr<CPDF_Object> GetMutableDirect();
@@ -179,7 +194,9 @@ class CPDF_Object : public Retainable {
 
   uint32_t obj_num_ = 0;
   uint32_t gen_num_ = 0;
-  bool frozen_ = false;
+  // EmbedPDF: frozen is a generation (kFrozen), so the word replaces the old
+  // `bool frozen_` and objects stay the size they were.
+  uint32_t write_generation_ = 0;
 };
 
 template <typename T>

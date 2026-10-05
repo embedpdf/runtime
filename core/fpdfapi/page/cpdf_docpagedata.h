@@ -64,6 +64,11 @@ class CPDF_DocPageData final : public CPDF_Document::PageDataIface,
   // EmbedPDF: discard a render-only font before its scratch resource holder
   // dies. Call only after every form using this private dictionary is gone.
   void ForgetEphemeralFont(const CPDF_Dictionary* font_dict);
+  // EmbedPDF: drops every entry derived from |root| or a direct object inside
+  // it. A layer transaction calls it for each version nobody can reach any
+  // more (a dropped copy, or a version a commit replaced), so the cache
+  // doesn't keep it alive. Objects still in use keep their own references.
+  void ForgetObjectTree(const CPDF_Object* root);
   RetainPtr<CPDF_Font> AddStandardFont(const ByteString& fontName,
                                        const CPDF_FontEncoding* pEncoding);
   RetainPtr<CPDF_Font> GetStandardFont(const ByteString& fontName,

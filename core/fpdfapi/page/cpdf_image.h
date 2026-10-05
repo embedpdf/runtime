@@ -43,12 +43,24 @@ class CPDF_Image final : public Retainable {
   // Never returns nullptr.
   CPDF_Document* GetDocument() const { return document_; }
 
-  int32_t GetPixelHeight() const { return height_; }
-  int32_t GetPixelWidth() const { return width_; }
+  int32_t GetPixelHeight() const {
+    RefreshStreamIfNeeded();
+    return height_;
+  }
+  int32_t GetPixelWidth() const {
+    RefreshStreamIfNeeded();
+    return width_;
+  }
   uint32_t GetMatteColor() const { return matte_color_; }
   bool IsInline() const { return is_inline_; }
-  bool IsMask() const { return is_mask_; }
-  bool IsInterpol() const { return interpolate_; }
+  bool IsMask() const {
+    RefreshStreamIfNeeded();
+    return is_mask_;
+  }
+  bool IsInterpol() const {
+    RefreshStreamIfNeeded();
+    return interpolate_;
+  }
 
   RetainPtr<CPDF_DIB> CreateNewDIB() const;
   RetainPtr<CFX_DIBBase> LoadDIBBase() const;
@@ -90,24 +102,32 @@ class CPDF_Image final : public Retainable {
   CPDF_Image(CPDF_Document* doc, uint32_t dwStreamObjNum);
   ~CPDF_Image() override;
 
-  void FinishInitialization();
+  // Reads what the image needs from its stream's dictionary.
+  void FinishInitialization() const;
+  // EmbedPDF: an indirect image is a view of one version of its stream (fork
+  // plan rule 5). When the document's overlay moved, look again by object
+  // number: a layer transaction may have copied the stream up, or dropped
+  // the copy this image was bound to.
+  void RefreshStreamIfNeeded() const;
   // Used only by explicit edit paths that need to promote this stream.
   RetainPtr<CPDF_Stream> AcquireMutableStreamForEdit();
   RetainPtr<CPDF_Dictionary> InitJPEG(pdfium::span<uint8_t> src_span);
   RetainPtr<CPDF_Dictionary> CreateXObjectImageDict(int width, int height);
 
-  int32_t height_ = 0;
-  int32_t width_ = 0;
+  // Derived from the stream: refreshed with it (RefreshStreamIfNeeded()).
+  mutable int32_t height_ = 0;
+  mutable int32_t width_ = 0;
   uint32_t matte_color_ = 0;
   bool is_inline_ = false;
-  bool is_mask_ = false;
-  bool interpolate_ = false;
+  mutable bool is_mask_ = false;
+  mutable bool interpolate_ = false;
   bool will_be_destroyed_ = false;
   UnownedPtr<CPDF_Document> const document_;
   RetainPtr<CFX_DIBBase> dibbase_;
   RetainPtr<CFX_DIBBase> mask_;
-  RetainPtr<const CPDF_Stream> stream_;
-  RetainPtr<const CPDF_Dictionary> oc_;
+  mutable RetainPtr<const CPDF_Stream> stream_;
+  mutable RetainPtr<const CPDF_Dictionary> oc_;
+  mutable uint64_t stream_epoch_ = 0;
 };
 
 #endif  // CORE_FPDFAPI_PAGE_CPDF_IMAGE_H_

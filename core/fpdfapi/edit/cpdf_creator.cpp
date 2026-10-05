@@ -784,6 +784,14 @@ CPDF_Creator::Stage CPDF_Creator::WriteDoc_Stage4() {
 
 bool CPDF_Creator::Create(Mask<CreateFlags> flags, int32_t file_version) {
   failure_reason_ = FailureReason::kNone;
+  // EmbedPDF: a layer's open transaction is not part of the document until it
+  // commits, and saving walks only committed objects. Refuse rather than write
+  // a document that is neither the state before the transaction nor after it.
+  if (const CPDF_LayerDocument* layer =
+          CPDF_LayerDocument::FromDocument(document_.get());
+      layer && layer->InTransaction()) {
+    return false;
+  }
   if (flags & ~kAllValidFlags) {
     flags = CreateFlags::kNone;
   }

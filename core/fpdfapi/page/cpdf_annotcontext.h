@@ -40,9 +40,18 @@ class CPDF_AnnotContext {
   bool HasForm() const { return !!annot_form_; }
   CPDF_Form* GetForm() const { return annot_form_.get(); }
 
-  // Never nullptr.
+  // Never nullptr. After the handle became invalid, the last version it
+  // resolved to; callers at the API boundary check IsValid() first.
   RetainPtr<CPDF_Dictionary> GetMutableAnnotDict();
   const CPDF_Dictionary* GetAnnotDict() const;
+
+  // EmbedPDF: whether the annotation this handle names is still there (fork
+  // plan L1): its object resolves, it is still in its page's /Annots (once
+  // it has been), and its page is still in the document. Checked again
+  // whenever the overlay epoch moves, so an abort that brings the
+  // annotation back makes the handle valid again. Always true for ordinary
+  // documents, whose epoch never moves.
+  bool IsValid() const;
 
   // Never nullptr.
   IPDF_Page* GetPage() const { return page_; }
@@ -54,13 +63,29 @@ class CPDF_AnnotContext {
  private:
   std::unique_ptr<CPDF_MeasureStorage> measure_storage_;
   void RefreshAnnotDictIfNeeded() const;
+  // The annotation this handle names, as the document has it now, or null
+  // when it is gone (L1). Follows a promotion through the birth list (L3).
+  RetainPtr<const CPDF_Dictionary> ResolveIdentity() const;
   void EnsureMutableBackingForAnnotDict();
 
   mutable std::unique_ptr<CPDF_Form> annot_form_;
   mutable RetainPtr<CPDF_Dictionary> annot_dict_;
   UnownedPtr<IPDF_Page> const page_;
-  const int annot_index_ = -1;
+  int annot_index_ = -1;
   mutable uint64_t annot_dict_epoch_ = 0;
+
+  // EmbedPDF identity (fork plan §4.14). An annotation with an object number
+  // is named by it. An inline one on an unpromoted page of a layer is named
+  // by its page and birth index: its position there, which promotion turns
+  // into an object number through the layer's birth list.
+  uint32_t objnum_ = 0;
+  uint32_t page_objnum_ = 0;
+  int birth_index_ = -1;
+  mutable bool valid_ = true;
+  // Seen in its page's /Annots: from then on, leaving it ends the handle.
+  // A handle to an annotation that never was a member there (a linked one on
+  // another page) is checked by resolution only.
+  mutable bool was_member_ = false;
 };
 
 #endif  // CORE_FPDFAPI_PAGE_CPDF_ANNOTCONTEXT_H_

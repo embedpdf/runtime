@@ -174,6 +174,7 @@ class CPDF_Array final : public CPDF_Object {
       CPDF_IndirectObjectHolder* holder,
       std::set<const CPDF_Object*>* pVisited) const override;
   void FreezeChildren(std::set<const CPDF_Object*>* visited) override;
+  void StampWriteGenerationOfChildren(uint32_t generation) override;
 
   std::vector<RetainPtr<CPDF_Object>> objects_;
   WeakPtr<ByteStringPool> pool_;

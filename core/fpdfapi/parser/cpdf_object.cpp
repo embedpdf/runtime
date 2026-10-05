@@ -14,6 +14,7 @@
 #include "core/fpdfapi/parser/cpdf_indirect_object_holder.h"
 #include "core/fpdfapi/parser/cpdf_parser.h"
 #include "core/fpdfapi/parser/cpdf_reference.h"
+#include "core/fpdfapi/parser/cpdf_write_generation.h"
 #include "core/fxcrt/check.h"
 #include "core/fxcrt/fx_string.h"
 #include "core/fxcrt/notreached.h"
@@ -45,11 +46,30 @@ void CPDF_Object::FreezeForHolder(std::set<const CPDF_Object*>* visited) {
     return;
   }
 
-  frozen_ = true;
+  write_generation_ = CPDF_WriteGeneration::kFrozen;
   FreezeChildren(visited);
 }
 
 void CPDF_Object::FreezeChildren(std::set<const CPDF_Object*>*) {}
+
+void CPDF_Object::StampWriteGeneration(uint32_t generation) {
+  // A stamped object stops the walk: what it holds was stamped with it.
+  if (write_generation_ != 0 || generation == 0) {
+    return;
+  }
+  write_generation_ = generation;
+  StampWriteGenerationOfChildren(generation);
+}
+
+void CPDF_Object::StampWriteGenerationOfChildren(uint32_t) {}
+
+bool CPDF_Object::IsWritable() const {
+  if (IsFrozen()) {
+    return false;
+  }
+  const uint32_t open = CPDF_WriteGeneration::Current();
+  return open == 0 || write_generation_ == 0 || write_generation_ == open;
+}
 
 RetainPtr<CPDF_Object> CPDF_Object::GetMutableDirect() {
   return pdfium::WrapRetain(const_cast<CPDF_Object*>(GetDirectInternal()));

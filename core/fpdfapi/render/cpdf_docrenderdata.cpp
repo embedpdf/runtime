@@ -19,6 +19,7 @@
 #include "core/fpdfapi/page/cpdf_transferfunc.h"
 #include "core/fpdfapi/parser/cpdf_array.h"
 #include "core/fpdfapi/parser/cpdf_document.h"
+#include "core/fpdfapi/parser/cpdf_object_walker.h"
 #include "core/fpdfapi/render/cpdf_type3cache.h"
 #include "core/fxcrt/compiler_specific.h"
 #include "core/fxcrt/fixed_size_data_vector.h"
@@ -61,6 +62,16 @@ RetainPtr<CPDF_Type3Cache> CPDF_DocRenderData::GetCachedType3(
   auto cache = pdfium::MakeRetain<CPDF_Type3Cache>(font);
   type3_face_map_[font].Reset(cache.Get());
   return cache;
+}
+
+void CPDF_DocRenderData::ForgetObjectTree(const CPDF_Object* root) {
+  CPDF_ObjectWalker walker(pdfium::WrapRetain(root));
+  while (RetainPtr<const CPDF_Object> object = walker.GetNext()) {
+    auto it = transfer_func_map_.find(object);
+    if (it != transfer_func_map_.end()) {
+      transfer_func_map_.erase(it);
+    }
+  }
 }
 
 RetainPtr<CPDF_TransferFunc> CPDF_DocRenderData::GetTransferFunc(

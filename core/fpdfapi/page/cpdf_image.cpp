@@ -127,26 +127,48 @@ bool CPDF_Image::IsValidJpegBitsPerComponent(int32_t bpc) {
   return bpc == 1 || bpc == 2 || bpc == 4 || bpc == 8 || bpc == 16;
 }
 
-CPDF_Image::CPDF_Image(CPDF_Document* doc) : document_(doc) {
+CPDF_Image::CPDF_Image(CPDF_Document* doc)
+    : document_(doc), stream_epoch_(doc->GetOverlayEpoch()) {
   DCHECK(document_);
 }
 
 CPDF_Image::CPDF_Image(CPDF_Document* doc, RetainPtr<CPDF_Stream> pStream)
-    : is_inline_(true), document_(doc), stream_(std::move(pStream)) {
+    : is_inline_(true),
+      document_(doc),
+      stream_(std::move(pStream)),
+      stream_epoch_(doc->GetOverlayEpoch()) {
   DCHECK(document_);
   FinishInitialization();
 }
 
 CPDF_Image::CPDF_Image(CPDF_Document* doc, uint32_t dwStreamObjNum)
     : document_(doc),
-      stream_(ToStream(doc->GetIndirectObject(dwStreamObjNum))) {
+      stream_(ToStream(doc->GetIndirectObject(dwStreamObjNum))),
+      stream_epoch_(doc->GetOverlayEpoch()) {
   DCHECK(document_);
   FinishInitialization();
 }
 
 CPDF_Image::~CPDF_Image() = default;
 
-void CPDF_Image::FinishInitialization() {
+void CPDF_Image::RefreshStreamIfNeeded() const {
+  if (!stream_ || stream_->GetObjNum() == 0) {
+    return;
+  }
+  const uint64_t epoch = document_->GetOverlayEpoch();
+  if (epoch == stream_epoch_) {
+    return;
+  }
+  stream_epoch_ = epoch;
+  RetainPtr<const CPDF_Stream> current =
+      ToStream(document_->GetIndirectObject(stream_->GetObjNum()));
+  if (current && current != stream_) {
+    stream_ = std::move(current);
+    FinishInitialization();
+  }
+}
+
+void CPDF_Image::FinishInitialization() const {
   RetainPtr<const CPDF_Dictionary> pStreamDict = stream_->GetDict();
   oc_ = pStreamDict->GetDictFor("OC");
   is_mask_ = !pStreamDict->KeyExist("ColorSpace") ||
@@ -166,14 +188,17 @@ RetainPtr<CPDF_Stream> CPDF_Image::AcquireMutableStreamForEdit() {
 }
 
 RetainPtr<const CPDF_Dictionary> CPDF_Image::GetDict() const {
+  RefreshStreamIfNeeded();
   return stream_ ? stream_->GetDict() : nullptr;
 }
 
 RetainPtr<const CPDF_Stream> CPDF_Image::GetStream() const {
+  RefreshStreamIfNeeded();
   return stream_;
 }
 
 RetainPtr<const CPDF_Dictionary> CPDF_Image::GetOC() const {
+  RefreshStreamIfNeeded();
   return oc_;
 }
 

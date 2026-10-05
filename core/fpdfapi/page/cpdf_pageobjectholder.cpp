@@ -121,7 +121,11 @@ RetainPtr<CPDF_Dictionary> CPDF_PageObjectHolder::GetMutableDict() {
     return dict_;
   }
 
-  if (dict_->IsFrozen()) {
+  // A direct dictionary is re-derived from its owner when it can't be
+  // written in place, or when the overlay moved since it was derived: after
+  // an abort it may still point into the dropped copy, which nothing would
+  // ever read again.
+  if (!dict_->IsWritable() || dict_epoch_ != document_->GetOverlayEpoch()) {
     EnsureMutableBackingObjectForDict();
   }
   dict_epoch_ = document_->GetOverlayEpoch();
@@ -167,7 +171,8 @@ RetainPtr<CPDF_Dictionary> CPDF_PageObjectHolder::GetMutableResources() {
     return resources_;
   }
 
-  if (resources_->IsFrozen()) {
+  if (!resources_->IsWritable() ||
+      resources_epoch_ != document_->GetOverlayEpoch()) {
     EnsureMutableBackingObjectForResources();
   }
   resources_epoch_ = document_->GetOverlayEpoch();
@@ -214,7 +219,8 @@ RetainPtr<CPDF_Dictionary> CPDF_PageObjectHolder::GetMutablePageResources() {
     return page_resources_;
   }
 
-  if (page_resources_->IsFrozen()) {
+  if (!page_resources_->IsWritable() ||
+      page_resources_epoch_ != document_->GetOverlayEpoch()) {
     EnsureMutableBackingObjectForPageResources();
   }
   page_resources_epoch_ = document_->GetOverlayEpoch();
@@ -286,13 +292,24 @@ std::set<int32_t> CPDF_PageObjectHolder::TakeDirtyStreams() {
   return dirty_streams;
 }
 
+bool CPDF_PageObjectHolder::ResourcesDefine(ByteStringView category,
+                                            const ByteString& name) const {
+  RetainPtr<const CPDF_Dictionary> resources = GetResources();
+  RetainPtr<const CPDF_Dictionary> names =
+      resources ? resources->GetDictFor(category) : nullptr;
+  return names && names->KeyExist(name.AsStringView());
+}
+
 std::optional<ByteString> CPDF_PageObjectHolder::GraphicsMapSearch(
     const GraphicsData& gd) {
   auto it = graphics_map_.find(gd);
   if (it == graphics_map_.end()) {
     return std::nullopt;
   }
-
+  if (!ResourcesDefine("ExtGState", it->second)) {
+    graphics_map_.erase(it);
+    return std::nullopt;
+  }
   return it->second;
 }
 
@@ -307,7 +324,10 @@ std::optional<ByteString> CPDF_PageObjectHolder::FontsMapSearch(
   if (it == fonts_map_.end()) {
     return std::nullopt;
   }
-
+  if (!ResourcesDefine("Font", it->second)) {
+    fonts_map_.erase(it);
+    return std::nullopt;
+  }
   return it->second;
 }
 
@@ -320,7 +340,14 @@ std::optional<ByteString> CPDF_PageObjectHolder::FontsByObjnumSearch(uint32_t ob
   if (!objnum)
     return std::nullopt;
   auto it = fonts_by_objnum_.find(objnum);
-  return it == fonts_by_objnum_.end() ? std::nullopt : std::optional<ByteString>(it->second);
+  if (it == fonts_by_objnum_.end()) {
+    return std::nullopt;
+  }
+  if (!ResourcesDefine("Font", it->second)) {
+    fonts_by_objnum_.erase(it);
+    return std::nullopt;
+  }
+  return it->second;
 }
 
 void CPDF_PageObjectHolder::FontsByObjnumInsert(uint32_t objnum, const ByteString& name) {
@@ -332,8 +359,13 @@ void CPDF_PageObjectHolder::FontsByObjnumInsert(uint32_t objnum, const ByteStrin
 std::optional<ByteString> CPDF_PageObjectHolder::ColorSpaceMapSearch(
     const ByteString& key) {
   auto it = colorspace_map_.find(key);
-  if (it == colorspace_map_.end())
+  if (it == colorspace_map_.end()) {
     return std::nullopt;
+  }
+  if (!ResourcesDefine("ColorSpace", it->second)) {
+    colorspace_map_.erase(it);
+    return std::nullopt;
+  }
   return it->second;
 }
 

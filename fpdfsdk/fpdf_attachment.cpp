@@ -40,6 +40,17 @@
 
 namespace {
 
+// EmbedPDF: the attachment a write may change. Null while a layer
+// transaction is open and |attachment| belongs to a committed version - read
+// before the transaction, or through FPDFAnnot_GetFileAttachment() - since a
+// write to it would land outside the transaction and survive an abort.
+// EPDFAnnot_GetFileAttachmentForWrite() gives a handle the transaction may
+// write. Outside transactions every attachment is writable, as before.
+CPDF_Object* WritableAttachment(FPDF_ATTACHMENT attachment) {
+  CPDF_Object* file = CPDFObjectFromFPDFAttachment(attachment);
+  return file && file->IsWritable() ? file : nullptr;
+}
+
 constexpr char kChecksumKey[] = "CheckSum";
 
 // How EPDFAttachment_ExtractFile* decodes a given embedded file stream.
@@ -315,7 +326,7 @@ FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV
 FPDFAttachment_SetStringValue(FPDF_ATTACHMENT attachment,
                               FPDF_BYTESTRING key,
                               FPDF_WIDESTRING value) {
-  CPDF_Object* pFile = CPDFObjectFromFPDFAttachment(attachment);
+  CPDF_Object* pFile = WritableAttachment(attachment);
   if (!pFile) {
     return false;
   }
@@ -389,7 +400,7 @@ FPDFAttachment_SetFile(FPDF_ATTACHMENT attachment,
     return false;
   }
 
-  CPDF_Object* pFile = CPDFObjectFromFPDFAttachment(attachment);
+  CPDF_Object* pFile = WritableAttachment(attachment);
   ScopedFPDFDocumentView document_view(document);
   CPDF_Document* doc = document_view.Get();
   if (!pFile || !pFile->IsDictionary() || !doc || len > INT_MAX) {
@@ -397,7 +408,8 @@ FPDFAttachment_SetFile(FPDF_ATTACHMENT attachment,
   }
   RetainPtr<CPDF_Object> effective_file;
   if (pFile->GetObjNum() != 0) {
-    effective_file = doc->GetOrParseIndirectObject(pFile->GetObjNum());
+    // The version the document writes: its own, through the door.
+    effective_file = doc->GetMutableIndirectObject(pFile->GetObjNum());
     if (effective_file) {
       pFile = effective_file.Get();
     }
@@ -499,7 +511,7 @@ FPDFAttachment_GetSubtype(FPDF_ATTACHMENT attachment,
 
 FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV
 EPDFAttachment_SetSubtype(FPDF_ATTACHMENT attachment, FPDF_BYTESTRING subtype) {
-  CPDF_Object* file = CPDFObjectFromFPDFAttachment(attachment);
+  CPDF_Object* file = WritableAttachment(attachment);
   if (!file) {
     return false;
   }
@@ -534,7 +546,7 @@ EPDFAttachment_SetSubtype(FPDF_ATTACHMENT attachment, FPDF_BYTESTRING subtype) {
 FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV
 EPDFAttachment_SetDescription(FPDF_ATTACHMENT attachment,
                               FPDF_WIDESTRING desc) {
-  CPDF_Object* file = CPDFObjectFromFPDFAttachment(attachment);
+  CPDF_Object* file = WritableAttachment(attachment);
   if (!file || !file->IsDictionary()) {
     return false;
   }
@@ -553,7 +565,7 @@ EPDFAttachment_SetDescription(FPDF_ATTACHMENT attachment,
 
 FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV
 EPDFAttachment_SetName(FPDF_ATTACHMENT attachment, FPDF_WIDESTRING name) {
-  CPDF_Object* file = CPDFObjectFromFPDFAttachment(attachment);
+  CPDF_Object* file = WritableAttachment(attachment);
   if (!file || !file->IsDictionary()) {
     return false;
   }

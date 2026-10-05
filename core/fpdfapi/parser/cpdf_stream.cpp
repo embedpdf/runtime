@@ -20,6 +20,7 @@
 #include "core/fpdfapi/parser/cpdf_number.h"
 #include "core/fpdfapi/parser/cpdf_read_only_graph_guard.h"
 #include "core/fpdfapi/parser/cpdf_stream_acc.h"
+#include "core/fpdfapi/parser/cpdf_write_generation.h"
 #include "core/fpdfapi/parser/fpdf_parser_decode.h"
 #include "core/fpdfapi/parser/fpdf_parser_utility.h"
 #include "core/fxcrt/cfx_memorystream.h"
@@ -90,7 +91,7 @@ CPDF_Stream* CPDF_Stream::AsMutableStream() {
 
 void CPDF_Stream::InitStreamFromFile(RetainPtr<IFX_SeekableReadStream> file) {
   DCHECK_PDF_GRAPH_MUTABLE_FOR(this);
-  DCHECK(!IsFrozen());
+  DCHECK_PDF_WRITABLE(this);
   const int size = pdfium::checked_cast<int>(file->GetSize());
   data_ = std::move(file);
   dict_ = pdfium::MakeRetain<CPDF_Dictionary>();
@@ -185,9 +186,13 @@ void CPDF_Stream::FreezeChildren(std::set<const CPDF_Object*>* visited) {
   dict_->FreezeForHolder(visited);
 }
 
+void CPDF_Stream::StampWriteGenerationOfChildren(uint32_t generation) {
+  dict_->StampWriteGeneration(generation);
+}
+
 void CPDF_Stream::SetDataAndRemoveFilter(pdfium::span<const uint8_t> pData) {
   DCHECK_PDF_GRAPH_MUTABLE_FOR(this);
-  DCHECK(!IsFrozen());
+  DCHECK_PDF_WRITABLE(this);
   SetData(pData);
   dict_->RemoveFor("Filter");
   dict_->RemoveFor(pdfium::stream::kDecodeParms);
@@ -205,14 +210,14 @@ void CPDF_Stream::SetDataFromStringstreamAndRemoveFilter(
 
 void CPDF_Stream::SetData(pdfium::span<const uint8_t> pData) {
   DCHECK_PDF_GRAPH_MUTABLE_FOR(this);
-  DCHECK(!IsFrozen());
+  DCHECK_PDF_WRITABLE(this);
   DataVector<uint8_t> data_copy(pData.begin(), pData.end());
   TakeData(std::move(data_copy));
 }
 
 void CPDF_Stream::TakeData(DataVector<uint8_t> data) {
   DCHECK_PDF_GRAPH_MUTABLE_FOR(this);
-  DCHECK(!IsFrozen());
+  DCHECK_PDF_WRITABLE(this);
   const int size = pdfium::checked_cast<int>(data.size());
   data_ = std::move(data);
   SetLengthInDict(size);
@@ -220,7 +225,7 @@ void CPDF_Stream::TakeData(DataVector<uint8_t> data) {
 
 void CPDF_Stream::SetDataFromStringstream(fxcrt::ostringstream* stream) {
   DCHECK_PDF_GRAPH_MUTABLE_FOR(this);
-  DCHECK(!IsFrozen());
+  DCHECK_PDF_WRITABLE(this);
   if (stream->tellp() <= 0) {
     SetData({});
     return;
@@ -297,6 +302,6 @@ pdfium::span<const uint8_t> CPDF_Stream::GetInMemoryRawData() const {
 
 void CPDF_Stream::SetLengthInDict(int length) {
   DCHECK_PDF_GRAPH_MUTABLE_FOR(this);
-  DCHECK(!IsFrozen());
+  DCHECK_PDF_WRITABLE(this);
   dict_->SetNewFor<CPDF_Number>("Length", length);
 }

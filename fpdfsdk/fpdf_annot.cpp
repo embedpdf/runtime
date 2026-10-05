@@ -17,25 +17,26 @@
 #include <vector>
 
 #include "constants/annotation_common.h"
+#include "core/fdrm/fx_crypt.h"
 #include "core/fpdfapi/edit/cpdf_contentstream_write_utils.h"
 #include "core/fpdfapi/edit/cpdf_pagecontentgenerator.h"
 #include "core/fpdfapi/edit/cpdf_pageorganizer.h"
+#include "core/fpdfapi/edit/cpdf_stringarchivestream.h"
 #include "core/fpdfapi/page/cpdf_annotcontext.h"
 #include "core/fpdfapi/page/cpdf_form.h"
-#include "core/fpdfapi/page/cpdf_paintedbounds.h"
 #include "core/fpdfapi/page/cpdf_formobject.h"
 #include "core/fpdfapi/page/cpdf_image.h"
 #include "core/fpdfapi/page/cpdf_imageobject.h"
 #include "core/fpdfapi/page/cpdf_page.h"
 #include "core/fpdfapi/page/cpdf_pageobject.h"
+#include "core/fpdfapi/page/cpdf_paintedbounds.h"
 #include "core/fpdfapi/page/cpdf_streamparser.h"
-#include "core/fdrm/fx_crypt.h"
-#include "core/fpdfapi/edit/cpdf_stringarchivestream.h"
 #include "core/fpdfapi/parser/cpdf_array.h"
 #include "core/fpdfapi/parser/cpdf_boolean.h"
 #include "core/fpdfapi/parser/cpdf_dictionary.h"
 #include "core/fpdfapi/parser/cpdf_document.h"
 #include "core/fpdfapi/parser/cpdf_document_view_scope.h"
+#include "core/fpdfapi/parser/cpdf_layer_document.h"
 #include "core/fpdfapi/parser/cpdf_name.h"
 #include "core/fpdfapi/parser/cpdf_number.h"
 #include "core/fpdfapi/parser/cpdf_reference.h"
@@ -419,6 +420,13 @@ void UpdateContentStream(CPDF_Form* pForm, CPDF_Stream* pStream) {
   DCHECK(pForm);
   DCHECK(pStream);
 
+  // EmbedPDF: bind the form to the writable version of its stream first,
+  // keeping the objects it parsed - the ones being written. A layer
+  // transaction may have copied the stream up since the form was parsed;
+  // left to notice that mid-generation, the form would rebind by dropping
+  // those objects while the generator walks them.
+  RetainPtr<CPDF_Stream> writable = pForm->GetMutableFormStream();
+  DCHECK_EQ(writable.Get(), pStream);
   CPDF_PageContentGenerator generator(pForm);
   fxcrt::ostringstream buf;
   generator.ProcessPageObjects(&buf);
@@ -462,7 +470,7 @@ void UpdateBBox(CPDF_Dictionary* annot_dict) {
   // Update BBox entry in appearance stream based on the bounding rectangle
   // of the annotation's quadpoints.
   RetainPtr<CPDF_Stream> pStream =
-      GetAnnotAP(annot_dict, CPDF_Annot::AppearanceMode::kNormal);
+      GetMutableAnnotAP(annot_dict, CPDF_Annot::AppearanceMode::kNormal);
   if (pStream) {
     CFX_FloatRect boundingRect =
         CPDF_Annot::BoundingRectFromQuadPoints(annot_dict);
@@ -578,13 +586,27 @@ CFX_FloatRect GetEmbedMetadataRectFor(const CPDF_Dictionary* annot_dict,
   return metadata ? metadata->GetRectFor(key) : CFX_FloatRect();
 }
 
-static uint32_t EnsureIndirect(CPDF_Document* doc,
-                               RetainPtr<CPDF_Dictionary> dict) {
-  uint32_t objnum = dict->GetObjNum();
-  if (objnum == 0) {
-    objnum = doc->AddIndirectObject(dict);
+// Promotes page |page_index| of |pdf| (see EPDFPage_PromoteInlineAnnotsRaw()):
+// every inline annotation becomes an object in place. A layer also records
+// the page's births. Returns how many moved, or -1.
+static int PromoteInlineAnnots(CPDF_Document* pdf, int page_index) {
+  if (CPDF_LayerDocument* layer = CPDF_LayerDocument::FromDocument(pdf)) {
+    return layer->PromotePageAnnots(page_index);
   }
-  return objnum;
+  RetainPtr<CPDF_Dictionary> page = pdf->GetMutablePageDictionary(page_index);
+  if (!page) {
+    return -1;
+  }
+  RetainPtr<CPDF_Array> annots = page->GetMutableArrayFor("Annots");
+  int moved = 0;
+  for (size_t i = 0; annots && i < annots->size(); ++i) {
+    RetainPtr<const CPDF_Object> entry = annots->GetObjectAt(i);
+    if (entry && entry->IsInline() && entry->IsDictionary()) {
+      annots->ConvertToIndirectObjectAt(i, pdf);
+      ++moved;
+    }
+  }
+  return moved;
 }
 
 RetainPtr<CPDF_Dictionary> SetExtGStateInResourceDict(
@@ -1051,7 +1073,9 @@ FPDFPage_CreateAnnot(FPDF_PAGE page, FPDF_ANNOTATION_SUBTYPE subtype) {
 }
 
 FPDF_EXPORT int FPDF_CALLCONV FPDFPage_GetAnnotCount(FPDF_PAGE page) {
-  const CPDF_Page* pPage = CPDFPageFromFPDFPage(page);
+  // A layer's page may be the base's while its /Annots array is the layer's.
+  ScopedFPDFPageView page_view(page);
+  const CPDF_Page* pPage = page_view.Get();
   if (!pPage) {
     return 0;
   }
@@ -1121,7 +1145,8 @@ FPDF_EXPORT int FPDF_CALLCONV FPDFPage_GetAnnotIndex(FPDF_PAGE page,
 }
 
 FPDF_EXPORT void FPDF_CALLCONV FPDFPage_CloseAnnot(FPDF_ANNOTATION annot) {
-  delete CPDFAnnotContextFromFPDFAnnotation(annot);
+  // Directly: an invalid handle must still be closable.
+  delete reinterpret_cast<CPDF_AnnotContext*>(annot);
 }
 
 FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV FPDFPage_RemoveAnnot(FPDF_PAGE page,
@@ -1174,7 +1199,7 @@ FPDFAnnot_UpdateObject(FPDF_ANNOTATION annot, FPDF_PAGEOBJECT obj) {
   // existing object is to be updated.
   RetainPtr<CPDF_Dictionary> pAnnotDict = pAnnot->GetMutableAnnotDict();
   RetainPtr<CPDF_Stream> pStream =
-      GetAnnotAP(pAnnotDict.Get(), CPDF_Annot::AppearanceMode::kNormal);
+      GetMutableAnnotAP(pAnnotDict.Get(), CPDF_Annot::AppearanceMode::kNormal);
   if (!pStream) {
     return false;
   }
@@ -1247,11 +1272,12 @@ FPDFAnnot_AppendObject(FPDF_ANNOTATION annot, FPDF_PAGEOBJECT obj) {
   // If the annotation does not have an AP stream yet, generate and set it.
   RetainPtr<CPDF_Dictionary> pAnnotDict = pAnnot->GetMutableAnnotDict();
   RetainPtr<CPDF_Stream> pStream =
-      GetAnnotAP(pAnnotDict.Get(), CPDF_Annot::AppearanceMode::kNormal);
+      GetMutableAnnotAP(pAnnotDict.Get(), CPDF_Annot::AppearanceMode::kNormal);
   if (!pStream) {
     CPDF_GenerateAP::GenerateEmptyAP(pAnnot->GetPage()->GetDocument(),
                                      pAnnotDict.Get());
-    pStream = GetAnnotAP(pAnnotDict.Get(), CPDF_Annot::AppearanceMode::kNormal);
+    pStream = GetMutableAnnotAP(pAnnotDict.Get(),
+                                CPDF_Annot::AppearanceMode::kNormal);
     if (!pStream) {
       return false;
     }
@@ -1340,7 +1366,7 @@ FPDFAnnot_RemoveObject(FPDF_ANNOTATION annot, int index) {
   // existing object is to be deleted.
   RetainPtr<CPDF_Dictionary> pAnnotDict = pAnnot->GetMutableAnnotDict();
   RetainPtr<CPDF_Stream> pStream =
-      GetAnnotAP(pAnnotDict.Get(), CPDF_Annot::AppearanceMode::kNormal);
+      GetMutableAnnotAP(pAnnotDict.Get(), CPDF_Annot::AppearanceMode::kNormal);
   if (!pStream) {
     return false;
   }
@@ -1563,7 +1589,7 @@ FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV FPDFAnnot_SetRect(FPDF_ANNOTATION annot,
   }
 
   RetainPtr<CPDF_Stream> pStream =
-      GetAnnotAP(pAnnotDict.Get(), CPDF_Annot::AppearanceMode::kNormal);
+      GetMutableAnnotAP(pAnnotDict.Get(), CPDF_Annot::AppearanceMode::kNormal);
   if (pStream && newRect.Contains(pStream->GetDict()->GetRectFor("BBox"))) {
     pStream->GetMutableDict()->SetRectFor("BBox", newRect);
   }
@@ -2731,6 +2757,27 @@ FPDFAnnot_GetFileAttachment(FPDF_ANNOTATION annot) {
   RetainPtr<const CPDF_Object> file_spec = annot_dict->GetDirectObjectFor("FS");
   return FPDFAttachmentFromCPDFObject(
       const_cast<CPDF_Object*>(file_spec.Get()));
+}
+
+FPDF_EXPORT FPDF_ATTACHMENT FPDF_CALLCONV
+EPDFAnnot_GetFileAttachmentForWrite(FPDF_ANNOTATION annot) {
+  if (FPDFAnnot_GetSubtype(annot) != FPDF_ANNOT_FILEATTACHMENT) {
+    return nullptr;
+  }
+  CPDF_AnnotContext* context = CPDFAnnotContextFromFPDFAnnotation(annot);
+  if (!context) {
+    return nullptr;
+  }
+  CPDF_DocumentViewScope document_view(context->GetPage()->GetDocument());
+  RetainPtr<CPDF_Dictionary> annot_dict = context->GetMutableAnnotDict();
+  if (!annot_dict) {
+    return nullptr;
+  }
+  // An indirect /FS opens through the door; a direct one is part of the
+  // annotation dictionary just opened for writing.
+  RetainPtr<CPDF_Object> file_spec =
+      annot_dict->GetMutableDirectObjectFor("FS");
+  return FPDFAttachmentFromCPDFObject(file_spec.Get());
 }
 
 FPDF_EXPORT FPDF_ATTACHMENT FPDF_CALLCONV
@@ -4046,7 +4093,8 @@ EPDFPage_RemoveAnnotByName(FPDF_PAGE page, FPDF_WIDESTRING nm) {
     return false;
   }
 
-  CPDF_Page* pPage = CPDFPageFromFPDFPage(page);
+  ScopedFPDFPageView page_view(page);
+  CPDF_Page* pPage = page_view.Get();
   if (!pPage) {
     return false;
   }
@@ -4100,14 +4148,23 @@ EPDFAnnot_SetLinkedAnnot(FPDF_ANNOTATION annot,
     return false;
   }
 
-  RetainPtr<CPDF_Dictionary> dst_dict = dst->GetMutableAnnotDict();
-  if (!dst_dict) {
-    return false;
-  }
-
-  const uint32_t objnum = EnsureIndirect(doc, dst_dict);
+  // A link points at an object. An inline target gets one by promoting its
+  // page, in place: making only the target indirect would leave its inline
+  // original in /Annots, a second copy.
+  uint32_t objnum = dst->GetAnnotDict()->GetObjNum();
   if (objnum == 0) {
-    return false;
+    RetainPtr<const CPDF_Dictionary> page_dict = dp->AsPDFPage()->GetDict();
+    const int page_index =
+        page_dict ? doc->GetPageIndex(page_dict->GetObjNum()) : -1;
+    if (page_index < 0 || PromoteInlineAnnots(doc, page_index) < 0) {
+      return false;
+    }
+    objnum = dst->GetAnnotDict()->GetObjNum();
+    if (objnum == 0) {
+      return false;
+    }
+    // The source may have been inline on that page too.
+    src_dict = src->GetMutableAnnotDict();
   }
 
   src_dict->SetNewFor<CPDF_Reference>(key, doc, objnum);
@@ -4288,6 +4345,20 @@ FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV EPDFPage_RemoveAnnotRaw(FPDF_DOCUMENT doc,
   RetainPtr<CPDF_Dictionary> page_dict =
       pdf->GetMutablePageDictionary(page_index);
   return RemoveAnnotEntryAt(pdf, page_dict.Get(), static_cast<size_t>(index));
+}
+
+FPDF_EXPORT int FPDF_CALLCONV EPDFPage_PromoteInlineAnnotsRaw(FPDF_DOCUMENT doc,
+                                                              int page_index) {
+  CPDF_Document* pdf = CPDFDocumentFromFPDFDocument(doc);
+  if (!pdf || page_index < 0 || page_index >= pdf->GetPageCount()) {
+    return -1;
+  }
+  CPDF_DocumentViewScope document_view(pdf);
+  return PromoteInlineAnnots(pdf, page_index);
+}
+
+FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV EPDFAnnot_IsValid(FPDF_ANNOTATION annot) {
+  return !!CPDFAnnotContextFromFPDFAnnotation(annot);
 }
 
 FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV EPDFAnnot_SetName(FPDF_ANNOTATION annot,
@@ -4482,10 +4553,10 @@ static bool RefitPlacedAppearance(FPDF_ANNOTATION annot,
 
   // Fetch/create AP(N).
   RetainPtr<CPDF_Stream> ap =
-      GetAnnotAP(ad.Get(), CPDF_Annot::AppearanceMode::kNormal);
+      GetMutableAnnotAP(ad.Get(), CPDF_Annot::AppearanceMode::kNormal);
   if (!ap) {
     CPDF_GenerateAP::GenerateEmptyAP(ctx->GetPage()->GetDocument(), ad.Get());
-    ap = GetAnnotAP(ad.Get(), CPDF_Annot::AppearanceMode::kNormal);
+    ap = GetMutableAnnotAP(ad.Get(), CPDF_Annot::AppearanceMode::kNormal);
     if (!ap) {
       return false;
     }
@@ -5893,7 +5964,8 @@ EPDFPage_GetAnnotByObjectNumber(FPDF_PAGE page, unsigned int obj_num) {
 
 FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV EPDFPage_RemoveAnnot(FPDF_PAGE page,
                                                          int index) {
-  CPDF_Page* pPage = CPDFPageFromFPDFPage(page);
+  ScopedFPDFPageView page_view(page);
+  CPDF_Page* pPage = page_view.Get();
   if (!pPage || index < 0) {
     return false;
   }
@@ -5912,7 +5984,8 @@ EPDFPage_RemoveAnnotByObjectNumber(FPDF_PAGE page, unsigned int obj_num) {
     return false;
   }
 
-  CPDF_Page* pPage = CPDFPageFromFPDFPage(page);
+  ScopedFPDFPageView page_view(page);
+  CPDF_Page* pPage = page_view.Get();
   if (!pPage) {
     return false;
   }

@@ -717,8 +717,87 @@ EPDFLayer_OpenLayerArtifactFromPath(EPDF_BASE_DOCUMENT base,
 FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV
 EPDFLayer_IsObjectPromoted(FPDF_DOCUMENT layer, unsigned long obj_num);
 
+// Function: EPDFPage_IsValid
+//          Return whether |page| still names a page of its document: its
+//          object resolves and it is in the document's page list. A page
+//          deleted, or created in an aborted layer transaction, is invalid;
+//          an abort that brings a page back makes its handle valid again.
+//          Other calls on an invalid page keep working on its last version;
+//          load the page again after a transaction that may have removed it.
+FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV EPDFPage_IsValid(FPDF_PAGE page);
+
+// Function: EPDFLayer_IsPagePromoted
+//          Return whether |layer| promoted the page with object number
+//          |page_obj_num| (EPDFPage_PromoteInlineAnnotsRaw()): its births
+//          are recorded, so its inline annotations from the base resolve
+//          through them, not by position.
+FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV
+EPDFLayer_IsPagePromoted(FPDF_DOCUMENT layer, unsigned long page_obj_num);
+
+// Function: EPDFLayer_GetBirthObjectNumber
+//          The object an inline annotation became when |layer| promoted its
+//          page. |page_obj_num| and |birth_index| are its birth name: the
+//          page's object number and the annotation's position in the base
+//          page's /Annots.
+// Return value:
+//          The object number, or 0 when the page isn't promoted (the
+//          annotation is still inline at its birth index) or the base had no
+//          inline annotation at |birth_index|.
+FPDF_EXPORT unsigned long FPDF_CALLCONV
+EPDFLayer_GetBirthObjectNumber(FPDF_DOCUMENT layer,
+                               unsigned long page_obj_num,
+                               unsigned long birth_index);
+
+// Function: EPDFLayer_GetBirthName
+//          The birth name of object |obj_num|, when it is an inline
+//          annotation from the base that |layer| promoted.
+// Parameters:
+//          page_obj_num - receives the page's object number.
+//          birth_index  - receives its position in the base page's /Annots.
+// Return value:
+//          TRUE when |obj_num| has a birth name.
+FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV
+EPDFLayer_GetBirthName(FPDF_DOCUMENT layer,
+                       unsigned long obj_num,
+                       unsigned long* page_obj_num,
+                       unsigned long* birth_index);
+
+// Function: EPDFLayer_BeginTransaction
+//          Start a transaction on |layer|. Until it is committed or aborted,
+//          every write lands in an overlay above the layer's committed objects,
+//          and every read sees it. One at a time, never nested; saving during
+//          a transaction is refused.
+// Return value:
+//          TRUE if a transaction started; FALSE for a document that is not a
+//          layer, or when one is already open.
+FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV
+EPDFLayer_BeginTransaction(FPDF_DOCUMENT layer);
+
+// Function: EPDFLayer_CommitTransaction
+//          Make the open transaction's writes part of the layer.
+// Return value:
+//          TRUE on success; FALSE when no transaction is open.
+FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV
+EPDFLayer_CommitTransaction(FPDF_DOCUMENT layer);
+
+// Function: EPDFLayer_AbortTransaction
+//          Drop the open transaction's writes. The layer's objects and page
+//          list are exactly as at the transaction's start; object numbers it
+//          handed out are not given back.
+// Return value:
+//          TRUE on success; FALSE when no transaction is open.
+FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV
+EPDFLayer_AbortTransaction(FPDF_DOCUMENT layer);
+
+// Function: EPDFLayer_IsInTransaction
+//          Return whether |layer| has an open transaction.
+FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV
+EPDFLayer_IsInTransaction(FPDF_DOCUMENT layer);
+
 // Function: EPDFLayer_GetPromotedObjectCount
 //          Return the number of objects currently stored in the layer overlay.
+//          Committed objects only: an open transaction's copies and new
+//          objects count once it commits.
 FPDF_EXPORT unsigned long FPDF_CALLCONV
 EPDFLayer_GetPromotedObjectCount(FPDF_DOCUMENT layer);
 

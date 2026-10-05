@@ -1119,8 +1119,20 @@ DaFontResolution ResolveDaFontForPersistentTarget(CPDF_Document* doc,
     result.registered_font_id = *font_id;
     return result;
   }
-  result.font_dict =
-      GetFontFromDrFontDictOrGenerateFallback(doc, dr_font_dict, font_name);
+  // EmbedPDF: the fallback is a write, so it goes into /DR/Font as the
+  // document opens it for writing - a layer transaction copies the catalog's
+  // chain up first. |dr_font_dict| may be a read-path view of a committed
+  // version; writing into it would land outside the transaction.
+  RetainPtr<CPDF_Dictionary> root = doc->GetMutableRoot();
+  RetainPtr<CPDF_Dictionary> acroform =
+      root ? root->GetMutableDictFor("AcroForm") : nullptr;
+  if (!acroform) {
+    return result;
+  }
+  RetainPtr<CPDF_Dictionary> writable_dr_font_dict =
+      acroform->GetOrCreateDictFor("DR")->GetOrCreateDictFor("Font");
+  result.font_dict = GetFontFromDrFontDictOrGenerateFallback(
+      doc, writable_dr_font_dict.Get(), font_name);
   return result;
 }
 

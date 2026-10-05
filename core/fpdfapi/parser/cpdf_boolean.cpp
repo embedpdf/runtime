@@ -6,6 +6,7 @@
 
 #include "core/fpdfapi/parser/cpdf_boolean.h"
 
+#include "core/fpdfapi/parser/cpdf_write_generation.h"
 #include "core/fxcrt/check.h"
 #include "core/fxcrt/fx_stream.h"
 
@@ -32,7 +33,7 @@ int CPDF_Boolean::GetInteger() const {
 }
 
 void CPDF_Boolean::SetString(const ByteString& str) {
-  DCHECK(!IsFrozen());
+  DCHECK_PDF_WRITABLE(this);
   value_ = (str == "true");
 }
 

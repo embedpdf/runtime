@@ -247,6 +247,11 @@ ScopedFPDFPageView::ScopedFPDFPageView(FPDF_PAGE page)
 
 ScopedFPDFPageView::~ScopedFPDFPageView() = default;
 
+CPDF_AnnotContext* CPDFAnnotContextFromFPDFAnnotation(FPDF_ANNOTATION annot) {
+  auto* context = reinterpret_cast<CPDF_AnnotContext*>(annot);
+  return context && context->IsValid() ? context : nullptr;
+}
+
 ScopedFPDFAnnotationView::ScopedFPDFAnnotationView(
     FPDF_ANNOTATION annotation)
     : annotation_(CPDFAnnotContextFromFPDFAnnotation(annotation)),
@@ -332,8 +337,9 @@ RetainPtr<const CPDF_Array> GetQuadPointsArrayFromDictionary(
 
 RetainPtr<CPDF_Array> GetMutableQuadPointsArrayFromDictionary(
     CPDF_Dictionary* dict) {
-  return pdfium::WrapRetain(
-      const_cast<CPDF_Array*>(GetQuadPointsArrayFromDictionary(dict).Get()));
+  // EmbedPDF: the mutable accessor, so an indirect /QuadPoints opens through
+  // the document's write door (a layer transaction copies it up).
+  return dict->GetMutableArrayFor("QuadPoints");
 }
 
 RetainPtr<CPDF_Array> AddQuadPointsArrayToDictionary(CPDF_Dictionary* dict) {

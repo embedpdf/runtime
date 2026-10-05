@@ -74,6 +74,7 @@ class CPDF_Form final : public CPDF_PageObjectHolder,
  private:
   // CPDF_PageObjectHolder:
   void EnsureMutableBackingObjectForDict() override;
+  void EnsureMutableBackingObjectForResources() override;
 
   void RebindFormStream(RetainPtr<CPDF_Stream> stream,
                         bool reset_parsed_content);
