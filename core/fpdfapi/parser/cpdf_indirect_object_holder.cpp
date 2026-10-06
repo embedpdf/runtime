@@ -146,6 +146,16 @@ uint32_t CPDF_IndirectObjectHolder::AddIndirectObject(
   return last_obj_num_;
 }
 
+bool CPDF_IndirectObjectHolder::CanAddIndirectObjectAt(uint32_t objnum) const {
+  return false;
+}
+
+bool CPDF_IndirectObjectHolder::AddIndirectObjectAt(
+    uint32_t objnum,
+    RetainPtr<CPDF_Object> pObj) {
+  return false;
+}
+
 bool CPDF_IndirectObjectHolder::ReplaceIndirectObjectIfHigherGeneration(
     uint32_t objnum,
     RetainPtr<CPDF_Object> pObj) {

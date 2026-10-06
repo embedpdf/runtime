@@ -2388,10 +2388,10 @@ TEST_F(FPDFAnnotEmbedderTest, WidgetRegisteredFontInstallsRealDrEntry) {
 
     ScopedFPDFWideString field_name = GetFPDFWideString(L"roboto_text");
     const uint32_t field = EPDFForm_CreateField(
-        document(), 4 /* EPDF_FORMFIELD_FAMILY_TEXT */, field_name.get());
+        document(), 4 /* EPDF_FORMFIELD_FAMILY_TEXT */, field_name.get(), 0);
     ASSERT_GT(field, 0u);
     ASSERT_TRUE(EPDFForm_AttachWidget(
-        document(), field, EPDFAnnot_GetObjectNumber(annot.get()), nullptr));
+        document(), field, EPDFAnnot_GetObjectNumber(annot.get()), nullptr, 0));
     ScopedFPDFWideString value = GetFPDFWideString(L"hello");
     ASSERT_TRUE(EPDFForm_SetTextValue(document(), field, value.get(), nullptr,
                                       0, nullptr));
@@ -3309,10 +3309,11 @@ TEST_F(FPDFAnnotEmbedderTest, FontEmbeddingPolicyGovernsRegisteredResources) {
         widget.get(), roboto_id, 12.0f, 0, 0, 0));
     ScopedFPDFWideString field_name = GetFPDFWideString(L"policy_text");
     const uint32_t field = EPDFForm_CreateField(
-        document(), 4 /* EPDF_FORMFIELD_FAMILY_TEXT */, field_name.get());
+        document(), 4 /* EPDF_FORMFIELD_FAMILY_TEXT */, field_name.get(), 0);
     ASSERT_GT(field, 0u);
-    ASSERT_TRUE(EPDFForm_AttachWidget(
-        document(), field, EPDFAnnot_GetObjectNumber(widget.get()), nullptr));
+    ASSERT_TRUE(EPDFForm_AttachWidget(document(), field,
+                                      EPDFAnnot_GetObjectNumber(widget.get()),
+                                      nullptr, 0));
     ScopedFPDFWideString value = GetFPDFWideString(L"hello");
     ASSERT_TRUE(EPDFForm_SetTextValue(document(), field, value.get(), nullptr,
                                       0, nullptr));
@@ -4880,10 +4881,10 @@ TEST_F(FPDFAnnotEmbedderTest, TextFieldKoreanUsesRegisteredDroidFallbackFont) {
 
     ScopedFPDFWideString field_name = GetFPDFWideString(L"korean_text");
     const uint32_t field = EPDFForm_CreateField(
-        document(), 4 /* EPDF_FORMFIELD_FAMILY_TEXT */, field_name.get());
+        document(), 4 /* EPDF_FORMFIELD_FAMILY_TEXT */, field_name.get(), 0);
     ASSERT_GT(field, 0u);
     ASSERT_TRUE(EPDFForm_AttachWidget(
-        document(), field, EPDFAnnot_GetObjectNumber(annot.get()), nullptr));
+        document(), field, EPDFAnnot_GetObjectNumber(annot.get()), nullptr, 0));
 
     ScopedFPDFWideString value = GetFPDFWideString(L"\xD55C\xAE00");
     ASSERT_TRUE(EPDFForm_SetTextValue(document(), field, value.get(), nullptr,
@@ -4917,11 +4918,12 @@ TEST_F(FPDFAnnotEmbedderTest, ComboBoxKoreanUsesRegisteredDroidFallbackFont) {
                                                18.0f, 0, 0, 0));
 
     ScopedFPDFWideString field_name = GetFPDFWideString(L"korean_combo");
-    const uint32_t field = EPDFForm_CreateField(
-        document(), 5 /* EPDF_FORMFIELD_FAMILY_COMBOBOX */, field_name.get());
+    const uint32_t field =
+        EPDFForm_CreateField(document(), 5 /* EPDF_FORMFIELD_FAMILY_COMBOBOX */,
+                             field_name.get(), 0);
     ASSERT_GT(field, 0u);
     ASSERT_TRUE(EPDFForm_AttachWidget(
-        document(), field, EPDFAnnot_GetObjectNumber(annot.get()), nullptr));
+        document(), field, EPDFAnnot_GetObjectNumber(annot.get()), nullptr, 0));
 
     ScopedFPDFWideString latin_option = GetFPDFWideString(L"Latin");
     ScopedFPDFWideString korean_option = GetFPDFWideString(L"\xD55C\xAE00");
@@ -4959,10 +4961,10 @@ TEST_F(FPDFAnnotEmbedderTest, ListBoxKoreanUsesRegisteredDroidFallbackFont) {
 
     ScopedFPDFWideString field_name = GetFPDFWideString(L"korean_list");
     const uint32_t field = EPDFForm_CreateField(
-        document(), 6 /* EPDF_FORMFIELD_FAMILY_LISTBOX */, field_name.get());
+        document(), 6 /* EPDF_FORMFIELD_FAMILY_LISTBOX */, field_name.get(), 0);
     ASSERT_GT(field, 0u);
     ASSERT_TRUE(EPDFForm_AttachWidget(
-        document(), field, EPDFAnnot_GetObjectNumber(annot.get()), nullptr));
+        document(), field, EPDFAnnot_GetObjectNumber(annot.get()), nullptr, 0));
 
     ScopedFPDFWideString latin_option = GetFPDFWideString(L"Latin");
     ScopedFPDFWideString korean_option = GetFPDFWideString(L"\xD55C\xAE00");
@@ -11047,7 +11049,7 @@ TEST_F(FPDFAnnotEmbedderTest, LayerRemoveAnnotRawRemovesOneTheLayerCreated) {
   const int initial = EPDFPage_GetAnnotCountRaw(doc.layer, 0);
   {
     ScopedFPDFAnnotation created(
-        EPDFPage_CreateAnnotRaw(doc.layer, 0, FPDF_ANNOT_SQUARE));
+        EPDFPage_CreateAnnotRaw(doc.layer, 0, FPDF_ANNOT_SQUARE, 0));
     ASSERT_TRUE(created);
   }
   ASSERT_EQ(initial + 1, EPDFPage_GetAnnotCountRaw(doc.layer, 0));

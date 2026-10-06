@@ -394,6 +394,49 @@ uint32_t CPDF_LayerDocument::AddIndirectObject(RetainPtr<CPDF_Object> object) {
   return objnum;
 }
 
+bool CPDF_LayerDocument::RaiseLastObjectNumber(uint32_t objnum) {
+  if (objnum > CPDF_Parser::kMaxObjectNumber) {
+    return false;
+  }
+  if (objnum > GetLastObjNum()) {
+    SetLastObjNum(objnum);
+  }
+  return true;
+}
+
+bool CPDF_LayerDocument::CanAddIndirectObjectAt(uint32_t objnum) const {
+  // Only inside a transaction: a number is placed in the open overlay, and
+  // an abort leaves it free again.
+  if (!transaction_) {
+    return false;
+  }
+  // Below or at the base's last number is the uploaded file's: never free.
+  // Above the last number was never handed out.
+  if (objnum <= base_->GetLastObjNum() || objnum > GetLastObjNum()) {
+    return false;
+  }
+  // A committed layer object, even one this transaction hid, and anything
+  // this transaction wrote, created or hid keep their number.
+  return !FindLocalIndirectObject(objnum) &&
+         !transaction_->touched.contains(objnum);
+}
+
+bool CPDF_LayerDocument::AddIndirectObjectAt(uint32_t objnum,
+                                             RetainPtr<CPDF_Object> object) {
+  if (!object || !CanAddIndirectObjectAt(objnum)) {
+    return false;
+  }
+  DCHECK_PDF_HOLDER_MUTABLE();
+  CHECK(!object->GetObjNum());
+  object->StampWriteGeneration(transaction_->generation);
+  object->SetObjNum(objnum);
+  ++transaction_->stats.objects_added;
+  transaction_->written[objnum] = std::move(object);
+  transaction_->touched.insert(objnum);
+  ++overlay_epoch_;
+  return true;
+}
+
 bool CPDF_LayerDocument::ReplaceIndirectObjectIfHigherGeneration(
     uint32_t objnum,
     RetainPtr<CPDF_Object> object) {

@@ -1830,20 +1830,25 @@ EPDFPage_GetAnnotIndexByObjectNumberRaw(FPDF_DOCUMENT doc,
 
 // Experimental EmbedPDF Extension API.
 // Create an annotation of |subtype| on a page without loading or parsing the
-// page: a new annotation dictionary, an object of its own, appended to the
-// page's /Annots. EPDFPage_CreateAnnot() on an unparsed page, for writing to
-// many pages at once.
+// page: a new annotation dictionary, an object of its own whose /P names the
+// page, appended to the page's /Annots. EPDFPage_CreateAnnot() on an unparsed
+// page, for writing to many pages at once.
 //
 //   doc        - handle to a document.
 //   page_index - the index of the page.
 //   subtype    - the subtype of the new annotation.
+//   objnum     - the object number the annotation gets, or 0 for the next
+//                free one. A number other than 0 needs a layer transaction
+//                and must be free (EPDFLayer_RaiseLastObjectNumber()).
 //
 // Returns a handle to the new annotation, which the caller closes with
-// FPDFPage_CloseAnnot(), or NULL on error.
+// FPDFPage_CloseAnnot(), or NULL on error, including a number that isn't
+// free.
 FPDF_EXPORT FPDF_ANNOTATION FPDF_CALLCONV
 EPDFPage_CreateAnnotRaw(FPDF_DOCUMENT doc,
                         int page_index,
-                        FPDF_ANNOTATION_SUBTYPE subtype);
+                        FPDF_ANNOTATION_SUBTYPE subtype,
+                        unsigned long objnum);
 
 // Experimental EmbedPDF Extension API.
 // Remove the annotation by index.
@@ -1968,7 +1973,7 @@ EPDFAnnot_SetStampOpacity(FPDF_ANNOTATION annot,
 
 // Experimental EmbedPDF Extension API.
 // Create an annotation. (the difference from FPDFPage_CreateAnnot is that it
-// creates an indirect object)
+// creates an indirect object, whose /P names the page)
 //
 //   page    - handle to a page.
 //   subtype - the subtype of the annotation.

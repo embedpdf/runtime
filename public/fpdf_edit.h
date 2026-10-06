@@ -119,6 +119,28 @@ FPDF_EXPORT FPDF_PAGE FPDF_CALLCONV FPDFPage_New(FPDF_DOCUMENT document,
                                                  double width,
                                                  double height);
 
+// Experimental EmbedPDF Extension API.
+// Insert a blank page without loading it: FPDFPage_New() for a caller that
+// only writes the page into the document.
+//
+//   document   - handle to document.
+//   page_index - the 0-based index the new page gets, from 0 to the page
+//                count (append). Out of range is refused, never clamped.
+//   width      - the page width in points.
+//   height     - the page height in points.
+//   objnum     - the object number the page gets, or 0 for the next free one.
+//                A number other than 0 needs a layer transaction and must be
+//                free (EPDFLayer_RaiseLastObjectNumber()).
+//
+// Returns TRUE when the page was inserted; FALSE otherwise, and then nothing
+// changed.
+FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV
+EPDFPage_InsertBlankRaw(FPDF_DOCUMENT document,
+                        int page_index,
+                        double width,
+                        double height,
+                        unsigned long objnum);
+
 // Delete the page at |page_index|.
 //
 //   document   - handle to document.

@@ -147,8 +147,22 @@ class CPDF_LayerDocument final : public CPDF_Document {
   RetainPtr<CPDF_Object> GetMutableIndirectObject(uint32_t objnum) override;
   void DeleteIndirectObject(uint32_t objnum) override;
 
+  // Object numbers chosen by the caller. A number can take a new object when
+  // it was handed out (at or below the last object number), is above the
+  // base's numbers, holds no committed layer object, and the open
+  // transaction hasn't touched it. Which numbers a caller may use is the
+  // engine's decision; this only refuses a number that is not free.
+  //
+  // Raises the last object number to |objnum| when it is lower, so neither
+  // the allocator nor a later load hands out a number below it. False above
+  // the parser's limit (CPDF_Parser::kMaxObjectNumber).
+  bool RaiseLastObjectNumber(uint32_t objnum);
+
   // CPDF_IndirectObjectHolder:
   uint32_t AddIndirectObject(RetainPtr<CPDF_Object> object) override;
+  bool CanAddIndirectObjectAt(uint32_t objnum) const override;
+  bool AddIndirectObjectAt(uint32_t objnum,
+                           RetainPtr<CPDF_Object> object) override;
   bool ReplaceIndirectObjectIfHigherGeneration(
       uint32_t objnum,
       RetainPtr<CPDF_Object> object) override;

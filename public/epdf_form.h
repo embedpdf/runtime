@@ -606,13 +606,19 @@ EPDFForm_Repair(FPDF_DOCUMENT document,
 //   full_name - dotted fully qualified name ("billing.name"). Missing
 //               non-terminal ancestors are created; a sibling name
 //               collision at any level fails.
+//   field_objnum - the object number the field dictionary gets, or 0 for
+//               the next free one. A number other than 0 needs a layer
+//               transaction and must be free
+//               (EPDFLayer_RaiseLastObjectNumber()); ancestors created on
+//               the way always get the next free numbers.
 //
 // Bootstraps /AcroForm (with /DR and /DA) when the document has none.
 // Returns the new field dictionary's object number, or 0 on failure.
 FPDF_EXPORT uint32_t FPDF_CALLCONV
 EPDFForm_CreateField(FPDF_DOCUMENT document,
                      int family,
-                     FPDF_WIDESTRING full_name);
+                     FPDF_WIDESTRING full_name,
+                     uint32_t field_objnum);
 
 // Experimental EmbedPDF Extension API.
 // Adopt an existing widget annotation as a view of |field_objnum|.
@@ -623,13 +629,17 @@ EPDFForm_CreateField(FPDF_DOCUMENT document,
 // NULL. Adoption wires /Parent + /Kids, seeds toggle /AP states and /AS,
 // and bakes the family-correct appearance stream. Adopting into a legacy
 // MERGED field first splits it (the field keeps its object number; the
-// previously merged widget becomes a new kid annotation - widget identity
-// changes, field identity never does).
+// previously merged widget becomes a new kid annotation, whose /P names its
+// page - widget identity changes, field identity never does). |split_objnum| is
+// the object number that new kid gets, or 0 for the next free one; it is used
+// only when the field is merged. A number other than 0 needs a layer
+// transaction and must be free (EPDFLayer_RaiseLastObjectNumber()).
 FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV
 EPDFForm_AttachWidget(FPDF_DOCUMENT document,
                       uint32_t field_objnum,
                       uint32_t widget_objnum,
-                      FPDF_BYTESTRING on_state);
+                      FPDF_BYTESTRING on_state,
+                      uint32_t split_objnum);
 
 // Experimental EmbedPDF Extension API.
 // Detach a widget from its field. The widget keeps its page placement and

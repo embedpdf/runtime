@@ -810,6 +810,19 @@ EPDFLayer_IsInTransaction(FPDF_DOCUMENT layer) {
 }
 
 FPDF_EXPORT unsigned long FPDF_CALLCONV
+EPDFLayer_GetLastObjectNumber(FPDF_DOCUMENT layer) {
+  CPDF_LayerDocument* layer_doc = LayerFromFPDFDocument(layer);
+  return layer_doc ? layer_doc->GetLastObjNum() : 0;
+}
+
+FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV
+EPDFLayer_RaiseLastObjectNumber(FPDF_DOCUMENT layer, unsigned long obj_num) {
+  CPDF_LayerDocument* layer_doc = LayerFromFPDFDocument(layer);
+  return layer_doc && obj_num <= std::numeric_limits<uint32_t>::max() &&
+         layer_doc->RaiseLastObjectNumber(static_cast<uint32_t>(obj_num));
+}
+
+FPDF_EXPORT unsigned long FPDF_CALLCONV
 EPDFLayer_GetPromotedObjectCount(FPDF_DOCUMENT layer) {
   CPDF_Document* document = CPDFDocumentFromFPDFDocument(layer);
   CPDF_LayerDocument* layer_doc = CPDF_LayerDocument::FromDocument(document);

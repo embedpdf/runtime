@@ -630,7 +630,8 @@ namespace {
 // Creates an unsigned signature field "name" with a widget on page 0.
 uint32_t CreateSignatureField(FPDF_DOCUMENT doc, FPDF_PAGE page, const wchar_t* name) {
   ScopedFPDFWideString wide = GetFPDFWideString(name);
-  const uint32_t field = EPDFForm_CreateField(doc, EPDF_FORMFIELD_FAMILY_SIGNATURE, wide.get());
+  const uint32_t field =
+      EPDFForm_CreateField(doc, EPDF_FORMFIELD_FAMILY_SIGNATURE, wide.get(), 0);
   if (field == 0) {
     ADD_FAILURE() << "EPDFForm_CreateField failed";
     return 0;
@@ -648,7 +649,7 @@ uint32_t CreateSignatureField(FPDF_DOCUMENT doc, FPDF_PAGE page, const wchar_t* 
     ADD_FAILURE() << "widget has no object number";
     return 0;
   }
-  if (!EPDFForm_AttachWidget(doc, field, widget_objnum, nullptr)) {
+  if (!EPDFForm_AttachWidget(doc, field, widget_objnum, nullptr, 0)) {
     ADD_FAILURE() << "EPDFForm_AttachWidget failed for widget " << widget_objnum;
     return 0;
   }
@@ -2208,8 +2209,8 @@ TEST_F(EPDFSignatureEmbedderTest, LayerEncryptedSigningPreservesExistingSignatur
   ASSERT_FALSE(first.empty());
   ASSERT_FALSE(second.empty());
   ScopedFPDFWideString name = GetFPDFWideString(L"third");
-  const uint32_t field =
-      EPDFForm_CreateField(candidate.get(), EPDF_FORMFIELD_FAMILY_SIGNATURE, name.get());
+  const uint32_t field = EPDFForm_CreateField(
+      candidate.get(), EPDF_FORMFIELD_FAMILY_SIGNATURE, name.get(), 0);
   ASSERT_NE(0u, field);
   EPDF_SIG_PREPARE opts = DefaultPrepare();
   opts.subfilter = EPDF_SIG_SUBFILTER_ADBE_PKCS7_DETACHED;

@@ -42,6 +42,17 @@ class CPDF_IndirectObjectHolder {
     return obj;
   }
 
+  // EmbedPDF: creates a new object at |objnum| (see AddIndirectObjectAt()),
+  // or returns null when that number can't take one.
+  template <typename T, typename... Args>
+  RetainPtr<T> NewIndirectAt(uint32_t objnum, Args&&... args) {
+    auto obj = New<T>(std::forward<Args>(args)...);
+    if (!AddIndirectObjectAt(objnum, obj)) {
+      return nullptr;
+    }
+    return obj;
+  }
+
   // Creates and adds a new object not retained by the indirect object holder,
   // but which can intern strings from it. We have a special cast to handle
   // objects that can intern strings from our ByteStringPool.
@@ -61,6 +72,15 @@ class CPDF_IndirectObjectHolder {
   // EmbedPDF: virtual, so a layer document can route a new object into an
   // open transaction instead of its committed objects.
   virtual uint32_t AddIndirectObject(RetainPtr<CPDF_Object> pObj);
+
+  // EmbedPDF: whether a new object can be stored as |objnum|, a number handed
+  // out earlier that holds nothing. Only a layer document can do that (see
+  // CPDF_LayerDocument::CanAddIndirectObjectAt()); false everywhere else.
+  virtual bool CanAddIndirectObjectAt(uint32_t objnum) const;
+  // EmbedPDF: stores |pObj| as object |objnum| when CanAddIndirectObjectAt()
+  // allows it, without moving the last object number. Returns whether it did.
+  virtual bool AddIndirectObjectAt(uint32_t objnum,
+                                   RetainPtr<CPDF_Object> pObj);
 
   // If higher generation number, retains |pObj| and returns true.
   // EmbedPDF: virtual for the same reason as AddIndirectObject().

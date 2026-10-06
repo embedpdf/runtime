@@ -585,8 +585,10 @@ int CheckPDFiumCApi() {
   CHK(EPDF_SaveDocumentToOwnedBuffer);
   CHK(EPDF_SaveDocumentToOwnedBufferWithVersion);
   CHK(EPDFLayer_GetBaseDocument);
+  CHK(EPDFLayer_GetLastObjectNumber);
   CHK(EPDFLayer_GetPromotedObjectCount);
   CHK(EPDFLayer_IsObjectPromoted);
+  CHK(EPDFLayer_RaiseLastObjectNumber);
   CHK(EPDFLayer_OpenLayer);
   CHK(EPDFLayer_OpenLayerArtifact);
   CHK(EPDFLayer_SaveDelta);
@@ -628,6 +630,7 @@ int CheckPDFiumCApi() {
   CHK(EPDFPage_GetAnnotIndexByNameRaw);
   CHK(EPDFPage_GetAnnotIndexByObjectNumberRaw);
   CHK(EPDFPage_MoveAnnotsRaw);
+  CHK(EPDFPage_InsertBlankRaw);
   CHK(EPDFDest_CreateXYZByObjectNumber);
   CHK(EPDFDest_CreateViewByObjectNumber);
   CHK(EPDFAnnot_GetStampDrawing);

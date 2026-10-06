@@ -793,6 +793,28 @@ EPDFLayer_AbortTransaction(FPDF_DOCUMENT layer);
 FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV
 EPDFLayer_IsInTransaction(FPDF_DOCUMENT layer);
 
+// Function: EPDFLayer_GetLastObjectNumber
+//          The last object number |layer| has handed out: new objects get
+//          numbers above it. Numbers a transaction handed out count even
+//          after it aborted.
+// Return value:
+//          The number, or 0 for a document that is not a layer.
+FPDF_EXPORT unsigned long FPDF_CALLCONV
+EPDFLayer_GetLastObjectNumber(FPDF_DOCUMENT layer);
+
+// Function: EPDFLayer_RaiseLastObjectNumber
+//          Raise |layer|'s last object number to |obj_num| when it is lower,
+//          so new objects get numbers above it. The numbers in between are
+//          handed out: a caller can create objects at them (the |objnum|
+//          parameter of EPDFPage_CreateAnnotRaw(), EPDFPage_InsertBlankRaw(),
+//          EPDFForm_CreateField() and EPDFForm_AttachWidget()). Never lowers
+//          the number.
+// Return value:
+//          TRUE on success; FALSE for a document that is not a layer, or a
+//          number above the parser's limit.
+FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV
+EPDFLayer_RaiseLastObjectNumber(FPDF_DOCUMENT layer, unsigned long obj_num);
+
 // Function: EPDFLayer_GetPromotedObjectCount
 //          Return the number of objects currently stored in the layer overlay.
 //          Committed objects only: an open transaction's copies and new

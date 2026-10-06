@@ -12,6 +12,7 @@
 #include <utility>
 #include <vector>
 
+#include "constants/annotation_common.h"
 #include "constants/annotation_flags.h"
 #include "constants/form_fields.h"
 #include "constants/form_flags.h"
@@ -2852,11 +2853,16 @@ void BakeWidgetAppearance(CPDF_Document* doc,
 FPDF_EXPORT uint32_t FPDF_CALLCONV
 EPDFForm_CreateField(FPDF_DOCUMENT document,
                      int family,
-                     FPDF_WIDESTRING full_name) {
+                     FPDF_WIDESTRING full_name,
+                     uint32_t field_objnum) {
   ScopedFPDFDocumentView document_view(document);
   CPDF_Document* doc = document_view.Get();
   AuthorFamily author;
   if (!doc || !doc->GetRoot() || !AuthorFamilyFromCode(family, &author)) {
+    return 0;
+  }
+  // Checked before anything is written: a refused number changes nothing.
+  if (field_objnum && !doc->CanAddIndirectObjectAt(field_objnum)) {
     return 0;
   }
   const WideString name =
@@ -2922,14 +2928,21 @@ EPDFForm_CreateField(FPDF_DOCUMENT document,
   }
 
   for (size_t i = existing_path.size(); i < segments.size(); ++i) {
-    auto node = doc->NewIndirect<CPDF_Dictionary>();
+    const bool terminal = i + 1 == segments.size();
+    // Only the field itself takes the caller's number; the parent nodes
+    // created on the way get the next free ones.
+    auto node = terminal && field_objnum
+                    ? doc->NewIndirectAt<CPDF_Dictionary>(field_objnum)
+                    : doc->NewIndirect<CPDF_Dictionary>();
+    if (!node) {
+      return 0;
+    }
     node->SetNewFor<CPDF_String>(pdfium::form_fields::kT,
                                  segments[i].AsStringView());
     if (parent_field) {
       node->SetNewFor<CPDF_Reference>(pdfium::form_fields::kParent, doc,
                                       parent_field->GetObjNum());
     }
-    const bool terminal = i + 1 == segments.size();
     if (terminal) {
       node->SetNewFor<CPDF_Name>(pdfium::form_fields::kFT, author.field_type);
       if (author.flags != 0) {
@@ -2960,7 +2973,8 @@ FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV
 EPDFForm_AttachWidget(FPDF_DOCUMENT document,
                       uint32_t field_objnum,
                       uint32_t widget_objnum,
-                      FPDF_BYTESTRING on_state) {
+                      FPDF_BYTESTRING on_state,
+                      uint32_t split_objnum) {
   ScopedFPDFDocumentView document_view(document);
   CPDF_Document* doc = document_view.Get();
   if (!doc || field_objnum == 0 || widget_objnum == 0 ||
@@ -2988,6 +3002,12 @@ EPDFForm_AttachWidget(FPDF_DOCUMENT document,
       widget->KeyExist(pdfium::form_fields::kFT)) {
     return false;  // must be an unattached, non-merged widget annotation
   }
+  // A merged field splits below: the number its widget half moves to must be
+  // free before anything is written.
+  if (split_objnum && field->GetNameFor("Subtype") == "Widget" &&
+      !doc->CanAddIndirectObjectAt(split_objnum)) {
+    return false;
+  }
 
   // ---- Apply. ----
   RetainPtr<CPDF_Dictionary> mutable_field =
@@ -2997,10 +3017,16 @@ EPDFForm_AttachWidget(FPDF_DOCUMENT document,
   }
 
   // Legacy merged field: split it first. The field keeps its object number;
-  // the previously merged widget half moves into a new kid annotation.
+  // the previously merged widget half moves into a new kid annotation, at
+  // |split_objnum| when the caller names one.
   if (mutable_field->GetNameFor("Subtype") == "Widget") {
     const uint32_t page_objnum = FindPageContainingAnnot(doc, field_objnum);
-    auto split_widget = doc->NewIndirect<CPDF_Dictionary>();
+    auto split_widget = split_objnum
+                            ? doc->NewIndirectAt<CPDF_Dictionary>(split_objnum)
+                            : doc->NewIndirect<CPDF_Dictionary>();
+    if (!split_widget) {
+      return false;
+    }
     for (const char* key : kWidgetPlaneKeys) {
       RetainPtr<CPDF_Object> value = mutable_field->GetMutableObjectFor(key);
       if (!value) {
@@ -3013,6 +3039,10 @@ EPDFForm_AttachWidget(FPDF_DOCUMENT document,
     split_widget->SetNewFor<CPDF_Name>("Subtype", "Widget");
     split_widget->SetNewFor<CPDF_Reference>(pdfium::form_fields::kParent, doc,
                                             field_objnum);
+    if (page_objnum != 0) {
+      split_widget->SetNewFor<CPDF_Reference>(pdfium::annotation::kP, doc,
+                                              page_objnum);
+    }
     RetainPtr<CPDF_Array> kids = GetMutableArrayMember(
         doc, mutable_field.Get(), pdfium::form_fields::kKids);
     if (!kids) {

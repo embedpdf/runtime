@@ -9,11 +9,12 @@
 #include <array>
 #include <cmath>
 #include <cstdint>
+#include <limits>
 #include <memory>
 #include <optional>
+#include <set>
 #include <sstream>
 #include <utility>
-#include <set>
 #include <vector>
 
 #include "constants/annotation_common.h"
@@ -572,18 +573,6 @@ void RemoveEmbedMetadataIfEmpty(RetainPtr<CPDF_Dictionary> annot_dict) {
   if (EmbedMetadataIsEmpty(metadata.Get())) {
     annot_dict->RemoveFor(kEmbedMetadataKey);
   }
-}
-
-float GetEmbedMetadataFloatFor(const CPDF_Dictionary* annot_dict,
-                               ByteStringView key) {
-  RetainPtr<const CPDF_Dictionary> metadata = GetEmbedMetadataDict(annot_dict);
-  return metadata ? metadata->GetFloatFor(key) : 0.0f;
-}
-
-CFX_FloatRect GetEmbedMetadataRectFor(const CPDF_Dictionary* annot_dict,
-                                      ByteStringView key) {
-  RetainPtr<const CPDF_Dictionary> metadata = GetEmbedMetadataDict(annot_dict);
-  return metadata ? metadata->GetRectFor(key) : CFX_FloatRect();
 }
 
 // Promotes page |page_index| of |pdf| (see EPDFPage_PromoteInlineAnnotsRaw()):
@@ -4292,10 +4281,17 @@ EPDFPage_GetAnnotRaw(FPDF_DOCUMENT doc, int page_index, int index) {
 FPDF_EXPORT FPDF_ANNOTATION FPDF_CALLCONV
 EPDFPage_CreateAnnotRaw(FPDF_DOCUMENT doc,
                         int page_index,
-                        FPDF_ANNOTATION_SUBTYPE subtype) {
+                        FPDF_ANNOTATION_SUBTYPE subtype,
+                        unsigned long objnum) {
   CPDF_Document* pdf = CPDFDocumentFromFPDFDocument(doc);
   if (!pdf || page_index < 0 || page_index >= pdf->GetPageCount() ||
-      !FPDFAnnot_IsSupportedSubtype(subtype)) {
+      !FPDFAnnot_IsSupportedSubtype(subtype) ||
+      objnum > std::numeric_limits<uint32_t>::max()) {
+    return nullptr;
+  }
+  const uint32_t number = static_cast<uint32_t>(objnum);
+  // Checked before anything is written: a refused number changes nothing.
+  if (number && !pdf->CanAddIndirectObjectAt(number)) {
     return nullptr;
   }
   CPDF_DocumentViewScope document_view(pdf);
@@ -4307,11 +4303,20 @@ EPDFPage_CreateAnnotRaw(FPDF_DOCUMENT doc,
   // Built from the dictionary alone: its content is never parsed.
   auto page = pdfium::MakeRetain<CPDF_Page>(pdf, page_dict);
 
-  RetainPtr<CPDF_Dictionary> dict = pdf->NewIndirect<CPDF_Dictionary>();
+  RetainPtr<CPDF_Dictionary> dict =
+      number ? pdf->NewIndirectAt<CPDF_Dictionary>(number)
+             : pdf->NewIndirect<CPDF_Dictionary>();
+  if (!dict) {
+    return nullptr;
+  }
   dict->SetNewFor<CPDF_Name>(pdfium::annotation::kType, "Annot");
   dict->SetNewFor<CPDF_Name>(pdfium::annotation::kSubtype,
                              CPDF_Annot::AnnotSubtypeToString(
                                  static_cast<CPDF_Annot::Subtype>(subtype)));
+  if (page_dict->GetObjNum()) {
+    dict->SetNewFor<CPDF_Reference>(pdfium::annotation::kP, pdf,
+                                    page_dict->GetObjNum());
+  }
   RetainPtr<CPDF_Array> annots = page->GetOrCreateAnnotsArray();
   annots->AppendNew<CPDF_Reference>(pdf, dict->GetObjNum());
   const int index = fxcrt::CollectionSize<int>(*annots) - 1;
@@ -4659,6 +4664,10 @@ EPDFPage_CreateAnnot(FPDF_PAGE page, FPDF_ANNOTATION_SUBTYPE subtype) {
   dict->SetNewFor<CPDF_Name>(pdfium::annotation::kSubtype,
                              CPDF_Annot::AnnotSubtypeToString(
                                  static_cast<CPDF_Annot::Subtype>(subtype)));
+  // ISO 32000-2 table 166: /P, the page the annotation belongs to.
+  if (const uint32_t page_objnum = pPage->GetDict()->GetObjNum()) {
+    dict->SetNewFor<CPDF_Reference>(pdfium::annotation::kP, doc, page_objnum);
+  }
 
   // Append a REFERENCE to /Annots instead of the direct dict
   RetainPtr<CPDF_Array> annots = pPage->GetOrCreateAnnotsArray();

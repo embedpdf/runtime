@@ -13,6 +13,7 @@
 #include "public/cpp/fpdf_scopers.h"
 #include "public/fpdf_annot.h"
 #include "public/fpdf_edit.h"
+#include "public/fpdf_ppo.h"
 #include "public/fpdfview.h"
 #include "testing/embedder_test.h"
 #include "testing/fx_string_testhelpers.h"
@@ -29,6 +30,19 @@ void SetName(FPDF_ANNOTATION annot, const wchar_t* nm) {
 int IndexByName(FPDF_DOCUMENT doc, int page_index, const wchar_t* nm) {
   ScopedFPDFWideString text = GetFPDFWideString(nm);
   return EPDFPage_GetAnnotIndexByNameRaw(doc, page_index, text.get());
+}
+
+// The object number of the page that the first annotation on page
+// |page_index| names as its own (/P), or 0 when it names none.
+uint32_t PageNamedByFirstAnnot(FPDF_DOCUMENT doc, int page_index) {
+  RetainPtr<const CPDF_Dictionary> page =
+      CPDFDocumentFromFPDFDocument(doc)->GetPageDictionary(page_index);
+  RetainPtr<const CPDF_Array> annots = page->GetArrayFor("Annots");
+  RetainPtr<const CPDF_Dictionary> annot =
+      annots ? annots->GetDictAt(0) : nullptr;
+  RetainPtr<const CPDF_Dictionary> named =
+      annot ? annot->GetDictFor("P") : nullptr;
+  return named ? named->GetObjNum() : 0;
 }
 
 }  // namespace
@@ -63,7 +77,7 @@ TEST_F(EPDFAnnotRawEmbedderTest, FindsAnAnnotationByNameOnItsPage) {
 
   // A name given to an annotation made without loading its page is found.
   ScopedFPDFAnnotation raw(
-      EPDFPage_CreateAnnotRaw(doc.get(), 1, FPDF_ANNOT_TEXT));
+      EPDFPage_CreateAnnotRaw(doc.get(), 1, FPDF_ANNOT_TEXT, 0));
   ASSERT_TRUE(raw);
   SetName(raw.get(), L"first");
   EXPECT_EQ(0, IndexByName(doc.get(), 1, L"first"));
@@ -100,7 +114,7 @@ TEST_F(EPDFAnnotRawEmbedderTest, FindsAnAnnotationByObjectNumber) {
   unsigned int numbers[2] = {};
   for (unsigned int& number : numbers) {
     ScopedFPDFAnnotation annot(
-        EPDFPage_CreateAnnotRaw(doc.get(), 0, FPDF_ANNOT_SQUARE));
+        EPDFPage_CreateAnnotRaw(doc.get(), 0, FPDF_ANNOT_SQUARE, 0));
     ASSERT_TRUE(annot);
     number = static_cast<unsigned int>(EPDFAnnot_GetObjectNumber(annot.get()));
     ASSERT_NE(0u, number);
@@ -128,4 +142,40 @@ TEST_F(EPDFAnnotRawEmbedderTest, FindsNothingWhereThereIsNothing) {
   EXPECT_EQ(-1, IndexByName(doc.get(), -1, L"first"));
   EXPECT_EQ(-1, IndexByName(nullptr, 0, L"first"));
   EXPECT_EQ(-1, EPDFPage_GetAnnotIndexByNameRaw(doc.get(), 0, nullptr));
+}
+
+// A new annotation names its page (/P), whichever call made it; a copy of the
+// page names the copy.
+TEST_F(EPDFAnnotRawEmbedderTest, NewAnnotationsNameTheirPage) {
+  ScopedFPDFDocument doc(FPDF_CreateNewDocument());
+  ASSERT_TRUE(doc);
+  for (int index : {0, 1}) {
+    ScopedFPDFPage page(FPDFPage_New(doc.get(), index, 612, 792));
+    ASSERT_TRUE(page);
+  }
+  {
+    ScopedFPDFPage page(FPDF_LoadPage(doc.get(), 0));
+    ScopedFPDFAnnotation annot(
+        EPDFPage_CreateAnnot(page.get(), FPDF_ANNOT_SQUARE));
+    ASSERT_TRUE(annot);
+  }
+  {
+    ScopedFPDFAnnotation annot(
+        EPDFPage_CreateAnnotRaw(doc.get(), 1, FPDF_ANNOT_TEXT, 0));
+    ASSERT_TRUE(annot);
+  }
+  EXPECT_EQ(EPDFDoc_GetPageObjectNumberByIndex(doc.get(), 0),
+            PageNamedByFirstAnnot(doc.get(), 0));
+  EXPECT_EQ(EPDFDoc_GetPageObjectNumberByIndex(doc.get(), 1),
+            PageNamedByFirstAnnot(doc.get(), 1));
+
+  ScopedFPDFDocument copy(FPDF_CreateNewDocument());
+  ASSERT_TRUE(copy);
+  const int second_page[] = {1};
+  ASSERT_TRUE(
+      FPDF_ImportPagesByIndex(copy.get(), doc.get(), second_page, 1, 0));
+  const unsigned int copied_page =
+      EPDFDoc_GetPageObjectNumberByIndex(copy.get(), 0);
+  ASSERT_NE(0u, copied_page);
+  EXPECT_EQ(copied_page, PageNamedByFirstAnnot(copy.get(), 0));
 }

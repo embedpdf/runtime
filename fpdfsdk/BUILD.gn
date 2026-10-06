@@ -190,6 +190,9 @@ pdfium_embeddertest_source_set("embeddertests") {
     # EmbedPDF: covers annotation identity: handle lifetimes, promotion and
     # the birth list (EPDFPage_PromoteInlineAnnotsRaw).
     "epdf_annot_identity_embeddertest.cpp",
+    # EmbedPDF: covers objects at numbers the caller chooses
+    # (EPDFLayer_RaiseLastObjectNumber).
+    "epdf_object_number_embeddertest.cpp",
     # EmbedPDF: covers text bounds that don't depend on what was rendered.
     "epdf_text_bounds_embeddertest.cpp",
     # EmbedPDF: covers what a parsed page costs and whether it is current

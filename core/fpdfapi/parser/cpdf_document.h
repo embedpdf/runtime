@@ -281,6 +281,10 @@ class CPDF_Document : public Observable,
   void LoadPages();
   void CreateNewDoc();
   RetainPtr<CPDF_Dictionary> CreateNewPage(int iPage);
+  // EmbedPDF: CreateNewPage() with the page dictionary at |objnum| (see
+  // CPDF_IndirectObjectHolder::AddIndirectObjectAt()). Null when the number
+  // can't take it or the page can't be inserted; nothing changes then.
+  RetainPtr<CPDF_Dictionary> CreateNewPageAt(int iPage, uint32_t objnum);
 
   void IncrementParsedPageCount() { ++parsed_page_count_; }
   uint32_t GetParsedPageCountForTesting() { return parsed_page_count_; }

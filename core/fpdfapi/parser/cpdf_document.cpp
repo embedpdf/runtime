@@ -670,6 +670,20 @@ RetainPtr<CPDF_Dictionary> CPDF_Document::CreateNewPage(int iPage) {
   return dict;
 }
 
+RetainPtr<CPDF_Dictionary> CPDF_Document::CreateNewPageAt(int iPage,
+                                                          uint32_t objnum) {
+  auto dict = NewIndirectAt<CPDF_Dictionary>(objnum);
+  if (!dict) {
+    return nullptr;
+  }
+  dict->SetNewFor<CPDF_Name>("Type", "Page");
+  if (!InsertNewPage(iPage, dict)) {
+    DeleteIndirectObject(objnum);
+    return nullptr;
+  }
+  return dict;
+}
+
 bool CPDF_Document::InsertDeletePDFPage(
     RetainPtr<CPDF_Dictionary> pages_dict,
     int pages_to_go,

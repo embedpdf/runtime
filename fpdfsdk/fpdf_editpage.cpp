@@ -7,6 +7,7 @@
 #include "public/fpdf_edit.h"
 
 #include <algorithm>
+#include <limits>
 #include <memory>
 #include <utility>
 #include <vector>
@@ -286,6 +287,31 @@ FPDF_EXPORT FPDF_PAGE FPDF_CALLCONV FPDFPage_New(FPDF_DOCUMENT document,
   pPage->ParseContent();
 
   return FPDFPageFromIPDFPage(pPage.Leak());  // Caller takes ownership.
+}
+
+FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV
+EPDFPage_InsertBlankRaw(FPDF_DOCUMENT document,
+                        int page_index,
+                        double width,
+                        double height,
+                        unsigned long objnum) {
+  CPDF_Document* doc = CPDFDocumentFromFPDFDocument(document);
+  if (!doc || page_index < 0 || page_index > doc->GetPageCount() ||
+      objnum > std::numeric_limits<uint32_t>::max()) {
+    return false;
+  }
+  const uint32_t number = static_cast<uint32_t>(objnum);
+  RetainPtr<CPDF_Dictionary> page_dict =
+      number ? doc->CreateNewPageAt(page_index, number)
+             : doc->CreateNewPage(page_index);
+  if (!page_dict) {
+    return false;
+  }
+  page_dict->SetRectFor(pdfium::page_object::kMediaBox,
+                        CFX_FloatRect(0, 0, width, height));
+  page_dict->SetNewFor<CPDF_Number>(pdfium::page_object::kRotate, 0);
+  page_dict->SetNewFor<CPDF_Dictionary>(pdfium::page_object::kResources);
+  return true;
 }
 
 FPDF_EXPORT int FPDF_CALLCONV FPDFPage_GetRotation(FPDF_PAGE page) {

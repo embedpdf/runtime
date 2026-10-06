@@ -1556,7 +1556,7 @@ TEST_F(EPDFFormEmbedderTest, CreateUnplacedFieldBootstrapsAcroForm) {
   ASSERT_TRUE(OpenDocument("hello_world.pdf"));
 
   const uint32_t field = EPDFForm_CreateField(
-      document(), 4 /* text */, GetFPDFWideString(L"billing.name").get());
+      document(), 4 /* text */, GetFPDFWideString(L"billing.name").get(), 0);
   ASSERT_GT(field, 0u);
 
   EPDF_FORM_MODEL model = EPDFForm_LoadModel(document());
@@ -1570,10 +1570,11 @@ TEST_F(EPDFFormEmbedderTest, CreateUnplacedFieldBootstrapsAcroForm) {
   EPDFForm_CloseModel(model);
 
   // Sibling collisions fail without touching the tree.
+  EXPECT_EQ(0u,
+            EPDFForm_CreateField(document(), 4,
+                                 GetFPDFWideString(L"billing.name").get(), 0));
   EXPECT_EQ(0u, EPDFForm_CreateField(document(), 4,
-                                     GetFPDFWideString(L"billing.name").get()));
-  EXPECT_EQ(0u, EPDFForm_CreateField(document(), 4,
-                                     GetFPDFWideString(L"billing").get()));
+                                     GetFPDFWideString(L"billing").get(), 0));
 
   model = EPDFForm_LoadModel(document());
   ASSERT_TRUE(model);
@@ -1587,19 +1588,19 @@ TEST_F(EPDFFormEmbedderTest, AttachWidgetsFormsARadioGroup) {
   ASSERT_TRUE(page);
 
   const uint32_t field = EPDFForm_CreateField(
-      document(), 3 /* radio */, GetFPDFWideString(L"gender").get());
+      document(), 3 /* radio */, GetFPDFWideString(L"gender").get(), 0);
   ASSERT_GT(field, 0u);
   const uint32_t w1 = CreateWidgetAnnot(page, 20, 200, 40, 220);
   const uint32_t w2 = CreateWidgetAnnot(page, 60, 200, 80, 220);
   ASSERT_GT(w1, 0u);
   ASSERT_GT(w2, 0u);
 
-  ASSERT_TRUE(EPDFForm_AttachWidget(document(), field, w1, "male"));
-  ASSERT_TRUE(EPDFForm_AttachWidget(document(), field, w2, "female"));
+  ASSERT_TRUE(EPDFForm_AttachWidget(document(), field, w1, "male", 0));
+  ASSERT_TRUE(EPDFForm_AttachWidget(document(), field, w2, "female", 0));
   // Re-attaching an already attached widget fails.
-  EXPECT_FALSE(EPDFForm_AttachWidget(document(), field, w1, "male"));
+  EXPECT_FALSE(EPDFForm_AttachWidget(document(), field, w1, "male", 0));
   // Toggles demand a usable on-state name.
-  EXPECT_FALSE(EPDFForm_AttachWidget(document(), field, w1, nullptr));
+  EXPECT_FALSE(EPDFForm_AttachWidget(document(), field, w1, nullptr, 0));
 
   EPDF_FORM_MODEL model = EPDFForm_LoadModel(document());
   ASSERT_TRUE(model);
@@ -1631,7 +1632,7 @@ TEST_F(EPDFFormEmbedderTest, AttachToLegacyMergedFieldKeepsFieldId) {
   // maxlen_text (object 4) is a merged field/widget.
   const uint32_t widget = CreateWidgetAnnot(page, 20, 20, 280, 36);
   ASSERT_GT(widget, 0u);
-  ASSERT_TRUE(EPDFForm_AttachWidget(document(), 4u, widget, nullptr));
+  ASSERT_TRUE(EPDFForm_AttachWidget(document(), 4u, widget, nullptr, 0));
 
   EPDF_FORM_MODEL model = EPDFForm_LoadModel(document());
   ASSERT_TRUE(model);
@@ -1659,9 +1660,9 @@ TEST_F(EPDFFormEmbedderTest, DetachWidgetKeepsFieldVisible) {
   ASSERT_TRUE(page);
 
   const uint32_t field =
-      EPDFForm_CreateField(document(), 4, GetFPDFWideString(L"note").get());
+      EPDFForm_CreateField(document(), 4, GetFPDFWideString(L"note").get(), 0);
   const uint32_t widget = CreateWidgetAnnot(page, 20, 200, 200, 220);
-  ASSERT_TRUE(EPDFForm_AttachWidget(document(), field, widget, nullptr));
+  ASSERT_TRUE(EPDFForm_AttachWidget(document(), field, widget, nullptr, 0));
   ASSERT_TRUE(EPDFForm_DetachWidget(document(), field, widget));
   // Detaching twice fails (no longer attached).
   EXPECT_FALSE(EPDFForm_DetachWidget(document(), field, widget));
@@ -1683,9 +1684,9 @@ TEST_F(EPDFFormEmbedderTest, DeleteFieldDetachesAndPrunesAncestors) {
   ASSERT_TRUE(page);
 
   const uint32_t field = EPDFForm_CreateField(
-      document(), 4, GetFPDFWideString(L"billing.name").get());
+      document(), 4, GetFPDFWideString(L"billing.name").get(), 0);
   const uint32_t widget = CreateWidgetAnnot(page, 20, 200, 200, 220);
-  ASSERT_TRUE(EPDFForm_AttachWidget(document(), field, widget, nullptr));
+  ASSERT_TRUE(EPDFForm_AttachWidget(document(), field, widget, nullptr, 0));
 
   uint32_t detached[4] = {};
   unsigned long detached_count = 0;
@@ -1873,19 +1874,19 @@ TEST_F(EPDFFormEmbedderTest, AuthoringOnLayerIsDurable) {
   ASSERT_TRUE(OpenLayer("hello_world.pdf", &doc));
 
   const uint32_t field = EPDFForm_CreateField(
-      doc.layer, 4, GetFPDFWideString(L"layer_field").get());
+      doc.layer, 4, GetFPDFWideString(L"layer_field").get(), 0);
   ASSERT_GT(field, 0u);
   FPDF_PAGE page = FPDF_LoadPage(doc.layer, 0);
   ASSERT_TRUE(page);
   const uint32_t widget = CreateWidgetAnnot(page, 20, 200, 200, 220);
   ASSERT_GT(widget, 0u);
-  ASSERT_TRUE(EPDFForm_AttachWidget(doc.layer, field, widget, nullptr));
+  ASSERT_TRUE(EPDFForm_AttachWidget(doc.layer, field, widget, nullptr, 0));
   FPDF_ClosePage(page);
 
   // Duplicate create fails without growing the delta.
   const unsigned long promoted = EPDFLayer_GetPromotedObjectCount(doc.layer);
-  EXPECT_EQ(0u, EPDFForm_CreateField(doc.layer, 4,
-                                     GetFPDFWideString(L"layer_field").get()));
+  EXPECT_EQ(0u, EPDFForm_CreateField(
+                    doc.layer, 4, GetFPDFWideString(L"layer_field").get(), 0));
   EXPECT_EQ(promoted, EPDFLayer_GetPromotedObjectCount(doc.layer));
 
   ClearString();
