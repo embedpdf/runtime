@@ -5999,34 +5999,24 @@ EPDFPage_RemoveAnnotByObjectNumber(FPDF_PAGE page, unsigned int obj_num) {
                             *index);
 }
 
-FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV EPDFPage_MoveAnnots(FPDF_PAGE page,
-                                                        const int* from_indices,
-                                                        int from_indices_len,
-                                                        int to_index) {
-  if (!page || !from_indices || from_indices_len <= 0) {
+namespace {
+
+// Whether moving the entries at |from_indices| of a /Annots array of |count|
+// entries to |to_index| is a request EPDFPage_MoveAnnots() takes: every
+// source in range and named once, the destination in the post-removal index
+// space. Duplicate detection is O(N^2), but N is a selection's size.
+bool IsValidAnnotMove(size_t count,
+                      const int* from_indices,
+                      int from_indices_len,
+                      int to_index) {
+  if (!from_indices || from_indices_len <= 0) {
     return false;
   }
-
-  CPDF_Page* pPage = CPDFPageFromFPDFPage(page);
-  if (!pPage) {
-    return false;
-  }
-
-  RetainPtr<CPDF_Array> annots = pPage->GetMutableAnnotsArray();
-  if (!annots) {
-    return false;
-  }
-
-  const int count = static_cast<int>(annots->size());
-
-  // 1. Validate every source index is in range and unique. Duplicate
-  //    detection is O(N^2) but N is small (selection size); avoiding
-  //    a hash table keeps the dependency surface minimal.
   std::vector<int> seen;
   seen.reserve(static_cast<size_t>(from_indices_len));
   for (int i = 0; i < from_indices_len; ++i) {
-    int idx = from_indices[i];
-    if (idx < 0 || idx >= count) {
+    const int idx = from_indices[i];
+    if (idx < 0 || static_cast<size_t>(idx) >= count) {
       return false;
     }
     for (int s : seen) {
@@ -6036,14 +6026,19 @@ FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV EPDFPage_MoveAnnots(FPDF_PAGE page,
     }
     seen.push_back(idx);
   }
-  const int post_count = count - from_indices_len;
-  if (to_index < 0 || to_index > post_count) {
-    return false;
-  }
+  const int post_count = static_cast<int>(count) - from_indices_len;
+  return to_index >= 0 && to_index <= post_count;
+}
 
-  // 2. Detach each entry in caller order. RetainPtr keeps the underlying
-  //    CPDF_Object alive across the subsequent RemoveAt calls so the
-  //    indirect annotation object survives the array relocation.
+// Moves the entries at |from_indices| of |annots| to |to_index|, a request
+// IsValidAnnotMove() took. The entries are relocated, never destroyed, so
+// each annotation keeps its object number and /NM.
+void MoveAnnotEntries(CPDF_Array* annots,
+                      const int* from_indices,
+                      int from_indices_len,
+                      int to_index) {
+  // Detach each entry in caller order. The RetainPtrs keep each object alive
+  // across the RemoveAt calls.
   std::vector<RetainPtr<CPDF_Object>> entries;
   entries.reserve(static_cast<size_t>(from_indices_len));
   for (int i = 0; i < from_indices_len; ++i) {
@@ -6051,20 +6046,70 @@ FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV EPDFPage_MoveAnnots(FPDF_PAGE page,
         annots->GetMutableObjectAt(static_cast<size_t>(from_indices[i])));
   }
 
-  // 3. Remove in descending index order so earlier indices stay valid
-  //    during the loop. We do NOT call DeleteIndirectObject — this is a
-  //    relocation, not a destruction.
-  std::vector<int> sorted_desc(seen);
+  // Remove in descending index order so the indices still to go hold.
+  std::vector<int> sorted_desc(from_indices, from_indices + from_indices_len);
   std::sort(sorted_desc.begin(), sorted_desc.end(), std::greater<int>());
   for (int idx : sorted_desc) {
     annots->RemoveAt(static_cast<size_t>(idx));
   }
 
-  // 4. Re-insert at to_index in original caller order. The array takes
-  //    a fresh reference to each entry; our local RetainPtr drops at
-  //    scope exit.
+  // Re-insert at |to_index| in caller order.
   for (int i = 0; i < from_indices_len; ++i) {
     annots->InsertAt(static_cast<size_t>(to_index + i), std::move(entries[i]));
   }
+}
+
+}  // namespace
+
+FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV EPDFPage_MoveAnnots(FPDF_PAGE page,
+                                                        const int* from_indices,
+                                                        int from_indices_len,
+                                                        int to_index) {
+  CPDF_Page* pPage = CPDFPageFromFPDFPage(page);
+  if (!pPage) {
+    return false;
+  }
+  RetainPtr<CPDF_Array> annots = pPage->GetMutableAnnotsArray();
+  if (!annots ||
+      !IsValidAnnotMove(annots->size(), from_indices, from_indices_len,
+                        to_index)) {
+    return false;
+  }
+  MoveAnnotEntries(annots.Get(), from_indices, from_indices_len, to_index);
+  return true;
+}
+
+FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV
+EPDFPage_MoveAnnotsRaw(FPDF_DOCUMENT doc,
+                       int page_index,
+                       const int* from_indices,
+                       int from_indices_len,
+                       int to_index) {
+  CPDF_Document* pdf = CPDFDocumentFromFPDFDocument(doc);
+  if (!pdf || page_index < 0 || page_index >= pdf->GetPageCount()) {
+    return false;
+  }
+  // As the raw remove: a layer's page resolves its /Annots in the layer.
+  CPDF_DocumentViewScope document_view(pdf);
+
+  // Checked on the const view; only a move it takes opens the page for
+  // writing.
+  RetainPtr<const CPDF_Dictionary> page_view = pdf->GetPageDictionary(page_index);
+  RetainPtr<const CPDF_Array> annots_view =
+      page_view ? page_view->GetArrayFor("Annots") : nullptr;
+  if (!annots_view ||
+      !IsValidAnnotMove(annots_view->size(), from_indices, from_indices_len,
+                        to_index)) {
+    return false;
+  }
+
+  RetainPtr<CPDF_Dictionary> page_dict =
+      pdf->GetMutablePageDictionary(page_index);
+  RetainPtr<CPDF_Array> annots =
+      page_dict ? page_dict->GetMutableArrayFor("Annots") : nullptr;
+  if (!annots) {
+    return false;
+  }
+  MoveAnnotEntries(annots.Get(), from_indices, from_indices_len, to_index);
   return true;
 }

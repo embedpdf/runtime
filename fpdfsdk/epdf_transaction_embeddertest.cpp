@@ -30,7 +30,6 @@
 #include "fpdfsdk/cpdfsdk_helpers.h"
 #include "fpdfsdk/epdf_edit_test_util.h"
 #include "public/cpp/fpdf_scopers.h"
-#include "public/epdf_checkpoint.h"
 #include "public/fpdf_annot.h"
 #include "public/fpdf_attachment.h"
 #include "public/fpdf_doc.h"
@@ -309,15 +308,13 @@ TEST_F(EPDFTransactionEmbedderTest, SavesAreRefusedInsideATransaction) {
   EXPECT_TRUE(EPDFLayer_SaveDeltaEx(doc.get(), this, nullptr, nullptr));
 }
 
-// §4.15: what a transaction rules out while it is open - a checkpoint, a
-// second layer opened on this thread - and a checkpoint rules out a
-// transaction.
+// §4.15: what a transaction rules out while it is open: a second layer
+// opened on this thread.
 TEST_F(EPDFTransactionEmbedderTest, RefusesWhatOverlapsATransaction) {
   ScopedFPDFDocument doc = Open();
   ASSERT_TRUE(doc);
 
   ASSERT_TRUE(EPDFLayer_BeginTransaction(doc.get()));
-  EXPECT_FALSE(EPDFDoc_BeginCheckpoint(doc.get()));
   EPDF_BASE_DOCUMENT base =
       EPDF_LoadMemBaseDocument(input_.data(), input_.size(), nullptr);
   ASSERT_TRUE(base);
@@ -327,13 +324,6 @@ TEST_F(EPDFTransactionEmbedderTest, RefusesWhatOverlapsATransaction) {
       EPDFLayer_OpenLayer(base, nullptr, nullptr, nullptr));
   EXPECT_TRUE(second);
   EPDF_ReleaseBaseDocument(base);
-
-  EPDF_CHECKPOINT checkpoint = EPDFDoc_BeginCheckpoint(doc.get());
-  ASSERT_TRUE(checkpoint);
-  EXPECT_FALSE(EPDFLayer_BeginTransaction(doc.get()));
-  EPDFDoc_EndCheckpoint(checkpoint);
-  EXPECT_TRUE(EPDFLayer_BeginTransaction(doc.get()));
-  EXPECT_TRUE(EPDFLayer_AbortTransaction(doc.get()));
 }
 
 // G1 + G2: the mixed batch fails after each of its writes, on a fresh layer

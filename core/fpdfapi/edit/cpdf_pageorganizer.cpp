@@ -41,7 +41,8 @@ bool CPDF_PageOrganizer::InitDestDoc() {
     return false;
   }
 
-  RetainPtr<CPDF_Dictionary> info = dest()->GetInfo();
+  // Through the write door, so a layer transaction copies /Info up first.
+  RetainPtr<CPDF_Dictionary> info = dest()->GetMutableInfo();
   if (info) {
     info->SetNewFor<CPDF_String>("Producer", "PDFium");
   }

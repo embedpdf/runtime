@@ -2538,6 +2538,27 @@ FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV EPDFPage_MoveAnnots(FPDF_PAGE page,
                                                         int from_indices_len,
                                                         int to_index);
 
+// Experimental EmbedPDF Extension API.
+// EPDFPage_MoveAnnots() on a page that isn't loaded: the page's /Annots is
+// read and written from its dictionary, so its content is never parsed. A
+// reorder moves entries, so promote the page first (see
+// EPDFPage_PromoteInlineAnnotsRaw()).
+//
+//   doc              - handle to a document.
+//   page_index       - the index of the page.
+//   from_indices     - as EPDFPage_MoveAnnots().
+//   from_indices_len - as EPDFPage_MoveAnnots().
+//   to_index         - as EPDFPage_MoveAnnots().
+//
+// Returns true on success. A request EPDFPage_MoveAnnots() refuses returns
+// false and changes nothing.
+FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV
+EPDFPage_MoveAnnotsRaw(FPDF_DOCUMENT doc,
+                       int page_index,
+                       const int* from_indices,
+                       int from_indices_len,
+                       int to_index);
+
 #ifdef __cplusplus
 }  // extern "C"
 #endif  // __cplusplus

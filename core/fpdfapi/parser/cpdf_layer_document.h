@@ -52,12 +52,6 @@ class CPDF_LayerDocument final : public CPDF_Document {
   bool CommitTransaction();
   bool AbortTransaction();
   bool InTransaction() const { return !!transaction_; }
-  // Checkpoints (public/epdf_checkpoint.h) and transactions are two ways to
-  // make writes all or nothing; they never overlap. A transaction doesn't
-  // begin while a checkpoint is open, and a checkpoint doesn't begin inside
-  // a transaction.
-  void NoteCheckpointBegun() { ++open_checkpoints_; }
-  void NoteCheckpointEnded() { --open_checkpoints_; }
   // What the last ended (or the open) transaction cost.
   const CPDF_LayerTransactionStats& GetTransactionStats() const {
     return transaction_ ? transaction_->stats : last_transaction_stats_;
@@ -209,7 +203,6 @@ class CPDF_LayerDocument final : public CPDF_Document {
   uint64_t overlay_epoch_ = 0;
   std::unique_ptr<CPDF_LayerTransaction> transaction_;
   CPDF_LayerTransactionStats last_transaction_stats_;
-  int open_checkpoints_ = 0;
   // The committed birth list, by page object number, and its reverse: each
   // promoted object's birth name.
   std::map<uint32_t, CPDF_PageBirths> births_;

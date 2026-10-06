@@ -11087,6 +11087,59 @@ TEST_F(FPDFAnnotEmbedderTest, LayerMoveAnnotsPromotesOnlyThePageAndMoveBackIsUnc
   EXPECT_TRUE(delta.bytes.empty());
 }
 
+TEST_F(FPDFAnnotEmbedderTest, LayerMoveAnnotsRawPromotesOnlyThePageAndMoveBackIsUnchanged) {
+  LayerFixture doc;
+  ASSERT_TRUE(doc.OpenFresh(kTwoAnnots));
+  uint32_t page_num;
+  uint32_t first;
+  uint32_t second;
+  unsigned long expected;
+  {
+    ScopedFPDFPage page(FPDF_LoadPage(doc.layer, 0));
+    ASSERT_TRUE(page);
+    page_num = EPDFPage_GetObjectNumber(page.get());
+    first = AnnotObjNumAt(page.get(), 0);
+    second = AnnotObjNumAt(page.get(), 1);
+    expected = PromotedByAnnotsMutation(page.get());
+  }
+  EXPECT_EQ(0ul, EPDFLayer_GetPromotedObjectCount(doc.layer));
+
+  const int from[1] = {1};
+  ASSERT_TRUE(EPDFPage_MoveAnnotsRaw(doc.layer, 0, from, 1, 0));
+  EXPECT_EQ(0, EPDFPage_GetAnnotIndexByObjectNumberRaw(doc.layer, 0, second));
+  EXPECT_EQ(1, EPDFPage_GetAnnotIndexByObjectNumberRaw(doc.layer, 0, first));
+  EXPECT_EQ(expected, EPDFLayer_GetPromotedObjectCount(doc.layer));
+  EXPECT_TRUE(EPDFLayer_IsObjectPromoted(doc.layer, page_num));
+  EXPECT_FALSE(EPDFLayer_IsObjectPromoted(doc.layer, first));
+  EXPECT_FALSE(EPDFLayer_IsObjectPromoted(doc.layer, second));
+  EXPECT_TRUE(SaveDeltaEx(doc.layer).changed_since_load);
+
+  ASSERT_TRUE(EPDFPage_MoveAnnotsRaw(doc.layer, 0, from, 1, 0));
+  EXPECT_EQ(0, EPDFPage_GetAnnotIndexByObjectNumberRaw(doc.layer, 0, first));
+  DeltaProbe delta = SaveDeltaEx(doc.layer);
+  EXPECT_EQ(EPDFLayerSaveStatus_kSuccess, delta.status);
+  EXPECT_FALSE(delta.changed_since_load);
+  EXPECT_TRUE(delta.bytes.empty());
+}
+
+TEST_F(FPDFAnnotEmbedderTest, MoveAnnotsRawRefusesWithoutWriting) {
+  LayerFixture doc;
+  ASSERT_TRUE(doc.OpenFresh(kTwoAnnots));
+  const int count = EPDFPage_GetAnnotCountRaw(doc.layer, 0);
+  ASSERT_GE(count, 2);
+  const int duplicate[2] = {0, 0};
+  const int out_of_range[1] = {count};
+  const int one[1] = {0};
+  EXPECT_FALSE(EPDFPage_MoveAnnotsRaw(doc.layer, 0, duplicate, 2, 0));
+  EXPECT_FALSE(EPDFPage_MoveAnnotsRaw(doc.layer, 0, out_of_range, 1, 0));
+  // The destination is in the post-removal index space: at most count - 1.
+  EXPECT_FALSE(EPDFPage_MoveAnnotsRaw(doc.layer, 0, one, 1, count));
+  EXPECT_FALSE(EPDFPage_MoveAnnotsRaw(doc.layer, 0, one, 0, 0));
+  EXPECT_FALSE(EPDFPage_MoveAnnotsRaw(doc.layer, -1, one, 1, 0));
+  EXPECT_EQ(0ul, EPDFLayer_GetPromotedObjectCount(doc.layer));
+  EXPECT_FALSE(SaveDeltaEx(doc.layer).changed_since_load);
+}
+
 // The report's flow. The annotation is created the way the engine creates
 // it, with a generated appearance: an indirect /AP stream that removal leaves
 // behind as an orphan. Promoted counts it; the save pass reaches neither

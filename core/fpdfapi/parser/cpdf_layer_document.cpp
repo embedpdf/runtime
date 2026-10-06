@@ -433,7 +433,7 @@ bool CPDF_LayerDocument::BeginTransaction() {
   // One transaction per thread: the open generation is per thread, so a
   // second layer can't open one while another layer's is open.
   if (transaction_ || ingest_status_ != OpenStatus::kSuccess ||
-      open_checkpoints_ > 0 || CPDF_WriteGeneration::Current() != 0) {
+      CPDF_WriteGeneration::Current() != 0) {
     return false;
   }
   transaction_ = std::make_unique<CPDF_LayerTransaction>();

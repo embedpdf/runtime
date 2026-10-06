@@ -9,7 +9,6 @@
 
 #include "fpdfsdk/fpdf_view_c_api_test.h"
 
-#include "public/epdf_checkpoint.h"
 #include "public/epdf_font.h"
 #include "public/epdf_measure.h"
 #include "public/epdf_text.h"
@@ -628,13 +627,9 @@ int CheckPDFiumCApi() {
   CHK(EPDFPage_CreateAnnotRaw);
   CHK(EPDFPage_GetAnnotIndexByNameRaw);
   CHK(EPDFPage_GetAnnotIndexByObjectNumberRaw);
+  CHK(EPDFPage_MoveAnnotsRaw);
   CHK(EPDFDest_CreateXYZByObjectNumber);
   CHK(EPDFDest_CreateViewByObjectNumber);
-  CHK(EPDFDoc_BeginCheckpoint);
-  CHK(EPDFDoc_CheckpointPage);
-  CHK(EPDFDoc_CheckpointObject);
-  CHK(EPDFDoc_Rollback);
-  CHK(EPDFDoc_EndCheckpoint);
   CHK(EPDFAnnot_GetStampDrawing);
   CHK(EPDFAnnot_SetStampDrawing);
   CHK(EPDFDoc_CanonicalDrawing);
