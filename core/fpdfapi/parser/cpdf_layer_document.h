@@ -158,6 +158,16 @@ class CPDF_LayerDocument final : public CPDF_Document {
   // the parser's limit (CPDF_Parser::kMaxObjectNumber).
   bool RaiseLastObjectNumber(uint32_t objnum);
 
+  // Puts |object| back as this layer's version of |objnum|, in the open
+  // transaction, when the layer holds no version of it now: a number the
+  // layer handed out whose object is gone (a delete removed it, or a save
+  // left it behind), or a number of the base, whose original then stops
+  // showing. A version the layer holds is never replaced: it may be newer
+  // (a shared font grows its subset), and a number is never reused, so it is
+  // the same object. False outside a transaction, above the last object
+  // number, or when the layer holds a version.
+  bool RestoreLayerVersion(uint32_t objnum, RetainPtr<CPDF_Object> object);
+
   // CPDF_IndirectObjectHolder:
   uint32_t AddIndirectObject(RetainPtr<CPDF_Object> object) override;
   bool CanAddIndirectObjectAt(uint32_t objnum) const override;

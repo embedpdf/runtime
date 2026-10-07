@@ -31,6 +31,7 @@
 #include "fpdfsdk/cpdfsdk_customaccess.h"
 #include "fpdfsdk/cpdfsdk_filewriteadapter.h"
 #include "fpdfsdk/cpdfsdk_helpers.h"
+#include "fpdfsdk/epdf_owned_buffer.h"
 #include "public/fpdf_save.h"
 
 namespace {
@@ -532,26 +533,6 @@ std::optional<LayerArtifactHeader> ReadLayerArtifactHeader(
   return header;
 }
 
-void* CopyToOwnedBuffer(pdfium::span<const uint8_t> data,
-                        unsigned long* out_size) {
-  if (!out_size || data.empty() ||
-      data.size() > std::numeric_limits<unsigned long>::max()) {
-    if (out_size) {
-      *out_size = 0;
-    }
-    return nullptr;
-  }
-
-  void* buffer = malloc(data.size());
-  if (!buffer) {
-    *out_size = 0;
-    return nullptr;
-  }
-  memcpy(buffer, data.data(), data.size());
-  *out_size = static_cast<unsigned long>(data.size());
-  return buffer;
-}
-
 DataVector<uint8_t> ReadStreamToVector(IFX_SeekableReadStream* stream) {
   if (!stream || stream->GetSize() < 0 ||
       !pdfium::IsValueInRangeForNumericType<size_t>(stream->GetSize())) {
@@ -958,7 +939,7 @@ EPDFLayer_SaveDeltaToOwnedBuffer(FPDF_DOCUMENT layer,
   if (!EPDFLayer_SaveDelta(layer, &writer, out_status) || writer.data.empty()) {
     return nullptr;
   }
-  return CopyToOwnedBuffer(pdfium::as_byte_span(writer.data), out_size);
+  return epdf::CopyToOwnedBuffer(pdfium::as_byte_span(writer.data), out_size);
 }
 
 FPDF_EXPORT void* FPDF_CALLCONV
@@ -975,7 +956,7 @@ EPDFLayer_SaveDeltaToOwnedBufferEx(FPDF_DOCUMENT layer,
       writer.data.empty()) {
     return nullptr;
   }
-  return CopyToOwnedBuffer(pdfium::as_byte_span(writer.data), out_size);
+  return epdf::CopyToOwnedBuffer(pdfium::as_byte_span(writer.data), out_size);
 }
 
 namespace {
@@ -1120,7 +1101,7 @@ void* SaveLayerArtifactToOwnedBufferImpl(FPDF_DOCUMENT layer,
   artifact.insert(artifact.end(), births.begin(), births.end());
 
   SetSaveStatus(out_status, EPDFLayerSaveStatus_kSuccess);
-  return CopyToOwnedBuffer(pdfium::span(artifact), out_size);
+  return epdf::CopyToOwnedBuffer(pdfium::span(artifact), out_size);
 }
 
 }  // namespace

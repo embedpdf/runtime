@@ -49,12 +49,14 @@
 #include "fpdfsdk/cpdfsdk_helpers.h"
 #include "fpdfsdk/epdf_action_helpers.h"
 #include "fpdfsdk/epdf_form_helpers.h"
+#include "fpdfsdk/epdf_object_helpers.h"
 
 namespace {
 
 using epdf::BuildReconciledForm;
 using epdf::CollectFieldDicts;
 using epdf::CountFormFields;
+using epdf::GetMutableAcroForm;
 using epdf::PageObjNumForWidget;
 using epdf::ResolveFieldDict;
 using epdf::SweepPageWidgets;
@@ -1643,53 +1645,6 @@ RetainPtr<const CPDF_Dictionary> ClimbToFieldRoot(
   return dict;
 }
 
-// Resolve /AcroForm for mutation, handling all three storage shapes:
-// missing (optionally bootstrap one), an indirect reference (promote the
-// target), or a direct dictionary inside the catalog (promote the root and
-// mutate the embedded clone). Never mutates through a reference held by a
-// frozen base object.
-RetainPtr<CPDF_Dictionary> GetMutableAcroForm(CPDF_Document* doc,
-                                              bool create_if_missing,
-                                              bool* out_created) {
-  const CPDF_Dictionary* root = doc->GetRoot();
-  if (!root) {
-    return nullptr;
-  }
-  RetainPtr<const CPDF_Object> entry = root->GetObjectFor("AcroForm");
-  if (!entry) {
-    if (!create_if_missing) {
-      return nullptr;
-    }
-    RetainPtr<CPDF_Dictionary> acro_form =
-        CPDF_InteractiveForm::InitAcroFormDict(doc);
-    if (acro_form && out_created) {
-      *out_created = true;
-    }
-    return acro_form;
-  }
-  if (const CPDF_Reference* ref = entry->AsReference()) {
-    return ToDictionary(doc->GetMutableIndirectObject(ref->GetRefObjNum()));
-  }
-  RetainPtr<CPDF_Dictionary> mutable_root = doc->GetMutableRoot();
-  return mutable_root ? mutable_root->GetMutableDictFor("AcroForm") : nullptr;
-}
-
-// Resolve an array member of an already-mutable dictionary, following (and
-// promoting) an indirect reference when present, creating the array when
-// absent.
-RetainPtr<CPDF_Array> GetMutableArrayMember(CPDF_Document* doc,
-                                            CPDF_Dictionary* dict,
-                                            const ByteString& key) {
-  RetainPtr<const CPDF_Object> entry = dict->GetObjectFor(key.AsStringView());
-  if (!entry) {
-    return dict->SetNewFor<CPDF_Array>(key);
-  }
-  if (const CPDF_Reference* ref = entry->AsReference()) {
-    return ToArray(doc->GetMutableIndirectObject(ref->GetRefObjNum()));
-  }
-  return dict->GetMutableArrayFor(key.AsStringView());
-}
-
 // Membership of a raw array: indirect references by object number, direct
 // dictionaries by pointer identity.
 bool ArrayReferencesDict(const CPDF_Array* array,
@@ -2522,8 +2477,8 @@ EPDFForm_Repair(FPDF_DOCUMENT document,
       return false;
     }
     report.acroform_created = created ? 1 : 0;
-    RetainPtr<CPDF_Array> fields_array =
-        GetMutableArrayMember(doc, acro_form.Get(), "Fields");
+    RetainPtr<CPDF_Array> fields_array = epdf::GetMutableArrayMember(
+        doc, acro_form.Get(), "Fields", /*create_if_missing=*/true);
     if (!fields_array) {
       return false;
     }
@@ -2539,8 +2494,9 @@ EPDFForm_Repair(FPDF_DOCUMENT document,
     if (!field_dict) {
       continue;
     }
-    RetainPtr<CPDF_Array> kids = GetMutableArrayMember(
-        doc, field_dict.Get(), pdfium::form_fields::kKids);
+    RetainPtr<CPDF_Array> kids = epdf::GetMutableArrayMember(
+        doc, field_dict.Get(), pdfium::form_fields::kKids,
+        /*create_if_missing=*/true);
     if (!kids) {
       continue;
     }
@@ -2912,16 +2868,17 @@ EPDFForm_CreateField(FPDF_DOCUMENT document,
     return 0;
   }
 
-  RetainPtr<CPDF_Array> parent_array =
-      GetMutableArrayMember(doc, acro_form.Get(), "Fields");
+  RetainPtr<CPDF_Array> parent_array = epdf::GetMutableArrayMember(
+      doc, acro_form.Get(), "Fields", /*create_if_missing=*/true);
   RetainPtr<CPDF_Dictionary> parent_field;  // null at the root level
   for (uint32_t objnum : existing_path) {
     parent_field = ToDictionary(doc->GetMutableIndirectObject(objnum));
     if (!parent_field) {
       return 0;
     }
-    parent_array = GetMutableArrayMember(doc, parent_field.Get(),
-                                         pdfium::form_fields::kKids);
+    parent_array = epdf::GetMutableArrayMember(doc, parent_field.Get(),
+                                               pdfium::form_fields::kKids,
+                                               /*create_if_missing=*/true);
   }
   if (!parent_array) {
     return 0;
@@ -2960,8 +2917,9 @@ EPDFForm_CreateField(FPDF_DOCUMENT document,
       return node->GetObjNum();
     }
     parent_field = node;
-    parent_array = GetMutableArrayMember(doc, parent_field.Get(),
-                                         pdfium::form_fields::kKids);
+    parent_array = epdf::GetMutableArrayMember(doc, parent_field.Get(),
+                                               pdfium::form_fields::kKids,
+                                               /*create_if_missing=*/true);
     if (!parent_array) {
       return 0;
     }
@@ -3043,8 +3001,9 @@ EPDFForm_AttachWidget(FPDF_DOCUMENT document,
       split_widget->SetNewFor<CPDF_Reference>(pdfium::annotation::kP, doc,
                                               page_objnum);
     }
-    RetainPtr<CPDF_Array> kids = GetMutableArrayMember(
-        doc, mutable_field.Get(), pdfium::form_fields::kKids);
+    RetainPtr<CPDF_Array> kids = epdf::GetMutableArrayMember(
+        doc, mutable_field.Get(), pdfium::form_fields::kKids,
+        /*create_if_missing=*/true);
     if (!kids) {
       return false;
     }
@@ -3073,8 +3032,9 @@ EPDFForm_AttachWidget(FPDF_DOCUMENT document,
     mutable_widget->SetNewFor<CPDF_Number>(
         "F", static_cast<int>(pdfium::annotation_flags::kPrint));
   }
-  RetainPtr<CPDF_Array> kids = GetMutableArrayMember(
-      doc, mutable_field.Get(), pdfium::form_fields::kKids);
+  RetainPtr<CPDF_Array> kids = epdf::GetMutableArrayMember(
+      doc, mutable_field.Get(), pdfium::form_fields::kKids,
+      /*create_if_missing=*/true);
   if (!kids) {
     return false;
   }
@@ -3125,8 +3085,9 @@ EPDFForm_DetachWidget(FPDF_DOCUMENT document,
   if (!mutable_field || !mutable_widget) {
     return false;
   }
-  RetainPtr<CPDF_Array> mutable_kids = GetMutableArrayMember(
-      doc, mutable_field.Get(), pdfium::form_fields::kKids);
+  RetainPtr<CPDF_Array> mutable_kids = epdf::GetMutableArrayMember(
+      doc, mutable_field.Get(), pdfium::form_fields::kKids,
+      /*create_if_missing=*/true);
   if (!mutable_kids ||
       !RemoveObjNumFromMutableArray(mutable_kids.Get(), widget_objnum)) {
     return false;
@@ -3206,8 +3167,9 @@ EPDFForm_DeleteField(FPDF_DOCUMENT document,
     if (parent && parent->GetObjNum() != 0) {
       RetainPtr<CPDF_Dictionary> mutable_parent =
           ToDictionary(doc->GetMutableIndirectObject(parent->GetObjNum()));
-      RetainPtr<CPDF_Array> parent_kids = GetMutableArrayMember(
-          doc, mutable_parent.Get(), pdfium::form_fields::kKids);
+      RetainPtr<CPDF_Array> parent_kids = epdf::GetMutableArrayMember(
+          doc, mutable_parent.Get(), pdfium::form_fields::kKids,
+          /*create_if_missing=*/true);
       if (!parent_kids ||
           !RemoveObjNumFromMutableArray(parent_kids.Get(), current)) {
         break;
@@ -3224,8 +3186,8 @@ EPDFForm_DeleteField(FPDF_DOCUMENT document,
     RetainPtr<CPDF_Dictionary> acro_form =
         GetMutableAcroForm(doc, /*create_if_missing=*/false, nullptr);
     if (acro_form) {
-      RetainPtr<CPDF_Array> fields =
-          GetMutableArrayMember(doc, acro_form.Get(), "Fields");
+      RetainPtr<CPDF_Array> fields = epdf::GetMutableArrayMember(
+          doc, acro_form.Get(), "Fields", /*create_if_missing=*/true);
       if (fields) {
         RemoveObjNumFromMutableArray(fields.Get(), current);
       }

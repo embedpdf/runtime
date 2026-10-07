@@ -797,10 +797,15 @@ ByteString CPDF_PageContentGenerator::RealizeResource(
     ByteStringView type) const {
   DCHECK(pResource);
   if (!obj_holder_->GetResources()) {
-    obj_holder_->SetResources(document_->NewIndirect<CPDF_Dictionary>());
+    // EmbedPDF: name the new dictionary in /Resources before the holder holds
+    // it, and never read it back through GetResources(). On a layer document
+    // creating the dictionary is a write, and a page re-reads /Resources from
+    // its dictionary after every write: read back first, it finds none.
+    RetainPtr<CPDF_Dictionary> resources =
+        document_->NewIndirect<CPDF_Dictionary>();
     obj_holder_->GetMutableDict()->SetNewFor<CPDF_Reference>(
-        pdfium::page_object::kResources, document_,
-        obj_holder_->GetResources()->GetObjNum());
+        pdfium::page_object::kResources, document_, resources->GetObjNum());
+    obj_holder_->SetResources(std::move(resources));
   }
 
   RetainPtr<CPDF_Dictionary> resource_dict =

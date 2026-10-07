@@ -404,6 +404,25 @@ bool CPDF_LayerDocument::RaiseLastObjectNumber(uint32_t objnum) {
   return true;
 }
 
+bool CPDF_LayerDocument::RestoreLayerVersion(uint32_t objnum,
+                                             RetainPtr<CPDF_Object> object) {
+  if (!transaction_ || !object || !objnum ||
+      objnum == CPDF_Object::kInvalidObjNum || objnum > GetLastObjNum() ||
+      FindLayerVersion(objnum)) {
+    return false;
+  }
+  DCHECK_PDF_HOLDER_MUTABLE();
+  object->SetObjNum(objnum);
+  object->StampWriteGeneration(transaction_->generation);
+  ++transaction_->stats.objects_added;
+  transaction_->written[objnum] = std::move(object);
+  transaction_->hidden.erase(objnum);
+  transaction_->touched.insert(objnum);
+  ++overlay_epoch_;
+  InvalidateCachedDictsFor(objnum);
+  return true;
+}
+
 bool CPDF_LayerDocument::CanAddIndirectObjectAt(uint32_t objnum) const {
   // Only inside a transaction: a number is placed in the open overlay, and
   // an abort leaves it free again.

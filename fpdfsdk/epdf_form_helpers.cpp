@@ -117,4 +117,30 @@ RetainPtr<const CPDF_Dictionary> ResolveFieldDict(CPDF_Document* doc,
   return ToDictionary(doc->GetOrParseIndirectObject(field_objnum));
 }
 
+RetainPtr<CPDF_Dictionary> GetMutableAcroForm(CPDF_Document* doc,
+                                              bool create_if_missing,
+                                              bool* out_created) {
+  const CPDF_Dictionary* root = doc->GetRoot();
+  if (!root) {
+    return nullptr;
+  }
+  RetainPtr<const CPDF_Object> entry = root->GetObjectFor("AcroForm");
+  if (!entry) {
+    if (!create_if_missing) {
+      return nullptr;
+    }
+    RetainPtr<CPDF_Dictionary> acro_form =
+        CPDF_InteractiveForm::InitAcroFormDict(doc);
+    if (acro_form && out_created) {
+      *out_created = true;
+    }
+    return acro_form;
+  }
+  if (const CPDF_Reference* ref = entry->AsReference()) {
+    return ToDictionary(doc->GetMutableIndirectObject(ref->GetRefObjNum()));
+  }
+  RetainPtr<CPDF_Dictionary> mutable_root = doc->GetMutableRoot();
+  return mutable_root ? mutable_root->GetMutableDictFor("AcroForm") : nullptr;
+}
+
 }  // namespace epdf

@@ -35,6 +35,8 @@
 #include "core/fxcrt/span.h"
 #include "fpdfsdk/cpdfsdk_helpers.h"
 #include "fpdfsdk/epdf_appearance_exporter.h"
+#include "fpdfsdk/epdf_form_helpers.h"
+#include "fpdfsdk/epdf_object_helpers.h"
 #include "public/fpdf_edit.h"
 
 namespace {
@@ -506,20 +508,6 @@ RetainPtr<CPDF_Dictionary> CreateLocalPageXObjects(CPDF_Document* document,
   return local_xobjects;
 }
 
-RetainPtr<CPDF_Array> GetMutableArrayMember(CPDF_Document* document,
-                                            CPDF_Dictionary* dictionary,
-                                            ByteStringView key) {
-  if (!document || !dictionary) {
-    return nullptr;
-  }
-  RetainPtr<const CPDF_Object> entry = dictionary->GetObjectFor(key);
-  if (const CPDF_Reference* reference = ToReference(entry.Get())) {
-    return ToArray(
-        document->GetMutableIndirectObject(reference->GetRefObjNum()));
-  }
-  return dictionary->GetMutableArrayFor(key);
-}
-
 bool RemoveObjectFromArray(CPDF_Array* array,
                            uint32_t object_number,
                            const CPDF_Dictionary* dictionary) {
@@ -541,21 +529,6 @@ bool RemoveObjectFromArray(CPDF_Array* array,
   return removed;
 }
 
-RetainPtr<CPDF_Dictionary> GetMutableAcroForm(CPDF_Document* document) {
-  const CPDF_Dictionary* root = document ? document->GetRoot() : nullptr;
-  RetainPtr<const CPDF_Object> entry =
-      root ? root->GetObjectFor("AcroForm") : nullptr;
-  if (const CPDF_Reference* reference = ToReference(entry.Get())) {
-    return ToDictionary(
-        document->GetMutableIndirectObject(reference->GetRefObjNum()));
-  }
-  if (!entry) {
-    return nullptr;
-  }
-  RetainPtr<CPDF_Dictionary> mutable_root = document->GetMutableRoot();
-  return mutable_root ? mutable_root->GetMutableDictFor("AcroForm") : nullptr;
-}
-
 void UnlinkMergedFieldAndPruneAncestors(CPDF_Document* document,
                                         uint32_t field_object_number) {
   uint32_t current = field_object_number;
@@ -570,8 +543,8 @@ void UnlinkMergedFieldAndPruneAncestors(CPDF_Document* document,
     if (parent && parent->GetObjNum() != 0) {
       RetainPtr<CPDF_Dictionary> mutable_parent =
           ToDictionary(document->GetMutableIndirectObject(parent->GetObjNum()));
-      RetainPtr<CPDF_Array> parent_kids =
-          GetMutableArrayMember(document, mutable_parent.Get(), "Kids");
+      RetainPtr<CPDF_Array> parent_kids = epdf::GetMutableArrayMember(
+          document, mutable_parent.Get(), "Kids", /*create_if_missing=*/false);
       if (!mutable_parent ||
           !RemoveObjectFromArray(parent_kids.Get(), current, node.Get())) {
         return;
@@ -584,9 +557,10 @@ void UnlinkMergedFieldAndPruneAncestors(CPDF_Document* document,
       continue;
     }
 
-    RetainPtr<CPDF_Dictionary> acro_form = GetMutableAcroForm(document);
-    RetainPtr<CPDF_Array> fields =
-        GetMutableArrayMember(document, acro_form.Get(), "Fields");
+    RetainPtr<CPDF_Dictionary> acro_form = epdf::GetMutableAcroForm(
+        document, /*create_if_missing=*/false, nullptr);
+    RetainPtr<CPDF_Array> fields = epdf::GetMutableArrayMember(
+        document, acro_form.Get(), "Fields", /*create_if_missing=*/false);
     RemoveObjectFromArray(fields.Get(), current, node.Get());
     return;
   }
@@ -623,8 +597,8 @@ void DetachFlattenedWidget(CPDF_Document* document,
   }
 
   if (mutable_parent) {
-    RetainPtr<CPDF_Array> kids =
-        GetMutableArrayMember(document, mutable_parent.Get(), "Kids");
+    RetainPtr<CPDF_Array> kids = epdf::GetMutableArrayMember(
+        document, mutable_parent.Get(), "Kids", /*create_if_missing=*/false);
     RemoveObjectFromArray(kids.Get(), candidate.annotation_object_number,
                           mutable_annotation);
 
@@ -641,9 +615,10 @@ void DetachFlattenedWidget(CPDF_Document* document,
     return;  // An orphan widget was never part of the AcroForm field tree.
   }
 
-  RetainPtr<CPDF_Dictionary> acro_form = GetMutableAcroForm(document);
-  RetainPtr<CPDF_Array> fields =
-      GetMutableArrayMember(document, acro_form.Get(), "Fields");
+  RetainPtr<CPDF_Dictionary> acro_form =
+      epdf::GetMutableAcroForm(document, /*create_if_missing=*/false, nullptr);
+  RetainPtr<CPDF_Array> fields = epdf::GetMutableArrayMember(
+      document, acro_form.Get(), "Fields", /*create_if_missing=*/false);
   RemoveObjectFromArray(fields.Get(), candidate.annotation_object_number,
                         mutable_annotation);
 }
@@ -766,8 +741,8 @@ int ApplyFlattenPlan(CPDF_Document* document,
     return FLATTEN_FAIL;
   }
 
-  RetainPtr<CPDF_Array> annotations =
-      GetMutableArrayMember(document, page.Get(), "Annots");
+  RetainPtr<CPDF_Array> annotations = epdf::GetMutableArrayMember(
+      document, page.Get(), "Annots", /*create_if_missing=*/false);
   if (!annotations) {
     return FLATTEN_FAIL;
   }

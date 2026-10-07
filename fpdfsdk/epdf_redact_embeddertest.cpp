@@ -3,9 +3,11 @@
 
 #include "public/epdf_redact.h"
 
+#include <memory>
 #include <set>
 #include <string>
 #include <tuple>
+#include <type_traits>
 #include <vector>
 
 #include "core/fpdfapi/page/cpdf_annotcontext.h"
@@ -143,26 +145,8 @@ int CountSentinel(CPDF_Document* doc, const std::string& sentinel) {
   return count;
 }
 
-// A one-page drawing 300 wide that writes `lines`, one every 40 points from
-// the bottom up, its font dictionary an object of its own (/Font 5 0 R), as
-// some PDF generators write it.
-std::string MakeTextDrawing(const std::vector<std::string>& lines) {
-  std::string content;
-  for (size_t i = 0; i < lines.size(); ++i) {
-    content += "BT /F1 24 Tf 10 " + std::to_string(10 + 40 * i) + " Td (" +
-               lines[i] + ") Tj ET\n";
-  }
-  const std::vector<std::string> objects = {
-      "<< /Type /Catalog /Pages 2 0 R >>",
-      "<< /Type /Pages /Kids [3 0 R] /Count 1 >>",
-      "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 300 " +
-          std::to_string(10 + 40 * lines.size()) +
-          "] /Contents 4 0 R /Resources << /Font 5 0 R >> >>",
-      "<< /Length " + std::to_string(content.size()) + " >>\nstream\n" +
-          content + "\nendstream",
-      "<< /F1 6 0 R >>",
-      "<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>",
-  };
+// A PDF file of `objects`, numbered from 1, with its cross-reference table.
+std::string PdfOf(const std::vector<std::string>& objects) {
   std::string pdf = "%PDF-1.7\n";
   std::vector<size_t> offsets;
   for (size_t i = 0; i < objects.size(); ++i) {
@@ -179,6 +163,28 @@ std::string MakeTextDrawing(const std::vector<std::string>& lines) {
   pdf += "trailer\n<< /Size " + std::to_string(objects.size() + 1) +
          " /Root 1 0 R >>\nstartxref\n" + std::to_string(xref) + "\n%%EOF\n";
   return pdf;
+}
+
+// A one-page drawing 300 wide that writes `lines`, one every 40 points from
+// the bottom up, its font dictionary an object of its own (/Font 5 0 R), as
+// some PDF generators write it.
+std::string MakeTextDrawing(const std::vector<std::string>& lines) {
+  std::string content;
+  for (size_t i = 0; i < lines.size(); ++i) {
+    content += "BT /F1 24 Tf 10 " + std::to_string(10 + 40 * i) + " Td (" +
+               lines[i] + ") Tj ET\n";
+  }
+  return PdfOf({
+      "<< /Type /Catalog /Pages 2 0 R >>",
+      "<< /Type /Pages /Kids [3 0 R] /Count 1 >>",
+      "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 300 " +
+          std::to_string(10 + 40 * lines.size()) +
+          "] /Contents 4 0 R /Resources << /Font 5 0 R >> >>",
+      "<< /Length " + std::to_string(content.size()) + " >>\nstream\n" +
+          content + "\nendstream",
+      "<< /F1 6 0 R >>",
+      "<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>",
+  });
 }
 
 RetainPtr<CPDF_Dictionary> AnnotDict(FPDF_ANNOTATION annot) {
@@ -686,5 +692,81 @@ TEST_F(EPDFRedactEmbedderTest, RedactingTheOnlyStampLeavesNothingOfItsDrawing) {
     ASSERT_TRUE(FPDFPage_GenerateContent(page.get()));
     EXPECT_EQ(0, FPDFPage_GetAnnotCount(page.get()));
     EXPECT_EQ(0, SentinelsInRewrite(doc.get(), "SENTINELONLY"));
+  }
+}
+
+// A page with neither /Contents nor /Resources, as some generators write a
+// blank page. The overlay an apply draws is a form with its own graphics
+// state, which the content generator names in /Resources the page doesn't
+// have yet. In a layer transaction (every engine job runs in one) creating
+// that dictionary is a write, after which the page reads /Resources from its
+// dictionary again.
+TEST_F(EPDFRedactEmbedderTest, AppliesOnAPageWithoutContentsOrResources) {
+  const std::string input = PdfOf({
+      "<< /Type /Catalog /Pages 2 0 R >>",
+      "<< /Type /Pages /Kids [3 0 R] /Count 1 >>",
+      "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 300 300] >>",
+  });
+  for (bool layer : {false, true}) {
+    SCOPED_TRACE(layer ? "layer transaction" : "document");
+    std::unique_ptr<std::remove_pointer_t<EPDF_BASE_DOCUMENT>,
+                    decltype(&EPDF_ReleaseBaseDocument)>
+        base(nullptr, EPDF_ReleaseBaseDocument);
+    ScopedFPDFDocument doc;
+    if (layer) {
+      base.reset(
+          EPDF_LoadMemBaseDocument64(input.data(), input.size(), nullptr));
+      ASSERT_TRUE(base);
+      doc.reset(EPDFLayer_OpenLayer(base.get(), nullptr, nullptr, nullptr));
+    } else {
+      doc.reset(FPDF_LoadMemDocument64(input.data(), input.size(), nullptr));
+    }
+    ASSERT_TRUE(doc);
+    ScopedFPDFPage page(FPDF_LoadPage(doc.get(), 0));
+    ASSERT_TRUE(page);
+    {
+      ScopedFPDFAnnotation mark(
+          FPDFPage_CreateAnnot(page.get(), FPDF_ANNOT_REDACT));
+      ASSERT_TRUE(mark);
+      const FS_RECTF rect = {20, 150, 60, 120};
+      ASSERT_TRUE(FPDFAnnot_SetRect(mark.get(), &rect));
+      ASSERT_TRUE(FPDFAnnot_SetColor(
+          mark.get(), FPDFANNOT_COLORTYPE_InteriorColor, 0, 0, 0, 255));
+    }
+    if (layer) {
+      ASSERT_TRUE(EPDFLayer_BeginTransaction(doc.get()));
+    }
+    ASSERT_TRUE(EPDFPage_ApplyRedactions(page.get(), nullptr));
+    ASSERT_TRUE(FPDFPage_GenerateContent(page.get()));
+    if (layer) {
+      ASSERT_TRUE(EPDFLayer_CommitTransaction(doc.get()));
+    }
+    EXPECT_EQ(0, FPDFPage_GetAnnotCount(page.get()));
+    {
+      CPDF_Document* pdf = CPDFDocumentFromFPDFDocument(doc.get());
+      CPDF_DocumentViewScope document_view(pdf);
+      RetainPtr<const CPDF_Dictionary> resources =
+          pdf->GetPageDictionary(0)->GetDictFor("Resources");
+      ASSERT_TRUE(resources);
+      RetainPtr<const CPDF_Dictionary> forms = resources->GetDictFor("XObject");
+      ASSERT_TRUE(forms);
+      EXPECT_EQ(1u, forms->size());
+    }
+
+    // Black where the mark was, before and after a full rewrite: 600 pixels
+    // for 300 points puts the mark at x 40..120, y 300..360.
+    auto after = Render(page.get());
+    EXPECT_EQ(0x000000u, Pixel(after.get(), 80, 330));
+    EXPECT_EQ(0xffffffu, Pixel(after.get(), 200, 100));
+    ClearString();
+    ASSERT_TRUE(FPDF_SaveAsCopy(doc.get(), this, FPDF_NO_INCREMENTAL));
+    ASSERT_TRUE(OpenSavedDocument());
+    FPDF_PAGE saved = LoadSavedPage(0);
+    ASSERT_TRUE(saved);
+    auto reloaded = Render(saved);
+    EXPECT_EQ(0x000000u, Pixel(reloaded.get(), 80, 330));
+    EXPECT_EQ(0xffffffu, Pixel(reloaded.get(), 200, 100));
+    CloseSavedPage(saved);
+    CloseSavedDocument();
   }
 }

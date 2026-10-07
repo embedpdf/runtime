@@ -13,6 +13,8 @@ source_set("fpdfsdk") {
     # EmbedPDF: cross-document appearance Form XObject cloning (shared).
     "epdf_appearance_exporter.h",
     "epdf_base_document.cpp",
+    # EmbedPDF: captures of what a layer write loses (EPDF*_Export*Raw).
+    "epdf_capture.cpp",
     # EmbedPDF: implements EPDFFont_* runtime font registration APIs.
     "epdf_font.cpp",
     # EmbedPDF: session-free AcroForm model snapshot (EPDFForm_* APIs).
@@ -37,6 +39,12 @@ source_set("fpdfsdk") {
     # EmbedPDF: the reconciled-form lens shared by the form and signature models.
     "epdf_form_helpers.cpp",
     "epdf_form_helpers.h",
+    # EmbedPDF: object helpers every write path shares.
+    "epdf_object_helpers.cpp",
+    "epdf_object_helpers.h",
+    # EmbedPDF: buffers the caller releases with EPDF_FreeBuffer().
+    "epdf_owned_buffer.cpp",
+    "epdf_owned_buffer.h",
     # EmbedPDF: generic namespace-scoped document/page /PieceInfo metadata.
     "epdf_pieceinfo.cpp",
     # EmbedPDF: measurement dictionaries and dimension appearance controls.
@@ -185,6 +193,8 @@ pdfium_embeddertest_source_set("embeddertests") {
     # writes.
     "epdf_edit_test_util.cpp",
     "epdf_edit_test_util.h",
+    # EmbedPDF: covers captures and their imports (EPDF*_Export*Raw).
+    "epdf_capture_embeddertest.cpp",
     # EmbedPDF: covers layer transactions (EPDFLayer_BeginTransaction).
     "epdf_transaction_embeddertest.cpp",
     # EmbedPDF: covers annotation identity: handle lifetimes, promotion and

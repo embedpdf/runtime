@@ -9,6 +9,7 @@
 
 #include "fpdfsdk/fpdf_view_c_api_test.h"
 
+#include "public/epdf_capture.h"
 #include "public/epdf_font.h"
 #include "public/epdf_measure.h"
 #include "public/epdf_text.h"
@@ -44,6 +45,14 @@ fnptr g_c_api_test_fnptr = NULL;  // Extern, so can't know it doesn't change.
 
 // Function to call from gtest harness to ensure linker resolution.
 int CheckPDFiumCApi() {
+  // epdf_capture.h
+  CHK(EPDFDoc_ExportDictRawToOwnedBuffer);
+  CHK(EPDFDoc_ImportDictRaw);
+  CHK(EPDFForm_ExportFieldRawToOwnedBuffer);
+  CHK(EPDFForm_ImportFieldRaw);
+  CHK(EPDFPage_ExportAnnotsRawToOwnedBuffer);
+  CHK(EPDFPage_ImportAnnotsRaw);
+
   // epdf_text.h
   CHK(EPDFText_GetCharGeometry);
   CHK(EPDFText_GetCharToTextMap);
