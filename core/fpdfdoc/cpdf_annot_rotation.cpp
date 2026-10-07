@@ -6,12 +6,12 @@
 #include <cmath>
 
 #include "core/fpdfapi/parser/cpdf_dictionary.h"
+#include "core/fpdfdoc/cpdf_embed_metadata.h"
 
 namespace fpdfdoc {
 
 namespace {
 
-constexpr char kEmbedMetadataKey[] = "EMBD_Metadata";
 constexpr float kPi = 3.14159265358979323846f;
 
 float NormalizeDegrees(float degrees) {
@@ -52,8 +52,7 @@ CFX_Matrix TurnAbout(const CFX_PointF& center, float degrees) {
 
 std::optional<AnnotRotation> GetRecordedAnnotRotation(
     const CPDF_Dictionary* annot_dict) {
-  RetainPtr<const CPDF_Dictionary> metadata =
-      annot_dict ? annot_dict->GetDictFor(kEmbedMetadataKey) : nullptr;
+  RetainPtr<const CPDF_Dictionary> metadata = GetEmbedMetadata(annot_dict);
   if (!metadata) {
     return std::nullopt;
   }

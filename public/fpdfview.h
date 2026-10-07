@@ -1317,10 +1317,12 @@ FPDF_EXPORT int FPDF_CALLCONV FPDF_GetPageSizeByIndex(FPDF_DOCUMENT document,
 // boundaries of adjacent fill paths are less visible.
 #define FPDF_CONVERT_FILL_TO_STROKE 0x20
 // Experimental EmbedPDF Extension API.
-// With FPDF_ANNOT, draw form field widgets too, from their appearances, after
-// the other annotations. Hidden widgets stay hidden, and so do no-view ones
-// unless printing. A widget with no appearance is drawn in memory; the render
-// writes nothing. Without this flag widgets are left out, as upstream does.
+// Draw form field widgets, from their appearances. It works with or without
+// FPDF_ANNOT, which draws the other annotations: with both, the widgets come
+// after them; alone, the page shows its widgets and no other annotation.
+// Hidden widgets stay hidden, and so do no-view ones unless printing. A widget
+// with no appearance is drawn in memory; the render writes nothing. Without
+// this flag widgets are left out, as upstream does.
 #define EPDF_RENDER_WIDGETS 0x8000
 
 // Struct for color scheme.

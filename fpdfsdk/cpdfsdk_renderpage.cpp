@@ -71,7 +71,12 @@ void RenderPageImpl(CPDF_PageRenderContext* context,
 
   context->context_->AppendLayer(pPage, matrix);
 
-  if (flags & FPDF_ANNOT) {
+  // EmbedPDF: annotations (FPDF_ANNOT) and form field widgets
+  // (EPDF_RENDER_WIDGETS) are drawn independently, so a page picture can hold
+  // either, both or neither: a viewer paints its own layers over the rest.
+  const bool bShowAnnots = !!(flags & FPDF_ANNOT);
+  const bool bShowWidget = !!(flags & EPDF_RENDER_WIDGETS);
+  if (bShowAnnots || bShowWidget) {
     auto pOwnedList = std::make_unique<CPDF_AnnotList>(pPage);
     CPDF_AnnotList* pList = pOwnedList.get();
     context->annots_ = std::move(pOwnedList);
@@ -80,11 +85,8 @@ void RenderPageImpl(CPDF_PageRenderContext* context,
     is_printing |= context->device_->GetDeviceType() == DeviceType::kPrinter;
 #endif
 
-    // EmbedPDF: widgets only when asked (EPDF_RENDER_WIDGETS), so a page
-    // picture a viewer paints its own field layer over stays without them.
-    const bool bShowWidget = !!(flags & EPDF_RENDER_WIDGETS);
     pList->DisplayAnnots(context->context_.get(), is_printing, matrix,
-                         bShowWidget);
+                         bShowAnnots, bShowWidget);
   }
 
   context->renderer_ = std::make_unique<CPDF_ProgressiveRenderer>(

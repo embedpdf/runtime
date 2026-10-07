@@ -27,9 +27,12 @@ class CPDF_AnnotList final : public CPDF_PageRenderContext::AnnotListIface {
   explicit CPDF_AnnotList(CPDF_Page* pPage);
   ~CPDF_AnnotList() override;
 
+  // Draws the annotations that aren't widgets when |bShowAnnots|, then the
+  // widgets when |bShowWidget|, so a caller can draw either, both or neither.
   void DisplayAnnots(CPDF_RenderContext* context,
                      bool bPrinting,
                      const CFX_Matrix& mtUser2Device,
+                     bool bShowAnnots,
                      bool bShowWidget);
 
   size_t Count() const { return annot_list_.size(); }

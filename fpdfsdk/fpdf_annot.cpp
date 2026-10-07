@@ -18,6 +18,7 @@
 #include <vector>
 
 #include "constants/annotation_common.h"
+#include "constants/form_fields.h"
 #include "core/fdrm/fx_crypt.h"
 #include "core/fpdfapi/edit/cpdf_contentstream_write_utils.h"
 #include "core/fpdfapi/edit/cpdf_pagecontentgenerator.h"
@@ -48,6 +49,7 @@
 #include "core/fpdfdoc/cpdf_annot.h"
 #include "core/fpdfdoc/cpdf_annot_rotation.h"
 #include "core/fpdfdoc/cpdf_color_utils.h"
+#include "core/fpdfdoc/cpdf_embed_metadata.h"
 #include "core/fpdfdoc/cpdf_formfield.h"
 #include "core/fpdfdoc/cpdf_generateap.h"
 #include "core/fpdfdoc/cpdf_interactiveform.h"
@@ -539,40 +541,6 @@ RetainPtr<CPDF_Dictionary> GetMutableAnnotDictFromFPDFAnnotation(
     FPDF_ANNOTATION annot) {
   CPDF_AnnotContext* context = CPDFAnnotContextFromFPDFAnnotation(annot);
   return context ? context->GetMutableAnnotDict() : nullptr;
-}
-
-constexpr char kEmbedMetadataKey[] = "EMBD_Metadata";
-constexpr char kEmbedMetadataCustomJSONKey[] = "CustomJSON";
-
-RetainPtr<const CPDF_Dictionary> GetEmbedMetadataDict(
-    const CPDF_Dictionary* annot_dict) {
-  return annot_dict ? annot_dict->GetDictFor(kEmbedMetadataKey) : nullptr;
-}
-
-RetainPtr<CPDF_Dictionary> GetOrCreateEmbedMetadataDict(
-    RetainPtr<CPDF_Dictionary> annot_dict) {
-  if (!annot_dict) {
-    return nullptr;
-  }
-
-  RetainPtr<CPDF_Dictionary> metadata =
-      annot_dict->GetMutableDictFor(kEmbedMetadataKey);
-  if (!metadata) {
-    metadata = annot_dict->SetNewFor<CPDF_Dictionary>(kEmbedMetadataKey);
-  }
-  return metadata;
-}
-
-bool EmbedMetadataIsEmpty(const CPDF_Dictionary* metadata) {
-  return !metadata || metadata->size() == 0;
-}
-
-void RemoveEmbedMetadataIfEmpty(RetainPtr<CPDF_Dictionary> annot_dict) {
-  RetainPtr<const CPDF_Dictionary> metadata =
-      GetEmbedMetadataDict(annot_dict.Get());
-  if (EmbedMetadataIsEmpty(metadata.Get())) {
-    annot_dict->RemoveFor(kEmbedMetadataKey);
-  }
 }
 
 // Promotes page |page_index| of |pdf| (see EPDFPage_PromoteInlineAnnotsRaw()):
@@ -1828,8 +1796,7 @@ EPDFAnnot_SetNumberValue(FPDF_ANNOTATION annot,
 
 FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV
 EPDFAnnot_HasEmbedMetadata(FPDF_ANNOTATION annot) {
-  const CPDF_Dictionary* annot_dict = GetAnnotDictFromFPDFAnnotation(annot);
-  return !!GetEmbedMetadataDict(annot_dict);
+  return !!fpdfdoc::GetEmbedMetadata(GetAnnotDictFromFPDFAnnotation(annot));
 }
 
 FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV
@@ -1840,7 +1807,7 @@ EPDFAnnot_ClearEmbedMetadata(FPDF_ANNOTATION annot) {
     return false;
   }
 
-  annot_dict->RemoveFor(kEmbedMetadataKey);
+  fpdfdoc::RemoveEmbedMetadata(annot_dict.Get());
   return true;
 }
 
@@ -1852,14 +1819,7 @@ EPDFAnnot_ClearEmbedMetadataKey(FPDF_ANNOTATION annot, FPDF_BYTESTRING key) {
     return false;
   }
 
-  RetainPtr<CPDF_Dictionary> metadata =
-      annot_dict->GetMutableDictFor(kEmbedMetadataKey);
-  if (!metadata) {
-    return true;
-  }
-
-  metadata->RemoveFor(key);
-  RemoveEmbedMetadataIfEmpty(annot_dict);
+  fpdfdoc::RemoveEmbedMetadataKey(annot_dict.Get(), key);
   return true;
 }
 
@@ -1867,18 +1827,15 @@ FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV
 EPDFAnnot_SetEmbedMetadataString(FPDF_ANNOTATION annot,
                                  FPDF_BYTESTRING key,
                                  FPDF_WIDESTRING value) {
-  if (!key) {
+  RetainPtr<CPDF_Dictionary> annot_dict =
+      GetMutableAnnotDictFromFPDFAnnotation(annot);
+  if (!annot_dict || !key) {
     return false;
   }
 
-  RetainPtr<CPDF_Dictionary> metadata = GetOrCreateEmbedMetadataDict(
-      GetMutableAnnotDictFromFPDFAnnotation(annot));
-  if (!metadata) {
-    return false;
-  }
-
-  metadata->SetNewFor<CPDF_String>(
-      key, UNSAFE_BUFFERS(WideStringFromFPDFWideString(value).AsStringView()));
+  fpdfdoc::SetEmbedMetadataString(
+      annot_dict.Get(), key,
+      UNSAFE_BUFFERS(WideStringFromFPDFWideString(value)));
   return true;
 }
 
@@ -1887,19 +1844,16 @@ EPDFAnnot_GetEmbedMetadataString(FPDF_ANNOTATION annot,
                                  FPDF_BYTESTRING key,
                                  FPDF_WCHAR* buffer,
                                  unsigned long buflen) {
-  if (!key) {
-    return 0;
-  }
-
   const CPDF_Dictionary* annot_dict = GetAnnotDictFromFPDFAnnotation(annot);
-  if (!annot_dict) {
+  if (!annot_dict || !key) {
     return 0;
   }
 
-  RetainPtr<const CPDF_Dictionary> metadata = GetEmbedMetadataDict(annot_dict);
+  RetainPtr<const CPDF_Dictionary> metadata =
+      fpdfdoc::GetEmbedMetadata(annot_dict);
   // SAFETY: required from caller.
   return Utf16EncodeMaybeCopyAndReturnLength(
-      metadata ? metadata->GetUnicodeTextFor(key) : WideString(),
+      fpdfdoc::GetEmbedMetadataString(metadata.Get(), key),
       UNSAFE_BUFFERS(SpanFromFPDFApiArgs(buffer, buflen)));
 }
 
@@ -1907,17 +1861,13 @@ FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV
 EPDFAnnot_SetEmbedMetadataNumber(FPDF_ANNOTATION annot,
                                  FPDF_BYTESTRING key,
                                  float value) {
-  if (!key) {
+  RetainPtr<CPDF_Dictionary> annot_dict =
+      GetMutableAnnotDictFromFPDFAnnotation(annot);
+  if (!annot_dict || !key) {
     return false;
   }
 
-  RetainPtr<CPDF_Dictionary> metadata = GetOrCreateEmbedMetadataDict(
-      GetMutableAnnotDictFromFPDFAnnotation(annot));
-  if (!metadata) {
-    return false;
-  }
-
-  metadata->SetNewFor<CPDF_Number>(key, value);
+  fpdfdoc::SetEmbedMetadataNumber(annot_dict.Get(), key, value);
   return true;
 }
 
@@ -1930,35 +1880,21 @@ EPDFAnnot_GetEmbedMetadataNumber(FPDF_ANNOTATION annot,
   }
 
   RetainPtr<const CPDF_Dictionary> metadata =
-      GetEmbedMetadataDict(GetAnnotDictFromFPDFAnnotation(annot));
-  if (!metadata) {
-    return false;
-  }
-
-  RetainPtr<const CPDF_Object> object = metadata->GetObjectFor(key);
-  if (!object || object->GetType() != CPDF_Object::Type::kNumber) {
-    return false;
-  }
-
-  *value = object->GetNumber();
-  return true;
+      fpdfdoc::GetEmbedMetadata(GetAnnotDictFromFPDFAnnotation(annot));
+  return fpdfdoc::GetEmbedMetadataNumber(metadata.Get(), key, value);
 }
 
 FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV
 EPDFAnnot_SetEmbedMetadataBoolean(FPDF_ANNOTATION annot,
                                   FPDF_BYTESTRING key,
                                   FPDF_BOOL value) {
-  if (!key) {
+  RetainPtr<CPDF_Dictionary> annot_dict =
+      GetMutableAnnotDictFromFPDFAnnotation(annot);
+  if (!annot_dict || !key) {
     return false;
   }
 
-  RetainPtr<CPDF_Dictionary> metadata = GetOrCreateEmbedMetadataDict(
-      GetMutableAnnotDictFromFPDFAnnotation(annot));
-  if (!metadata) {
-    return false;
-  }
-
-  metadata->SetNewFor<CPDF_Boolean>(key, !!value);
+  fpdfdoc::SetEmbedMetadataBoolean(annot_dict.Get(), key, !!value);
   return true;
 }
 
@@ -1971,17 +1907,12 @@ EPDFAnnot_GetEmbedMetadataBoolean(FPDF_ANNOTATION annot,
   }
 
   RetainPtr<const CPDF_Dictionary> metadata =
-      GetEmbedMetadataDict(GetAnnotDictFromFPDFAnnotation(annot));
-  if (!metadata) {
+      fpdfdoc::GetEmbedMetadata(GetAnnotDictFromFPDFAnnotation(annot));
+  bool boolean_value = false;
+  if (!fpdfdoc::GetEmbedMetadataBoolean(metadata.Get(), key, &boolean_value)) {
     return false;
   }
-
-  RetainPtr<const CPDF_Object> object = metadata->GetObjectFor(key);
-  if (!object || object->GetType() != CPDF_Object::Type::kBoolean) {
-    return false;
-  }
-
-  *value = object->GetInteger() != 0;
+  *value = boolean_value;
   return true;
 }
 
@@ -1989,33 +1920,19 @@ FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV
 EPDFAnnot_SetEmbedMetadataRect(FPDF_ANNOTATION annot,
                                FPDF_BYTESTRING key,
                                const FS_RECTF* rect) {
-  if (!key) {
-    return false;
-  }
-
   RetainPtr<CPDF_Dictionary> annot_dict =
       GetMutableAnnotDictFromFPDFAnnotation(annot);
-  if (!annot_dict) {
+  if (!annot_dict || !key) {
     return false;
   }
 
   if (!rect) {
-    RetainPtr<CPDF_Dictionary> metadata =
-        annot_dict->GetMutableDictFor(kEmbedMetadataKey);
-    if (metadata) {
-      metadata->RemoveFor(key);
-      RemoveEmbedMetadataIfEmpty(annot_dict);
-    }
+    fpdfdoc::RemoveEmbedMetadataKey(annot_dict.Get(), key);
     return true;
   }
 
-  RetainPtr<CPDF_Dictionary> metadata =
-      GetOrCreateEmbedMetadataDict(annot_dict);
-  if (!metadata) {
-    return false;
-  }
-
-  metadata->SetRectFor(key, CFXFloatRectFromFSRectF(*rect));
+  fpdfdoc::SetEmbedMetadataRect(annot_dict.Get(), key,
+                                CFXFloatRectFromFSRectF(*rect));
   return true;
 }
 
@@ -2028,32 +1945,27 @@ EPDFAnnot_GetEmbedMetadataRect(FPDF_ANNOTATION annot,
   }
 
   RetainPtr<const CPDF_Dictionary> metadata =
-      GetEmbedMetadataDict(GetAnnotDictFromFPDFAnnotation(annot));
-  if (!metadata) {
+      fpdfdoc::GetEmbedMetadata(GetAnnotDictFromFPDFAnnotation(annot));
+  CFX_FloatRect box;
+  if (!fpdfdoc::GetEmbedMetadataRect(metadata.Get(), key, &box)) {
     return false;
   }
-
-  RetainPtr<const CPDF_Object> object = metadata->GetObjectFor(key);
-  if (!object || object->GetType() != CPDF_Object::Type::kArray) {
-    return false;
-  }
-
-  *rect = FSRectFFromCFXFloatRect(metadata->GetRectFor(key));
+  *rect = FSRectFFromCFXFloatRect(box);
   return true;
 }
 
 FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV
 EPDFAnnot_SetEmbedMetadataJSON(FPDF_ANNOTATION annot, FPDF_WIDESTRING json) {
-  return EPDFAnnot_SetEmbedMetadataString(annot, kEmbedMetadataCustomJSONKey,
-                                          json);
+  return EPDFAnnot_SetEmbedMetadataString(
+      annot, fpdfdoc::kEmbedMetadataCustomJSONKey, json);
 }
 
 FPDF_EXPORT unsigned long FPDF_CALLCONV
 EPDFAnnot_GetEmbedMetadataJSON(FPDF_ANNOTATION annot,
                                FPDF_WCHAR* buffer,
                                unsigned long buflen) {
-  return EPDFAnnot_GetEmbedMetadataString(annot, kEmbedMetadataCustomJSONKey,
-                                          buffer, buflen);
+  return EPDFAnnot_GetEmbedMetadataString(
+      annot, fpdfdoc::kEmbedMetadataCustomJSONKey, buffer, buflen);
 }
 
 FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV
@@ -2063,6 +1975,8 @@ EPDFDocument_ClearEmbedMetadata(FPDF_DOCUMENT document) {
     return false;
   }
 
+  // Every annotation, and up each widget's /Parent chain: the fields it
+  // belongs to, even one the field tree doesn't list.
   for (int page_index = 0; page_index < pdf->GetPageCount(); ++page_index) {
     RetainPtr<CPDF_Dictionary> page_dict =
         pdf->GetMutablePageDictionary(page_index);
@@ -2078,9 +1992,45 @@ EPDFDocument_ClearEmbedMetadata(FPDF_DOCUMENT document) {
     for (size_t annot_index = 0; annot_index < annots->size(); ++annot_index) {
       RetainPtr<CPDF_Dictionary> annot_dict =
           annots->GetMutableDictAt(annot_index);
-      if (annot_dict) {
-        annot_dict->RemoveFor(kEmbedMetadataKey);
+      if (!annot_dict) {
+        continue;
       }
+      fpdfdoc::RemoveEmbedMetadata(annot_dict.Get());
+      if (annot_dict->GetNameFor(pdfium::annotation::kSubtype) != "Widget") {
+        continue;
+      }
+      std::set<const CPDF_Dictionary*> chain = {annot_dict.Get()};
+      RetainPtr<CPDF_Dictionary> parent =
+          annot_dict->GetMutableDictFor(pdfium::form_fields::kParent);
+      while (parent && chain.insert(parent.Get()).second) {
+        fpdfdoc::RemoveEmbedMetadata(parent.Get());
+        parent = parent->GetMutableDictFor(pdfium::form_fields::kParent);
+      }
+    }
+  }
+
+  // Every field in the field tree, including those no page shows.
+  RetainPtr<CPDF_Dictionary> root = pdf->GetMutableRoot();
+  RetainPtr<CPDF_Dictionary> acro_form =
+      root ? root->GetMutableDictFor("AcroForm") : nullptr;
+  RetainPtr<CPDF_Array> fields =
+      acro_form ? acro_form->GetMutableArrayFor("Fields") : nullptr;
+  std::vector<RetainPtr<CPDF_Dictionary>> pending;
+  for (size_t i = 0; fields && i < fields->size(); ++i) {
+    pending.push_back(fields->GetMutableDictAt(i));
+  }
+  std::set<const CPDF_Dictionary*> visited;
+  while (!pending.empty()) {
+    RetainPtr<CPDF_Dictionary> field = std::move(pending.back());
+    pending.pop_back();
+    if (!field || !visited.insert(field.Get()).second) {
+      continue;
+    }
+    fpdfdoc::RemoveEmbedMetadata(field.Get());
+    RetainPtr<CPDF_Array> kids =
+        field->GetMutableArrayFor(pdfium::form_fields::kKids);
+    for (size_t i = 0; kids && i < kids->size(); ++i) {
+      pending.push_back(kids->GetMutableDictAt(i));
     }
   }
 

@@ -27,6 +27,7 @@
 #include "core/fpdfapi/parser/fpdf_parser_decode.h"
 #include "core/fpdfdoc/cpdf_aaction.h"
 #include "core/fpdfdoc/cpdf_action.h"
+#include "core/fpdfdoc/cpdf_embed_metadata.h"
 #include "core/fpdfdoc/cpdf_formcontrol.h"
 #include "core/fpdfdoc/cpdf_formfield.h"
 #include "core/fpdfdoc/cpdf_generateap.h"
@@ -92,6 +93,8 @@ struct FieldRecord {
   WideString fqn;
   WideString alternate_name;
   WideString mapping_name;
+  // A detached copy of the field's own /EMBD_Metadata, or null.
+  RetainPtr<const CPDF_Dictionary> embed_metadata;
   FieldValueRecord value;
   FieldValueRecord default_value;
   std::vector<OptionRecord> options;
@@ -231,6 +234,10 @@ FieldRecord SnapshotField(
   record.fqn = field->GetFullName();
   record.alternate_name = field->GetAlternateName();
   record.mapping_name = field->GetMappingName();
+  if (RetainPtr<const CPDF_Dictionary> metadata =
+          fpdfdoc::GetEmbedMetadata(field_dict)) {
+    record.embed_metadata = ToDictionary(metadata->CloneDirectObject());
+  }
   record.value = SnapshotFieldValue(
       CPDF_FormField::GetFieldAttrForDict(field_dict, pdfium::form_fields::kV));
   record.default_value = SnapshotFieldValue(CPDF_FormField::GetFieldAttrForDict(
@@ -1849,6 +1856,67 @@ EPDFForm_GetFieldMappingName(EPDF_FORM_MODEL model,
   }
   return Utf16EncodeMaybeCopyAndReturnLength(
       field->mapping_name, UNSAFE_BUFFERS(SpanFromFPDFApiArgs(buffer, buflen)));
+}
+
+FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV
+EPDFForm_HasFieldEmbedMetadata(EPDF_FORM_MODEL model, int field_index) {
+  const FieldRecord* field = GetFieldRecord(model, field_index);
+  return field && field->embed_metadata;
+}
+
+FPDF_EXPORT unsigned long FPDF_CALLCONV
+EPDFForm_GetFieldEmbedMetadataString(EPDF_FORM_MODEL model,
+                                     int field_index,
+                                     FPDF_BYTESTRING key,
+                                     FPDF_WCHAR* buffer,
+                                     unsigned long buflen) {
+  const FieldRecord* field = GetFieldRecord(model, field_index);
+  if (!field || !key) {
+    return 0;
+  }
+  return Utf16EncodeMaybeCopyAndReturnLength(
+      fpdfdoc::GetEmbedMetadataString(field->embed_metadata.Get(), key),
+      UNSAFE_BUFFERS(SpanFromFPDFApiArgs(buffer, buflen)));
+}
+
+FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV
+EPDFForm_GetFieldEmbedMetadataNumber(EPDF_FORM_MODEL model,
+                                     int field_index,
+                                     FPDF_BYTESTRING key,
+                                     float* value) {
+  const FieldRecord* field = GetFieldRecord(model, field_index);
+  if (!field || !key || !value) {
+    return false;
+  }
+  return fpdfdoc::GetEmbedMetadataNumber(field->embed_metadata.Get(), key,
+                                         value);
+}
+
+FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV
+EPDFForm_GetFieldEmbedMetadataBoolean(EPDF_FORM_MODEL model,
+                                      int field_index,
+                                      FPDF_BYTESTRING key,
+                                      FPDF_BOOL* value) {
+  const FieldRecord* field = GetFieldRecord(model, field_index);
+  if (!field || !key || !value) {
+    return false;
+  }
+  bool boolean_value = false;
+  if (!fpdfdoc::GetEmbedMetadataBoolean(field->embed_metadata.Get(), key,
+                                        &boolean_value)) {
+    return false;
+  }
+  *value = boolean_value;
+  return true;
+}
+
+FPDF_EXPORT unsigned long FPDF_CALLCONV
+EPDFForm_GetFieldEmbedMetadataJSON(EPDF_FORM_MODEL model,
+                                   int field_index,
+                                   FPDF_WCHAR* buffer,
+                                   unsigned long buflen) {
+  return EPDFForm_GetFieldEmbedMetadataString(
+      model, field_index, fpdfdoc::kEmbedMetadataCustomJSONKey, buffer, buflen);
 }
 
 FPDF_EXPORT int FPDF_CALLCONV EPDFForm_GetFieldValueKind(EPDF_FORM_MODEL model,
@@ -3619,6 +3687,145 @@ EPDFForm_SetFieldMappingName(FPDF_DOCUMENT document,
                              uint32_t field_objnum,
                              FPDF_WIDESTRING value) {
   return SetOptionalFieldText(document, field_objnum, value, "TM");
+}
+
+namespace {
+
+// Writes the field's own /EMBD_Metadata, on |field_objnum|'s dictionary and
+// never a parent's, through |write|. When |unchanged| finds the metadata
+// already as asked, the field is left untouched, so a layer doesn't take it
+// over for a write that changes nothing.
+template <typename Unchanged, typename Write>
+FPDF_BOOL WriteFieldEmbedMetadata(FPDF_DOCUMENT document,
+                                  uint32_t field_objnum,
+                                  Unchanged unchanged,
+                                  Write write) {
+  ScopedFPDFDocumentView document_view(document);
+  CPDF_Document* doc = document_view.Get();
+  if (!doc || field_objnum == 0) {
+    return false;
+  }
+  RetainPtr<const CPDF_Dictionary> field = ResolveFieldDict(doc, field_objnum);
+  if (!field || InheritedFieldType(field.Get()).IsEmpty()) {
+    return false;
+  }
+  if (unchanged(fpdfdoc::GetEmbedMetadata(field.Get()).Get())) {
+    return true;
+  }
+  RetainPtr<CPDF_Dictionary> mutable_field =
+      ToDictionary(doc->GetMutableIndirectObject(field_objnum));
+  if (!mutable_field) {
+    return false;
+  }
+  write(mutable_field.Get());
+  return true;
+}
+
+// The value at |key| in |metadata| (which may be null), or null.
+RetainPtr<const CPDF_Object> EmbedMetadataValue(const CPDF_Dictionary* metadata,
+                                                ByteStringView key) {
+  return metadata ? metadata->GetObjectFor(key) : nullptr;
+}
+
+}  // namespace
+
+FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV
+EPDFForm_SetFieldEmbedMetadataString(FPDF_DOCUMENT document,
+                                     uint32_t field_objnum,
+                                     FPDF_BYTESTRING key,
+                                     FPDF_WIDESTRING value) {
+  if (!key) {
+    return false;
+  }
+  const WideString text =
+      value ? WideStringFromFPDFWideString(value) : WideString();
+  return WriteFieldEmbedMetadata(
+      document, field_objnum,
+      [&](const CPDF_Dictionary* metadata) {
+        RetainPtr<const CPDF_Object> current =
+            EmbedMetadataValue(metadata, key);
+        return current && current->IsString() &&
+               current->GetUnicodeText() == text;
+      },
+      [&](CPDF_Dictionary* owner) {
+        fpdfdoc::SetEmbedMetadataString(owner, key, text);
+      });
+}
+
+FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV
+EPDFForm_SetFieldEmbedMetadataNumber(FPDF_DOCUMENT document,
+                                     uint32_t field_objnum,
+                                     FPDF_BYTESTRING key,
+                                     float value) {
+  if (!key) {
+    return false;
+  }
+  return WriteFieldEmbedMetadata(
+      document, field_objnum,
+      [&](const CPDF_Dictionary* metadata) {
+        RetainPtr<const CPDF_Object> current =
+            EmbedMetadataValue(metadata, key);
+        return current && current->IsNumber() && current->GetNumber() == value;
+      },
+      [&](CPDF_Dictionary* owner) {
+        fpdfdoc::SetEmbedMetadataNumber(owner, key, value);
+      });
+}
+
+FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV
+EPDFForm_SetFieldEmbedMetadataBoolean(FPDF_DOCUMENT document,
+                                      uint32_t field_objnum,
+                                      FPDF_BYTESTRING key,
+                                      FPDF_BOOL value) {
+  if (!key) {
+    return false;
+  }
+  const bool boolean_value = !!value;
+  return WriteFieldEmbedMetadata(
+      document, field_objnum,
+      [&](const CPDF_Dictionary* metadata) {
+        RetainPtr<const CPDF_Object> current =
+            EmbedMetadataValue(metadata, key);
+        return current && current->IsBoolean() &&
+               (current->GetInteger() != 0) == boolean_value;
+      },
+      [&](CPDF_Dictionary* owner) {
+        fpdfdoc::SetEmbedMetadataBoolean(owner, key, boolean_value);
+      });
+}
+
+FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV
+EPDFForm_SetFieldEmbedMetadataJSON(FPDF_DOCUMENT document,
+                                   uint32_t field_objnum,
+                                   FPDF_WIDESTRING json) {
+  return EPDFForm_SetFieldEmbedMetadataString(
+      document, field_objnum, fpdfdoc::kEmbedMetadataCustomJSONKey, json);
+}
+
+FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV
+EPDFForm_ClearFieldEmbedMetadataKey(FPDF_DOCUMENT document,
+                                    uint32_t field_objnum,
+                                    FPDF_BYTESTRING key) {
+  if (!key) {
+    return false;
+  }
+  return WriteFieldEmbedMetadata(
+      document, field_objnum,
+      [&](const CPDF_Dictionary* metadata) {
+        return !metadata || !metadata->KeyExist(key);
+      },
+      [&](CPDF_Dictionary* owner) {
+        fpdfdoc::RemoveEmbedMetadataKey(owner, key);
+      });
+}
+
+FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV
+EPDFForm_ClearFieldEmbedMetadata(FPDF_DOCUMENT document,
+                                 uint32_t field_objnum) {
+  return WriteFieldEmbedMetadata(
+      document, field_objnum,
+      [](const CPDF_Dictionary* metadata) { return !metadata; },
+      [](CPDF_Dictionary* owner) { fpdfdoc::RemoveEmbedMetadata(owner); });
 }
 
 FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV

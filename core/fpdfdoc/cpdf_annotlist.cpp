@@ -220,9 +220,12 @@ void CPDF_AnnotList::DisplayPass(CPDF_RenderContext* context,
 void CPDF_AnnotList::DisplayAnnots(CPDF_RenderContext* context,
                                    bool bPrinting,
                                    const CFX_Matrix& mtUser2Device,
+                                   bool bShowAnnots,
                                    bool bShowWidget) {
   CHECK(context);
-  DisplayPass(context, bPrinting, mtUser2Device, false);
+  if (bShowAnnots) {
+    DisplayPass(context, bPrinting, mtUser2Device, false);
+  }
   if (bShowWidget) {
     DisplayPass(context, bPrinting, mtUser2Device, true);
   }

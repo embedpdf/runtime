@@ -161,6 +161,54 @@ EPDFForm_GetFieldMappingName(EPDF_FORM_MODEL model,
                              FPDF_WCHAR* buffer,
                              unsigned long buflen);
 
+// Experimental EmbedPDF Extension API.
+// The field's own /EMBD_Metadata dictionary, as the model read it: EmbedPDF's
+// keys on the field dictionary that holds /T and /V, never inherited from a
+// parent field. These mirror the EPDFAnnot_*EmbedMetadata* reads, so a field
+// and an annotation are read the same way.
+//
+// Returns true if the field has an /EMBD_Metadata dictionary.
+FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV
+EPDFForm_HasFieldEmbedMetadata(EPDF_FORM_MODEL model, int field_index);
+
+// Experimental EmbedPDF Extension API.
+// Copy the string at |key| in the field's /EMBD_Metadata into |buffer| as
+// UTF-16LE. Same conventions as EPDFForm_GetFieldName(); a missing key reads
+// as the empty string.
+FPDF_EXPORT unsigned long FPDF_CALLCONV
+EPDFForm_GetFieldEmbedMetadataString(EPDF_FORM_MODEL model,
+                                     int field_index,
+                                     FPDF_BYTESTRING key,
+                                     FPDF_WCHAR* buffer,
+                                     unsigned long buflen);
+
+// Experimental EmbedPDF Extension API.
+// Read the number at |key| in the field's /EMBD_Metadata. Returns false when
+// the key is missing or holds another type.
+FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV
+EPDFForm_GetFieldEmbedMetadataNumber(EPDF_FORM_MODEL model,
+                                     int field_index,
+                                     FPDF_BYTESTRING key,
+                                     float* value);
+
+// Experimental EmbedPDF Extension API.
+// Read the boolean at |key| in the field's /EMBD_Metadata. Returns false when
+// the key is missing or holds another type.
+FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV
+EPDFForm_GetFieldEmbedMetadataBoolean(EPDF_FORM_MODEL model,
+                                      int field_index,
+                                      FPDF_BYTESTRING key,
+                                      FPDF_BOOL* value);
+
+// Experimental EmbedPDF Extension API.
+// Copy the app's own data in the field's /EMBD_Metadata (/CustomJSON) into
+// |buffer| as UTF-16LE. Same conventions as EPDFForm_GetFieldName().
+FPDF_EXPORT unsigned long FPDF_CALLCONV
+EPDFForm_GetFieldEmbedMetadataJSON(EPDF_FORM_MODEL model,
+                                   int field_index,
+                                   FPDF_WCHAR* buffer,
+                                   unsigned long buflen);
+
 // String-oriented PDF field value shapes. Text strings and button name
 // objects are exposed as SCALAR. A multi-select choice array is ARRAY,
 // including an empty array. NONE means the inherited entry is absent or
@@ -734,6 +782,55 @@ FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV
 EPDFForm_SetFieldMappingName(FPDF_DOCUMENT document,
                              uint32_t field_objnum,
                              FPDF_WIDESTRING value);
+
+// Experimental EmbedPDF Extension API.
+// Writes to the field's own /EMBD_Metadata dictionary, on the field dictionary
+// |field_objnum| names, never on a parent field. These mirror the
+// EPDFAnnot_*EmbedMetadata* writes: the first write creates /EMBD_Metadata,
+// and removing its last key removes it. A write that changes nothing leaves
+// the field untouched. Each returns false when |field_objnum| isn't a field.
+//
+// Set a UTF-16LE string at |key|.
+FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV
+EPDFForm_SetFieldEmbedMetadataString(FPDF_DOCUMENT document,
+                                     uint32_t field_objnum,
+                                     FPDF_BYTESTRING key,
+                                     FPDF_WIDESTRING value);
+
+// Experimental EmbedPDF Extension API.
+// Set a number at |key| in the field's /EMBD_Metadata.
+FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV
+EPDFForm_SetFieldEmbedMetadataNumber(FPDF_DOCUMENT document,
+                                     uint32_t field_objnum,
+                                     FPDF_BYTESTRING key,
+                                     float value);
+
+// Experimental EmbedPDF Extension API.
+// Set a boolean at |key| in the field's /EMBD_Metadata.
+FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV
+EPDFForm_SetFieldEmbedMetadataBoolean(FPDF_DOCUMENT document,
+                                      uint32_t field_objnum,
+                                      FPDF_BYTESTRING key,
+                                      FPDF_BOOL value);
+
+// Experimental EmbedPDF Extension API.
+// Set the app's own data (/CustomJSON) in the field's /EMBD_Metadata.
+FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV
+EPDFForm_SetFieldEmbedMetadataJSON(FPDF_DOCUMENT document,
+                                   uint32_t field_objnum,
+                                   FPDF_WIDESTRING json);
+
+// Experimental EmbedPDF Extension API.
+// Remove |key| from the field's /EMBD_Metadata.
+FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV
+EPDFForm_ClearFieldEmbedMetadataKey(FPDF_DOCUMENT document,
+                                    uint32_t field_objnum,
+                                    FPDF_BYTESTRING key);
+
+// Experimental EmbedPDF Extension API.
+// Remove the field's /EMBD_Metadata dictionary.
+FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV
+EPDFForm_ClearFieldEmbedMetadata(FPDF_DOCUMENT document, uint32_t field_objnum);
 
 // Experimental EmbedPDF Extension API.
 // Replace a choice field's effective /Opt with |count| options. Entries where

@@ -45,6 +45,7 @@
 #include "core/fpdfdoc/cpdf_cloudy_border.h"
 #include "core/fpdfdoc/cpdf_color_utils.h"
 #include "core/fpdfdoc/cpdf_defaultappearance.h"
+#include "core/fpdfdoc/cpdf_embed_metadata.h"
 #include "core/fpdfdoc/cpdf_formfield.h"
 #include "core/fpdfdoc/cpdf_interactiveform.h"
 #include "core/fpdfdoc/cpdf_richtext.h"
@@ -626,17 +627,12 @@ AnnotationDimensionsAndColor GetAnnotationDimensionsAndColor(
   };
 }
 
-constexpr char kEmbedMetadataKey[] = "EMBD_Metadata";
 constexpr char kEmbedMetadataVerticalAlignmentKey[] = "VerticalAlignment";
-
-RetainPtr<const CPDF_Dictionary> GetEmbedMetadataDict(
-    const CPDF_Dictionary* annot_dict) {
-  return annot_dict ? annot_dict->GetDictFor(kEmbedMetadataKey) : nullptr;
-}
 
 int GetEmbedMetadataIntegerFor(const CPDF_Dictionary* annot_dict,
                                ByteStringView key) {
-  RetainPtr<const CPDF_Dictionary> metadata = GetEmbedMetadataDict(annot_dict);
+  RetainPtr<const CPDF_Dictionary> metadata =
+      fpdfdoc::GetEmbedMetadata(annot_dict);
   return metadata ? metadata->GetIntegerFor(key) : 0;
 }
 

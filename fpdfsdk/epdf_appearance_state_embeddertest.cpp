@@ -4,9 +4,9 @@
 // Appearance states and modes. A caller can list the states a mode stores
 // (EPDFAnnot_GetAppearanceState*) and draw any one of them whatever /AS says
 // (EPDF_RenderAnnotBitmap's `state`), so a viewer has both looks of a check
-// box before anyone clicks it. A page render draws widgets only when asked
-// (EPDF_RENDER_WIDGETS). And the check box and radio button generators draw
-// the symbol /MK /CA names, in the /DA colour.
+// box before anyone clicks it. A page render draws annotations (FPDF_ANNOT)
+// and widgets (EPDF_RENDER_WIDGETS) independently. And the check box and
+// radio button generators draw the symbol /MK /CA names, in the /DA colour.
 
 #include <stdint.h>
 
@@ -272,7 +272,8 @@ TEST_F(EPDFAppearanceStateEmbedderTest, UnrotatedRenderTakesAState) {
       "Maybe", /*degrees=*/0, /*box=*/nullptr, &identity, 0));
 }
 
-TEST_F(EPDFAppearanceStateEmbedderTest, PageRenderDrawsWidgetsOnlyWhenAsked) {
+TEST_F(EPDFAppearanceStateEmbedderTest,
+       PageRenderDrawsAnnotationsAndWidgetsIndependently) {
   ScopedFPDFDocument doc = OpenFixture();
   ASSERT_TRUE(doc);
   ScopedFPDFPage page(FPDF_LoadPage(doc.get(), 0));
@@ -295,22 +296,28 @@ TEST_F(EPDFAppearanceStateEmbedderTest, PageRenderDrawsWidgetsOnlyWhenAsked) {
     return bitmap;
   };
 
-  // Annotations without the flag: the square, not the widgets.
+  // Neither flag: the page content only.
+  ScopedFPDFBitmap content = render(0);
+  EXPECT_EQ(kWhite, PixelAt(content.get(), MiddleX(20), MiddleY(20)));
+  EXPECT_EQ(kWhite, PixelAt(content.get(), MiddleX(100), MiddleY(20)));
+
+  // Annotations only: the square, not the widgets.
   ScopedFPDFBitmap annotations = render(FPDF_ANNOT);
   EXPECT_EQ(kCyan, PixelAt(annotations.get(), MiddleX(100), MiddleY(20)));
   EXPECT_EQ(kWhite, PixelAt(annotations.get(), MiddleX(20), MiddleY(20)));
 
-  // With it: the visible widget in its current state; the hidden one stays
-  // hidden.
-  ScopedFPDFBitmap widgets = render(FPDF_ANNOT | EPDF_RENDER_WIDGETS);
-  EXPECT_EQ(kCyan, PixelAt(widgets.get(), MiddleX(100), MiddleY(20)));
+  // Widgets only: the visible widget in its current state, not the square.
+  // The hidden widget stays hidden.
+  ScopedFPDFBitmap widgets = render(EPDF_RENDER_WIDGETS);
   EXPECT_EQ(kGreen, PixelAt(widgets.get(), MiddleX(20), MiddleY(20)));
+  EXPECT_EQ(kWhite, PixelAt(widgets.get(), MiddleX(100), MiddleY(20)));
   EXPECT_EQ(kWhite, PixelAt(widgets.get(), MiddleX(160), MiddleY(20)));
 
-  // The flag alone draws no annotation at all.
-  ScopedFPDFBitmap content = render(EPDF_RENDER_WIDGETS);
-  EXPECT_EQ(kWhite, PixelAt(content.get(), MiddleX(20), MiddleY(20)));
-  EXPECT_EQ(kWhite, PixelAt(content.get(), MiddleX(100), MiddleY(20)));
+  // Both: everything the page shows.
+  ScopedFPDFBitmap both = render(FPDF_ANNOT | EPDF_RENDER_WIDGETS);
+  EXPECT_EQ(kCyan, PixelAt(both.get(), MiddleX(100), MiddleY(20)));
+  EXPECT_EQ(kGreen, PixelAt(both.get(), MiddleX(20), MiddleY(20)));
+  EXPECT_EQ(kWhite, PixelAt(both.get(), MiddleX(160), MiddleY(20)));
 
   // Drawing widgets writes nothing: the toggles without an appearance still
   // have none.

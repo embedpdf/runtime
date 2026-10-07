@@ -792,8 +792,10 @@ EPDFAnnot_GetEmbedMetadataJSON(FPDF_ANNOTATION annot,
                                unsigned long buflen);
 
 // Experimental EmbedPDF Extension API.
-// Removes /EMBD_Metadata from every annotation in |document|. This does not
-// remove standard annotation fields or appearance streams.
+// Removes /EMBD_Metadata from every annotation and every form field in
+// |document|: the fields in the field tree, and those a widget's /Parent chain
+// reaches. This does not remove standard annotation fields or appearance
+// streams.
 FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV
 EPDFDocument_ClearEmbedMetadata(FPDF_DOCUMENT document);
 

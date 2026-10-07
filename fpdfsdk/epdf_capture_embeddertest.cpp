@@ -34,6 +34,7 @@
 #include "public/fpdf_save.h"
 #include "public/fpdfview.h"
 #include "testing/embedder_test.h"
+#include "testing/fx_string_testhelpers.h"
 #include "testing/gmock/include/gmock/gmock.h"
 #include "testing/gtest/include/gtest/gtest.h"
 
@@ -679,6 +680,37 @@ TEST_F(EPDFCaptureEmbedderTest, MergedFieldComesBack) {
               ElementsAre(kFileSquare, kFileNote, kFilePopup, kFileReply,
                           kMergedField, kChildWidget));
   EXPECT_FALSE(DictOf(layer.get(), kMergedField)->KeyExist("Parent"));
+}
+
+// A field's own /EMBD_Metadata is part of its capture: deleting the field and
+// putting it back keeps it. `group.child` is a field whose widget is a
+// separate object, so only the field's dictionary holds it.
+TEST_F(EPDFCaptureEmbedderTest, FieldMetadataComesBackWithTheField) {
+  ScopedFPDFDocument layer = OpenLayer();
+  ASSERT_TRUE(layer);
+  ASSERT_TRUE(EPDFLayer_BeginTransaction(layer.get()));
+  ASSERT_TRUE(EPDFForm_SetFieldEmbedMetadataString(
+      layer.get(), kChildField, "GroupID", GetFPDFWideString(L"buyer").get()));
+  ASSERT_TRUE(EPDFLayer_CommitTransaction(layer.get()));
+
+  ASSERT_TRUE(EPDFLayer_BeginTransaction(layer.get()));
+  const std::vector<uint8_t> capture = ExportField(layer.get(), kChildField);
+  ASSERT_FALSE(capture.empty());
+  uint32_t detached[4] = {};
+  unsigned long count = 0;
+  ASSERT_TRUE(
+      EPDFForm_DeleteField(layer.get(), kChildField, detached, 4, &count));
+  ASSERT_TRUE(EPDFPage_RemoveAnnotRaw(layer.get(), 0, 5));
+  ASSERT_TRUE(EPDFLayer_CommitTransaction(layer.get()));
+
+  ASSERT_TRUE(EPDFLayer_BeginTransaction(layer.get()));
+  ASSERT_TRUE(ImportField(layer.get(), capture));
+  ASSERT_TRUE(EPDFLayer_CommitTransaction(layer.get()));
+  RetainPtr<const CPDF_Dictionary> metadata =
+      DictOf(layer.get(), kChildField)->GetDictFor("EMBD_Metadata");
+  ASSERT_TRUE(metadata);
+  EXPECT_EQ(L"buyer", metadata->GetUnicodeTextFor("GroupID"));
+  EXPECT_FALSE(DictOf(layer.get(), kChildWidget)->KeyExist("EMBD_Metadata"));
 }
 
 // A field that isn't terminal has no capture.

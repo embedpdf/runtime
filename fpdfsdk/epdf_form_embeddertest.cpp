@@ -1914,3 +1914,167 @@ TEST_F(EPDFFormEmbedderTest, AuthoringOnLayerIsDurable) {
   EPDFForm_CloseModel(model);
   FPDF_CloseDocument(second);
 }
+
+// A field's own /EMBD_Metadata, read and written the way an annotation's is.
+// In toggle_fields.pdf, object 4 is a text field merged with its widget, and
+// object 5 is a radio group whose field dictionary sits above its widgets
+// (objects 6 and 7), so no annotation handle reaches it.
+TEST_F(EPDFFormEmbedderTest, FieldEmbedMetadataReadsAndWrites) {
+  ASSERT_TRUE(OpenDocument("toggle_fields.pdf"));
+
+  auto read_string = [](EPDF_FORM_MODEL model, int index, const char* key) {
+    unsigned long length_bytes =
+        EPDFForm_GetFieldEmbedMetadataString(model, index, key, nullptr, 0);
+    std::vector<FPDF_WCHAR> buffer = GetFPDFWideStringBuffer(length_bytes);
+    EXPECT_EQ(length_bytes,
+              EPDFForm_GetFieldEmbedMetadataString(
+                  model, index, key, buffer.data(), length_bytes));
+    return GetPlatformWString(buffer.data());
+  };
+
+  for (uint32_t field : {4u, 5u}) {
+    SCOPED_TRACE(field);
+    EXPECT_TRUE(EPDFForm_SetFieldEmbedMetadataString(
+        document(), field, "GroupID", GetFPDFWideString(L"buyer").get()));
+    EXPECT_TRUE(EPDFForm_SetFieldEmbedMetadataNumber(document(), field,
+                                                     "Weight", 2.5f));
+    EXPECT_TRUE(EPDFForm_SetFieldEmbedMetadataBoolean(document(), field,
+                                                      "Locked", true));
+    EXPECT_TRUE(EPDFForm_SetFieldEmbedMetadataJSON(
+        document(), field, GetFPDFWideString(L"{\"a\":1}").get()));
+
+    EPDF_FORM_MODEL model = EPDFForm_LoadModel(document());
+    ASSERT_TRUE(model);
+    const int index = EPDFForm_GetFieldIndexByObjNum(model, field);
+    ASSERT_GE(index, 0);
+    EXPECT_TRUE(EPDFForm_HasFieldEmbedMetadata(model, index));
+    EXPECT_EQ(L"buyer", read_string(model, index, "GroupID"));
+    float number = 0;
+    EXPECT_TRUE(
+        EPDFForm_GetFieldEmbedMetadataNumber(model, index, "Weight", &number));
+    EXPECT_FLOAT_EQ(2.5f, number);
+    FPDF_BOOL boolean = false;
+    EXPECT_TRUE(EPDFForm_GetFieldEmbedMetadataBoolean(model, index, "Locked",
+                                                      &boolean));
+    EXPECT_TRUE(boolean);
+    EXPECT_EQ(L"{\"a\":1}",
+              GetWideString(EPDFForm_GetFieldEmbedMetadataJSON, model, index));
+
+    // A typed read succeeds only for its type, and a missing key reads as
+    // nothing.
+    EXPECT_FALSE(
+        EPDFForm_GetFieldEmbedMetadataNumber(model, index, "GroupID", &number));
+    EXPECT_FALSE(EPDFForm_GetFieldEmbedMetadataBoolean(model, index, "Weight",
+                                                       &boolean));
+    EXPECT_FALSE(
+        EPDFForm_GetFieldEmbedMetadataNumber(model, index, "Missing", &number));
+    EXPECT_EQ(L"", read_string(model, index, "Missing"));
+    EPDFForm_CloseModel(model);
+  }
+
+  // The radio group's widgets carry nothing: the metadata is the field's.
+  for (uint32_t widget : {6u, 7u}) {
+    EXPECT_FALSE(GetEffectiveIndirectDictionary(document(), widget)
+                     ->KeyExist("EMBD_Metadata"));
+  }
+
+  // The merged field shares its dictionary with its widget, so the
+  // annotation API reads the same metadata.
+  ScopedPage page = LoadScopedPage(0);
+  ASSERT_TRUE(page);
+  ScopedFPDFAnnotation widget(FPDFPage_GetAnnot(page.get(), 0));
+  ASSERT_TRUE(widget);
+  unsigned long length_bytes =
+      EPDFAnnot_GetEmbedMetadataString(widget.get(), "GroupID", nullptr, 0);
+  std::vector<FPDF_WCHAR> buffer = GetFPDFWideStringBuffer(length_bytes);
+  EPDFAnnot_GetEmbedMetadataString(widget.get(), "GroupID", buffer.data(),
+                                   length_bytes);
+  EXPECT_EQ(L"buyer", GetPlatformWString(buffer.data()));
+}
+
+// The model is a snapshot, like every other field fact it reports.
+TEST_F(EPDFFormEmbedderTest, FieldEmbedMetadataIsSnapshotted) {
+  ASSERT_TRUE(OpenDocument("toggle_fields.pdf"));
+  ASSERT_TRUE(EPDFForm_SetFieldEmbedMetadataString(
+      document(), 4u, "GroupID", GetFPDFWideString(L"buyer").get()));
+  EPDF_FORM_MODEL before = EPDFForm_LoadModel(document());
+  ASSERT_TRUE(before);
+  ASSERT_TRUE(EPDFForm_SetFieldEmbedMetadataString(
+      document(), 4u, "GroupID", GetFPDFWideString(L"seller").get()));
+
+  const int index = EPDFForm_GetFieldIndexByObjNum(before, 4u);
+  std::vector<FPDF_WCHAR> buffer = GetFPDFWideStringBuffer(64);
+  EPDFForm_GetFieldEmbedMetadataString(before, index, "GroupID", buffer.data(),
+                                       64);
+  EXPECT_EQ(L"buyer", GetPlatformWString(buffer.data()));
+  EPDFForm_CloseModel(before);
+}
+
+// A write goes on the field dictionary it names, never on a parent field the
+// field inherits from (object 17 inherits /FT from object 16).
+TEST_F(EPDFFormEmbedderTest, FieldEmbedMetadataWritesTheFieldNotItsParent) {
+  ASSERT_TRUE(OpenDocument("toggle_fields.pdf"));
+  ASSERT_TRUE(EPDFForm_SetFieldEmbedMetadataString(
+      document(), 17u, "GroupID", GetFPDFWideString(L"buyer").get()));
+  EXPECT_TRUE(GetEffectiveIndirectDictionary(document(), 17u)
+                  ->KeyExist("EMBD_Metadata"));
+  EXPECT_FALSE(GetEffectiveIndirectDictionary(document(), 16u)
+                   ->KeyExist("EMBD_Metadata"));
+
+  // Something that isn't a field, a missing object, or no key: refused.
+  const ScopedFPDFWideString value = GetFPDFWideString(L"buyer");
+  EXPECT_FALSE(EPDFForm_SetFieldEmbedMetadataString(document(), 3u, "GroupID",
+                                                    value.get()));
+  EXPECT_FALSE(EPDFForm_SetFieldEmbedMetadataString(document(), 0u, "GroupID",
+                                                    value.get()));
+  EXPECT_FALSE(EPDFForm_SetFieldEmbedMetadataString(document(), 4000u,
+                                                    "GroupID", value.get()));
+  EXPECT_FALSE(EPDFForm_SetFieldEmbedMetadataString(document(), 4u, nullptr,
+                                                    value.get()));
+  EXPECT_FALSE(EPDFForm_ClearFieldEmbedMetadata(document(), 3u));
+}
+
+// Removing the last key removes /EMBD_Metadata, and clearing what isn't there
+// creates nothing.
+TEST_F(EPDFFormEmbedderTest, ClearingFieldEmbedMetadata) {
+  ASSERT_TRUE(OpenDocument("toggle_fields.pdf"));
+  auto has_metadata = [&](uint32_t field) {
+    return GetEffectiveIndirectDictionary(document(), field)
+        ->KeyExist("EMBD_Metadata");
+  };
+
+  EXPECT_TRUE(EPDFForm_ClearFieldEmbedMetadataKey(document(), 5u, "GroupID"));
+  EXPECT_TRUE(EPDFForm_ClearFieldEmbedMetadata(document(), 5u));
+  EXPECT_FALSE(has_metadata(5u));
+
+  ASSERT_TRUE(EPDFForm_SetFieldEmbedMetadataString(
+      document(), 5u, "GroupID", GetFPDFWideString(L"buyer").get()));
+  ASSERT_TRUE(
+      EPDFForm_SetFieldEmbedMetadataBoolean(document(), 5u, "Locked", false));
+  EXPECT_TRUE(EPDFForm_ClearFieldEmbedMetadataKey(document(), 5u, "GroupID"));
+  EXPECT_TRUE(has_metadata(5u));
+  EXPECT_TRUE(EPDFForm_ClearFieldEmbedMetadataKey(document(), 5u, "Locked"));
+  EXPECT_FALSE(has_metadata(5u));
+
+  ASSERT_TRUE(EPDFForm_SetFieldEmbedMetadataString(
+      document(), 5u, "GroupID", GetFPDFWideString(L"buyer").get()));
+  EXPECT_TRUE(EPDFForm_ClearFieldEmbedMetadata(document(), 5u));
+  EXPECT_FALSE(has_metadata(5u));
+}
+
+// Clearing a document's metadata reaches its fields too, including one no
+// annotation handle reaches (the radio group's field) and a parent field.
+TEST_F(EPDFFormEmbedderTest, DocumentClearReachesFields) {
+  ASSERT_TRUE(OpenDocument("toggle_fields.pdf"));
+  for (uint32_t field : {4u, 5u, 16u, 17u}) {
+    ASSERT_TRUE(EPDFForm_SetFieldEmbedMetadataString(
+        document(), field, "GroupID", GetFPDFWideString(L"buyer").get()));
+  }
+
+  ASSERT_TRUE(EPDFDocument_ClearEmbedMetadata(document()));
+  for (uint32_t field : {4u, 5u, 16u, 17u}) {
+    SCOPED_TRACE(field);
+    EXPECT_FALSE(GetEffectiveIndirectDictionary(document(), field)
+                     ->KeyExist("EMBD_Metadata"));
+  }
+}
