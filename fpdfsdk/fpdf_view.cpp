@@ -1341,7 +1341,8 @@ EPDF_RenderAnnotBitmap(FPDF_BITMAP bitmap,
   auto pAnnot = std::make_unique<CPDF_Annot>(
       pdfium::WrapRetain(const_cast<CPDF_Dictionary*>(pAnnotDict)), pDoc,
       CPDF_Annot::MissingAppearance::kGenerateWhenDrawn);
-  if (state) {
+  // NULL or empty: the state /AS selects (a binding may pass "" for none).
+  if (state && state[0]) {
     pAnnot->SetAppearanceState(ByteString(state));
   }
   if (!pAnnot->GetDrawingRect(
@@ -1414,7 +1415,8 @@ EPDF_RenderAnnotBitmapUnrotated(FPDF_BITMAP bitmap,
   auto pAnnot = std::make_unique<CPDF_Annot>(
       pdfium::WrapRetain(const_cast<CPDF_Dictionary*>(pAnnotDict)), pDoc,
       CPDF_Annot::MissingAppearance::kGenerateWhenDrawn);
-  if (state) {
+  // NULL or empty: the state /AS selects (a binding may pass "" for none).
+  if (state && state[0]) {
     pAnnot->SetAppearanceState(ByteString(state));
   }
   if (!pAnnot->GetDrawingRect(

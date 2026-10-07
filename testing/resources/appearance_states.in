@@ -3,7 +3,7 @@
   /Type /Catalog
   /Pages 2 0 R
   /AcroForm <<
-    /Fields [5 0 R 10 0 R 15 0 R 16 0 R 17 0 R 18 0 R]
+    /Fields [5 0 R 10 0 R 15 0 R 16 0 R 17 0 R 18 0 R 19 0 R]
   >>
 >>
 endobj
@@ -17,7 +17,7 @@ endobj
   /Type /Page
   /Parent 2 0 R
   /MediaBox [0 0 300 300]
-  /Annots [5 0 R 9 0 R 10 0 R 15 0 R 16 0 R 17 0 R 18 0 R]
+  /Annots [5 0 R 9 0 R 10 0 R 15 0 R 16 0 R 17 0 R 18 0 R 19 0 R]
 >>
 endobj
 % A check box that is off, with normal, down and rollover states. Each state
@@ -177,6 +177,19 @@ endobj
   /V /Off
   /DA (0 0 1 rg)
   /Rect [220 100 260 140]
+>>
+endobj
+% A check box that is on, its on state a UTF-8 name: "S" and an i with an
+% acute accent, written with # escapes. Red when on, green when off.
+{{object 19 0}} <<
+  /Type /Annot
+  /Subtype /Widget
+  /FT /Btn
+  /T (si)
+  /V /S#C3#AD
+  /AS /S#C3#AD
+  /Rect [220 20 260 60]
+  /AP << /N << /S#C3#AD 6 0 R /Off 7 0 R >> >>
 >>
 endobj
 {{xref}}

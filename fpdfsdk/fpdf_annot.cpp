@@ -5684,6 +5684,29 @@ EPDFAnnot_GetAppearanceStateName(FPDF_ANNOTATION annot,
       names[index], UNSAFE_BUFFERS(SpanFromFPDFApiArgs(buffer, buflen)));
 }
 
+FPDF_EXPORT unsigned long FPDF_CALLCONV
+EPDFAnnot_GetAppearanceState(FPDF_ANNOTATION annot,
+                             void* buffer,
+                             unsigned long buflen) {
+  CPDF_AnnotContext* context = CPDFAnnotContextFromFPDFAnnotation(annot);
+  if (!context) {
+    return 0;
+  }
+  CPDF_DocumentViewScope document_view(context->GetPage()->GetDocument());
+  const CPDF_Dictionary* annot_dict = context->GetAnnotDict();
+  if (!annot_dict) {
+    return 0;
+  }
+  RetainPtr<const CPDF_Name> state =
+      ToName(annot_dict->GetDirectObjectFor(pdfium::annotation::kAS));
+  if (!state) {
+    return 0;
+  }
+  // SAFETY: required from caller.
+  return NulTerminateMaybeCopyAndReturnLength(
+      state->GetString(), UNSAFE_BUFFERS(SpanFromFPDFApiArgs(buffer, buflen)));
+}
+
 FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV
 EPDFAnnot_HasAppearanceStream(FPDF_ANNOTATION annot,
                               FPDF_ANNOT_APPEARANCEMODE appearanceMode) {

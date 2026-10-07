@@ -1931,7 +1931,8 @@ FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV FPDF_GetXFAPacketContent(
 //   page           - Page that owns the annotation.
 //   annot          - Annotation handle obtained from any FPDFAnnot_* API.
 //   appearanceMode - One of FPDF_ANNOT_APPEARANCEMODE_*.
-//   state          - NULL to draw the state /AS selects. Otherwise the name
+//   state          - NULL or empty to draw the state /AS selects (empty for
+//                    bindings that can't pass NULL). Otherwise the name
 //                    of a state of the mode's appearance subdictionary (as
 //                    EPDFAnnot_GetAppearanceStateName gives it), drawn
 //                    whatever /AS says. A mode whose entry is a single

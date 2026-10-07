@@ -637,6 +637,7 @@ int CheckPDFiumCApi() {
   CHK(EPDFAnnot_ExportAppearance);
   CHK(EPDFAnnot_GetAppearanceStateCount);
   CHK(EPDFAnnot_GetAppearanceStateName);
+  CHK(EPDFAnnot_GetAppearanceState);
   CHK(EPDF_RenderAnnotBitmap);
   CHK(EPDF_RenderAnnotBitmapUnrotated);
   CHK(EPDFPage_CreateAnnotRaw);

@@ -4,7 +4,7 @@
   /Type /Catalog
   /Pages 2 0 R
   /AcroForm <<
-    /Fields [5 0 R 10 0 R 15 0 R 16 0 R 17 0 R 18 0 R]
+    /Fields [5 0 R 10 0 R 15 0 R 16 0 R 17 0 R 18 0 R 19 0 R]
   >>
 >>
 endobj
@@ -18,7 +18,7 @@ endobj
   /Type /Page
   /Parent 2 0 R
   /MediaBox [0 0 300 300]
-  /Annots [5 0 R 9 0 R 10 0 R 15 0 R 16 0 R 17 0 R 18 0 R]
+  /Annots [5 0 R 9 0 R 10 0 R 15 0 R 16 0 R 17 0 R 18 0 R 19 0 R]
 >>
 endobj
 % A check box that is off, with normal, down and rollover states. Each state
@@ -180,31 +180,45 @@ endobj
   /Rect [220 100 260 140]
 >>
 endobj
+% A check box that is on, its on state a UTF-8 name: "S" and an i with an
+% acute accent, written with # escapes. Red when on, green when off.
+19 0 obj <<
+  /Type /Annot
+  /Subtype /Widget
+  /FT /Btn
+  /T (si)
+  /V /S#C3#AD
+  /AS /S#C3#AD
+  /Rect [220 20 260 60]
+  /AP << /N << /S#C3#AD 6 0 R /Off 7 0 R >> >>
+>>
+endobj
 xref
-0 19
+0 20
 0000000000 65535 f 
 0000000015 00000 n 
-0000000143 00000 n 
-0000000206 00000 n 
+0000000150 00000 n 
+0000000213 00000 n 
 0000000000 65535 f 
-0000000631 00000 n 
-0000000878 00000 n 
-0000001007 00000 n 
-0000001136 00000 n 
-0000001338 00000 n 
-0000001491 00000 n 
-0000001657 00000 n 
-0000001787 00000 n 
-0000001912 00000 n 
-0000002042 00000 n 
-0000002270 00000 n 
-0000002484 00000 n 
-0000002727 00000 n 
-0000002908 00000 n 
+0000000645 00000 n 
+0000000892 00000 n 
+0000001021 00000 n 
+0000001150 00000 n 
+0000001352 00000 n 
+0000001505 00000 n 
+0000001671 00000 n 
+0000001801 00000 n 
+0000001926 00000 n 
+0000002056 00000 n 
+0000002284 00000 n 
+0000002498 00000 n 
+0000002741 00000 n 
+0000002922 00000 n 
+0000003208 00000 n 
 trailer <<
   /Root 1 0 R
-  /Size 19
+  /Size 20
 >>
 startxref
-3051
+3385
 %%EOF

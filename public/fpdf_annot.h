@@ -2369,6 +2369,22 @@ EPDFAnnot_GetAppearanceStateName(FPDF_ANNOTATION annot,
                                  unsigned long buflen);
 
 // Experimental EmbedPDF Extension API.
+// Copy the annotation's /AS, the state it shows, into |buffer| as raw PDF
+// name bytes, including the trailing NUL: the same bytes
+// EPDFAnnot_GetAppearanceStateName gives for that state.
+//
+//   annot  - handle to an annotation.
+//   buffer - receives the name; may be NULL to query the length.
+//   buflen - the length of |buffer| in bytes.
+//
+// Returns the byte length of the name including the NUL, or 0 when the
+// annotation has no /AS name.
+FPDF_EXPORT unsigned long FPDF_CALLCONV
+EPDFAnnot_GetAppearanceState(FPDF_ANNOTATION annot,
+                             void* buffer,
+                             unsigned long buflen);
+
+// Experimental EmbedPDF Extension API.
 // Check whether an annotation has a renderable appearance stream for the
 // given mode, taking sub-appearance dictionaries and /AS into account.
 //

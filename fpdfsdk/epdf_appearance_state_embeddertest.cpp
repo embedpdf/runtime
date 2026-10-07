@@ -39,6 +39,7 @@ constexpr int kCross = 3;   // check box, /CA 8, /DA blue, no appearance yet
 constexpr int kSquareRadio = 4;  // radio, /CA n, /DA red, black border
 constexpr int kPlain = 5;        // check box, no /CA, no /DA
 constexpr int kDot = 6;          // radio, no /CA, /DA blue
+constexpr int kSi = 7;           // check box, on, its on state a UTF-8 name
 
 constexpr int kPageSize = 300;
 
@@ -153,6 +154,9 @@ TEST_F(EPDFAppearanceStateEmbedderTest, DrawsTheChosenStateWhateverAsSays) {
   EXPECT_EQ(kGreen,
             DrawAnnot(page.get(), box.get(), FPDF_ANNOT_APPEARANCEMODE_NORMAL,
                       nullptr, 20, 20));
+  // An empty state is no state, for bindings that can't pass NULL.
+  EXPECT_EQ(kGreen, DrawAnnot(page.get(), box.get(),
+                              FPDF_ANNOT_APPEARANCEMODE_NORMAL, "", 20, 20));
   EXPECT_EQ(kRed, DrawAnnot(page.get(), box.get(),
                             FPDF_ANNOT_APPEARANCEMODE_NORMAL, "Yes", 20, 20));
   EXPECT_EQ(kGreen, DrawAnnot(page.get(), box.get(),
@@ -376,4 +380,41 @@ TEST_F(EPDFAppearanceStateEmbedderTest,
   EXPECT_EQ(kBlue,
             DrawAnnot(page.get(), dot.get(), FPDF_ANNOT_APPEARANCEMODE_NORMAL,
                       "Yes", 220, 100));
+}
+
+TEST_F(EPDFAppearanceStateEmbedderTest, TheShownStateReadsAsTheStateNames) {
+  ScopedFPDFDocument doc = OpenFixture();
+  ASSERT_TRUE(doc);
+  ScopedFPDFPage page(FPDF_LoadPage(doc.get(), 0));
+  ASSERT_TRUE(page);
+
+  // The same raw bytes as the state list gives, so a caller can match the
+  // shown state to its image, also when the name isn't ASCII.
+  ScopedFPDFAnnotation si(FPDFPage_GetAnnot(page.get(), kSi));
+  ASSERT_TRUE(si);
+  const unsigned long length =
+      EPDFAnnot_GetAppearanceState(si.get(), nullptr, 0);
+  ASSERT_EQ(4u, length);  // "S", the two bytes of the i, the NUL
+  std::string shown(length, '\0');
+  ASSERT_EQ(length,
+            EPDFAnnot_GetAppearanceState(si.get(), shown.data(), length));
+  shown.pop_back();
+  EXPECT_EQ("S\xC3\xAD", shown);
+  const std::vector<std::string> names =
+      StateNames(si.get(), FPDF_ANNOT_APPEARANCEMODE_NORMAL);
+  EXPECT_EQ((std::vector<std::string>{"Off", "S\xC3\xAD"}), names);
+  EXPECT_EQ(kRed,
+            DrawAnnot(page.get(), si.get(), FPDF_ANNOT_APPEARANCEMODE_NORMAL,
+                      shown.c_str(), 220, 20));
+
+  // Off reads as Off; an annotation without /AS has none.
+  ScopedFPDFAnnotation box(FPDFPage_GetAnnot(page.get(), kStates));
+  ASSERT_TRUE(box);
+  char off[8] = {};
+  EXPECT_EQ(4u, EPDFAnnot_GetAppearanceState(box.get(), off, sizeof(off)));
+  EXPECT_STREQ("Off", off);
+  ScopedFPDFAnnotation square(FPDFPage_GetAnnot(page.get(), kSquare));
+  ASSERT_TRUE(square);
+  EXPECT_EQ(0u, EPDFAnnot_GetAppearanceState(square.get(), nullptr, 0));
+  EXPECT_EQ(0u, EPDFAnnot_GetAppearanceState(nullptr, nullptr, 0));
 }
