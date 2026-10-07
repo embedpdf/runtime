@@ -216,6 +216,11 @@ class CPDF_Annot {
 
   bool IsHidden() const;
 
+  // EmbedPDF: draw this state of an appearance subdictionary (/AP /N /Yes),
+  // whatever /AS says. Only a stored state is drawn: a mode whose entry is a
+  // single stream, a state the subdictionary lacks, or no /AP draws nothing.
+  void SetAppearanceState(const ByteString& state);
+
   // Where the appearance for `mode` is drawn, in page space, without writing
   // anything: a stored appearance is fitted into /Rect; with none, the normal
   // appearance PDFium draws in memory takes its own box, which can reach past
@@ -243,6 +248,9 @@ class CPDF_Annot {
 
  private:
   void GenerateAPIfNeeded();
+  // The stored stream drawn for `mode`: the chosen state when one was set
+  // (SetAppearanceState), else the one /AS selects.
+  RetainPtr<CPDF_Stream> GetStoredAP(AppearanceMode mode) const;
   RetainPtr<CPDF_Stream> GetOrBuildEphemeralAP(AppearanceMode mode);
   bool CanGenerateEphemeralAP() const;
   bool ShouldGenerateAP() const;
@@ -258,6 +266,7 @@ class CPDF_Annot {
   std::map<RetainPtr<CPDF_Stream>, std::unique_ptr<CPDF_Form>> ap_map_;
   RetainPtr<CPDF_Stream> ephemeral_normal_ap_;
   std::optional<CFX_FloatRect> ephemeral_rect_;
+  std::optional<ByteString> appearance_state_;
   // If non-null, then this is not a popup annotation.
   UnownedPtr<CPDF_Annot> popup_annot_;
   const Subtype subtype_;

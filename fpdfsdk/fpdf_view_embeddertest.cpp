@@ -1302,7 +1302,7 @@ TEST_F(FPDFViewEmbedderTest, OpenFreshLayerAnnotHandleDoesNotPromote) {
     const FS_MATRIX identity = {1, 0, 0, 1, 0, 0};
     EXPECT_TRUE(EPDF_RenderAnnotBitmap(bitmap.get(), page.get(), annot.get(),
                                        FPDF_ANNOT_APPEARANCEMODE_NORMAL,
-                                       &identity, 0));
+                                       /*state=*/nullptr, &identity, 0));
     EXPECT_EQ(0u, EPDFLayer_GetPromotedObjectCount(layer.get()));
   }
 

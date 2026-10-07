@@ -5623,6 +5623,67 @@ EPDFAnnot_GetAvailableAppearanceModes(FPDF_ANNOTATION annot) {
   return modes;
 }
 
+// The names of the states `mode` stores, in key order: the stream entries of
+// its appearance subdictionary. None for a single stream or a missing mode.
+static std::vector<ByteString> GetAppearanceStateNames(
+    FPDF_ANNOTATION annot,
+    FPDF_ANNOT_APPEARANCEMODE appearanceMode) {
+  std::vector<ByteString> names;
+  CPDF_AnnotContext* context = CPDFAnnotContextFromFPDFAnnotation(annot);
+  if (!context || appearanceMode < FPDF_ANNOT_APPEARANCEMODE_NORMAL ||
+      appearanceMode >= FPDF_ANNOT_APPEARANCEMODE_COUNT) {
+    return names;
+  }
+  CPDF_DocumentViewScope document_view(context->GetPage()->GetDocument());
+  const CPDF_Dictionary* annot_dict = context->GetAnnotDict();
+  if (!annot_dict) {
+    return names;
+  }
+  RetainPtr<const CPDF_Dictionary> ap =
+      annot_dict->GetDictFor(pdfium::annotation::kAP);
+  if (!ap) {
+    return names;
+  }
+  static constexpr const char* kModeKeys[] = {"N", "R", "D"};
+  RetainPtr<const CPDF_Object> entry =
+      ap->GetDirectObjectFor(kModeKeys[appearanceMode]);
+  const CPDF_Dictionary* states = entry ? entry->AsDictionary() : nullptr;
+  if (!states) {
+    return names;
+  }
+  CPDF_DictionaryLocker locker(states);
+  for (const auto& [name, value] : locker) {
+    RetainPtr<const CPDF_Object> direct = value->GetDirect();
+    if (direct && direct->AsStream()) {
+      names.push_back(name);
+    }
+  }
+  return names;
+}
+
+FPDF_EXPORT int FPDF_CALLCONV
+EPDFAnnot_GetAppearanceStateCount(FPDF_ANNOTATION annot,
+                                  FPDF_ANNOT_APPEARANCEMODE appearanceMode) {
+  return pdfium::checked_cast<int>(
+      GetAppearanceStateNames(annot, appearanceMode).size());
+}
+
+FPDF_EXPORT unsigned long FPDF_CALLCONV
+EPDFAnnot_GetAppearanceStateName(FPDF_ANNOTATION annot,
+                                 FPDF_ANNOT_APPEARANCEMODE appearanceMode,
+                                 int index,
+                                 void* buffer,
+                                 unsigned long buflen) {
+  std::vector<ByteString> names =
+      GetAppearanceStateNames(annot, appearanceMode);
+  if (index < 0 || static_cast<size_t>(index) >= names.size()) {
+    return 0;
+  }
+  // SAFETY: required from caller.
+  return NulTerminateMaybeCopyAndReturnLength(
+      names[index], UNSAFE_BUFFERS(SpanFromFPDFApiArgs(buffer, buflen)));
+}
+
 FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV
 EPDFAnnot_HasAppearanceStream(FPDF_ANNOTATION annot,
                               FPDF_ANNOT_APPEARANCEMODE appearanceMode) {

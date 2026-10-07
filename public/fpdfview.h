@@ -1316,6 +1316,12 @@ FPDF_EXPORT int FPDF_CALLCONV FPDF_GetPageSizeByIndex(FPDF_DOCUMENT document,
 // FPDF_COLORSCHEME is passed in, since with a single fill color for paths the
 // boundaries of adjacent fill paths are less visible.
 #define FPDF_CONVERT_FILL_TO_STROKE 0x20
+// Experimental EmbedPDF Extension API.
+// With FPDF_ANNOT, draw form field widgets too, from their appearances, after
+// the other annotations. Hidden widgets stay hidden, and so do no-view ones
+// unless printing. A widget with no appearance is drawn in memory; the render
+// writes nothing. Without this flag widgets are left out, as upstream does.
+#define EPDF_RENDER_WIDGETS 0x8000
 
 // Struct for color scheme.
 // Each should be a 32-bit value specifying the color, in 8888 ARGB format.
@@ -1921,12 +1927,18 @@ FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV FPDF_GetXFAPacketContent(
 // Experimental EmbedPDF Extension API.
 // Renders the appearance stream of a single annotation to a bitmap.
 //
-//   bitmap -  Destination bitmap handle.
-//   page   - Page that owns the annotation.
-//   annot  - Annotation handle obtained from any FPDFAnnot_* API.
-//   matrix - Matrix to transform the annotation
-//   flags  - Flags to control the rendering
-//   mode - One of `FPDF_ANNOT_APPEAR_*` above.
+//   bitmap         - Destination bitmap handle.
+//   page           - Page that owns the annotation.
+//   annot          - Annotation handle obtained from any FPDFAnnot_* API.
+//   appearanceMode - One of FPDF_ANNOT_APPEARANCEMODE_*.
+//   state          - NULL to draw the state /AS selects. Otherwise the name
+//                    of a state of the mode's appearance subdictionary (as
+//                    EPDFAnnot_GetAppearanceStateName gives it), drawn
+//                    whatever /AS says. A mode whose entry is a single
+//                    stream, or a state the subdictionary lacks, draws
+//                    nothing.
+//   matrix         - Matrix to transform the annotation
+//   flags          - Flags to control the rendering
 //
 // Returns true if the rendering was successful, false otherwise.
 FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV
@@ -1934,6 +1946,7 @@ EPDF_RenderAnnotBitmap(FPDF_BITMAP bitmap,
                        FPDF_PAGE page,
                        FPDF_ANNOTATION annot,
                        FPDF_ANNOT_APPEARANCEMODE appearanceMode,
+                       FPDF_BYTESTRING state,
                        const FS_MATRIX* matrix,
                        int flags);
 
@@ -1945,7 +1958,7 @@ EPDF_RenderAnnotBitmap(FPDF_BITMAP bitmap,
 // upright drawing, for UI layers that turn it themselves. With `degrees` 0
 // or no `box`, it renders as the page shows it.
 //
-//   bitmap, page, annot, appearanceMode, matrix, flags - as
+//   bitmap, page, annot, appearanceMode, state, matrix, flags - as
 //            EPDF_RenderAnnotBitmap.
 //   degrees - the turn to take out, counterclockwise (the PDF convention).
 //   box     - the box it turns about, in page space, before turning.
@@ -1956,6 +1969,7 @@ EPDF_RenderAnnotBitmapUnrotated(FPDF_BITMAP bitmap,
                                 FPDF_PAGE page,
                                 FPDF_ANNOTATION annot,
                                 FPDF_ANNOT_APPEARANCEMODE appearanceMode,
+                                FPDF_BYTESTRING state,
                                 float degrees,
                                 const FS_RECTF* box,
                                 const FS_MATRIX* matrix,

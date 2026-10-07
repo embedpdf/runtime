@@ -78,9 +78,13 @@ CPDF_Form* AnnotGetMatrix(CPDF_Page* pPage,
   return pForm;
 }
 
+// `state`, when given, names the state of an appearance subdictionary to
+// take instead of the one /AS selects; a mode whose entry is a single stream
+// has no states, so it gives nothing then.
 RetainPtr<CPDF_Stream> GetAnnotAPInternal(const CPDF_Dictionary* pAnnotDict,
                                           CPDF_Annot::AppearanceMode eMode,
-                                          bool bFallbackToNormal) {
+                                          bool bFallbackToNormal,
+                                          const ByteString* state = nullptr) {
   RetainPtr<const CPDF_Dictionary> pAP =
       pAnnotDict->GetDictFor(pdfium::annotation::kAP);
   if (!pAP) {
@@ -104,12 +108,19 @@ RetainPtr<CPDF_Stream> GetAnnotAPInternal(const CPDF_Dictionary* pAnnotDict,
 
   RetainPtr<const CPDF_Stream> pStream(psub->AsStream());
   if (pStream) {
-    return pdfium::WrapRetain(const_cast<CPDF_Stream*>(pStream.Get()));
+    return state ? nullptr
+                 : pdfium::WrapRetain(const_cast<CPDF_Stream*>(pStream.Get()));
   }
 
   const CPDF_Dictionary* dict = psub->AsDictionary();
   if (!dict) {
     return nullptr;
+  }
+
+  if (state) {
+    RetainPtr<const CPDF_Stream> chosen =
+        dict->GetStreamFor(state->AsStringView());
+    return pdfium::WrapRetain(const_cast<CPDF_Stream*>(chosen.Get()));
   }
 
   ByteString as = pAnnotDict->GetByteStringFor(pdfium::annotation::kAS);
@@ -246,8 +257,23 @@ void CPDF_Annot::ClearCachedAP() {
       (CanGenerateEphemeralAP() && ShouldGenerateAP());
 }
 
+void CPDF_Annot::SetAppearanceState(const ByteString& state) {
+  appearance_state_ = state;
+  ap_map_.clear();
+}
+
+RetainPtr<CPDF_Stream> CPDF_Annot::GetStoredAP(AppearanceMode mode) const {
+  return appearance_state_.has_value()
+             ? GetAnnotAPInternal(annot_dict_.Get(), mode,
+                                  /*bFallbackToNormal=*/true,
+                                  &appearance_state_.value())
+             : GetAnnotAP(annot_dict_.Get(), mode);
+}
+
 std::optional<CFX_FloatRect> CPDF_Annot::GetDrawingRect(AppearanceMode mode) {
-  if (!GetAnnotAP(annot_dict_.Get(), mode) && !GetOrBuildEphemeralAP(mode)) {
+  // A chosen state is a stored one: nothing is drawn in memory for it.
+  if (!GetStoredAP(mode) &&
+      (appearance_state_.has_value() || !GetOrBuildEphemeralAP(mode))) {
     return std::nullopt;
   }
   return GetRect();
@@ -345,8 +371,8 @@ RetainPtr<CPDF_Stream> GetMutableAnnotAP(CPDF_Dictionary* pAnnotDict,
 }
 
 CPDF_Form* CPDF_Annot::GetAPForm(CPDF_Page* pPage, AppearanceMode mode) {
-  RetainPtr<CPDF_Stream> pStream = GetAnnotAP(annot_dict_.Get(), mode);
-  if (!pStream) {
+  RetainPtr<CPDF_Stream> pStream = GetStoredAP(mode);
+  if (!pStream && !appearance_state_.has_value()) {
     pStream = GetOrBuildEphemeralAP(mode);
   }
   if (!pStream) {

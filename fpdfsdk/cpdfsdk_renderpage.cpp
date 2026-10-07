@@ -80,8 +80,9 @@ void RenderPageImpl(CPDF_PageRenderContext* context,
     is_printing |= context->device_->GetDeviceType() == DeviceType::kPrinter;
 #endif
 
-    // TODO(https://crbug.com/42271964) - maybe pass true here.
-    const bool bShowWidget = false;
+    // EmbedPDF: widgets only when asked (EPDF_RENDER_WIDGETS), so a page
+    // picture a viewer paints its own field layer over stays without them.
+    const bool bShowWidget = !!(flags & EPDF_RENDER_WIDGETS);
     pList->DisplayAnnots(context->context_.get(), is_printing, matrix,
                          bShowWidget);
   }

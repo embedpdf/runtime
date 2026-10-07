@@ -2334,6 +2334,41 @@ FPDF_EXPORT int FPDF_CALLCONV
 EPDFAnnot_GetAvailableAppearanceModes(FPDF_ANNOTATION annot);
 
 // Experimental EmbedPDF Extension API.
+// Get how many states an appearance mode stores: the entries of its
+// appearance subdictionary that are streams (/AP /N << /Off … /Yes … >>
+// stores two). A mode whose entry is a single stream, or that the annotation
+// doesn't have, stores none: there is no falling back to /N.
+//
+//   annot          - handle to an annotation.
+//   appearanceMode - one of FPDF_ANNOT_APPEARANCEMODE_*.
+//
+// Returns the number of states, or 0.
+FPDF_EXPORT int FPDF_CALLCONV
+EPDFAnnot_GetAppearanceStateCount(FPDF_ANNOTATION annot,
+                                  FPDF_ANNOT_APPEARANCEMODE appearanceMode);
+
+// Experimental EmbedPDF Extension API.
+// Copy the name of one state of an appearance mode into |buffer| as raw PDF
+// name bytes, including the trailing NUL: the name EPDF_RenderAnnotBitmap
+// takes as its `state`. States are in the subdictionary's key order, which
+// is stable.
+//
+//   annot          - handle to an annotation.
+//   appearanceMode - one of FPDF_ANNOT_APPEARANCEMODE_*.
+//   index          - the state, in [0, EPDFAnnot_GetAppearanceStateCount).
+//   buffer         - receives the name; may be NULL to query the length.
+//   buflen         - the length of |buffer| in bytes.
+//
+// Returns the byte length of the name including the NUL, or 0 when there is
+// no such state.
+FPDF_EXPORT unsigned long FPDF_CALLCONV
+EPDFAnnot_GetAppearanceStateName(FPDF_ANNOTATION annot,
+                                 FPDF_ANNOT_APPEARANCEMODE appearanceMode,
+                                 int index,
+                                 void* buffer,
+                                 unsigned long buflen);
+
+// Experimental EmbedPDF Extension API.
 // Check whether an annotation has a renderable appearance stream for the
 // given mode, taking sub-appearance dictionaries and /AS into account.
 //
@@ -2424,7 +2459,9 @@ EPDFAnnot_ClearMKColor(FPDF_ANNOTATION annot, EPDF_MK_COLORTYPE type);
 // dispatches to the appropriate form AP generator:
 //   - /Tx  -> text field appearance
 //   - /Ch  -> combo box or list box appearance (based on /Ff flags)
-//   - /Btn -> returns true (buttons use custom AP/N state-based appearances)
+//   - /Btn -> a check box or radio button appearance: both states, the
+//             symbol /MK /CA names in the /DA colour. Push buttons are left
+//             as they are.
 //
 //   annot - handle to a widget annotation.
 //

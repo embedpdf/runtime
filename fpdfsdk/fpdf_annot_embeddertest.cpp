@@ -1182,7 +1182,7 @@ TEST_F(FPDFAnnotEmbedderTest, DrawingRectIsWhereTheAppearanceIsDrawn) {
   const FS_MATRIX identity{1, 0, 0, 1, 0, 0};
   EXPECT_FALSE(EPDF_RenderAnnotBitmap(bitmap.get(), page.get(), popup.get(),
                                       FPDF_ANNOT_APPEARANCEMODE_NORMAL,
-                                      &identity, 0));
+                                      /*state=*/nullptr, &identity, 0));
   EXPECT_FALSE(FPDFAnnot_HasKey(popup.get(), "AP"));
 }
 
@@ -8376,8 +8376,8 @@ ScopedFPDFBitmap RenderUnturned(FPDF_PAGE page,
   const FS_MATRIX to_bitmap = {sx, 0, 0, sy, -box.left * sx,
                                -(page_height - box.top) * sy};
   EXPECT_TRUE(EPDF_RenderAnnotBitmapUnrotated(
-      bitmap.get(), page, annot, FPDF_ANNOT_APPEARANCEMODE_NORMAL, degrees,
-      &box, &to_bitmap, 0));
+      bitmap.get(), page, annot, FPDF_ANNOT_APPEARANCEMODE_NORMAL,
+      /*state=*/nullptr, degrees, &box, &to_bitmap, 0));
   return bitmap;
 }
 

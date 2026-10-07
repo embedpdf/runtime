@@ -195,6 +195,9 @@ pdfium_embeddertest_source_set("embeddertests") {
     "epdf_edit_test_util.h",
     # EmbedPDF: covers captures and their imports (EPDF*_Export*Raw).
     "epdf_capture_embeddertest.cpp",
+    # EmbedPDF: covers appearance states and modes, widgets in page renders,
+    # and the check box and radio button symbols.
+    "epdf_appearance_state_embeddertest.cpp",
     # EmbedPDF: covers layer transactions (EPDFLayer_BeginTransaction).
     "epdf_transaction_embeddertest.cpp",
     # EmbedPDF: covers annotation identity: handle lifetimes, promotion and

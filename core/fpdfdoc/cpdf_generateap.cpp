@@ -547,6 +547,9 @@ struct AppearanceCharacteristics {
   int rotation = 0;  // In degrees.
   CFX_Color border_color;
   CFX_Color background_color;
+  // /CA, the normal caption. A check box or radio button keeps one
+  // ZapfDingbats character there, naming the symbol it shows when on.
+  WideString caption;
 };
 
 AppearanceCharacteristics GetAppearanceCharacteristics(
@@ -571,6 +574,8 @@ AppearanceCharacteristics GetAppearanceCharacteristics(
     appearance_characteristics.background_color =
         fpdfdoc::CFXColorFromArray(*background_color_array);
   }
+  appearance_characteristics.caption =
+      mk_dict->GetUnicodeTextFor(pdfium::appearance::kCA);
   return appearance_characteristics;
 }
 
@@ -4432,6 +4437,156 @@ void BuildCheckboxBoxStream(fxcrt::ostringstream& stream,
   }
 }
 
+// The symbol a check box or radio button shows when on, named by the
+// ZapfDingbats character in its /MK /CA (the characters Acrobat writes).
+enum class CheckStyle { kCheck, kCircle, kCross, kDiamond, kSquare, kStar };
+
+std::optional<CheckStyle> CheckStyleFromCaption(const WideString& caption) {
+  if (caption.IsEmpty()) {
+    return std::nullopt;
+  }
+  switch (caption[0]) {
+    case L'4':
+      return CheckStyle::kCheck;
+    case L'8':
+      return CheckStyle::kCross;
+    case L'H':
+      return CheckStyle::kStar;
+    case L'l':
+      return CheckStyle::kCircle;
+    case L'n':
+      return CheckStyle::kSquare;
+    case L'u':
+      return CheckStyle::kDiamond;
+    default:
+      return std::nullopt;
+  }
+}
+
+// The colour the symbol is painted in: the widget's /DA colour, inherited
+// from its field or the form, and black when none names one.
+CFX_Color CheckSymbolColor(CPDF_Document* doc,
+                           const CPDF_Dictionary* annot_dict) {
+  const CPDF_Dictionary* root = doc->GetRoot();
+  RetainPtr<const CPDF_Dictionary> acroform =
+      root ? root->GetDictFor("AcroForm") : nullptr;
+  std::optional<CFX_Color> color =
+      CPDF_DefaultAppearance(annot_dict, acroform.Get()).GetColor();
+  if (!color.has_value() ||
+      color->nColorType == CFX_Color::Type::kTransparent) {
+    return CFX_Color(CFX_Color::Type::kRGB, 0, 0, 0);
+  }
+  return color.value();
+}
+
+// Where the symbol is drawn: the middle square of `body` (the widget inside
+// its border), shrunk for the filled shapes as PDFium's form filler shrinks
+// them (CPDFSDK_AppStream), so a symbol looks the same whichever drew it.
+CFX_FloatRect CheckSymbolRect(const CFX_FloatRect& body,
+                              CheckStyle style,
+                              bool radio) {
+  CFX_FloatRect rect = body.GetCenterSquare();
+  switch (style) {
+    case CheckStyle::kCheck:
+    case CheckStyle::kCross:
+      break;
+    case CheckStyle::kCircle:
+      rect.ScaleFromCenterPoint(radio ? 1.0f / 2.0f : 2.0f / 3.0f);
+      break;
+    case CheckStyle::kDiamond:
+    case CheckStyle::kSquare:
+    case CheckStyle::kStar:
+      rect.ScaleFromCenterPoint(2.0f / 3.0f);
+      break;
+  }
+  return rect;
+}
+
+void WriteClosedPolygon(fxcrt::ostringstream& stream,
+                        std::initializer_list<CFX_PointF> points) {
+  bool first = true;
+  for (const CFX_PointF& point : points) {
+    WritePoint(stream, point) << (first ? " m\n" : " l\n");
+    first = false;
+  }
+  stream << "h\n";
+}
+
+// The symbol of `style` filling `rect`, painted in `color`: a cross is
+// stroked, every other symbol filled. The shapes are PDFium's form filler's.
+void WriteCheckSymbol(fxcrt::ostringstream& stream,
+                      CheckStyle style,
+                      const CFX_FloatRect& rect,
+                      const CFX_Color& color) {
+  const bool stroked = style == CheckStyle::kCross;
+  stream << "q\n"
+         << GenerateColorAP(color, stroked ? PaintOperation::kStroke
+                                           : PaintOperation::kFill);
+  const float mid_x = (rect.left + rect.right) / 2.0f;
+  const float mid_y = (rect.bottom + rect.top) / 2.0f;
+  switch (style) {
+    case CheckStyle::kCheck:
+      GenerateCheckmarkPath(stream, rect);
+      break;
+    case CheckStyle::kCircle: {
+      // Four quarter arcs, from the left middle clockwise.
+      const float rx = rect.Width() / 2.0f;
+      const float ry = rect.Height() / 2.0f;
+      const CFX_PointF left(rect.left, mid_y);
+      const CFX_PointF top(mid_x, rect.top);
+      const CFX_PointF right(rect.right, mid_y);
+      const CFX_PointF bottom(mid_x, rect.bottom);
+      WritePoint(stream, left) << " m\n";
+      WritePoint(stream, {left.x, left.y + ry * FXSYS_BEZIER}) << " ";
+      WritePoint(stream, {top.x - rx * FXSYS_BEZIER, top.y}) << " ";
+      WritePoint(stream, top) << " c\n";
+      WritePoint(stream, {top.x + rx * FXSYS_BEZIER, top.y}) << " ";
+      WritePoint(stream, {right.x, right.y + ry * FXSYS_BEZIER}) << " ";
+      WritePoint(stream, right) << " c\n";
+      WritePoint(stream, {right.x, right.y - ry * FXSYS_BEZIER}) << " ";
+      WritePoint(stream, {bottom.x + rx * FXSYS_BEZIER, bottom.y}) << " ";
+      WritePoint(stream, bottom) << " c\n";
+      WritePoint(stream, {bottom.x - rx * FXSYS_BEZIER, bottom.y}) << " ";
+      WritePoint(stream, {left.x, left.y - ry * FXSYS_BEZIER}) << " ";
+      WritePoint(stream, left) << " c\n";
+      break;
+    }
+    case CheckStyle::kCross:
+      WritePoint(stream, {rect.left, rect.top}) << " m\n";
+      WritePoint(stream, {rect.right, rect.bottom}) << " l\n";
+      WritePoint(stream, {rect.left, rect.bottom}) << " m\n";
+      WritePoint(stream, {rect.right, rect.top}) << " l\n";
+      break;
+    case CheckStyle::kDiamond:
+      WriteClosedPolygon(stream, {{rect.left, mid_y},
+                                  {mid_x, rect.top},
+                                  {rect.right, mid_y},
+                                  {mid_x, rect.bottom}});
+      break;
+    case CheckStyle::kSquare:
+      WriteClosedPolygon(stream, {{rect.left, rect.top},
+                                  {rect.right, rect.top},
+                                  {rect.right, rect.bottom},
+                                  {rect.left, rect.bottom}});
+      break;
+    case CheckStyle::kStar: {
+      // A five-pointed star, its points joined every second one, filled by
+      // the nonzero rule so the middle is solid.
+      const float radius =
+          (rect.top - rect.bottom) / (1 + cosf(FXSYS_PI / 5.0f));
+      std::array<CFX_PointF, 5> tips;
+      float angle = FXSYS_PI / 10.0f;
+      for (CFX_PointF& tip : tips) {
+        tip = {mid_x + radius * cosf(angle), mid_y + radius * sinf(angle)};
+        angle += FXSYS_PI * 2 / 5.0f;
+      }
+      WriteClosedPolygon(stream, {tips[0], tips[2], tips[4], tips[1], tips[3]});
+      break;
+    }
+  }
+  stream << (stroked ? "S\n" : "f\n") << "Q\n";
+}
+
 uint32_t CreateFormXObjectStream(CPDF_Document* doc,
                                  fxcrt::ostringstream& content,
                                  const CFX_FloatRect& bbox,
@@ -4715,19 +4870,19 @@ void CPDF_GenerateAP::GenerateCheckboxFormAP(CPDF_Document* doc,
 
   CFX_FloatRect body_rect = dims.bbox;
   body_rect.Deflate(bs.width, bs.width);
-  CFX_FloatRect check_rect = body_rect.GetCenterSquare();
+  const CheckStyle style =
+      CheckStyleFromCaption(mk.caption).value_or(CheckStyle::kCheck);
 
   // Off state: box only (background fill + border stroke).
   fxcrt::ostringstream off_content;
   BuildCheckboxBoxStream(off_content, mk, bs, dims.bbox);
 
-  // Yes state: same box + checkmark path.
+  // On state: the same box and the symbol /MK /CA names, in the /DA colour.
   fxcrt::ostringstream yes_content;
   BuildCheckboxBoxStream(yes_content, mk, bs, dims.bbox);
-  yes_content << "q\n";
-  yes_content << "0 0 0 rg\n";
-  GenerateCheckmarkPath(yes_content, check_rect);
-  yes_content << "f\nQ\n";
+  WriteCheckSymbol(yes_content, style,
+                   CheckSymbolRect(body_rect, style, /*radio=*/false),
+                   CheckSymbolColor(doc, annot_dict));
 
   const uint32_t off_obj_num =
       CreateFormXObjectStream(doc, off_content, dims.bbox, dims.matrix);
@@ -4875,17 +5030,32 @@ void CPDF_GenerateAP::GenerateRadioButtonFormAP(CPDF_Document* doc,
     s << "h\n";
   };
 
-  // Off state: circle only (background fill + border stroke).
-  fxcrt::ostringstream off_content;
-  BuildRadioCircleStream(off_content, mk, bs, dims.bbox);
+  const CheckStyle style =
+      CheckStyleFromCaption(mk.caption).value_or(CheckStyle::kCircle);
+  const CFX_Color symbol_color = CheckSymbolColor(doc, annot_dict);
 
-  // Yes state: same circle + filled inner dot.
+  fxcrt::ostringstream off_content;
   fxcrt::ostringstream yes_content;
-  BuildRadioCircleStream(yes_content, mk, bs, dims.bbox);
-  yes_content << "q\n";
-  yes_content << "0 0 0 rg\n";
-  WriteEllipse(yes_content, inner_rx, inner_ry);
-  yes_content << "f*\nQ\n";
+  if (style == CheckStyle::kCircle) {
+    // Off state: circle only (background fill + border stroke).
+    BuildRadioCircleStream(off_content, mk, bs, dims.bbox);
+
+    // On state: the same circle and a filled dot, in the /DA colour.
+    BuildRadioCircleStream(yes_content, mk, bs, dims.bbox);
+    yes_content << "q\n"
+                << GenerateColorAP(symbol_color, PaintOperation::kFill);
+    WriteEllipse(yes_content, inner_rx, inner_ry);
+    yes_content << "f*\nQ\n";
+  } else {
+    // Any other symbol sits in a box, as PDFium's form filler draws it.
+    CFX_FloatRect body_rect = dims.bbox;
+    body_rect.Deflate(bs.width, bs.width);
+    BuildCheckboxBoxStream(off_content, mk, bs, dims.bbox);
+    BuildCheckboxBoxStream(yes_content, mk, bs, dims.bbox);
+    WriteCheckSymbol(yes_content, style,
+                     CheckSymbolRect(body_rect, style, /*radio=*/true),
+                     symbol_color);
+  }
 
   const uint32_t off_obj_num =
       CreateFormXObjectStream(doc, off_content, dims.bbox, dims.matrix);

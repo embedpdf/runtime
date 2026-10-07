@@ -1307,6 +1307,7 @@ EPDF_RenderAnnotBitmap(FPDF_BITMAP bitmap,
                        FPDF_PAGE page,
                        FPDF_ANNOTATION annot,
                        FPDF_ANNOT_APPEARANCEMODE appearanceMode,
+                       FPDF_BYTESTRING state,
                        const FS_MATRIX* matrix,
                        int flags) {
   // Guards
@@ -1340,6 +1341,9 @@ EPDF_RenderAnnotBitmap(FPDF_BITMAP bitmap,
   auto pAnnot = std::make_unique<CPDF_Annot>(
       pdfium::WrapRetain(const_cast<CPDF_Dictionary*>(pAnnotDict)), pDoc,
       CPDF_Annot::MissingAppearance::kGenerateWhenDrawn);
+  if (state) {
+    pAnnot->SetAppearanceState(ByteString(state));
+  }
   if (!pAnnot->GetDrawingRect(
           static_cast<CPDF_Annot::AppearanceMode>(appearanceMode))) {
     return false;
@@ -1379,6 +1383,7 @@ EPDF_RenderAnnotBitmapUnrotated(FPDF_BITMAP bitmap,
                                 FPDF_PAGE page,
                                 FPDF_ANNOTATION annot,
                                 FPDF_ANNOT_APPEARANCEMODE appearanceMode,
+                                FPDF_BYTESTRING state,
                                 float degrees,
                                 const FS_RECTF* box,
                                 const FS_MATRIX* matrix,
@@ -1409,6 +1414,9 @@ EPDF_RenderAnnotBitmapUnrotated(FPDF_BITMAP bitmap,
   auto pAnnot = std::make_unique<CPDF_Annot>(
       pdfium::WrapRetain(const_cast<CPDF_Dictionary*>(pAnnotDict)), pDoc,
       CPDF_Annot::MissingAppearance::kGenerateWhenDrawn);
+  if (state) {
+    pAnnot->SetAppearanceState(ByteString(state));
+  }
   if (!pAnnot->GetDrawingRect(
           static_cast<CPDF_Annot::AppearanceMode>(appearanceMode))) {
     return false;

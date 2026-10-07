@@ -39,9 +39,15 @@ class CPDF_GenerateAP {
                                               FormType type,
                                               const WideString& value_override);
 
+  // A check box's Off and on appearances: the box, and when on, the symbol
+  // its /MK /CA names (a check by default) in its /DA colour (black by
+  // default).
   static void GenerateCheckboxFormAP(CPDF_Document* doc,
                                      CPDF_Dictionary* annot_dict);
 
+  // A radio button's Off and on appearances: a circle with a dot by default;
+  // any other symbol /MK /CA names sits in a box, as PDFium's form filler
+  // draws it. The symbol takes the /DA colour (black by default).
   static void GenerateRadioButtonFormAP(CPDF_Document* doc,
                                         CPDF_Dictionary* annot_dict);
 
