@@ -1,0 +1,61 @@
+%PDF-1.7
+% ò¤ô
+% A field whose only widget names, with /P, a page dictionary the page tree
+% no longer holds: the page was deleted. No page's /Annots shows the widget,
+% so it is on no page.
+1 0 obj <<
+  /Type /Catalog
+  /Pages 2 0 R
+  /AcroForm << /Fields [4 0 R] >>
+>>
+endobj
+2 0 obj <<
+  /Type /Pages
+  /Count 1
+  /Kids [3 0 R]
+>>
+endobj
+3 0 obj <<
+  /Type /Page
+  /Parent 2 0 R
+  /MediaBox [0 0 300 300]
+>>
+endobj
+4 0 obj <<
+  /FT /Tx
+  /T (gone)
+  /Kids [5 0 R]
+>>
+endobj
+5 0 obj <<
+  /Type /Annot
+  /Subtype /Widget
+  /Parent 4 0 R
+  /P 6 0 R
+  /Rect [20 250 280 280]
+>>
+endobj
+% The deleted page: a page dictionary, but no longer in the page tree.
+6 0 obj <<
+  /Type /Page
+  /Parent 2 0 R
+  /MediaBox [0 0 300 300]
+  /Annots [5 0 R]
+>>
+endobj
+xref
+0 7
+0000000000 65535 f 
+0000000191 00000 n 
+0000000278 00000 n 
+0000000341 00000 n 
+0000000418 00000 n 
+0000000477 00000 n 
+0000000655 00000 n 
+trailer <<
+  /Root 1 0 R
+  /Size 7
+>>
+startxref
+750
+%%EOF

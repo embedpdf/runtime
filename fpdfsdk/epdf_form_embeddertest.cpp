@@ -341,6 +341,19 @@ TEST_F(EPDFFormEmbedderTest, ClickFormModel) {
   EPDFForm_CloseModel(model);
 }
 
+TEST_F(EPDFFormEmbedderTest, WidgetOnDeletedPageIsOnNoPage) {
+  ASSERT_TRUE(OpenDocument("widget_on_deleted_page.pdf"));
+  EPDF_FORM_MODEL model = EPDFForm_LoadModel(document());
+  ASSERT_TRUE(model);
+  ASSERT_EQ(1, EPDFForm_CountFields(model));
+  EXPECT_EQ(L"gone", GetWideString(EPDFForm_GetFieldName, model, 0));
+  ASSERT_EQ(1, EPDFForm_CountFieldWidgets(model, 0));
+  EXPECT_EQ(5u, EPDFForm_GetFieldWidgetObjNum(model, 0, 0));
+  // Its /P names a page the page tree no longer holds: it is on no page.
+  EXPECT_EQ(0u, EPDFForm_GetFieldWidgetPageObjNum(model, 0, 0));
+  EPDFForm_CloseModel(model);
+}
+
 TEST_F(EPDFFormEmbedderTest, OrphanWidgetsRecovered) {
   ASSERT_TRUE(OpenDocument("orphan_widgets.pdf"));
   EPDF_FORM_MODEL model = EPDFForm_LoadModel(document());

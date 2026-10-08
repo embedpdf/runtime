@@ -40,7 +40,10 @@ std::map<const CPDF_Dictionary*, uint32_t> SweepPageWidgets(
 // A form with the page sweep applied.
 std::unique_ptr<CPDF_InteractiveForm> BuildReconciledForm(CPDF_Document* doc);
 
+// The page that shows a widget: the swept page whose /Annots holds it, else
+// the page its /P names when that is a page of |doc|, else 0 (no page).
 uint32_t PageObjNumForWidget(
+    CPDF_Document* doc,
     const std::map<const CPDF_Dictionary*, uint32_t>& widget_pages,
     const CPDF_Dictionary* widget_dict);
 

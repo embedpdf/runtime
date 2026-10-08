@@ -280,7 +280,7 @@ FieldRecord SnapshotField(
     const CPDF_Dictionary* widget_dict = control->GetWidgetDict().Get();
     WidgetRecord widget;
     widget.objnum = widget_dict->GetObjNum();
-    widget.page_objnum = PageObjNumForWidget(widget_pages, widget_dict);
+    widget.page_objnum = PageObjNumForWidget(document, widget_pages, widget_dict);
     if (widget_dict->KeyExist("Rect")) {
       widget.rect = widget_dict->GetRectFor("Rect");
       widget.rect.Normalize();

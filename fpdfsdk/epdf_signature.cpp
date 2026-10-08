@@ -1037,7 +1037,8 @@ SignatureRecord SnapshotSignature(
         control ? control->GetWidgetDict() : nullptr;
     if (widget) {
       record.widget_objnum = widget->GetObjNum();
-      record.page_objnum = epdf::PageObjNumForWidget(widget_pages, widget.Get());
+      record.page_objnum =
+          epdf::PageObjNumForWidget(doc, widget_pages, widget.Get());
     }
   }
 
