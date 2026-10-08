@@ -308,6 +308,77 @@ EPDFDoc_GetPageActionModel(FPDF_DOCUMENT document,
 FPDF_EXPORT EPDF_ACTION_MODEL FPDF_CALLCONV
 EPDFAnnot_GetActionModel(FPDF_ANNOTATION annotation, int event);
 
+// Writing actions -----------------------------------------------------------
+//
+// Each creator makes a new action dictionary, an indirect object of
+// |document|, and returns its handle, or NULL on bad arguments. Attach it
+// with EPDFAnnot_SetEventAction(), EPDFForm_SetFieldEventAction() or
+// EPDFAction_SetNext(). The fork writes what it is given; which actions a
+// caller may write is the caller's decision.
+
+#define EPDF_ACTION_TARGET_NAME 0
+#define EPDF_ACTION_TARGET_OBJECT 1
+
+// A field or widget an action names, as the reader's targets: by fully
+// qualified field name (EPDF_ACTION_TARGET_NAME, |name| as UTF-16LE), or by
+// the object number of a field or annotation dictionary
+// (EPDF_ACTION_TARGET_OBJECT, |object_number|).
+typedef struct {
+  int kind;
+  uint32_t object_number;
+  FPDF_WIDESTRING name;
+} EPDF_ACTION_TARGET;
+
+// /S /JavaScript with |script| as the /JS text string.
+FPDF_EXPORT FPDF_ACTION FPDF_CALLCONV
+EPDFAction_CreateJavaScript(FPDF_DOCUMENT document, FPDF_WIDESTRING script);
+
+// /S /Hide naming |count| (at least 1) |targets| in /T: the entry itself for
+// one, an array for several. /H false is written only when |hide| is false
+// (true, hide, is the default).
+FPDF_EXPORT FPDF_ACTION FPDF_CALLCONV
+EPDFAction_CreateHide(FPDF_DOCUMENT document,
+                      const EPDF_ACTION_TARGET* targets,
+                      int count,
+                      FPDF_BOOL hide);
+
+// /S /ResetForm. |count| -1 writes no /Fields (every field is reset); 0 or
+// more writes /Fields with |count| |targets|. |exclude| writes /Flags 1: the
+// listed fields are the ones NOT reset.
+FPDF_EXPORT FPDF_ACTION FPDF_CALLCONV
+EPDFAction_CreateResetForm(FPDF_DOCUMENT document,
+                           const EPDF_ACTION_TARGET* targets,
+                           int count,
+                           FPDF_BOOL exclude);
+
+// /S /SubmitForm to |url|, written as /F << /FS /URL /F (url) >>. /Fields as
+// for EPDFAction_CreateResetForm() (|count| -1: none). |flags| is written raw
+// as /Flags (ISO 32000-2 Table 240), and left out when 0.
+FPDF_EXPORT FPDF_ACTION FPDF_CALLCONV
+EPDFAction_CreateSubmitForm(FPDF_DOCUMENT document,
+                            FPDF_WIDESTRING url,
+                            const EPDF_ACTION_TARGET* targets,
+                            int count,
+                            unsigned int flags);
+
+// Sets |action|'s /Next to the |count| actions in |next|: one reference, or
+// an array for several; |count| 0 removes /Next. |action| and every next
+// must be indirect actions of |document|, and none may be |action| itself.
+FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV EPDFAction_SetNext(FPDF_DOCUMENT document,
+                                                       FPDF_ACTION action,
+                                                       const FPDF_ACTION* next,
+                                                       int count);
+
+// Sets a widget's action for |event| (EPDF_ANNOT_ACTION_*): ACTIVATE writes
+// /A, the others their /AA entry, each as a reference to |action|, an
+// indirect action of the widget's document. NULL removes the entry, and an
+// /AA left empty goes. On a field merged with its widget only the widget's
+// keys change, and the field events it inherits from a parent are copied in
+// first, so they keep applying. Widgets only: a link's action is
+// EPDFAnnot_SetAction().
+FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV
+EPDFAnnot_SetEventAction(FPDF_ANNOTATION annot, int event, FPDF_ACTION action);
+
 #ifdef __cplusplus
 }  // extern "C"
 #endif  // __cplusplus

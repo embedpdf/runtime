@@ -975,3 +975,160 @@ TEST_F(EPDFActionEmbedderTest, DestinationArrayJunkBeyondViewIsIgnored) {
   EXPECT_FLOAT_EQ(2.0f, y);
   EXPECT_FLOAT_EQ(3.0f, zoom);
 }
+
+namespace {
+
+EPDF_ACTION_TARGET NameTarget(const ScopedFPDFWideString& name) {
+  return {EPDF_ACTION_TARGET_NAME, 0, name.get()};
+}
+
+EPDF_ACTION_TARGET ObjectTarget(uint32_t object_number) {
+  return {EPDF_ACTION_TARGET_OBJECT, object_number, nullptr};
+}
+
+std::string GetSubmitURL(EPDF_ACTION_MODEL model, EPDF_ACTION_NODE_ID node) {
+  const unsigned long length =
+      EPDFAction_GetNodeSubmitFormURL(model, node, nullptr, 0);
+  if (length == 0) {
+    return std::string();
+  }
+  std::vector<char> buffer(length);
+  EPDFAction_GetNodeSubmitFormURL(model, node, buffer.data(), length);
+  return std::string(buffer.data());
+}
+
+}  // namespace
+
+// Each creator's action reads back through the action model as written.
+TEST_F(EPDFActionEmbedderTest, CreatorsReadBack) {
+  ScopedFPDFDocument document(FPDF_CreateNewDocument());
+  ASSERT_TRUE(document);
+  CPDF_Document* doc = CPDFDocumentFromFPDFDocument(document.get());
+  RetainPtr<CPDF_Dictionary> field = doc->NewIndirect<CPDF_Dictionary>();
+  const ScopedFPDFWideString total = GetFPDFWideString(L"order.total");
+
+  FPDF_ACTION script = EPDFAction_CreateJavaScript(
+      document.get(), GetFPDFWideString(L"event.value = \"€\";").get());
+  ASSERT_TRUE(script);
+  EXPECT_NE(0u, CPDFDictionaryFromFPDFAction(script)->GetObjNum());
+  ScopedEPDFActionModel script_model(EPDFAction_LoadModel(script));
+  ASSERT_TRUE(script_model);
+  EXPECT_EQ(EPDF_ACTION_TYPE_JAVASCRIPT,
+            EPDFAction_GetNodeType(script_model.get(), 0));
+  EXPECT_EQ(L"event.value = \"€\";",
+            GetActionJavaScript(script_model.get(), 0));
+
+  // Hide: one target is the /T entry itself; several, an array. /H false
+  // is written only to show.
+  const EPDF_ACTION_TARGET one[] = {NameTarget(total)};
+  FPDF_ACTION hide = EPDFAction_CreateHide(document.get(), one, 1, true);
+  ASSERT_TRUE(hide);
+  EXPECT_TRUE(
+      CPDFDictionaryFromFPDFAction(hide)->GetObjectFor("T")->IsString());
+  EXPECT_FALSE(CPDFDictionaryFromFPDFAction(hide)->KeyExist("H"));
+  const EPDF_ACTION_TARGET two[] = {NameTarget(total),
+                                    ObjectTarget(field->GetObjNum())};
+  FPDF_ACTION show = EPDFAction_CreateHide(document.get(), two, 2, false);
+  ASSERT_TRUE(show);
+  ScopedEPDFActionModel show_model(EPDFAction_LoadModel(show));
+  ASSERT_EQ(2, EPDFAction_GetNodeTargetCount(show_model.get(), 0));
+  EXPECT_EQ("order.total", GetTargetName(show_model.get(), 0, 0));
+  unsigned int object_number = 0;
+  ASSERT_TRUE(EPDFAction_GetNodeTargetObjectNumber(show_model.get(), 0, 1,
+                                                   &object_number));
+  EXPECT_EQ(field->GetObjNum(), object_number);
+  FPDF_BOOL hides = true;
+  ASSERT_TRUE(EPDFAction_GetNodeHideFlag(show_model.get(), 0, &hides));
+  EXPECT_FALSE(hides);
+
+  // Reset: every field (-1), none listed (0), some listed and excluded.
+  FPDF_BOOL has_fields = false;
+  FPDF_BOOL exclude = true;
+  ScopedEPDFActionModel reset_all(EPDFAction_LoadModel(
+      EPDFAction_CreateResetForm(document.get(), nullptr, -1, false)));
+  ASSERT_TRUE(
+      EPDFAction_GetNodeResetForm(reset_all.get(), 0, &has_fields, &exclude));
+  EXPECT_FALSE(has_fields);
+  EXPECT_FALSE(exclude);
+  ScopedEPDFActionModel reset_listed(EPDFAction_LoadModel(
+      EPDFAction_CreateResetForm(document.get(), nullptr, 0, false)));
+  ASSERT_TRUE(EPDFAction_GetNodeResetForm(reset_listed.get(), 0, &has_fields,
+                                          &exclude));
+  EXPECT_TRUE(has_fields);
+  EXPECT_EQ(0, EPDFAction_GetNodeTargetCount(reset_listed.get(), 0));
+  ScopedEPDFActionModel reset_but(EPDFAction_LoadModel(
+      EPDFAction_CreateResetForm(document.get(), two, 2, true)));
+  ASSERT_TRUE(
+      EPDFAction_GetNodeResetForm(reset_but.get(), 0, &has_fields, &exclude));
+  EXPECT_TRUE(has_fields);
+  EXPECT_TRUE(exclude);
+  EXPECT_EQ(2, EPDFAction_GetNodeTargetCount(reset_but.get(), 0));
+
+  // Submit: a URL file specification, the listed fields, raw flags.
+  FPDF_ACTION submit = EPDFAction_CreateSubmitForm(
+      document.get(), GetFPDFWideString(L"https://example.com/in").get(), one,
+      1, 4);
+  ASSERT_TRUE(submit);
+  ScopedEPDFActionModel submit_model(EPDFAction_LoadModel(submit));
+  unsigned int flags = 0;
+  ASSERT_TRUE(
+      EPDFAction_GetNodeSubmitForm(submit_model.get(), 0, &has_fields, &flags));
+  EXPECT_TRUE(has_fields);
+  EXPECT_EQ(4u, flags);
+  EXPECT_EQ("https://example.com/in", GetSubmitURL(submit_model.get(), 0));
+  EXPECT_EQ(
+      "URL",
+      CPDFDictionaryFromFPDFAction(submit)->GetDictFor("F")->GetNameFor("FS"));
+
+  // Refused, making nothing: bad targets, no URL, no script.
+  const EPDF_ACTION_TARGET unnamed[] = {{EPDF_ACTION_TARGET_NAME, 0, nullptr}};
+  const EPDF_ACTION_TARGET missing[] = {ObjectTarget(9999)};
+  const uint32_t last = doc->GetLastObjNum();
+  EXPECT_FALSE(EPDFAction_CreateHide(document.get(), unnamed, 1, true));
+  EXPECT_FALSE(EPDFAction_CreateHide(document.get(), one, 0, true));
+  EXPECT_FALSE(EPDFAction_CreateResetForm(document.get(), missing, 1, false));
+  EXPECT_FALSE(EPDFAction_CreateSubmitForm(
+      document.get(), GetFPDFWideString(L"").get(), nullptr, -1, 0));
+  EXPECT_FALSE(EPDFAction_CreateJavaScript(document.get(), nullptr));
+  EXPECT_EQ(last, doc->GetLastObjNum());
+}
+
+// /Next: one action is the entry itself; several, an array, read back in
+// order. An action can't follow itself.
+TEST_F(EPDFActionEmbedderTest, SetNextChainsActions) {
+  ScopedFPDFDocument document(FPDF_CreateNewDocument());
+  ASSERT_TRUE(document);
+  auto script = [&](const wchar_t* source) {
+    return EPDFAction_CreateJavaScript(document.get(),
+                                       GetFPDFWideString(source).get());
+  };
+  FPDF_ACTION first = script(L"first();");
+  FPDF_ACTION second = script(L"second();");
+  FPDF_ACTION third = script(L"third();");
+  ASSERT_TRUE(first && second && third);
+
+  ASSERT_TRUE(EPDFAction_SetNext(document.get(), first, &second, 1));
+  EXPECT_TRUE(
+      CPDFDictionaryFromFPDFAction(first)->GetObjectFor("Next")->IsReference());
+  const FPDF_ACTION both[] = {second, third};
+  ASSERT_TRUE(EPDFAction_SetNext(document.get(), first, both, 2));
+  ScopedEPDFActionModel model(EPDFAction_LoadModel(first));
+  ASSERT_TRUE(model);
+  ASSERT_EQ(2, EPDFAction_GetNextCount(model.get(), 0));
+  EXPECT_EQ(L"second();",
+            GetActionJavaScript(model.get(),
+                                EPDFAction_GetNextAt(model.get(), 0, 0)));
+  EXPECT_EQ(L"third();",
+            GetActionJavaScript(model.get(),
+                                EPDFAction_GetNextAt(model.get(), 0, 1)));
+
+  EXPECT_FALSE(EPDFAction_SetNext(document.get(), first, &first, 1));
+  ASSERT_TRUE(EPDFAction_SetNext(document.get(), first, nullptr, 0));
+  EXPECT_FALSE(CPDFDictionaryFromFPDFAction(first)->KeyExist("Next"));
+
+  // An action of another document is refused.
+  ScopedFPDFDocument other(FPDF_CreateNewDocument());
+  FPDF_ACTION foreign = EPDFAction_CreateJavaScript(
+      other.get(), GetFPDFWideString(L"x();").get());
+  EXPECT_FALSE(EPDFAction_SetNext(document.get(), first, &foreign, 1));
+}

@@ -26,7 +26,9 @@ enum class BlendMode;
 
 class CPDF_GenerateAP {
  public:
-  enum FormType { kTextField, kComboBox, kListBox };
+  // kPushButton: the button's background and border, and its caption (/MK
+  // /CA) centred in the /DA font and colour.
+  enum FormType { kTextField, kComboBox, kListBox, kPushButton };
 
   static void GenerateFormAP(CPDF_Document* doc,
                              CPDF_Dictionary* pAnnotDict,

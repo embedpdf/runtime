@@ -1,0 +1,72 @@
+{{header}}
+% Two text fields, each merged with its widget, carrying actions.
+% - "amount" (4): its own format script (/AA /F, the field's), a focus
+%   script (/AA /Fo, the widget's) and a click action (/A, the widget's).
+% - "group.child" (6): no /AA of its own. It inherits a keystroke and a
+%   calculate script from its parent "group" (5).
+{{object 1 0}} <<
+  /Type /Catalog
+  /Pages 2 0 R
+  /AcroForm <<
+    /Fields [4 0 R 5 0 R]
+    /DA (/Helv 0 Tf 0 g)
+    /DR << /Font << /Helv 7 0 R >> >>
+  >>
+>>
+endobj
+{{object 2 0}} <<
+  /Type /Pages
+  /Count 1
+  /Kids [3 0 R]
+>>
+endobj
+{{object 3 0}} <<
+  /Type /Page
+  /Parent 2 0 R
+  /MediaBox [0 0 300 300]
+  /Annots [4 0 R 6 0 R]
+>>
+endobj
+{{object 4 0}} <<
+  /Type /Annot
+  /Subtype /Widget
+  /FT /Tx
+  /T (amount)
+  /Rect [20 250 280 280]
+  /P 3 0 R
+  /A << /S /JavaScript /JS (clicked = 1;) >>
+  /AA <<
+    /F << /S /JavaScript /JS (formatted = 1;) >>
+    /Fo << /S /JavaScript /JS (focused = 1;) >>
+  >>
+>>
+endobj
+{{object 5 0}} <<
+  /FT /Tx
+  /T (group)
+  /Kids [6 0 R]
+  /AA <<
+    /K << /S /JavaScript /JS (keyed = 1;) >>
+    /C << /S /JavaScript /JS (calculated = 1;) >>
+  >>
+>>
+endobj
+{{object 6 0}} <<
+  /Type /Annot
+  /Subtype /Widget
+  /Parent 5 0 R
+  /T (child)
+  /Rect [20 200 280 230]
+  /P 3 0 R
+>>
+endobj
+{{object 7 0}} <<
+  /Type /Font
+  /Subtype /Type1
+  /BaseFont /Helvetica
+>>
+endobj
+{{xref}}
+{{trailer}}
+{{startxref}}
+%%EOF

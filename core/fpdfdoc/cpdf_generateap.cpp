@@ -4433,6 +4433,53 @@ void BuildCheckboxBoxStream(fxcrt::ostringstream& stream,
   }
 }
 
+// A push button: background and border as a text field draws them, and the
+// caption (/MK /CA) on one line, centred both ways, in the /DA font and
+// colour. An icon (/MK /I) is not drawn, so the caption takes the whole
+// button whatever /MK /TP says.
+void GeneratePushButtonFormAP(fxcrt::ostringstream& app_stream,
+                              const CPDF_Dictionary* annot_dict,
+                              const CFX_FloatRect& bbox,
+                              const DefaultAppearanceInfo& da_info,
+                              CPVT_VariableText::Provider& provider) {
+  const AppearanceCharacteristics mk =
+      GetAppearanceCharacteristics(annot_dict->GetDictFor("MK"));
+  const BorderStyleInfo bs = GetBorderStyleInfo(annot_dict->GetDictFor("BS"));
+  const float bw = bs.width;
+
+  app_stream << "q\n";
+  BuildCheckboxBoxStream(app_stream, mk, bs, bbox);
+  app_stream << "Q\n";
+  if (mk.caption.IsEmpty()) {
+    return;
+  }
+
+  CFX_FloatRect body_rect = bbox;
+  body_rect.Deflate(2.0f * bw, bw);
+  CPVT_VariableText vt(&provider);
+  vt.SetPlateRect(body_rect);
+  vt.SetAlignment(1);  // centred
+  SetVtFontSize(da_info.font_size, vt);
+  vt.Initialize();
+  vt.SetText(mk.caption);
+  vt.RearrangeAll();
+  const CFX_PointF offset(
+      0.0f, (vt.GetContentRect().Height() - body_rect.Height()) / 2.0f);
+  const ByteString caption =
+      GenerateEditAP(provider.GetFontMap(), vt.GetIterator(), offset, true, 0);
+  if (caption.IsEmpty()) {
+    return;
+  }
+
+  app_stream << "q\n";
+  CFX_FloatRect clip_rect = bbox;
+  clip_rect.Deflate(bw, bw);
+  WriteRect(app_stream, clip_rect) << " re W n\n";
+  app_stream << "BT\n"
+             << GenerateColorAP(da_info.text_color, PaintOperation::kFill)
+             << caption << "ET\nQ\n";
+}
+
 // The symbol a check box or radio button shows when on, named by the
 // ZapfDingbats character in its /MK /CA (the characters Acrobat writes).
 enum class CheckStyle { kCheck, kCircle, kCross, kDiamond, kSquare, kStar };
@@ -4756,6 +4803,10 @@ bool GenerateFormAPToTarget(APGenerationTarget* target,
       case CPDF_GenerateAP::kListBox:
         GenerateListBoxFormAP(app_stream, annot_dict, dims.bbox,
                               default_appearance_info.value(), provider);
+        break;
+      case CPDF_GenerateAP::kPushButton:
+        GeneratePushButtonFormAP(app_stream, annot_dict, dims.bbox,
+                                 default_appearance_info.value(), provider);
         break;
     }
   };

@@ -2663,11 +2663,51 @@ constexpr uint32_t kFamilyDefiningFlags =
 
 // Widget-plane keys that move to the new kid when a legacy merged field is
 // split by EPDFForm_AttachWidget. Field-plane keys (/FT /T /Ff /V /DV /Opt
-// /MaxLen /TU /TM /DA /Q /AA) stay on the field dictionary.
+// /MaxLen /TU /TM /DA /Q) stay on the field dictionary; /AA is split by
+// event (SplitAdditionalActions).
 constexpr const char* kWidgetPlaneKeys[] = {
-    "Type", "Subtype", "Rect", "AP", "AS", "MK", "BS", "Border",
-    "F",    "P",       "H",    "OC", "CA", "NM", "M",  "StructParent",
+    "Type", "Subtype", "Rect", "AP", "AS", "MK", "BS",           "Border", "F",
+    "P",    "H",       "OC",   "CA", "NM", "M",  "StructParent", "A",
 };
+
+// A merged field/widget's /AA holds both planes' events. The widget's (E X D
+// U Fo Bl PO PC PV PI) move to |widget|; the field's (K F V C), and any key
+// this doesn't know, stay on |field|. Each side gets a direct /AA of its own,
+// and the field's, left empty, goes unless it hides a parent's.
+void SplitAdditionalActions(CPDF_Dictionary* field, CPDF_Dictionary* widget) {
+  RetainPtr<const CPDF_Dictionary> events =
+      field->GetDictFor(pdfium::form_fields::kAA);
+  if (!events) {
+    return;
+  }
+  RetainPtr<CPDF_Dictionary> kept = ToDictionary(events->Clone());
+  RetainPtr<CPDF_Dictionary> moved = ToDictionary(events->Clone());
+  if (!kept || !moved) {
+    return;
+  }
+  bool any_moved = false;
+  for (const ByteString& key : events->GetKeys()) {
+    const bool widget_event =
+        std::any_of(epdf::kAnnotEventKeys.begin(), epdf::kAnnotEventKeys.end(),
+                    [&key](const char* event) { return key == event; });
+    if (widget_event) {
+      kept->RemoveFor(key.AsStringView());
+      any_moved = true;
+    } else {
+      moved->RemoveFor(key.AsStringView());
+    }
+  }
+  if (!any_moved) {
+    return;
+  }
+  widget->SetFor(pdfium::form_fields::kAA, std::move(moved));
+  // An empty /AA still hides the events a parent gives the field.
+  if (kept->size() == 0 && !epdf::InheritedFieldEvents(field)) {
+    field->RemoveFor(pdfium::form_fields::kAA);
+  } else {
+    field->SetFor(pdfium::form_fields::kAA, std::move(kept));
+  }
+}
 
 struct AuthorFamily {
   ByteString field_type;
@@ -2677,6 +2717,10 @@ struct AuthorFamily {
 
 bool AuthorFamilyFromCode(int family, AuthorFamily* out) {
   switch (family) {
+    case 1 /* EPDF_FORMFIELD_FAMILY_PUSHBUTTON */:
+      *out = {pdfium::form_fields::kBtn, pdfium::form_flags::kButtonPushbutton,
+              false};
+      return true;
     case 4 /* EPDF_FORMFIELD_FAMILY_TEXT */:
       *out = {pdfium::form_fields::kTx, 0, false};
       return true;
@@ -2786,6 +2830,26 @@ bool RemoveObjNumFromMutableArray(CPDF_Array* array, uint32_t objnum) {
   return false;
 }
 
+// Replaces |array|'s reference to |objnum| with one to |replacement|, in
+// place. False when |array| holds no reference to |objnum|.
+bool ReplaceObjNumInMutableArray(CPDF_Document* doc,
+                                 CPDF_Array* array,
+                                 uint32_t objnum,
+                                 uint32_t replacement) {
+  if (!array) {
+    return false;
+  }
+  for (size_t i = 0; i < array->size(); ++i) {
+    RetainPtr<const CPDF_Object> element = array->GetObjectAt(i);
+    const CPDF_Reference* ref = element ? element->AsReference() : nullptr;
+    if (ref && ref->GetRefObjNum() == objnum) {
+      array->SetNewAt<CPDF_Reference>(i, doc, replacement);
+      return true;
+    }
+  }
+  return false;
+}
+
 // Locate the page whose /Annots references |annot_objnum|. Page-tree walk
 // only; returns the page's object number or 0.
 uint32_t FindPageContainingAnnot(CPDF_Document* doc, uint32_t annot_objnum) {
@@ -2850,6 +2914,10 @@ void BakeWidgetAppearance(CPDF_Document* doc,
                           int family,
                           const ByteString& on_state) {
   switch (family) {
+    case 1:  // push button
+      CPDF_GenerateAP::GenerateFormAP(doc, widget,
+                                      CPDF_GenerateAP::kPushButton);
+      break;
     case 2:  // checkbox
       CPDF_GenerateAP::GenerateCheckboxFormAP(doc, widget);
       NormalizeToggleOnState(widget, on_state);
@@ -3012,8 +3080,8 @@ EPDFForm_AttachWidget(FPDF_DOCUMENT document,
     return false;  // must address the terminal field dictionary itself
   }
   const int family = FamilyOfFieldDict(field.Get());
-  if (family == 0 || family == 1) {
-    return false;  // unknown / pushbutton are not authorable
+  if (family == 0) {
+    return false;  // an unknown family is not authorable
   }
   const bool toggle = family == 2 || family == 3;
   const ByteString state(on_state ? on_state : "");
@@ -3061,6 +3129,7 @@ EPDFForm_AttachWidget(FPDF_DOCUMENT document,
       split_widget->SetFor(key, value->Clone());
       mutable_field->RemoveFor(key);
     }
+    SplitAdditionalActions(mutable_field.Get(), split_widget.Get());
     split_widget->SetNewFor<CPDF_Name>("Type", "Annot");
     split_widget->SetNewFor<CPDF_Name>("Subtype", "Widget");
     split_widget->SetNewFor<CPDF_Reference>(pdfium::form_fields::kParent, doc,
@@ -3077,13 +3146,16 @@ EPDFForm_AttachWidget(FPDF_DOCUMENT document,
     }
     kids->AppendNew<CPDF_Reference>(doc, split_widget->GetObjNum());
     if (page_objnum != 0) {
+      // The split widget takes the merged dictionary's place on the page,
+      // keeping its place in the stacking order.
       RetainPtr<CPDF_Dictionary> page =
           ToDictionary(doc->GetMutableIndirectObject(page_objnum));
       RetainPtr<CPDF_Array> annots =
-          page ? page->GetMutableArrayFor("Annots") : nullptr;
-      if (annots && RemoveObjNumFromMutableArray(annots.Get(), field_objnum)) {
-        annots->AppendNew<CPDF_Reference>(doc, split_widget->GetObjNum());
-      }
+          page ? epdf::GetMutableArrayMember(doc, page.Get(), "Annots",
+                                             /*create_if_missing=*/false)
+               : nullptr;
+      ReplaceObjNumInMutableArray(doc, annots.Get(), field_objnum,
+                                  split_widget->GetObjNum());
     }
   }
 
@@ -3462,6 +3534,115 @@ EPDFForm_SetFieldFlags(FPDF_DOCUMENT document,
                                         static_cast<int>(next));
   // Rendering-relevant text/choice bits (multiline, comb, ...) changed.
   RegenerateFieldAppearances(doc, field_objnum);
+  return true;
+}
+
+FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV
+EPDFForm_SetFieldEventAction(FPDF_DOCUMENT document,
+                             uint32_t field_objnum,
+                             int event,
+                             FPDF_ACTION action) {
+  ScopedFPDFDocumentView document_view(document);
+  CPDF_Document* doc = document_view.Get();
+  if (!doc || field_objnum == 0 || event < EPDF_FORM_ACTION_KEYSTROKE ||
+      event > EPDF_FORM_ACTION_CALCULATE) {
+    return false;
+  }
+  RetainPtr<const CPDF_Dictionary> field = ResolveFieldDict(doc, field_objnum);
+  if (!field || InheritedFieldType(field.Get()).IsEmpty()) {
+    return false;
+  }
+  uint32_t action_objnum = 0;
+  if (action) {
+    RetainPtr<const CPDF_Dictionary> held = epdf::IndirectActionOf(doc, action);
+    if (!held) {
+      return false;
+    }
+    action_objnum = held->GetObjNum();
+  }
+  const ByteStringView key = epdf::kFieldEventKeys[event];
+
+  // The field's events now: its own /AA, else the one a parent gives it.
+  RetainPtr<const CPDF_Dictionary> own =
+      field->GetDictFor(pdfium::form_fields::kAA);
+  RetainPtr<const CPDF_Dictionary> events =
+      own ? own : epdf::InheritedFieldEvents(field.Get());
+  if (epdf::RefersTo(events.Get(), key, action_objnum)) {
+    return true;  // nothing to change
+  }
+
+  RetainPtr<CPDF_Dictionary> mutable_field =
+      ToDictionary(doc->GetMutableIndirectObject(field_objnum));
+  if (!mutable_field) {
+    return false;
+  }
+  const bool inherits = epdf::TakeInheritedFieldEvents(mutable_field.Get());
+  epdf::SetAdditionalAction(doc, mutable_field.Get(), key, action_objnum,
+                            /*keep_empty=*/inherits);
+  return true;
+}
+
+FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV
+EPDFForm_SetCalculationOrder(FPDF_DOCUMENT document,
+                             const uint32_t* field_objnums,
+                             int count) {
+  ScopedFPDFDocumentView document_view(document);
+  CPDF_Document* doc = document_view.Get();
+  if (!doc || count < 0 || (count > 0 && !field_objnums)) {
+    return false;
+  }
+  std::vector<uint32_t> order;
+  std::set<uint32_t> seen;
+  for (int i = 0; i < count; ++i) {
+    const uint32_t objnum = UNSAFE_BUFFERS(field_objnums[i]);
+    RetainPtr<const CPDF_Dictionary> field =
+        objnum != 0 ? ResolveFieldDict(doc, objnum) : nullptr;
+    if (!field || InheritedFieldType(field.Get()).IsEmpty() ||
+        !seen.insert(objnum).second) {
+      return false;
+    }
+    order.push_back(objnum);
+  }
+
+  // Nothing to change: no write.
+  const CPDF_Dictionary* root = doc->GetRoot();
+  RetainPtr<const CPDF_Dictionary> acro_form =
+      root ? root->GetDictFor("AcroForm") : nullptr;
+  if (count == 0 && (!acro_form || !acro_form->KeyExist("CO"))) {
+    return true;
+  }
+  RetainPtr<const CPDF_Array> current =
+      acro_form ? acro_form->GetArrayFor("CO") : nullptr;
+  auto lists_order = [&order](const CPDF_Array* refs) {
+    if (!refs || refs->size() != order.size()) {
+      return false;
+    }
+    for (size_t i = 0; i < order.size(); ++i) {
+      RetainPtr<const CPDF_Object> entry = refs->GetObjectAt(i);
+      const CPDF_Reference* ref = entry ? entry->AsReference() : nullptr;
+      if (!ref || ref->GetRefObjNum() != order[i]) {
+        return false;
+      }
+    }
+    return true;
+  };
+  if (count > 0 && lists_order(current.Get())) {
+    return true;
+  }
+
+  RetainPtr<CPDF_Dictionary> mutable_form =
+      GetMutableAcroForm(doc, /*create_if_missing=*/count > 0, nullptr);
+  if (!mutable_form) {
+    return false;
+  }
+  if (count == 0) {
+    mutable_form->RemoveFor("CO");
+    return true;
+  }
+  RetainPtr<CPDF_Array> list = mutable_form->SetNewFor<CPDF_Array>("CO");
+  for (uint32_t objnum : order) {
+    list->AppendNew<CPDF_Reference>(doc, objnum);
+  }
   return true;
 }
 

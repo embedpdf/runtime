@@ -649,8 +649,9 @@ EPDFForm_Repair(FPDF_DOCUMENT document,
 //
 //   family    - EPDF_FORMFIELD_FAMILY_TEXT / CHECKBOX / RADIO / COMBOBOX /
 //               LISTBOX / SIGNATURE (created unsigned; /AcroForm /SigFlags
-//               gains SignaturesExist). Push buttons and unknown are not
-//               authorable.
+//               gains SignaturesExist) / PUSHBUTTON (no value; its caption
+//               is its widgets' /MK /CA, EPDFAnnot_SetMKText()). Unknown is
+//               not authorable.
 //   full_name - dotted fully qualified name ("billing.name"). Missing
 //               non-terminal ancestors are created; a sibling name
 //               collision at any level fails.
@@ -735,6 +736,29 @@ EPDFForm_SetFieldFlags(FPDF_DOCUMENT document,
                        uint32_t field_objnum,
                        uint32_t set_bits,
                        uint32_t clear_bits);
+
+// Experimental EmbedPDF Extension API.
+// Set a field's action for |event| (EPDF_FORM_ACTION_*: /AA K F V C) to a
+// reference to |action|, an indirect action of |document| (see
+// EPDFAction_CreateJavaScript()); NULL removes it. The field's own /AA is
+// written: one it only inherits from a parent is first copied in (its K F V
+// C entries), so its other events keep their meaning. An /AA left empty
+// goes, unless it hides an inherited one. On a field merged with its widget
+// only the field's keys change.
+FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV
+EPDFForm_SetFieldEventAction(FPDF_DOCUMENT document,
+                             uint32_t field_objnum,
+                             int event,
+                             FPDF_ACTION action);
+
+// Experimental EmbedPDF Extension API.
+// Set /AcroForm /CO, the order calculate scripts run in, to the |count|
+// fields in |field_objnums|, as references. |count| 0 removes /CO. Fails,
+// writing nothing, when a number names no field or appears twice.
+FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV
+EPDFForm_SetCalculationOrder(FPDF_DOCUMENT document,
+                             const uint32_t* field_objnums,
+                             int count);
 
 // Experimental EmbedPDF Extension API.
 // Set /MaxLen on a text field. 0 clears the limit. Fails when the current

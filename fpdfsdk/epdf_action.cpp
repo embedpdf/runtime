@@ -930,8 +930,6 @@ EPDFDoc_GetPageActionModel(FPDF_DOCUMENT document,
 
 FPDF_EXPORT EPDF_ACTION_MODEL FPDF_CALLCONV
 EPDFAnnot_GetActionModel(FPDF_ANNOTATION annotation, int event) {
-  static constexpr std::array<const char*, 10> kAdditionalKeys = {
-      "E", "X", "D", "U", "Fo", "Bl", "PO", "PC", "PV", "PI"};
   if (event < EPDF_ANNOT_ACTION_ACTIVATE ||
       event > EPDF_ANNOT_ACTION_PAGE_INVISIBLE) {
     return nullptr;
@@ -952,7 +950,7 @@ EPDFAnnot_GetActionModel(FPDF_ANNOTATION annotation, int event) {
   const int additional_index = event - EPDF_ANNOT_ACTION_CURSOR_ENTER;
   return additional ? epdf::MakeModelFromDictionary(
                           additional->GetDictFor(
-                              kAdditionalKeys[additional_index]),
+                              epdf::kAnnotEventKeys[additional_index]),
                           context->GetPage()->GetDocument())
                     : nullptr;
 }

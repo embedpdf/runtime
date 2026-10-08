@@ -18,6 +18,7 @@
 #include <vector>
 
 #include "constants/annotation_common.h"
+#include "constants/appearance.h"
 #include "constants/form_fields.h"
 #include "core/fdrm/fx_crypt.h"
 #include "core/fpdfapi/edit/cpdf_contentstream_write_utils.h"
@@ -5783,6 +5784,149 @@ EPDFAnnot_ClearMKColor(FPDF_ANNOTATION annot, EPDF_MK_COLORTYPE type) {
   return true;
 }
 
+namespace {
+
+// The /MK key of caption |which| (EPDF_MK_TEXT_*), or null.
+const char* MKTextKey(int which) {
+  switch (which) {
+    case EPDF_MK_TEXT_CA:
+      return pdfium::appearance::kCA;
+    case EPDF_MK_TEXT_RC:
+      return pdfium::appearance::kRC;
+    case EPDF_MK_TEXT_AC:
+      return pdfium::appearance::kAC;
+    default:
+      return nullptr;
+  }
+}
+
+// A widget's /MK, for reading; null when it has none or isn't a widget.
+RetainPtr<const CPDF_Dictionary> WidgetMKFromFPDFAnnotation(
+    FPDF_ANNOTATION annot) {
+  if (FPDFAnnot_GetSubtype(annot) != FPDF_ANNOT_WIDGET) {
+    return nullptr;
+  }
+  const CPDF_Dictionary* dict = GetAnnotDictFromFPDFAnnotation(annot);
+  return dict ? dict->GetDictFor("MK") : nullptr;
+}
+
+// Sets a widget's /MK |key| to the number |value|, or removes it when
+// |value| is |absent_value| (what an absent entry means). No write when
+// nothing changes.
+FPDF_BOOL SetMKNumber(FPDF_ANNOTATION annot,
+                      const char* key,
+                      int value,
+                      int absent_value) {
+  if (FPDFAnnot_GetSubtype(annot) != FPDF_ANNOT_WIDGET) {
+    return false;
+  }
+  RetainPtr<const CPDF_Dictionary> mk = WidgetMKFromFPDFAnnotation(annot);
+  const bool present = mk && mk->KeyExist(key);
+  const bool unchanged = value == absent_value
+                             ? !present
+                             : present && mk->GetIntegerFor(key) == value;
+  if (unchanged) {
+    return true;
+  }
+  RetainPtr<CPDF_Dictionary> dict =
+      GetMutableAnnotDictFromFPDFAnnotation(annot);
+  if (!dict) {
+    return false;
+  }
+  if (value != absent_value) {
+    dict->GetOrCreateDictFor("MK")->SetNewFor<CPDF_Number>(key, value);
+  } else if (RetainPtr<CPDF_Dictionary> mutable_mk =
+                 dict->GetMutableDictFor("MK")) {
+    mutable_mk->RemoveFor(key);
+  }
+  return true;
+}
+
+}  // namespace
+
+FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV EPDFAnnot_SetMKText(FPDF_ANNOTATION annot,
+                                                        int which,
+                                                        FPDF_WIDESTRING text) {
+  const char* key = MKTextKey(which);
+  if (!key || FPDFAnnot_GetSubtype(annot) != FPDF_ANNOT_WIDGET) {
+    return false;
+  }
+  std::optional<WideString> next;
+  if (text) {
+    next = UNSAFE_BUFFERS(WideStringFromFPDFWideString(text));
+  }
+  // Nothing to change: no write.
+  RetainPtr<const CPDF_Dictionary> mk = WidgetMKFromFPDFAnnotation(annot);
+  const bool present = mk && mk->KeyExist(key);
+  if (next ? present && mk->GetUnicodeTextFor(key) == *next : !present) {
+    return true;
+  }
+  RetainPtr<CPDF_Dictionary> dict =
+      GetMutableAnnotDictFromFPDFAnnotation(annot);
+  if (!dict) {
+    return false;
+  }
+  if (next) {
+    dict->GetOrCreateDictFor("MK")->SetNewFor<CPDF_String>(
+        key, next->AsStringView());
+  } else if (RetainPtr<CPDF_Dictionary> mutable_mk =
+                 dict->GetMutableDictFor("MK")) {
+    mutable_mk->RemoveFor(key);
+  }
+  return true;
+}
+
+FPDF_EXPORT unsigned long FPDF_CALLCONV
+EPDFAnnot_GetMKText(FPDF_ANNOTATION annot,
+                    int which,
+                    FPDF_WCHAR* buffer,
+                    unsigned long buflen) {
+  const char* key = MKTextKey(which);
+  RetainPtr<const CPDF_Dictionary> mk =
+      key ? WidgetMKFromFPDFAnnotation(annot) : nullptr;
+  if (!mk || !mk->KeyExist(key)) {
+    return 0;
+  }
+  // SAFETY: required from caller.
+  return Utf16EncodeMaybeCopyAndReturnLength(
+      mk->GetUnicodeTextFor(key),
+      UNSAFE_BUFFERS(SpanFromFPDFApiArgs(buffer, buflen)));
+}
+
+FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV
+EPDFAnnot_SetMKTextPosition(FPDF_ANNOTATION annot, int position) {
+  if (position < 0 || position > 6) {
+    return false;
+  }
+  return SetMKNumber(annot, "TP", position, /*absent_value=*/0);
+}
+
+FPDF_EXPORT int FPDF_CALLCONV
+EPDFAnnot_GetMKTextPosition(FPDF_ANNOTATION annot) {
+  if (FPDFAnnot_GetSubtype(annot) != FPDF_ANNOT_WIDGET) {
+    return -1;
+  }
+  RetainPtr<const CPDF_Dictionary> mk = WidgetMKFromFPDFAnnotation(annot);
+  return mk ? mk->GetIntegerFor("TP") : 0;
+}
+
+FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV
+EPDFAnnot_SetMKRotation(FPDF_ANNOTATION annot, int degrees) {
+  if (degrees < 0 || degrees > 270 || degrees % 90 != 0) {
+    return false;
+  }
+  return SetMKNumber(annot, pdfium::appearance::kR, degrees,
+                     /*absent_value=*/0);
+}
+
+FPDF_EXPORT int FPDF_CALLCONV EPDFAnnot_GetMKRotation(FPDF_ANNOTATION annot) {
+  if (FPDFAnnot_GetSubtype(annot) != FPDF_ANNOT_WIDGET) {
+    return -1;
+  }
+  RetainPtr<const CPDF_Dictionary> mk = WidgetMKFromFPDFAnnotation(annot);
+  return mk ? mk->GetIntegerFor(pdfium::appearance::kR) : 0;
+}
+
 FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV
 EPDFAnnot_GenerateFormFieldAP(FPDF_ANNOTATION annot) {
   CPDF_AnnotContext* pContext = CPDFAnnotContextFromFPDFAnnotation(annot);
@@ -5845,9 +5989,12 @@ EPDFAnnot_GenerateFormFieldAP(FPDF_ANNOTATION annot) {
   if (ft == "Btn") {
     const bool is_pushbutton = ff & (1 << 16);
     const bool is_radio = ff & (1 << 15);
-    if (is_radio) {
+    if (is_pushbutton) {
+      CPDF_GenerateAP::GenerateFormAP(pDoc, pAnnotDict.Get(),
+                                      CPDF_GenerateAP::kPushButton);
+    } else if (is_radio) {
       CPDF_GenerateAP::GenerateRadioButtonFormAP(pDoc, pAnnotDict.Get());
-    } else if (!is_pushbutton) {
+    } else {
       CPDF_GenerateAP::GenerateCheckboxFormAP(pDoc, pAnnotDict.Get());
     }
     return true;

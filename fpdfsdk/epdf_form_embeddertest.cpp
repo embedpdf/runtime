@@ -17,6 +17,7 @@
 #include "core/fpdfapi/parser/cpdf_stream.h"
 #include "core/fpdfapi/parser/cpdf_string.h"
 #include "fpdfsdk/cpdfsdk_helpers.h"
+#include "public/epdf_action.h"
 #include "public/fpdf_annot.h"
 #include "public/fpdf_save.h"
 #include "public/fpdfview.h"
@@ -2090,4 +2091,361 @@ TEST_F(EPDFFormEmbedderTest, DocumentClearReachesFields) {
     EXPECT_FALSE(GetEffectiveIndirectDictionary(document(), field)
                      ->KeyExist("EMBD_Metadata"));
   }
+}
+
+namespace {
+
+// The script of |model|'s first action, or "-" for no model (no action for
+// that event). Closes |model|.
+std::wstring TakeScript(EPDF_ACTION_MODEL model) {
+  if (!model) {
+    return L"-";
+  }
+  const EPDF_ACTION_NODE_ID root = EPDFAction_GetRootNode(model);
+  const unsigned long length =
+      EPDFAction_GetNodeJavaScript(model, root, nullptr, 0);
+  std::wstring script;
+  if (length > 0) {
+    std::vector<FPDF_WCHAR> buffer = GetFPDFWideStringBuffer(length);
+    EPDFAction_GetNodeJavaScript(model, root, buffer.data(), length);
+    script = GetPlatformWString(buffer.data());
+  }
+  EPDFAction_CloseModel(model);
+  return script;
+}
+
+// The script of field |field_objnum|'s |event| (EPDF_FORM_ACTION_*), as the
+// form model reads it.
+std::wstring FieldScript(FPDF_DOCUMENT document,
+                         uint32_t field_objnum,
+                         int event) {
+  EPDF_FORM_MODEL model = EPDFForm_LoadModel(document);
+  const int index = EPDFForm_GetFieldIndexByObjNum(model, field_objnum);
+  std::wstring script =
+      index >= 0 ? TakeScript(EPDFForm_GetFieldActionModel(model, index, event))
+                 : L"no field";
+  EPDFForm_CloseModel(model);
+  return script;
+}
+
+// The script of annotation |index| on |page| for |event| (EPDF_ANNOT_ACTION_*).
+std::wstring WidgetScript(FPDF_PAGE page, int index, int event) {
+  ScopedFPDFAnnotation annot(FPDFPage_GetAnnot(page, index));
+  return TakeScript(EPDFAnnot_GetActionModel(annot.get(), event));
+}
+
+FPDF_ACTION Script(FPDF_DOCUMENT document, const wchar_t* source) {
+  return EPDFAction_CreateJavaScript(document, GetFPDFWideString(source).get());
+}
+
+// The fields of /AcroForm /CO, by object number, as the form model reads it.
+std::vector<uint32_t> CalculationOrder(FPDF_DOCUMENT document) {
+  EPDF_FORM_MODEL model = EPDFForm_LoadModel(document);
+  std::vector<uint32_t> order;
+  for (int i = 0; i < EPDFForm_CountCalculationOrder(model); ++i) {
+    order.push_back(EPDFForm_GetFieldObjNum(
+        model, EPDFForm_GetCalculationOrderFieldIndex(model, i)));
+  }
+  EPDFForm_CloseModel(model);
+  return order;
+}
+
+}  // namespace
+
+// In merged_field_actions.pdf, "amount" (4) is a text field merged with its
+// widget, with a format script (the field's), a focus script and a click
+// action (the widget's). "group.child" (6) is merged too, with no /AA of its
+// own: it inherits a keystroke and a calculate script from "group" (5).
+
+TEST_F(EPDFFormEmbedderTest, EventActionsSetReplaceAndRemove) {
+  ASSERT_TRUE(OpenDocument("merged_field_actions.pdf"));
+  FPDF_DOCUMENT doc = document();
+  FPDF_ACTION blurred = Script(doc, L"blurred = 1;");
+  FPDF_ACTION typed = Script(doc, L"typed = 1;");
+  ASSERT_TRUE(blurred && typed);
+  FPDF_PAGE page = LoadPage(0);
+  ASSERT_TRUE(page);
+
+  // A widget event and a field event on the one merged dictionary: each
+  // leaves the other plane's entries alone.
+  {
+    ScopedFPDFAnnotation amount(FPDFPage_GetAnnot(page, 0));
+    ASSERT_TRUE(EPDFAnnot_SetEventAction(amount.get(), EPDF_ANNOT_ACTION_BLUR,
+                                         blurred));
+  }
+  ASSERT_TRUE(
+      EPDFForm_SetFieldEventAction(doc, 4u, EPDF_FORM_ACTION_KEYSTROKE, typed));
+  EXPECT_EQ(L"blurred = 1;", WidgetScript(page, 0, EPDF_ANNOT_ACTION_BLUR));
+  EXPECT_EQ(L"focused = 1;", WidgetScript(page, 0, EPDF_ANNOT_ACTION_FOCUS));
+  EXPECT_EQ(L"clicked = 1;", WidgetScript(page, 0, EPDF_ANNOT_ACTION_ACTIVATE));
+  EXPECT_EQ(L"typed = 1;", FieldScript(doc, 4u, EPDF_FORM_ACTION_KEYSTROKE));
+  EXPECT_EQ(L"formatted = 1;", FieldScript(doc, 4u, EPDF_FORM_ACTION_FORMAT));
+
+  // Replaced, then removed; removing what isn't there changes nothing.
+  ASSERT_TRUE(
+      EPDFForm_SetFieldEventAction(doc, 4u, EPDF_FORM_ACTION_FORMAT, typed));
+  EXPECT_EQ(L"typed = 1;", FieldScript(doc, 4u, EPDF_FORM_ACTION_FORMAT));
+  ASSERT_TRUE(
+      EPDFForm_SetFieldEventAction(doc, 4u, EPDF_FORM_ACTION_FORMAT, nullptr));
+  EXPECT_EQ(L"-", FieldScript(doc, 4u, EPDF_FORM_ACTION_FORMAT));
+  {
+    ScopedFPDFAnnotation amount(FPDFPage_GetAnnot(page, 0));
+    ASSERT_TRUE(EPDFAnnot_SetEventAction(amount.get(),
+                                         EPDF_ANNOT_ACTION_ACTIVATE, nullptr));
+    ASSERT_TRUE(EPDFAnnot_SetEventAction(amount.get(),
+                                         EPDF_ANNOT_ACTION_ACTIVATE, nullptr));
+  }
+  EXPECT_EQ(L"-", WidgetScript(page, 0, EPDF_ANNOT_ACTION_ACTIVATE));
+  EXPECT_FALSE(GetEffectiveIndirectDictionary(doc, 4u)->KeyExist("A"));
+
+  // The inherited events keep applying through the field's first entries
+  // of its own, and an /AA left empty keeps hiding the parent's.
+  {
+    ScopedFPDFAnnotation child(FPDFPage_GetAnnot(page, 1));
+    ASSERT_TRUE(EPDFAnnot_SetEventAction(child.get(), EPDF_ANNOT_ACTION_FOCUS,
+                                         blurred));
+  }
+  EXPECT_EQ(L"keyed = 1;", FieldScript(doc, 6u, EPDF_FORM_ACTION_KEYSTROKE));
+  EXPECT_EQ(L"calculated = 1;",
+            FieldScript(doc, 6u, EPDF_FORM_ACTION_CALCULATE));
+  ASSERT_TRUE(EPDFForm_SetFieldEventAction(doc, 6u, EPDF_FORM_ACTION_CALCULATE,
+                                           nullptr));
+  EXPECT_EQ(L"keyed = 1;", FieldScript(doc, 6u, EPDF_FORM_ACTION_KEYSTROKE));
+  EXPECT_EQ(L"-", FieldScript(doc, 6u, EPDF_FORM_ACTION_CALCULATE));
+  ASSERT_TRUE(EPDFForm_SetFieldEventAction(doc, 6u, EPDF_FORM_ACTION_KEYSTROKE,
+                                           nullptr));
+  {
+    ScopedFPDFAnnotation child(FPDFPage_GetAnnot(page, 1));
+    ASSERT_TRUE(EPDFAnnot_SetEventAction(child.get(), EPDF_ANNOT_ACTION_FOCUS,
+                                         nullptr));
+  }
+  EXPECT_EQ(L"-", FieldScript(doc, 6u, EPDF_FORM_ACTION_KEYSTROKE));
+  EXPECT_EQ(0u,
+            GetEffectiveIndirectDictionary(doc, 6u)->GetDictFor("AA")->size());
+  // The parent's own are untouched.
+  EXPECT_TRUE(
+      GetEffectiveIndirectDictionary(doc, 5u)->GetDictFor("AA")->KeyExist("C"));
+
+  // Refused: an event out of range, a direct action, a number that is no
+  // field, another annotation subtype.
+  {
+    ScopedFPDFAnnotation amount(FPDFPage_GetAnnot(page, 0));
+    EXPECT_FALSE(EPDFAnnot_SetEventAction(amount.get(), 11, typed));
+    auto direct = pdfium::MakeRetain<CPDF_Dictionary>();
+    direct->SetNewFor<CPDF_Name>("S", "JavaScript");
+    EXPECT_FALSE(
+        EPDFAnnot_SetEventAction(amount.get(), EPDF_ANNOT_ACTION_FOCUS,
+                                 FPDFActionFromCPDFDictionary(direct.Get())));
+  }
+  EXPECT_FALSE(
+      EPDFForm_SetFieldEventAction(doc, 3u, EPDF_FORM_ACTION_FORMAT, typed));
+  EXPECT_FALSE(EPDFForm_SetFieldEventAction(doc, 4u, 4, typed));
+  {
+    ScopedFPDFAnnotation square(EPDFPage_CreateAnnot(page, FPDF_ANNOT_SQUARE));
+    ASSERT_TRUE(square);
+    EXPECT_FALSE(EPDFAnnot_SetEventAction(square.get(),
+                                          EPDF_ANNOT_ACTION_ACTIVATE, typed));
+  }
+  UnloadPage(page);
+}
+
+// Inside a layer transaction: the writes read back through the snapshot,
+// and setting what is already there copies nothing up for writing.
+TEST_F(EPDFFormEmbedderTest, EventActionsOnALayer) {
+  LayerDoc doc;
+  ASSERT_TRUE(OpenLayer("merged_field_actions.pdf", &doc));
+  ASSERT_TRUE(EPDFLayer_BeginTransaction(doc.layer));
+  FPDF_ACTION typed = Script(doc.layer, L"typed = 1;");
+  ASSERT_TRUE(typed);
+  ASSERT_TRUE(EPDFForm_SetFieldEventAction(doc.layer, 4u,
+                                           EPDF_FORM_ACTION_KEYSTROKE, typed));
+  FPDF_PAGE page = FPDF_LoadPage(doc.layer, 0);
+  ASSERT_TRUE(page);
+  {
+    ScopedFPDFAnnotation amount(FPDFPage_GetAnnot(page, 0));
+    ASSERT_TRUE(
+        EPDFAnnot_SetEventAction(amount.get(), EPDF_ANNOT_ACTION_BLUR, typed));
+  }
+  ASSERT_TRUE(EPDFLayer_CommitTransaction(doc.layer));
+  EXPECT_EQ(L"typed = 1;",
+            FieldScript(doc.layer, 4u, EPDF_FORM_ACTION_KEYSTROKE));
+  EXPECT_EQ(L"typed = 1;", WidgetScript(page, 0, EPDF_ANNOT_ACTION_BLUR));
+  EXPECT_EQ(L"formatted = 1;",
+            FieldScript(doc.layer, 4u, EPDF_FORM_ACTION_FORMAT));
+
+  // Removing what isn't there copies nothing up for writing.
+  const unsigned long promoted = EPDFLayer_GetPromotedObjectCount(doc.layer);
+  ASSERT_TRUE(EPDFLayer_BeginTransaction(doc.layer));
+  ASSERT_TRUE(EPDFForm_SetFieldEventAction(doc.layer, 6u,
+                                           EPDF_FORM_ACTION_FORMAT, nullptr));
+  {
+    ScopedFPDFAnnotation child(FPDFPage_GetAnnot(page, 1));
+    ASSERT_TRUE(
+        EPDFAnnot_SetEventAction(child.get(), EPDF_ANNOT_ACTION_BLUR, nullptr));
+  }
+  ASSERT_TRUE(EPDFLayer_CommitTransaction(doc.layer));
+  EXPECT_EQ(promoted, EPDFLayer_GetPromotedObjectCount(doc.layer));
+  FPDF_ClosePage(page);
+}
+
+// Splitting a merged field moves the widget's actions (/A, and its /AA
+// events) to the new widget; the field keeps its own.
+TEST_F(EPDFFormEmbedderTest, SplitKeepsEachPlanesActions) {
+  ASSERT_TRUE(OpenDocument("merged_field_actions.pdf"));
+  FPDF_PAGE page = LoadPage(0);
+  ASSERT_TRUE(page);
+  const uint32_t widget = CreateWidgetAnnot(page, 20, 100, 280, 130);
+  ASSERT_GT(widget, 0u);
+  ASSERT_TRUE(EPDFForm_AttachWidget(document(), 4u, widget, nullptr, 0));
+  UnloadPage(page);
+
+  EXPECT_EQ(L"formatted = 1;",
+            FieldScript(document(), 4u, EPDF_FORM_ACTION_FORMAT));
+  RetainPtr<const CPDF_Dictionary> field =
+      GetEffectiveIndirectDictionary(document(), 4u);
+  EXPECT_FALSE(field->KeyExist("A"));
+  EXPECT_FALSE(field->GetDictFor("AA")->KeyExist("Fo"));
+
+  // The split widget took the merged dictionary's place in /Annots, so it
+  // keeps its place in the stacking order.
+  page = LoadPage(0);
+  ASSERT_TRUE(page);
+  {
+    ScopedFPDFAnnotation split(FPDFPage_GetAnnot(page, 0));
+    EXPECT_NE(4u, EPDFAnnot_GetObjectNumber(split.get()));
+  }
+  EXPECT_EQ(L"focused = 1;", WidgetScript(page, 0, EPDF_ANNOT_ACTION_FOCUS));
+  EXPECT_EQ(L"clicked = 1;", WidgetScript(page, 0, EPDF_ANNOT_ACTION_ACTIVATE));
+  // The new widget has none.
+  EXPECT_EQ(L"-", WidgetScript(page, 2, EPDF_ANNOT_ACTION_FOCUS));
+  UnloadPage(page);
+}
+
+TEST_F(EPDFFormEmbedderTest, CalculationOrderSetReplaceAndRemove) {
+  ASSERT_TRUE(OpenDocument("merged_field_actions.pdf"));
+  EXPECT_TRUE(CalculationOrder(document()).empty());
+
+  const uint32_t order[] = {6u, 4u};
+  ASSERT_TRUE(EPDFForm_SetCalculationOrder(document(), order, 2));
+  EXPECT_EQ(std::vector<uint32_t>({6u, 4u}), CalculationOrder(document()));
+  const uint32_t replaced[] = {4u};
+  ASSERT_TRUE(EPDFForm_SetCalculationOrder(document(), replaced, 1));
+  EXPECT_EQ(std::vector<uint32_t>({4u}), CalculationOrder(document()));
+
+  // Refused, writing nothing: a number twice, a number that is no field.
+  const uint32_t twice[] = {6u, 6u};
+  EXPECT_FALSE(EPDFForm_SetCalculationOrder(document(), twice, 2));
+  const uint32_t page[] = {3u};
+  EXPECT_FALSE(EPDFForm_SetCalculationOrder(document(), page, 1));
+  EXPECT_EQ(std::vector<uint32_t>({4u}), CalculationOrder(document()));
+
+  ASSERT_TRUE(EPDFForm_SetCalculationOrder(document(), nullptr, 0));
+  EXPECT_TRUE(CalculationOrder(document()).empty());
+  EXPECT_FALSE(CPDFDocumentFromFPDFDocument(document())
+                   ->GetRoot()
+                   ->GetDictFor("AcroForm")
+                   ->KeyExist("CO"));
+}
+
+// A push button: created, given a widget and a caption, and drawn with it.
+// Its value can't be written.
+TEST_F(EPDFFormEmbedderTest, PushButtonIsAuthorableAndShowsItsCaption) {
+  ASSERT_TRUE(OpenDocument("hello_world.pdf"));
+  FPDF_PAGE page = LoadPage(0);
+  ASSERT_TRUE(page);
+  const uint32_t field =
+      EPDFForm_CreateField(document(), EPDF_FORMFIELD_FAMILY_PUSHBUTTON,
+                           GetFPDFWideString(L"clear").get(), 0);
+  ASSERT_GT(field, 0u);
+  const uint32_t widget = CreateWidgetAnnot(page, 20, 200, 120, 230);
+  ASSERT_GT(widget, 0u);
+  {
+    ScopedFPDFAnnotation annot(
+        FPDFPage_GetAnnot(page, FPDFPage_GetAnnotCount(page) - 1));
+    ASSERT_TRUE(EPDFAnnot_SetMKText(annot.get(), EPDF_MK_TEXT_CA,
+                                    GetFPDFWideString(L"Clear").get()));
+    const unsigned long length =
+        EPDFAnnot_GetMKText(annot.get(), EPDF_MK_TEXT_CA, nullptr, 0);
+    ASSERT_GT(length, 0u);
+    std::vector<FPDF_WCHAR> buffer = GetFPDFWideStringBuffer(length);
+    EPDFAnnot_GetMKText(annot.get(), EPDF_MK_TEXT_CA, buffer.data(), length);
+    EXPECT_EQ(L"Clear", GetPlatformWString(buffer.data()));
+    EXPECT_EQ(0u,
+              EPDFAnnot_GetMKText(annot.get(), EPDF_MK_TEXT_RC, nullptr, 0));
+    EXPECT_FALSE(EPDFAnnot_SetMKText(annot.get(), 3, nullptr));
+
+    EXPECT_EQ(0, EPDFAnnot_GetMKTextPosition(annot.get()));
+    ASSERT_TRUE(EPDFAnnot_SetMKTextPosition(annot.get(), 2));
+    EXPECT_EQ(2, EPDFAnnot_GetMKTextPosition(annot.get()));
+    EXPECT_FALSE(EPDFAnnot_SetMKTextPosition(annot.get(), 7));
+    ASSERT_TRUE(EPDFAnnot_SetMKTextPosition(annot.get(), 0));
+  }
+  ASSERT_TRUE(EPDFForm_AttachWidget(document(), field, widget, nullptr, 0));
+
+  EPDF_FORM_MODEL model = EPDFForm_LoadModel(document());
+  ASSERT_TRUE(model);
+  const int index = EPDFForm_GetFieldIndexByObjNum(model, field);
+  ASSERT_GE(index, 0);
+  EXPECT_EQ(EPDF_FORMFIELD_FAMILY_PUSHBUTTON,
+            EPDFForm_GetFieldFamily(model, index));
+  EXPECT_EQ(1, EPDFForm_CountFieldWidgets(model, index));
+  EPDFForm_CloseModel(model);
+
+  // Attaching drew the button with its caption: text, in the /DA font.
+  const std::wstring look = GetEffectiveWidgetAppearance(document(), widget);
+  EXPECT_NE(std::wstring::npos, look.find(L"BT"));
+  EXPECT_NE(std::wstring::npos, look.find(L"Tf"));
+
+  // Without a caption it is drawn as the box alone.
+  {
+    ScopedFPDFAnnotation annot(
+        FPDFPage_GetAnnot(page, FPDFPage_GetAnnotCount(page) - 1));
+    ASSERT_TRUE(EPDFAnnot_SetMKText(annot.get(), EPDF_MK_TEXT_CA, nullptr));
+    ASSERT_TRUE(EPDFAnnot_GenerateFormFieldAP(annot.get()));
+  }
+  EXPECT_EQ(std::wstring::npos,
+            GetEffectiveWidgetAppearance(document(), widget).find(L"BT"));
+
+  // A push button has no value to write.
+  ScopedFPDFWideString value = GetFPDFWideString(L"x");
+  EXPECT_FALSE(EPDFForm_SetTextValue(document(), field, value.get(), nullptr, 0,
+                                     nullptr));
+  unsigned long changed = 0;
+  EXPECT_FALSE(
+      EPDFForm_SetToggle(document(), field, "Yes", nullptr, 0, &changed));
+  UnloadPage(page);
+}
+
+TEST_F(EPDFFormEmbedderTest, WidgetRotationTurnsItsAppearance) {
+  ASSERT_TRUE(OpenDocument("merged_field_actions.pdf"));
+  FPDF_PAGE page = LoadPage(0);
+  ASSERT_TRUE(page);
+  ScopedFPDFAnnotation amount(FPDFPage_GetAnnot(page, 0));
+  EXPECT_EQ(0, EPDFAnnot_GetMKRotation(amount.get()));
+  EXPECT_FALSE(EPDFAnnot_SetMKRotation(amount.get(), 45));
+  EXPECT_FALSE(EPDFAnnot_SetMKRotation(amount.get(), 360));
+  ASSERT_TRUE(EPDFAnnot_SetMKRotation(amount.get(), 90));
+  EXPECT_EQ(90, EPDFAnnot_GetMKRotation(amount.get()));
+  ASSERT_TRUE(EPDFAnnot_GenerateFormFieldAP(amount.get()));
+
+  // The normal appearance turns a quarter, counterclockwise.
+  RetainPtr<const CPDF_Stream> normal =
+      GetEffectiveIndirectDictionary(document(), 4u)
+          ->GetDictFor("AP")
+          ->GetStreamFor("N");
+  ASSERT_TRUE(normal);
+  const CFX_Matrix matrix = normal->GetDict()->GetMatrixFor("Matrix");
+  EXPECT_FLOAT_EQ(0.0f, matrix.a);
+  EXPECT_FLOAT_EQ(1.0f, matrix.b);
+  EXPECT_FLOAT_EQ(-1.0f, matrix.c);
+  EXPECT_FLOAT_EQ(0.0f, matrix.d);
+
+  // 0 removes /R.
+  ASSERT_TRUE(EPDFAnnot_SetMKRotation(amount.get(), 0));
+  EXPECT_EQ(0, EPDFAnnot_GetMKRotation(amount.get()));
+  EXPECT_FALSE(GetEffectiveIndirectDictionary(document(), 4u)
+                   ->GetDictFor("MK")
+                   ->KeyExist("R"));
+  amount.reset();
+  UnloadPage(page);
 }

@@ -10,6 +10,8 @@ source_set("fpdfsdk") {
     # EmbedPDF: detached, read-only PDF action models.
     "epdf_action.cpp",
     "epdf_action_helpers.h",
+    # EmbedPDF: action creators and the field/widget event setters.
+    "epdf_action_write.cpp",
     # EmbedPDF: cross-document appearance Form XObject cloning (shared).
     "epdf_appearance_exporter.h",
     "epdf_base_document.cpp",

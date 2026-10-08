@@ -2470,6 +2470,54 @@ FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV EPDFAnnot_GetMKColor(FPDF_ANNOTATION annot,
 FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV
 EPDFAnnot_ClearMKColor(FPDF_ANNOTATION annot, EPDF_MK_COLORTYPE type);
 
+// The captions of a widget's /MK dictionary.
+#define EPDF_MK_TEXT_CA 0  // /CA, the normal caption
+#define EPDF_MK_TEXT_RC 1  // /RC, the rollover caption (push buttons)
+#define EPDF_MK_TEXT_AC 2  // /AC, the down caption (push buttons)
+
+// Experimental EmbedPDF Extension API.
+// Set a widget's /MK caption |which| (EPDF_MK_TEXT_*) to |text|, or remove
+// it when |text| is NULL. The appearance is not regenerated
+// (EPDFAnnot_GenerateFormFieldAP()). Returns false for another subtype.
+FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV EPDFAnnot_SetMKText(FPDF_ANNOTATION annot,
+                                                        int which,
+                                                        FPDF_WIDESTRING text);
+
+// Experimental EmbedPDF Extension API.
+// Copy a widget's /MK caption |which| (EPDF_MK_TEXT_*) as UTF-16LE,
+// including the trailing NUL. Returns the required byte length, or 0 when
+// the caption is absent (an empty caption returns 2). |buffer| may be NULL
+// to query the length.
+FPDF_EXPORT unsigned long FPDF_CALLCONV
+EPDFAnnot_GetMKText(FPDF_ANNOTATION annot,
+                    int which,
+                    FPDF_WCHAR* buffer,
+                    unsigned long buflen);
+
+// Experimental EmbedPDF Extension API.
+// Set a widget's /MK /TP, where a push button's caption sits beside its icon
+// (ISO 32000-2 Table 192): 0 caption only (the default), 1 icon only, 2-6
+// caption below, above, right of, left of, or over the icon.
+FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV
+EPDFAnnot_SetMKTextPosition(FPDF_ANNOTATION annot, int position);
+
+// Experimental EmbedPDF Extension API.
+// A widget's /MK /TP (0 when absent), or -1 for another subtype.
+FPDF_EXPORT int FPDF_CALLCONV
+EPDFAnnot_GetMKTextPosition(FPDF_ANNOTATION annot);
+
+// Experimental EmbedPDF Extension API.
+// Set a widget's /MK /R: how far its appearance turns, in degrees
+// counterclockwise, a multiple of 90 from 0 to 270 (0 removes /R). The
+// appearance is not regenerated (EPDFAnnot_GenerateFormFieldAP()).
+FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV
+EPDFAnnot_SetMKRotation(FPDF_ANNOTATION annot, int degrees);
+
+// Experimental EmbedPDF Extension API.
+// A widget's /MK /R as stored, in degrees counterclockwise (0 when absent),
+// or -1 for another subtype.
+FPDF_EXPORT int FPDF_CALLCONV EPDFAnnot_GetMKRotation(FPDF_ANNOTATION annot);
+
 // Experimental EmbedPDF Extension API.
 // Generate the appearance stream for a form field widget annotation.
 // The standard EPDFAnnot_GenerateAppearance does NOT handle Widget subtypes.
@@ -2478,8 +2526,9 @@ EPDFAnnot_ClearMKColor(FPDF_ANNOTATION annot, EPDF_MK_COLORTYPE type);
 //   - /Tx  -> text field appearance
 //   - /Ch  -> combo box or list box appearance (based on /Ff flags)
 //   - /Btn -> a check box or radio button appearance: both states, the
-//             symbol /MK /CA names in the /DA colour. Push buttons are left
-//             as they are.
+//             symbol /MK /CA names in the /DA colour. A push button: its
+//             background and border, and its caption (/MK /CA) centred in
+//             the /DA font and colour; an icon (/MK /I) is not drawn.
 //
 //   annot - handle to a widget annotation.
 //
