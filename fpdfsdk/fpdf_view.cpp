@@ -1873,6 +1873,26 @@ static RetainPtr<const CPDF_Dictionary> GetPageDictionaryByIndex(
   return doc->GetPageDictionary(page_index);
 }
 
+FPDF_EXPORT unsigned long FPDF_CALLCONV
+EPDF_GetPageTabOrderByIndex(FPDF_DOCUMENT document,
+                            int page_index,
+                            void* buffer,
+                            unsigned long buflen) {
+  auto* pDoc = CPDFDocumentFromFPDFDocument(document);
+  if (!pDoc) {
+    return 0;
+  }
+  RetainPtr<const CPDF_Dictionary> dict =
+      GetPageDictionaryByIndex(document, pDoc, page_index);
+  if (!dict || !dict->KeyExist("Tabs")) {
+    return 0;
+  }
+  // SAFETY: required from caller.
+  return NulTerminateMaybeCopyAndReturnLength(
+      dict->GetNameFor("Tabs"),
+      UNSAFE_BUFFERS(SpanFromFPDFApiArgs(buffer, buflen)));
+}
+
 static ByteStringView GetPageBoxKey(EPDF_PAGE_BOX_TYPE box_type) {
   switch (box_type) {
     case EPDF_PAGE_BOX_MEDIA:

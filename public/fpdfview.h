@@ -1243,6 +1243,27 @@ EPDF_GetPageUserUnitByIndex(FPDF_DOCUMENT document,
                             float* user_unit);
 
 // Experimental EmbedPDF API.
+// Function: EPDF_GetPageTabOrderByIndex
+//          Get the page's /Tabs at the given index, the order its annotations
+//          take keyboard focus in, as the file writes it, without loading or
+//          parsing the page: R (rows), C (columns), S (structure), or a name
+//          PDF 2.0 adds (A, W). /Tabs isn't inherited.
+// Parameters:
+//          document    -   Handle to document. Returned by FPDF_LoadDocument().
+//          page_index  -   Page index, zero for the first page.
+//          buffer      -   Receives the name's bytes and a trailing NUL. May
+//                          be NULL to query the length.
+//          buflen      -   The size of |buffer| in bytes.
+// Return value:
+//          The name's length in bytes, including the trailing NUL. 0 when the
+//          page sets no /Tabs, or on error (document or page not found).
+FPDF_EXPORT unsigned long FPDF_CALLCONV
+EPDF_GetPageTabOrderByIndex(FPDF_DOCUMENT document,
+                            int page_index,
+                            void* buffer,
+                            unsigned long buflen);
+
+// Experimental EmbedPDF API.
 // Function: EPDF_LoadPageNormalized
 //          Load a page with rotation normalized to 0 degrees.
 //          All subsequent operations (GetPageWidth, annotations, text, rendering)

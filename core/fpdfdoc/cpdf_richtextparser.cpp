@@ -3,9 +3,6 @@
 
 #include "core/fpdfdoc/cpdf_richtextparser.h"
 
-#include "core/fpdfdoc/cpdf_annotfontmap.h"
-#include "core/fxge/cfx_fontregistry.h"
-
 #include <math.h>
 
 #include <algorithm>
@@ -16,6 +13,7 @@
 #include "core/fpdfapi/parser/cpdf_dictionary.h"
 #include "core/fpdfapi/parser/cpdf_stream.h"
 #include "core/fpdfdoc/cpdf_defaultappearance.h"
+#include "core/fpdfdoc/cpdf_fontface.h"
 #include "core/fxcrt/cfx_read_only_span_stream.h"
 #include "core/fxcrt/fx_string.h"
 #include "core/fxcrt/xml/cfx_xmldocument.h"
@@ -839,153 +837,18 @@ const CFX_XMLElement* FindBody(const CFX_XMLElement* root) {
 
 // ---- defaults from the annotation ----------------------------------------
 
-struct StandardAlias {
-  const char* alias;
-  const wchar_t* family;
-  int weight;
-  bool italic;
-};
-
-constexpr StandardAlias kStandardAliases[] = {
-    {"Helv", L"Helvetica", 400, false},
-    {"HeBo", L"Helvetica", 700, false},
-    {"HeOb", L"Helvetica", 400, true},
-    {"HeBO", L"Helvetica", 700, true},
-    {"Helvetica", L"Helvetica", 400, false},
-    {"Helvetica-Bold", L"Helvetica", 700, false},
-    {"Helvetica-Oblique", L"Helvetica", 400, true},
-    {"Helvetica-BoldOblique", L"Helvetica", 700, true},
-    {"Arial", L"Helvetica", 400, false},
-    {"Arial-BoldMT", L"Helvetica", 700, false},
-    {"ArialMT", L"Helvetica", 400, false},
-    {"TiRo", L"Times", 400, false},
-    {"TiBo", L"Times", 700, false},
-    {"TiIt", L"Times", 400, true},
-    {"TiBI", L"Times", 700, true},
-    {"Times-Roman", L"Times", 400, false},
-    {"Times-Bold", L"Times", 700, false},
-    {"Times-Italic", L"Times", 400, true},
-    {"Times-BoldItalic", L"Times", 700, true},
-    {"Cour", L"Courier", 400, false},
-    {"CoBo", L"Courier", 700, false},
-    {"CoOb", L"Courier", 400, true},
-    {"CoBO", L"Courier", 700, true},
-    {"Courier", L"Courier", 400, false},
-    {"Courier-Bold", L"Courier", 700, false},
-    {"Courier-Oblique", L"Courier", 400, true},
-    {"Courier-BoldOblique", L"Courier", 700, true},
-    {"Symb", L"Symbol", 400, false},
-    {"Symbol", L"Symbol", 400, false},
-    {"ZaDb", L"ZapfDingbats", 400, false},
-    {"ZapfDingbats", L"ZapfDingbats", 400, false},
-};
-
-bool ApplyStandardAlias(const ByteString& name, CPDF_RichTextStyle* style) {
-  for (const StandardAlias& entry : kStandardAliases) {
-    if (name == entry.alias) {
-      style->family = entry.family;
-      style->weight = entry.weight;
-      style->italic = entry.italic;
-      return true;
-    }
-  }
-  return false;
-}
-
-// "ABCDEF+MinionPro-BoldItalic" -> family MinionPro, 700, italic.
-void ApplyBaseFontName(ByteString base_font, CPDF_RichTextStyle* style) {
-  if (base_font.GetLength() > 7 && base_font[6] == '+') {
-    base_font = base_font.Substr(7);
-  }
-  if (ApplyStandardAlias(base_font, style)) {
-    return;
-  }
-  ByteString family = base_font;
-  ByteString suffix;
-  std::optional<size_t> dash = base_font.Find('-');
-  if (!dash.has_value()) {
-    dash = base_font.Find(',');
-  }
-  if (dash.has_value()) {
-    family = base_font.First(dash.value());
-    suffix = base_font.Substr(dash.value() + 1);
-  }
-  style->family = WideString::FromUTF8(family.AsStringView());
-  if (suffix.Contains("Bold")) {
-    style->weight = 700;
-  } else if (suffix.Contains("Light")) {
-    style->weight = 300;
-  } else if (suffix.Contains("Medium")) {
-    style->weight = 500;
-  } else if (suffix.Contains("Semibold") || suffix.Contains("Demibold")) {
-    style->weight = 600;
-  } else if (suffix.Contains("Black") || suffix.Contains("Heavy")) {
-    style->weight = 900;
-  }
-  if (suffix.Contains("Italic") || suffix.Contains("Oblique")) {
-    style->italic = true;
-  }
-}
-
-RetainPtr<const CPDF_Dictionary> FontDescriptorOf(
-    const CPDF_Dictionary* font_dict) {
-  if (font_dict->GetNameFor("Subtype") == "Type0") {
-    RetainPtr<const CPDF_Array> descendants =
-        font_dict->GetArrayFor("DescendantFonts");
-    RetainPtr<const CPDF_Dictionary> cid_font =
-        descendants ? descendants->GetDictAt(0) : nullptr;
-    return cid_font ? cid_font->GetDictFor("FontDescriptor") : nullptr;
-  }
-  return font_dict->GetDictFor("FontDescriptor");
-}
-
-// The face a /DA font name stands for, from /DR when it is there.
+// The face a /DA font name stands for, from the form's /DR when it is there.
 void ApplyDaFontFace(const ByteString& font_name,
                      const CPDF_Dictionary* acroform_dict,
                      const CPDF_Document* doc,
                      CPDF_RichTextStyle* style) {
-  RetainPtr<const CPDF_Dictionary> font_dict;
-  if (acroform_dict) {
-    RetainPtr<const CPDF_Dictionary> dr = acroform_dict->GetDictFor("DR");
-    RetainPtr<const CPDF_Dictionary> fonts =
-        dr ? dr->GetDictFor("Font") : nullptr;
-    font_dict = fonts ? fonts->GetDictFor(font_name.AsStringView()) : nullptr;
-  }
-  if (!font_dict) {
-    // A registered font's alias before its /DR entry exists (a draft ahead
-    // of its first appearance): the registry knows the face.
-    if (doc) {
-      std::optional<CFX_FontRegistry::FontId> registered =
-          CPDF_AnnotFontMap::RegisteredFontIdFromAlias(doc, font_name);
-      if (registered.has_value()) {
-        style->family = WideString::FromUTF8(
-            CFX_FontRegistry::GetFamilyName(*registered).AsStringView());
-        style->weight = CFX_FontRegistry::GetStyleWeight(*registered);
-        style->italic = CFX_FontRegistry::IsStyleItalic(*registered);
-        return;
-      }
-    }
-    if (!ApplyStandardAlias(font_name, style)) {
-      style->family = WideString::FromUTF8(font_name.AsStringView());
-    }
-    return;
-  }
-  ApplyBaseFontName(font_dict->GetNameFor("BaseFont"), style);
-  RetainPtr<const CPDF_Dictionary> descriptor =
-      FontDescriptorOf(font_dict.Get());
-  if (!descriptor) {
-    return;
-  }
-  WideString family = descriptor->GetUnicodeTextFor("FontFamily");
-  if (!family.IsEmpty()) {
-    style->family = family;
-  }
-  if (descriptor->KeyExist("FontWeight")) {
-    style->weight = descriptor->GetIntegerFor("FontWeight", style->weight);
-  }
-  if (descriptor->KeyExist("ItalicAngle")) {
-    style->italic = descriptor->GetIntegerFor("ItalicAngle", 0) != 0;
-  }
+  RetainPtr<const CPDF_Dictionary> dr =
+      acroform_dict ? acroform_dict->GetDictFor("DR") : nullptr;
+  const CPDF_FontFace face =
+      FaceOfDefaultAppearanceFont(doc, font_name, {dr.Get()});
+  style->family = face.family;
+  style->weight = face.weight;
+  style->italic = face.italic;
 }
 
 FX_ARGB ArgbFromCfxColor(const CFX_Color& color) {

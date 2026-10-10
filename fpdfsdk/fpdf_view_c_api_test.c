@@ -583,6 +583,7 @@ int CheckPDFiumCApi() {
   CHK(EPDF_ShutdownThread);
   CHK(EPDF_GetPageBoxByIndex);
   CHK(EPDF_GetPageRotateByIndex);
+  CHK(EPDF_GetPageTabOrderByIndex);
   CHK(EPDF_GetPageUserUnitByIndex);
   CHK(EPDF_LoadBaseDocument);
   CHK(EPDF_LoadMemBaseDocument);

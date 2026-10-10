@@ -22,11 +22,12 @@
 #include "core/fpdfapi/parser/cpdf_array.h"
 #include "core/fpdfapi/parser/cpdf_dictionary.h"
 #include "core/fpdfapi/parser/cpdf_document.h"
+#include "core/fpdfapi/parser/cpdf_name.h"
 #include "core/fpdfapi/parser/cpdf_number.h"
 #include "core/fpdfapi/parser/cpdf_reference.h"
 #include "core/fxge/agg/cfx_agg_devicedriver.h"
-#include "core/fxge/dib/cstretchengine.h"
 #include "core/fxge/cfx_defaultrenderdevice.h"
+#include "core/fxge/dib/cstretchengine.h"
 #include "fpdfsdk/cpdfsdk_helpers.h"
 #include "fpdfsdk/fpdf_view_c_api_test.h"
 #include "public/cpp/fpdf_scopers.h"
@@ -3999,6 +4000,36 @@ TEST_F(FPDFViewEmbedderTest, EPDFGetPageRotateByIndex) {
   tree->SetNewFor<CPDF_Number>(pdfium::page_object::kRotate, 270);
   ASSERT_TRUE(EPDF_GetPageRotateByIndex(document(), 0, &rotate));
   EXPECT_EQ(270, rotate);
+
+  EXPECT_EQ(0u, doc->GetParsedPageCountForTesting());
+}
+
+TEST_F(FPDFViewEmbedderTest, EPDFGetPageTabOrderByIndex) {
+  ASSERT_TRUE(OpenDocument("rectangles.pdf"));
+
+  EXPECT_EQ(0u, EPDF_GetPageTabOrderByIndex(nullptr, 0, nullptr, 0));
+  EXPECT_EQ(0u, EPDF_GetPageTabOrderByIndex(document(), 1, nullptr, 0));
+  // No /Tabs: 0.
+  EXPECT_EQ(0u, EPDF_GetPageTabOrderByIndex(document(), 0, nullptr, 0));
+
+  // The name as written, with its trailing NUL.
+  CPDF_Document* doc = CPDFDocumentFromFPDFDocument(document());
+  RetainPtr<CPDF_Dictionary> page_dict = doc->GetMutablePageDictionary(0);
+  ASSERT_TRUE(page_dict);
+  page_dict->SetNewFor<CPDF_Name>("Tabs", "S");
+  ASSERT_EQ(2u, EPDF_GetPageTabOrderByIndex(document(), 0, nullptr, 0));
+  char buffer[2] = {'x', 'x'};
+  ASSERT_EQ(2u,
+            EPDF_GetPageTabOrderByIndex(document(), 0, buffer, sizeof(buffer)));
+  EXPECT_STREQ("S", buffer);
+
+  // /Tabs isn't inherited: the page tree's is not the page's.
+  page_dict->RemoveFor("Tabs");
+  RetainPtr<CPDF_Dictionary> tree =
+      page_dict->GetMutableDictFor(pdfium::page_object::kParent);
+  ASSERT_TRUE(tree);
+  tree->SetNewFor<CPDF_Name>("Tabs", "R");
+  EXPECT_EQ(0u, EPDF_GetPageTabOrderByIndex(document(), 0, nullptr, 0));
 
   EXPECT_EQ(0u, doc->GetParsedPageCountForTesting());
 }

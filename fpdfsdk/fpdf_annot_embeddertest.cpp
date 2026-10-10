@@ -35,10 +35,10 @@
 #include "core/fpdfapi/page/cpdf_annotcontext.h"
 #include "core/fpdfapi/page/cpdf_page.h"
 #include "core/fpdfapi/parser/cpdf_array.h"
+#include "core/fpdfapi/parser/cpdf_boolean.h"
 #include "core/fpdfapi/parser/cpdf_dictionary.h"
 #include "core/fpdfapi/parser/cpdf_document.h"
 #include "core/fpdfapi/parser/cpdf_name.h"
-#include "core/fpdfapi/parser/cpdf_boolean.h"
 #include "core/fpdfapi/parser/cpdf_number.h"
 #include "core/fpdfapi/parser/cpdf_read_only_graph_guard.h"
 #include "core/fpdfapi/parser/cpdf_reference.h"
@@ -73,6 +73,7 @@
 #include "public/fpdfview.h"
 #include "testing/embedder_test.h"
 #include "testing/embedder_test_constants.h"
+#include "testing/embedpdf_form_writes.h"
 #include "testing/embedpdf_layer_fixture.h"
 #include "testing/fx_string_testhelpers.h"
 #include "testing/gmock/include/gmock/gmock-matchers.h"
@@ -2392,9 +2393,7 @@ TEST_F(FPDFAnnotEmbedderTest, WidgetRegisteredFontInstallsRealDrEntry) {
     ASSERT_GT(field, 0u);
     ASSERT_TRUE(EPDFForm_AttachWidget(
         document(), field, EPDFAnnot_GetObjectNumber(annot.get()), nullptr, 0));
-    ScopedFPDFWideString value = GetFPDFWideString(L"hello");
-    ASSERT_TRUE(EPDFForm_SetTextValue(document(), field, value.get(), nullptr,
-                                      0, nullptr));
+    ASSERT_TRUE(embedpdf_test::FillTextField(document(), field, L"hello"));
     ASSERT_TRUE(EPDFAnnot_GenerateFormFieldAP(annot.get()));
 
     RetainPtr<const CPDF_Dictionary> dr_entry =
@@ -3314,9 +3313,7 @@ TEST_F(FPDFAnnotEmbedderTest, FontEmbeddingPolicyGovernsRegisteredResources) {
     ASSERT_TRUE(EPDFForm_AttachWidget(document(), field,
                                       EPDFAnnot_GetObjectNumber(widget.get()),
                                       nullptr, 0));
-    ScopedFPDFWideString value = GetFPDFWideString(L"hello");
-    ASSERT_TRUE(EPDFForm_SetTextValue(document(), field, value.get(), nullptr,
-                                      0, nullptr));
+    ASSERT_TRUE(embedpdf_test::FillTextField(document(), field, L"hello"));
     ASSERT_TRUE(EPDFAnnot_GenerateFormFieldAP(widget.get()));
     EXPECT_TRUE(AppearanceFontHasEmbeddedSubset(
         GetAppearanceFontDict(widget.get(), alias).Get()));
@@ -4070,6 +4067,140 @@ TEST_F(FPDFAnnotEmbedderTest, SetRichTextJSONWithRegisteredBodyFont) {
 // body write — keep following it, across the plain → rich transition and on
 // a rich box; and the echo names a paragraph's alignment only where it
 // differs from the body, so nothing pins a block to a resolved value.
+// The face of the font a widget's /DA names, as its font dictionary says.
+TEST_F(FPDFAnnotEmbedderTest, DefaultAppearanceFontFace) {
+  ASSERT_TRUE(OpenDocument("text_form.pdf"));
+  ScopedPage page = LoadScopedPage(0);
+  ASSERT_TRUE(page);
+  ScopedFPDFAnnotation annot(FPDFPage_GetAnnot(page.get(), 0));
+  ASSERT_TRUE(annot);
+
+  struct Face {
+    std::wstring family;
+    int weight = 0;
+    bool italic = false;
+  };
+  auto face_of = [&]() {
+    Face face;
+    FPDF_BOOL italic = false;
+    const unsigned long length = EPDFAnnot_GetDefaultAppearanceFontFace(
+        annot.get(), nullptr, 0, &face.weight, &italic);
+    if (length == 0) {
+      return face;
+    }
+    std::vector<FPDF_WCHAR> buffer = GetFPDFWideStringBuffer(length);
+    EXPECT_EQ(length,
+              EPDFAnnot_GetDefaultAppearanceFontFace(
+                  annot.get(), buffer.data(), length, &face.weight, &italic));
+    face.family = GetPlatformWString(buffer.data());
+    face.italic = italic;
+    return face;
+  };
+
+  // /DA says /F1; the form's /DR has it as Helvetica.
+  Face face = face_of();
+  EXPECT_EQ(L"Helvetica", face.family);
+  EXPECT_EQ(400, face.weight);
+  EXPECT_FALSE(face.italic);
+
+  // The field's own /DR wins: a subset's name says its family and style.
+  CPDF_AnnotContext* context = CPDFAnnotContextFromFPDFAnnotation(annot.get());
+  ASSERT_TRUE(context);
+  RetainPtr<CPDF_Dictionary> annot_dict = context->GetMutableAnnotDict();
+  ASSERT_TRUE(annot_dict);
+  RetainPtr<CPDF_Dictionary> font = annot_dict->SetNewFor<CPDF_Dictionary>("DR")
+                                        ->SetNewFor<CPDF_Dictionary>("Font")
+                                        ->SetNewFor<CPDF_Dictionary>("F1");
+  font->SetNewFor<CPDF_Name>("BaseFont", "ABCDEF+Roboto-BoldItalic");
+  face = face_of();
+  EXPECT_EQ(L"Roboto", face.family);
+  EXPECT_EQ(700, face.weight);
+  EXPECT_TRUE(face.italic);
+
+  // The descriptor's family and weight win over the name.
+  RetainPtr<CPDF_Dictionary> descriptor =
+      font->SetNewFor<CPDF_Dictionary>("FontDescriptor");
+  descriptor->SetNewFor<CPDF_String>("FontFamily", L"Roboto Slab");
+  descriptor->SetNewFor<CPDF_Number>("FontWeight", 300);
+  face = face_of();
+  EXPECT_EQ(L"Roboto Slab", face.family);
+  EXPECT_EQ(300, face.weight);
+  EXPECT_TRUE(face.italic);
+
+  // A name no /DR holds is the family itself; no font, no face.
+  annot_dict->SetNewFor<CPDF_String>("DA", "/Zz 10 Tf 0 g");
+  EXPECT_EQ(L"Zz", face_of().family);
+  annot_dict->SetNewFor<CPDF_String>("DA", "0 g");
+  EXPECT_EQ(L"", face_of().family);
+}
+
+// A widget's /Q: its own, else its field's, else the form's.
+TEST_F(FPDFAnnotEmbedderTest, WidgetTextAlignment) {
+  ASSERT_TRUE(OpenDocument("text_form.pdf"));
+  ScopedPage page = LoadScopedPage(0);
+  ASSERT_TRUE(page);
+  ScopedFPDFAnnotation annot(FPDFPage_GetAnnot(page.get(), 0));
+  ASSERT_TRUE(annot);
+  ASSERT_EQ(FPDF_ANNOT_WIDGET, FPDFAnnot_GetSubtype(annot.get()));
+
+  EXPECT_EQ(FPDF_TEXT_ALIGNMENT_LEFT, EPDFAnnot_GetTextAlignment(annot.get()));
+  ASSERT_TRUE(
+      EPDFAnnot_SetTextAlignment(annot.get(), FPDF_TEXT_ALIGNMENT_CENTER));
+  EXPECT_EQ(FPDF_TEXT_ALIGNMENT_CENTER,
+            EPDFAnnot_GetTextAlignment(annot.get()));
+
+  // Without its own, the form's.
+  CPDF_AnnotContext* context = CPDFAnnotContextFromFPDFAnnotation(annot.get());
+  ASSERT_TRUE(context);
+  context->GetMutableAnnotDict()->RemoveFor("Q");
+  CPDF_Document* doc = CPDFDocumentFromFPDFDocument(document());
+  RetainPtr<CPDF_Dictionary> acroform =
+      doc->GetMutableRoot()->GetMutableDictFor("AcroForm");
+  ASSERT_TRUE(acroform);
+  acroform->SetNewFor<CPDF_Number>("Q", 2);
+  EXPECT_EQ(FPDF_TEXT_ALIGNMENT_RIGHT, EPDFAnnot_GetTextAlignment(annot.get()));
+}
+
+// A text field draws its border style, as a combo box and a list box do; a
+// solid border is drawn as before.
+TEST_F(FPDFAnnotEmbedderTest, TextFieldDrawsItsBorderStyle) {
+  ASSERT_TRUE(OpenDocument("text_form.pdf"));
+  ScopedPage page = LoadScopedPage(0);
+  ASSERT_TRUE(page);
+  ScopedFPDFAnnotation annot(FPDFPage_GetAnnot(page.get(), 0));
+  ASSERT_TRUE(annot);
+  CPDF_AnnotContext* context = CPDFAnnotContextFromFPDFAnnotation(annot.get());
+  ASSERT_TRUE(context);
+  RetainPtr<CPDF_Dictionary> annot_dict = context->GetMutableAnnotDict();
+  ASSERT_TRUE(annot_dict);
+  RetainPtr<CPDF_Dictionary> mk = annot_dict->SetNewFor<CPDF_Dictionary>("MK");
+  RetainPtr<CPDF_Array> border_color = mk->SetNewFor<CPDF_Array>("BC");
+  border_color->AppendNew<CPDF_Number>(0);
+  border_color->AppendNew<CPDF_Number>(0);
+  border_color->AppendNew<CPDF_Number>(1);
+  RetainPtr<CPDF_Dictionary> bs = annot_dict->SetNewFor<CPDF_Dictionary>("BS");
+  bs->SetNewFor<CPDF_Number>("W", 2);
+
+  bs->SetNewFor<CPDF_Name>("S", "S");
+  ASSERT_TRUE(EPDFAnnot_GenerateFormFieldAP(annot.get()));
+  EXPECT_THAT(GetNormalAppearance(annot.get()), HasSubstr(L" re s"));
+
+  bs->SetNewFor<CPDF_Name>("S", "D");
+  RetainPtr<CPDF_Array> dash = bs->SetNewFor<CPDF_Array>("D");
+  dash->AppendNew<CPDF_Number>(2);
+  dash->AppendNew<CPDF_Number>(1);
+  ASSERT_TRUE(EPDFAnnot_GenerateFormFieldAP(annot.get()));
+  std::wstring look = GetNormalAppearance(annot.get());
+  EXPECT_THAT(look, HasSubstr(L"] 0 d"));
+  EXPECT_THAT(look, Not(HasSubstr(L" re s")));
+
+  bs->SetNewFor<CPDF_Name>("S", "U");
+  ASSERT_TRUE(EPDFAnnot_GenerateFormFieldAP(annot.get()));
+  look = GetNormalAppearance(annot.get());
+  EXPECT_THAT(look, HasSubstr(L" l S"));
+  EXPECT_THAT(look, Not(HasSubstr(L" re s")));
+}
+
 TEST_F(FPDFAnnotEmbedderTest, RichTextAlignmentFollowsTheAnnotation) {
   ScopedFPDFDocument doc(FPDF_CreateNewDocument());
   ASSERT_TRUE(doc);
@@ -4886,9 +5017,8 @@ TEST_F(FPDFAnnotEmbedderTest, TextFieldKoreanUsesRegisteredDroidFallbackFont) {
     ASSERT_TRUE(EPDFForm_AttachWidget(
         document(), field, EPDFAnnot_GetObjectNumber(annot.get()), nullptr, 0));
 
-    ScopedFPDFWideString value = GetFPDFWideString(L"\xD55C\xAE00");
-    ASSERT_TRUE(EPDFForm_SetTextValue(document(), field, value.get(), nullptr,
-                                      0, nullptr));
+    ASSERT_TRUE(
+        embedpdf_test::FillTextField(document(), field, L"\xD55C\xAE00"));
 
     // The annotation-plane companion regenerates the same appearance.
     ASSERT_TRUE(EPDFAnnot_GenerateFormFieldAP(annot.get()));
@@ -4929,9 +5059,8 @@ TEST_F(FPDFAnnotEmbedderTest, ComboBoxKoreanUsesRegisteredDroidFallbackFont) {
     ScopedFPDFWideString korean_option = GetFPDFWideString(L"\xD55C\xAE00");
     FPDF_WIDESTRING labels[] = {latin_option.get(), korean_option.get()};
     ASSERT_TRUE(EPDFForm_SetFieldOptions(document(), field, labels, labels, 2));
-    FPDF_WIDESTRING selection[] = {korean_option.get()};
-    ASSERT_TRUE(EPDFForm_SetChoiceValues(document(), field, selection, 1,
-                                         nullptr, 0, nullptr));
+    ASSERT_TRUE(
+        embedpdf_test::ChooseOption(document(), field, L"\xD55C\xAE00", 1));
 
     ASSERT_TRUE(EPDFAnnot_GenerateFormFieldAP(annot.get()));
     ExpectRegisteredAppearanceMapsUnicode(annot.get(), font_id,
@@ -4970,9 +5099,8 @@ TEST_F(FPDFAnnotEmbedderTest, ListBoxKoreanUsesRegisteredDroidFallbackFont) {
     ScopedFPDFWideString korean_option = GetFPDFWideString(L"\xD55C\xAE00");
     FPDF_WIDESTRING labels[] = {latin_option.get(), korean_option.get()};
     ASSERT_TRUE(EPDFForm_SetFieldOptions(document(), field, labels, labels, 2));
-    FPDF_WIDESTRING selection[] = {korean_option.get()};
-    ASSERT_TRUE(EPDFForm_SetChoiceValues(document(), field, selection, 1,
-                                         nullptr, 0, nullptr));
+    ASSERT_TRUE(
+        embedpdf_test::ChooseOption(document(), field, L"\xD55C\xAE00", 1));
 
     ASSERT_TRUE(EPDFAnnot_GenerateFormFieldAP(annot.get()));
     ExpectRegisteredAppearanceMapsUnicode(annot.get(), font_id,

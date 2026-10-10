@@ -23,6 +23,9 @@ source_set("fpdfdoc") {
     "cpdf_annotfontmap.h",
     "cpdf_annotfontsubset.cpp",
     "cpdf_annotfontsubset.h",
+    # EmbedPDF: a font as a face (family, weight, italic), one reader for all.
+    "cpdf_fontface.cpp",
+    "cpdf_fontface.h",
     "cpdf_richtext.h",
     "cpdf_richtextjson.cpp",
     "cpdf_richtextjson.h",

@@ -51,6 +51,7 @@
 #include "core/fpdfdoc/cpdf_annot_rotation.h"
 #include "core/fpdfdoc/cpdf_color_utils.h"
 #include "core/fpdfdoc/cpdf_embed_metadata.h"
+#include "core/fpdfdoc/cpdf_fontface.h"
 #include "core/fpdfdoc/cpdf_formfield.h"
 #include "core/fpdfdoc/cpdf_generateap.h"
 #include "core/fpdfdoc/cpdf_interactiveform.h"
@@ -955,6 +956,23 @@ static bool WrapAPContentIntoFormXObject(CPDF_Stream* ap,
       new_res->SetNewFor<CPDF_Dictionary>("XObject");
   xobj->SetNewFor<CPDF_Reference>("EPDFWRAP", doc, child_stream->GetObjNum());
   return true;
+}
+
+// A widget's /Q when it sets none itself: its field's, inherited through
+// /Parent, else the interactive form's, else 0 (left).
+int WidgetInheritedAlignment(FPDF_ANNOTATION annot,
+                             const CPDF_Dictionary* widget_dict) {
+  RetainPtr<const CPDF_Object> field_q =
+      CPDF_FormField::GetFieldAttrForDict(widget_dict, "Q");
+  if (field_q) {
+    return field_q->GetInteger();
+  }
+  CPDF_AnnotContext* context = CPDFAnnotContextFromFPDFAnnotation(annot);
+  CPDF_Document* doc = context ? context->GetPage()->GetDocument() : nullptr;
+  const CPDF_Dictionary* root = doc ? doc->GetRoot() : nullptr;
+  RetainPtr<const CPDF_Dictionary> acroform =
+      root ? root->GetDictFor("AcroForm") : nullptr;
+  return acroform ? acroform->GetIntegerFor("Q", 0) : 0;
 }
 
 CPDF_Annot::StandardFont ResolveStandardFontFromDefaultResources(
@@ -3855,6 +3873,57 @@ EPDFAnnot_GetDefaultAppearance(FPDF_ANNOTATION annot,
   return true;
 }
 
+FPDF_EXPORT unsigned long FPDF_CALLCONV
+EPDFAnnot_GetDefaultAppearanceFontFace(FPDF_ANNOTATION annot,
+                                       FPDF_WCHAR* family,
+                                       unsigned long buflen,
+                                       int* weight,
+                                       FPDF_BOOL* italic) {
+  if (!weight || !italic) {
+    return 0;
+  }
+  CPDF_AnnotContext* context = CPDFAnnotContextFromFPDFAnnotation(annot);
+  if (!context) {
+    return 0;
+  }
+  FPDF_ANNOTATION_SUBTYPE subtype = FPDFAnnot_GetSubtype(annot);
+  if (subtype != FPDF_ANNOT_FREETEXT && subtype != FPDF_ANNOT_WIDGET &&
+      subtype != FPDF_ANNOT_REDACT) {
+    return 0;
+  }
+  CPDF_Document* doc = context->GetPage()->GetDocument();
+  if (!doc) {
+    return 0;
+  }
+  CPDF_DocumentViewScope document_view(doc);
+  const CPDF_Dictionary* annot_dict = context->GetAnnotDict();
+  if (!annot_dict) {
+    return 0;
+  }
+  const CPDF_Dictionary* root_dict = doc->GetRoot();
+  RetainPtr<const CPDF_Dictionary> acroform_dict =
+      root_dict ? root_dict->GetDictFor("AcroForm") : nullptr;
+  CPDF_DefaultAppearance da(annot_dict, acroform_dict.Get());
+  std::optional<CPDF_DefaultAppearance::FontNameAndSize> font_info =
+      da.GetFont();
+  if (!font_info.has_value() || font_info.value().name.IsEmpty()) {
+    return 0;
+  }
+  // The same /DR lookup as EPDFAnnot_GetDefaultAppearance(): the field's
+  // (inherited), then the form's.
+  RetainPtr<const CPDF_Dictionary> inherited_dr =
+      ToDictionary(CPDF_FormField::GetFieldAttrForDict(annot_dict, "DR"));
+  RetainPtr<const CPDF_Dictionary> acroform_dr =
+      acroform_dict ? acroform_dict->GetDictFor("DR") : nullptr;
+  const CPDF_FontFace face = FaceOfDefaultAppearanceFont(
+      doc, font_info.value().name, {inherited_dr.Get(), acroform_dr.Get()});
+  *weight = face.weight;
+  *italic = face.italic;
+  // SAFETY: required from caller.
+  return Utf16EncodeMaybeCopyAndReturnLength(
+      face.family, UNSAFE_BUFFERS(SpanFromFPDFApiArgs(family, buflen)));
+}
+
 FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV
 EPDFAnnot_SetTextAlignment(FPDF_ANNOTATION annot,
                            FPDF_TEXT_ALIGNMENT alignment) {
@@ -3864,9 +3933,11 @@ EPDFAnnot_SetTextAlignment(FPDF_ANNOTATION annot,
     return false;
   }
 
-  // This property is valid for FreeText and Redact annotations.
+  // This property is valid for FreeText, Redact and Widget annotations. A
+  // widget's own /Q wins over its field's.
   FPDF_ANNOTATION_SUBTYPE subtype = FPDFAnnot_GetSubtype(annot);
-  if (subtype != FPDF_ANNOT_FREETEXT && subtype != FPDF_ANNOT_REDACT) {
+  if (subtype != FPDF_ANNOT_FREETEXT && subtype != FPDF_ANNOT_REDACT &&
+      subtype != FPDF_ANNOT_WIDGET) {
     return false;
   }
 
@@ -3893,15 +3964,21 @@ EPDFAnnot_GetTextAlignment(FPDF_ANNOTATION annot) {
     return kDefaultAlignment;
   }
 
-  // This property is valid for FreeText and Redact annotations.
+  // This property is valid for FreeText, Redact and Widget annotations.
   FPDF_ANNOTATION_SUBTYPE subtype = FPDFAnnot_GetSubtype(annot);
-  if (subtype != FPDF_ANNOT_FREETEXT && subtype != FPDF_ANNOT_REDACT) {
+  if (subtype != FPDF_ANNOT_FREETEXT && subtype != FPDF_ANNOT_REDACT &&
+      subtype != FPDF_ANNOT_WIDGET) {
     return kDefaultAlignment;
   }
 
   // GetIntegerFor() conveniently returns 0 if the key doesn't exist,
   // which matches the PDF specification's default.
   int alignment_value = annot_dict->GetIntegerFor("Q");
+  if (subtype == FPDF_ANNOT_WIDGET && !annot_dict->KeyExist("Q")) {
+    // A widget's /Q is its field's, inherited, then the form's
+    // (CPDF_FormControl::GetControlAlignment()).
+    alignment_value = WidgetInheritedAlignment(annot, annot_dict);
+  }
 
   // Validate the value is within the known enum range before casting.
   if (alignment_value >= FPDF_TEXT_ALIGNMENT_LEFT &&

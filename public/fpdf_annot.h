@@ -1657,7 +1657,32 @@ EPDFAnnot_GetDefaultAppearance(FPDF_ANNOTATION annot,
                                unsigned int* B);
 
 // Experimental EmbedPDF Extension API.
-// Set the text alignment of a FreeText annotation.
+// Get the face of the font a FreeText, Redact or Widget annotation's default
+// appearance (/DA) names: its family, weight and italic, as the font's
+// descriptor and /BaseFont say (the subset tag and the style dropped from the
+// family). The font is looked up in the default resources (/DR, the field's
+// and then the form's); a name no /DR holds is a registered font's alias, a
+// standard alias (Helv is Helvetica), or the family itself.
+//
+//   annot  - handle to an annotation.
+//   family - receives the family as UTF-16LE with a trailing NUL; may be
+//            NULL to query the length.
+//   buflen - the size of |family| in bytes.
+//   weight - receives the weight, 100 to 900.
+//   italic - receives whether the face is italic.
+//
+// Returns the family's length in bytes, including the trailing NUL, or 0
+// when /DA names no font.
+FPDF_EXPORT unsigned long FPDF_CALLCONV
+EPDFAnnot_GetDefaultAppearanceFontFace(FPDF_ANNOTATION annot,
+                                       FPDF_WCHAR* family,
+                                       unsigned long buflen,
+                                       int* weight,
+                                       FPDF_BOOL* italic);
+
+// Experimental EmbedPDF Extension API.
+// Set the text alignment (/Q) of a FreeText, Redact or Widget annotation. A
+// widget's own /Q wins over its field's.
 //
 //   annot    - handle to an annotation.
 //   alignment - the text alignment to be set.
@@ -1668,7 +1693,9 @@ EPDFAnnot_SetTextAlignment(FPDF_ANNOTATION annot,
                            FPDF_TEXT_ALIGNMENT alignment);
 
 // Experimental EmbedPDF Extension API.
-// Get the text alignment of a FreeText annotation.
+// Get the text alignment (/Q) of a FreeText, Redact or Widget annotation. A
+// widget without its own /Q takes its field's (inherited), then the
+// interactive form's.
 //
 //   annot    - handle to an annotation.
 //

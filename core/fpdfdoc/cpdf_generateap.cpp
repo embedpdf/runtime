@@ -4253,16 +4253,22 @@ void GenerateTextFieldFormAP(fxcrt::ostringstream& app_stream,
   CFX_FloatRect body_rect = bbox;
   body_rect.Deflate(2.0f * bw, bw);
 
-  // Background + border in isolated graphics state
+  // Background + border in isolated graphics state. A solid border is a
+  // stroked rectangle; the other styles draw as a combo box's and a list
+  // box's do.
   app_stream << "q\n";
   if (has_bg) {
     app_stream << GenerateColorAP(mk.background_color, PaintOperation::kFill);
     WriteRect(app_stream, bbox) << " re f*\n";
   }
-  if (has_bc && bw > 0) {
-    app_stream << GenerateColorAP(mk.border_color, PaintOperation::kStroke);
-    WriteFloat(app_stream, bw) << " w\n";
-    WriteRect(app_stream, stroke_rect) << " re s\n";
+  if (bs.style == BorderStyle::kSolid) {
+    if (has_bc && bw > 0) {
+      app_stream << GenerateColorAP(mk.border_color, PaintOperation::kStroke);
+      WriteFloat(app_stream, bw) << " w\n";
+      WriteRect(app_stream, stroke_rect) << " re s\n";
+    }
+  } else {
+    app_stream << GenerateBorderAP(bbox, bs, mk.border_color);
   }
   app_stream << "Q\n";
 
@@ -5410,12 +5416,15 @@ bool CPDF_GenerateAP::UpdateDefaultAppearance(CPDF_Document* doc,
                                               const CFX_Color& color) {
   ByteString resource_key;
 
-  // When font is kUnknown, preserve the existing non-standard font resource
-  // key from the current DA string instead of failing. This allows updating
-  // fontSize and fontColor without replacing the original font.
+  // When font is kUnknown, preserve the font resource key the /DA in effect
+  // names (the annotation's own, its field's, or the form's) instead of
+  // failing. This allows updating fontSize and fontColor without replacing
+  // the original font.
   if (font == CPDF_Annot::StandardFont::kUnknown) {
-    ByteString existing_da = annot_dict->GetByteStringFor("DA");
-    CPDF_DefaultAppearance current_da(existing_da);
+    const CPDF_Dictionary* root = doc->GetRoot();
+    RetainPtr<const CPDF_Dictionary> acroform =
+        root ? root->GetDictFor("AcroForm") : nullptr;
+    CPDF_DefaultAppearance current_da(annot_dict, acroform.Get());
     auto font_info = current_da.GetFont();
     if (!font_info.has_value() || font_info->name.IsEmpty()) {
       return false;

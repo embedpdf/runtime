@@ -26,6 +26,7 @@
 #include "core/fpdfapi/parser/cpdf_stream.h"
 #include "core/fpdfapi/parser/cpdf_stream_acc.h"
 #include "core/fpdfdoc/cpdf_annotfontsubset.h"
+#include "core/fpdfdoc/cpdf_fontface.h"
 #include "core/fpdfdoc/cpdf_interactiveform.h"
 #include "core/fxcrt/check.h"
 #include "core/fxcrt/code_point_view.h"
@@ -240,39 +241,9 @@ void ProgramMetrics(const CFX_Font* font, float* ascent, float* descent) {
   }
 }
 
-RetainPtr<const CPDF_Dictionary> DescriptorOfFontDict(
-    const CPDF_Dictionary* font_dict) {
-  if (!font_dict) {
-    return nullptr;
-  }
-  RetainPtr<const CPDF_Dictionary> descriptor =
-      font_dict->GetDictFor("FontDescriptor");
-  if (descriptor) {
-    return descriptor;
-  }
-  RetainPtr<const CPDF_Array> descendants =
-      font_dict->GetArrayFor("DescendantFonts");
-  RetainPtr<const CPDF_Dictionary> cid_font =
-      descendants ? descendants->GetDictAt(0) : nullptr;
-  return cid_font ? cid_font->GetDictFor("FontDescriptor") : nullptr;
-}
-
 // "ABCDEF+NotoSans": a producer's subset, cut for the text it was used for.
 bool HasSubsetTag(const ByteString& base_font) {
   return base_font.GetLength() > 7 && base_font[6] == '+';
-}
-
-// "ABCDEF+NotoSans-Bold" -> "NotoSans"; "Arial,Bold" -> "Arial".
-ByteString FamilyFromBaseFont(ByteString base_font) {
-  if (base_font.GetLength() > 7 && base_font[6] == '+') {
-    base_font = base_font.Substr(7);
-  }
-  std::optional<size_t> cut = base_font.Find('-');
-  std::optional<size_t> comma = base_font.Find(',');
-  if (comma.has_value() && (!cut.has_value() || *comma < *cut)) {
-    cut = comma;
-  }
-  return cut.has_value() ? base_font.First(*cut) : base_font;
 }
 
 struct DocumentProgramCandidate {
@@ -282,11 +253,11 @@ struct DocumentProgramCandidate {
   int score = 0;
 };
 
-// Reads what a font dictionary says about itself: family, weight, italic,
-// and the sfnt program stream if it has one we can use.
+// Reads what a font dictionary says about itself (its face) and the sfnt
+// program stream, if it has one we can use.
 std::optional<DocumentProgramCandidate> CandidateFromFontDict(
     const CPDF_Dictionary* font_dict) {
-  RetainPtr<const CPDF_Dictionary> descriptor = DescriptorOfFontDict(font_dict);
+  RetainPtr<const CPDF_Dictionary> descriptor = FontDescriptorOf(font_dict);
   if (!descriptor) {
     return std::nullopt;
   }
@@ -306,25 +277,10 @@ std::optional<DocumentProgramCandidate> CandidateFromFontDict(
   DocumentProgramCandidate candidate;
   candidate.stream = std::move(stream);
   candidate.base_font_name = font_dict->GetNameFor("BaseFont");
-  ByteString lowered_name = candidate.base_font_name;
-  lowered_name.MakeLower();
-  WideString family = descriptor->GetUnicodeTextFor("FontFamily");
-  if (family.IsEmpty()) {
-    family = WideString::FromUTF8(
-        FamilyFromBaseFont(candidate.base_font_name).AsStringView());
-  }
-  candidate.identity.family = family.ToUTF8();
-  const int flags = descriptor->GetIntegerFor("Flags", 0);
-  if (descriptor->KeyExist("FontWeight")) {
-    candidate.identity.weight = descriptor->GetIntegerFor("FontWeight", 400);
-  } else if ((flags & pdfium::kFontStyleForceBold) ||
-             lowered_name.Contains("bold")) {
-    candidate.identity.weight = 700;
-  }
-  candidate.identity.italic =
-      descriptor->GetIntegerFor("ItalicAngle", 0) != 0 ||
-      (flags & pdfium::kFontStyleItalic) != 0 ||
-      lowered_name.Contains("italic") || lowered_name.Contains("oblique");
+  const CPDF_FontFace face = FaceOfFontDict(font_dict);
+  candidate.identity.family = face.family.ToUTF8();
+  candidate.identity.weight = face.weight;
+  candidate.identity.italic = face.italic;
   return candidate;
 }
 
