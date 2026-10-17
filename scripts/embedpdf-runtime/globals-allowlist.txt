@@ -60,6 +60,12 @@ third-party | icu_[0-9]*::* | ICU: once-initialized data behind umtx; any ICU ve
 third-party | (anonymous namespace)::g[A-Z]* | ICU: layout property tables, once-initialized.
 third-party | g[A-Z]* | ICU: data, directory and time zone state, once-initialized.
 third-party | p[A-Z]* | ICU: allocator and trace hooks, set before use.
+third-party | absl::container_internal::kDefaultIterSlot | Abseil hash tables: a sentinel whose address marks a default iterator; never written.
+third-party | absl::raw_log_internal::(anonymous namespace)::*_hook | Abseil raw logging: AtomicHook values, changed only by Register*Hook(), which nothing calls.
+third-party | hwy::GetChosenTarget()::chosen_target | Highway's dispatch target: its mask is a std::atomic, and every thread computes the same one.
+third-party | hwy::supported_mask_ | Highway: written only by DisableTargets(), which nothing calls.
+third-party | hwy::supported_targets_for_test_ | Highway: written only by SetSupportedTargetsForTest(), which nothing calls.
+third-party | hwy::(anonymous namespace)::Atomic*Func()::func | Highway's warn and abort hooks: std::atomic.
 third-party | utrace_level | ICU: trace level.
 third-party | _cms* | lcms: the context pool behind _cmsContextPoolHeadMutex, plugin chunks and constants.
 third-party | globalContext | lcms: the default context (see the June thread-safety fixes).

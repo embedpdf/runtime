@@ -9,8 +9,10 @@
 #include <array>
 #include <limits>
 #include <memory>
+#include <optional>
 #include <ostream>
 #include <string>
+#include <string_view>
 #include <utility>
 #include <vector>
 
@@ -60,16 +62,7 @@ namespace {
 
 constexpr wchar_t kBottomText[] = L"I'm at the bottom of the page";
 
-constexpr char kBottomTextPng[] = "bottom_text";
-
-constexpr char kHelloWorldRemovedHelloWorldPng[] =
-    "hello_world_removed_hello_world";
-
 constexpr wchar_t kLoadedFontText[] = L"I am testing my loaded font, WEE.";
-
-constexpr char kLoadedTextPng[] = "loaded_text";
-
-constexpr char kRedRectanglePng[] = "red_rectangle";
 
 // In embedded_images.pdf.
 constexpr char kEmbeddedImage33Checksum[] = "cb3637934bb3b95a6e4ae1ea9eb9e56e";
@@ -487,10 +480,7 @@ TEST_F(FPDFEditEmbedderTest, AddPaths) {
   EXPECT_TRUE(FPDFPageObj_SetMatrix(red_rect, &matrix));
 
   EXPECT_TRUE(FPDFPage_InsertObject(page.get(), red_rect));
-  {
-    ScopedFPDFBitmap page_bitmap = RenderPage(page.get());
-    CompareBitmap(page_bitmap.get(), kRedRectanglePng);
-  }
+  CompareDisplayList(RenderPageToDisplayList(page.get()), "red_rectangle");
 
   // Now add to that a green rectangle with some medium alpha
   FPDF_PAGEOBJECT green_rect = FPDFPageObj_CreateNewRect(100, 100, 40, 40);
@@ -549,10 +539,8 @@ TEST_F(FPDFEditEmbedderTest, AddPaths) {
 
   EXPECT_TRUE(FPDFPath_SetDrawMode(green_rect, FPDF_FILLMODE_WINDING, 0));
   EXPECT_TRUE(FPDFPage_InsertObject(page.get(), green_rect));
-  {
-    ScopedFPDFBitmap page_bitmap = RenderPage(page.get());
-    CompareBitmap(page_bitmap.get(), "red_green_rectangles");
-  }
+  CompareDisplayList(RenderPageToDisplayList(page.get()),
+                     "red_green_rectangles");
 
   // Add a black triangle.
   FPDF_PAGEOBJECT black_path = FPDFPageObj_CreateNewPath(400, 100);
@@ -588,10 +576,8 @@ TEST_F(FPDFEditEmbedderTest, AddPaths) {
   EXPECT_FALSE(FPDFPath_GetPathSegment(black_path, 3));
 
   EXPECT_TRUE(FPDFPage_InsertObject(page.get(), black_path));
-  {
-    ScopedFPDFBitmap page_bitmap = RenderPage(page.get());
-    CompareBitmap(page_bitmap.get(), "red_green_rectangles_black_triangle");
-  }
+  CompareDisplayList(RenderPageToDisplayList(page.get()),
+                     "red_green_rectangles_black_triangle");
 
   // Now add a more complex blue path.
   FPDF_PAGEOBJECT blue_path = FPDFPageObj_CreateNewPath(200, 200);
@@ -604,18 +590,13 @@ TEST_F(FPDFEditEmbedderTest, AddPaths) {
   EXPECT_TRUE(FPDFPath_BezierTo(blue_path, 375, 330, 390, 360, 400, 400));
   EXPECT_TRUE(FPDFPath_Close(blue_path));
   EXPECT_TRUE(FPDFPage_InsertObject(page.get(), blue_path));
-  {
-    ScopedFPDFBitmap page_bitmap = RenderPage(page.get());
-    CompareBitmapWithExpectationSuffix(page_bitmap.get(), "blue_path");
-  }
+  CompareDisplayList(RenderPageToDisplayList(page.get()), "blue_path");
 
   // Now save the result, closing the page and document.
   EXPECT_TRUE(FPDFPage_GenerateContent(page.get()));
   EXPECT_TRUE(FPDF_SaveAsCopy(document(), this, 0));
 
-  // Render the saved result. The images will change due to floating point
-  // precision error.
-  VerifySavedDocumentWithExpectationSuffix("blue_path");
+  VerifySavedDocumentWithDisplayList("blue_path_saved");
 }
 
 TEST_F(FPDFEditEmbedderTest, ClipPath) {
@@ -753,25 +734,20 @@ TEST_F(FPDFEditEmbedderTest, Bug1549) {
   ASSERT_TRUE(OpenDocument("bug_1549.pdf"));
   ScopedPage page = LoadScopedPage(0);
 
-  {
-    ScopedFPDFBitmap bitmap = RenderLoadedPage(page.get());
-    CompareBitmap(bitmap.get(), "bug_1549");
+  CompareDisplayList(RenderLoadedPageToDisplayList(page.get()), "bug_1549");
 
-    ScopedFPDFPageObject obj(FPDFPage_GetObject(page.get(), 0));
-    ASSERT_EQ(FPDF_PAGEOBJ_IMAGE, FPDFPageObj_GetType(obj.get()));
-    ASSERT_TRUE(FPDFPage_RemoveObject(page.get(), obj.get()));
-  }
+  ScopedFPDFPageObject obj(FPDFPage_GetObject(page.get(), 0));
+  ASSERT_EQ(FPDF_PAGEOBJ_IMAGE, FPDFPageObj_GetType(obj.get()));
+  ASSERT_TRUE(FPDFPage_RemoveObject(page.get(), obj.get()));
 
   ASSERT_TRUE(FPDFPage_GenerateContent(page.get()));
 
-  {
-    ScopedFPDFBitmap bitmap = RenderLoadedPage(page.get());
-    CompareBitmap(bitmap.get(), "bug_1549_removed");
-  }
+  CompareDisplayList(RenderLoadedPageToDisplayList(page.get()),
+                     "bug_1549_removed");
 
   ASSERT_TRUE(FPDF_SaveAsCopy(document(), this, 0));
 
-  VerifySavedDocument("bug_1549_removed");
+  VerifySavedDocumentWithDisplayList("bug_1549_removed");
 }
 
 TEST_F(FPDFEditEmbedderTest, SetText) {
@@ -867,14 +843,10 @@ TEST_F(FPDFEditEmbedderTest, SetPositions) {
   }
   ASSERT_TRUE(FPDFPage_GenerateContent(page.get()));
 
-  static constexpr char kExpected[] = "bug_410996566";
-  {
-    ScopedFPDFBitmap bitmap = RenderPage(page.get());
-    CompareBitmapWithExpectationSuffix(bitmap.get(), kExpected);
-  }
+  CompareDisplayList(RenderPageToDisplayList(page.get()), "bug_410996566");
 
   ASSERT_TRUE(FPDF_SaveAsCopy(document(), this, 0));
-  VerifySavedDocumentWithExpectationSuffix(kExpected);
+  VerifySavedDocumentWithDisplayList("bug_410996566");
 }
 
 TEST_F(FPDFEditEmbedderTest, SetPositionsZeroFontSize) {
@@ -927,17 +899,13 @@ TEST_F(FPDFEditEmbedderTest, SetPositionsVertical) {
   });
   ASSERT_TRUE(FPDFText_SetPositions(page_object, kAbsolutePositions.data(),
                                     kAbsolutePositions.size()));
-
-  static constexpr char kExpected[] = "vertical_text_positioned";
-  {
-    ScopedFPDFBitmap bitmap = RenderPage(page.get());
-    CompareBitmapWithExpectationSuffix(bitmap.get(), kExpected,
-                                       kFuzzyDiffOptions);
-  }
   ASSERT_TRUE(FPDFPage_GenerateContent(page.get()));
 
+  CompareDisplayList(RenderPageToDisplayList(page.get()),
+                     "vertical_text_positioned");
+
   ASSERT_TRUE(FPDF_SaveAsCopy(document(), this, 0));
-  VerifySavedDocumentWithExpectationSuffix(kExpected, kFuzzyDiffOptions);
+  VerifySavedDocumentWithDisplayList("vertical_text_positioned");
 }
 
 TEST_F(FPDFEditEmbedderTest, SetPositionsBengali2) {
@@ -978,12 +946,11 @@ TEST_F(FPDFEditEmbedderTest, SetPositionsBengali2) {
 
   EXPECT_TRUE(FPDFPage_GenerateContent(page.get()));
 
-  static constexpr char kExpected[] = "set_positions_bengali2";
-  ScopedFPDFBitmap page_bitmap = RenderPage(page.get());
-  CompareBitmapWithExpectationSuffix(page_bitmap.get(), kExpected);
+  CompareDisplayList(RenderPageToDisplayList(page.get()),
+                     "set_positions_bengali2");
 
   ASSERT_TRUE(FPDF_SaveAsCopy(document(), this, 0));
-  VerifySavedDocumentWithExpectationSuffix(kExpected);
+  VerifySavedDocumentWithDisplayList("set_positions_bengali2");
 }
 
 TEST_F(FPDFEditEmbedderTest, SetPositionsBengali3) {
@@ -1062,13 +1029,11 @@ TEST_F(FPDFEditEmbedderTest, SetPositionsBengali3) {
 
   EXPECT_TRUE(FPDFPage_GenerateContent(page.get()));
 
-  static constexpr char kExpected[] = "set_positions_bengali3";
-  ScopedFPDFBitmap page_bitmap = RenderPage(page.get());
-  CompareBitmapWithExpectationSuffix(page_bitmap.get(), kExpected,
-                                     kFuzzyDiffOptions);
+  CompareDisplayList(RenderPageToDisplayList(page.get()),
+                     "set_positions_bengali3");
 
   ASSERT_TRUE(FPDF_SaveAsCopy(document(), this, 0));
-  VerifySavedDocumentWithExpectationSuffix(kExpected);
+  VerifySavedDocumentWithDisplayList("set_positions_bengali3");
 }
 
 TEST_F(FPDFEditEmbedderTest, SetCharcodesBadParams) {
@@ -1279,11 +1244,7 @@ TEST_F(FPDFEditEmbedderTest, RemoveTextObject) {
   ASSERT_TRUE(page);
 
   // Show what the original file looks like.
-  {
-    ScopedFPDFBitmap page_bitmap = RenderPage(page.get());
-    CompareBitmapWithExpectationSuffix(page_bitmap.get(),
-                                       pdfium::kHelloWorldPng);
-  }
+  CompareDisplayList(RenderPageToDisplayList(page.get()), "hello_world");
 
   // Check the initial state of the text page as well. `text_page` must be freed
   // before calling FPDFPage_RemoveObject() below, so ASAN does not report
@@ -1306,11 +1267,8 @@ TEST_F(FPDFEditEmbedderTest, RemoveTextObject) {
   ASSERT_EQ(1, FPDFPage_CountObjects(page.get()));
 
   // Verify the "Hello, world!" text is gone.
-  {
-    ScopedFPDFBitmap page_bitmap = RenderPage(page.get());
-    CompareBitmapWithExpectationSuffix(page_bitmap.get(),
-                                       kHelloWorldRemovedHelloWorldPng);
-  }
+  CompareDisplayList(RenderPageToDisplayList(page.get()),
+                     "hello_world_removed_hello_world");
 
   // Create a new text page, which has updated results.
   {
@@ -1322,15 +1280,12 @@ TEST_F(FPDFEditEmbedderTest, RemoveTextObject) {
 
   // Verify the rendering again after calling FPDFPage_GenerateContent().
   ASSERT_TRUE(FPDFPage_GenerateContent(page.get()));
-  {
-    ScopedFPDFBitmap page_bitmap = RenderPage(page.get());
-    CompareBitmapWithExpectationSuffix(page_bitmap.get(),
-                                       kHelloWorldRemovedHelloWorldPng);
-  }
+  CompareDisplayList(RenderPageToDisplayList(page.get()),
+                     "hello_world_removed_hello_world");
 
   // Save the document and verify it after reloading.
   ASSERT_TRUE(FPDF_SaveAsCopy(document(), this, 0));
-  VerifySavedDocumentWithExpectationSuffix(kHelloWorldRemovedHelloWorldPng);
+  VerifySavedDocumentWithDisplayList("hello_world_removed_hello_world");
 
   // Verify removed/renamed resources are no longer there.
   EXPECT_THAT(GetString(), Not(HasSubstr("/F1")));
@@ -1348,12 +1303,8 @@ TEST_F(FPDFEditEmbedderTest,
   ASSERT_TRUE(page2);
 
   // Show what the original file looks like.
-  {
-    ScopedFPDFBitmap page1_bitmap = RenderPage(page1.get());
-    CompareBitmapWithExpectationSuffix(page1_bitmap.get(), kHelloWorldPng);
-    ScopedFPDFBitmap page2_bitmap = RenderPage(page2.get());
-    CompareBitmapWithExpectationSuffix(page2_bitmap.get(), kHelloWorldPng);
-  }
+  CompareDisplayList(RenderPageToDisplayList(page1.get()), "hello_world");
+  CompareDisplayList(RenderPageToDisplayList(page2.get()), "hello_world");
 
   // Get the "Hello, world!" text object from page 1 and remove it.
   ASSERT_EQ(2, FPDFPage_CountObjects(page1.get()));
@@ -1366,33 +1317,27 @@ TEST_F(FPDFEditEmbedderTest,
   ASSERT_EQ(1, FPDFPage_CountObjects(page1.get()));
 
   // Verify the "Hello, world!" text is gone from page 1.
-  {
-    ScopedFPDFBitmap page1_bitmap = RenderPage(page1.get());
-    CompareBitmapWithExpectationSuffix(page1_bitmap.get(),
-                                       kHelloWorldRemovedHelloWorldPng);
-    ScopedFPDFBitmap page2_bitmap = RenderPage(page2.get());
-    CompareBitmapWithExpectationSuffix(page2_bitmap.get(), kHelloWorldPng);
-  }
+  CompareDisplayList(RenderPageToDisplayList(page1.get()),
+                     "hello_world_removed_hello_world");
+  CompareDisplayList(RenderPageToDisplayList(page2.get()), "hello_world");
 
   // Verify the rendering again after calling FPDFPage_GenerateContent().
   ASSERT_TRUE(FPDFPage_GenerateContent(page1.get()));
-  {
-    ScopedFPDFBitmap page1_bitmap = RenderPage(page1.get());
-    CompareBitmapWithExpectationSuffix(page1_bitmap.get(),
-                                       kHelloWorldRemovedHelloWorldPng);
-    ScopedFPDFBitmap page2_bitmap = RenderPage(page2.get());
-    CompareBitmapWithExpectationSuffix(page2_bitmap.get(), kHelloWorldPng);
-  }
+  CompareDisplayList(RenderPageToDisplayList(page1.get()),
+                     "hello_world_removed_hello_world");
+  CompareDisplayList(RenderPageToDisplayList(page2.get()), "hello_world");
 
   // Save the document and verify it after reloading.
   ASSERT_TRUE(FPDF_SaveAsCopy(document(), this, 0));
   ScopedSavedDoc saved_document = OpenScopedSavedDocument();
   ASSERT_TRUE(saved_document);
   ScopedSavedPage saved_page1 = LoadScopedSavedPage(0);
-  VerifySavedRenderingWithExpectationSuffix(saved_page1.get(),
-                                            kHelloWorldRemovedHelloWorldPng);
+  ASSERT_TRUE(saved_page1);
+  VerifySavedRenderingWithDisplayList(saved_page1.get(),
+                                      "hello_world_removed_hello_world");
   ScopedSavedPage saved_page2 = LoadScopedSavedPage(1);
-  VerifySavedRenderingWithExpectationSuffix(saved_page2.get(), kHelloWorldPng);
+  ASSERT_TRUE(saved_page2);
+  VerifySavedRenderingWithDisplayList(saved_page2.get(), "hello_world");
   std::vector<std::string> split_saved_data = StringSplit(GetString(), '\n');
   // Verify removed/renamed resources are in the save PDF the correct number of
   // times.
@@ -1411,12 +1356,8 @@ TEST_F(FPDFEditEmbedderTest,
   ASSERT_TRUE(page2);
 
   // Show what the original file looks like.
-  {
-    ScopedFPDFBitmap page1_bitmap = RenderPage(page1.get());
-    CompareBitmapWithExpectationSuffix(page1_bitmap.get(), kHelloWorldPng);
-    ScopedFPDFBitmap page2_bitmap = RenderPage(page2.get());
-    CompareBitmapWithExpectationSuffix(page2_bitmap.get(), kHelloWorldPng);
-  }
+  CompareDisplayList(RenderPageToDisplayList(page1.get()), "hello_world");
+  CompareDisplayList(RenderPageToDisplayList(page2.get()), "hello_world");
 
   // Get the "Hello, world!" text object from page 1 and remove it.
   ASSERT_EQ(2, FPDFPage_CountObjects(page1.get()));
@@ -1429,33 +1370,27 @@ TEST_F(FPDFEditEmbedderTest,
   ASSERT_EQ(1, FPDFPage_CountObjects(page1.get()));
 
   // Verify the "Hello, world!" text is gone from page 1.
-  {
-    ScopedFPDFBitmap page1_bitmap = RenderPage(page1.get());
-    CompareBitmapWithExpectationSuffix(page1_bitmap.get(),
-                                       kHelloWorldRemovedHelloWorldPng);
-    ScopedFPDFBitmap page2_bitmap = RenderPage(page2.get());
-    CompareBitmapWithExpectationSuffix(page2_bitmap.get(), kHelloWorldPng);
-  }
+  CompareDisplayList(RenderPageToDisplayList(page1.get()),
+                     "hello_world_removed_hello_world");
+  CompareDisplayList(RenderPageToDisplayList(page2.get()), "hello_world");
 
   // Verify the rendering again after calling FPDFPage_GenerateContent().
   ASSERT_TRUE(FPDFPage_GenerateContent(page1.get()));
-  {
-    ScopedFPDFBitmap page1_bitmap = RenderPage(page1.get());
-    CompareBitmapWithExpectationSuffix(page1_bitmap.get(),
-                                       kHelloWorldRemovedHelloWorldPng);
-    ScopedFPDFBitmap page2_bitmap = RenderPage(page2.get());
-    CompareBitmapWithExpectationSuffix(page2_bitmap.get(), kHelloWorldPng);
-  }
+  CompareDisplayList(RenderPageToDisplayList(page1.get()),
+                     "hello_world_removed_hello_world");
+  CompareDisplayList(RenderPageToDisplayList(page2.get()), "hello_world");
 
   // Save the document and verify it after reloading.
   ASSERT_TRUE(FPDF_SaveAsCopy(document(), this, 0));
   ScopedSavedDoc saved_document = OpenScopedSavedDocument();
   ASSERT_TRUE(saved_document);
   ScopedSavedPage saved_page1 = LoadScopedSavedPage(0);
-  VerifySavedRenderingWithExpectationSuffix(saved_page1.get(),
-                                            kHelloWorldRemovedHelloWorldPng);
+  ASSERT_TRUE(saved_page1);
+  VerifySavedRenderingWithDisplayList(saved_page1.get(),
+                                      "hello_world_removed_hello_world");
   ScopedSavedPage saved_page2 = LoadScopedSavedPage(1);
-  VerifySavedRenderingWithExpectationSuffix(saved_page2.get(), kHelloWorldPng);
+  ASSERT_TRUE(saved_page2);
+  VerifySavedRenderingWithDisplayList(saved_page2.get(), "hello_world");
 }
 
 TEST_F(FPDFEditEmbedderTest, RemoveTextObjectWithTwoPagesSharingResourcesDict) {
@@ -1467,12 +1402,8 @@ TEST_F(FPDFEditEmbedderTest, RemoveTextObjectWithTwoPagesSharingResourcesDict) {
   ASSERT_TRUE(page2);
 
   // Show what the original file looks like.
-  {
-    ScopedFPDFBitmap page1_bitmap = RenderPage(page1.get());
-    CompareBitmapWithExpectationSuffix(page1_bitmap.get(), kHelloWorldPng);
-    ScopedFPDFBitmap page2_bitmap = RenderPage(page2.get());
-    CompareBitmapWithExpectationSuffix(page2_bitmap.get(), kHelloWorldPng);
-  }
+  CompareDisplayList(RenderPageToDisplayList(page1.get()), "hello_world");
+  CompareDisplayList(RenderPageToDisplayList(page2.get()), "hello_world");
 
   // Get the "Hello, world!" text object from page 1 and remove it.
   ASSERT_EQ(2, FPDFPage_CountObjects(page1.get()));
@@ -1485,33 +1416,27 @@ TEST_F(FPDFEditEmbedderTest, RemoveTextObjectWithTwoPagesSharingResourcesDict) {
   ASSERT_EQ(1, FPDFPage_CountObjects(page1.get()));
 
   // Verify the "Hello, world!" text is gone from page 1
-  {
-    ScopedFPDFBitmap page1_bitmap = RenderPage(page1.get());
-    CompareBitmapWithExpectationSuffix(page1_bitmap.get(),
-                                       kHelloWorldRemovedHelloWorldPng);
-    ScopedFPDFBitmap page2_bitmap = RenderPage(page2.get());
-    CompareBitmapWithExpectationSuffix(page2_bitmap.get(), kHelloWorldPng);
-  }
+  CompareDisplayList(RenderPageToDisplayList(page1.get()),
+                     "hello_world_removed_hello_world");
+  CompareDisplayList(RenderPageToDisplayList(page2.get()), "hello_world");
 
   // Verify the rendering again after calling FPDFPage_GenerateContent().
   ASSERT_TRUE(FPDFPage_GenerateContent(page1.get()));
-  {
-    ScopedFPDFBitmap page1_bitmap = RenderPage(page1.get());
-    CompareBitmapWithExpectationSuffix(page1_bitmap.get(),
-                                       kHelloWorldRemovedHelloWorldPng);
-    ScopedFPDFBitmap page2_bitmap = RenderPage(page2.get());
-    CompareBitmapWithExpectationSuffix(page2_bitmap.get(), kHelloWorldPng);
-  }
+  CompareDisplayList(RenderPageToDisplayList(page1.get()),
+                     "hello_world_removed_hello_world");
+  CompareDisplayList(RenderPageToDisplayList(page2.get()), "hello_world");
 
   // Save the document and verify it after reloading.
   ASSERT_TRUE(FPDF_SaveAsCopy(document(), this, 0));
   ScopedSavedDoc saved_document = OpenScopedSavedDocument();
   ASSERT_TRUE(saved_document);
   ScopedSavedPage saved_page1 = LoadScopedSavedPage(0);
-  VerifySavedRenderingWithExpectationSuffix(saved_page1.get(),
-                                            kHelloWorldRemovedHelloWorldPng);
+  ASSERT_TRUE(saved_page1);
+  VerifySavedRenderingWithDisplayList(saved_page1.get(),
+                                      "hello_world_removed_hello_world");
   ScopedSavedPage saved_page2 = LoadScopedSavedPage(1);
-  VerifySavedRenderingWithExpectationSuffix(saved_page2.get(), kHelloWorldPng);
+  ASSERT_TRUE(saved_page2);
+  VerifySavedRenderingWithDisplayList(saved_page2.get(), "hello_world");
 }
 
 void CheckMarkCounts(FPDF_PAGE page,
@@ -1943,14 +1868,9 @@ TEST_F(FPDFEditEmbedderTest, RemoveExistingPageObjectSplitStreamsNotLonely) {
   }
 
   // Verify the "Hello, world!" text is gone.
-  static constexpr char kHelloWorldSplitStreamsRemovedHelloWorldPng[] =
-      "hello_world_split_streams_removed_hello_world";
   ASSERT_EQ(2, FPDFPage_CountObjects(page.get()));
-  {
-    ScopedFPDFBitmap page_bitmap = RenderPage(page.get());
-    CompareBitmapWithExpectationSuffix(
-        page_bitmap.get(), kHelloWorldSplitStreamsRemovedHelloWorldPng);
-  }
+  CompareDisplayList(RenderPageToDisplayList(page.get()),
+                     "hello_world_split_streams_removed_hello_world");
 
   // Save the file
   EXPECT_TRUE(FPDFPage_GenerateContent(page.get()));
@@ -1963,11 +1883,8 @@ TEST_F(FPDFEditEmbedderTest, RemoveExistingPageObjectSplitStreamsNotLonely) {
   ASSERT_TRUE(saved_page);
 
   EXPECT_EQ(2, FPDFPage_CountObjects(saved_page.get()));
-  {
-    ScopedFPDFBitmap page_bitmap = RenderPage(saved_page.get());
-    CompareBitmapWithExpectationSuffix(
-        page_bitmap.get(), kHelloWorldSplitStreamsRemovedHelloWorldPng);
-  }
+  VerifySavedRenderingWithDisplayList(
+      saved_page.get(), "hello_world_split_streams_removed_hello_world");
 }
 
 TEST_F(FPDFEditEmbedderTest, RemoveExistingPageObjectSplitStreamsLonely) {
@@ -1987,10 +1904,7 @@ TEST_F(FPDFEditEmbedderTest, RemoveExistingPageObjectSplitStreamsLonely) {
 
   // Verify the "Greetings, world!" text is gone.
   ASSERT_EQ(2, FPDFPage_CountObjects(page.get()));
-  {
-    ScopedFPDFBitmap page_bitmap = RenderPage(page.get());
-    CompareBitmapWithExpectationSuffix(page_bitmap.get(), kHelloWorldPng);
-  }
+  CompareDisplayList(RenderPageToDisplayList(page.get()), "hello_world");
 
   // Save the file
   EXPECT_TRUE(FPDFPage_GenerateContent(page.get()));
@@ -2003,10 +1917,7 @@ TEST_F(FPDFEditEmbedderTest, RemoveExistingPageObjectSplitStreamsLonely) {
   ASSERT_TRUE(saved_page);
 
   EXPECT_EQ(2, FPDFPage_CountObjects(saved_page.get()));
-  {
-    ScopedFPDFBitmap page_bitmap = RenderPage(saved_page.get());
-    CompareBitmapWithExpectationSuffix(page_bitmap.get(), kHelloWorldPng);
-  }
+  VerifySavedRenderingWithDisplayList(saved_page.get(), "hello_world");
 }
 
 TEST_F(FPDFEditEmbedderTest, GetContentStream) {
@@ -2094,13 +2005,8 @@ TEST_F(FPDFEditEmbedderTest, RemoveAllFromStream) {
     }
   }
 
-  static constexpr char kSplitStreamsRemovedStream1Png[] =
-      "split_streams_removed_stream1";
-  {
-    ScopedFPDFBitmap page_bitmap = RenderPage(page.get());
-    CompareBitmapWithExpectationSuffix(page_bitmap.get(),
-                                       kSplitStreamsRemovedStream1Png);
-  }
+  CompareDisplayList(RenderPageToDisplayList(page.get()),
+                     "split_streams_removed_stream1");
 
   // Save the file
   EXPECT_TRUE(FPDF_SaveAsCopy(document(), this, 0));
@@ -2127,11 +2033,8 @@ TEST_F(FPDFEditEmbedderTest, RemoveAllFromStream) {
     }
   }
 
-  {
-    ScopedFPDFBitmap page_bitmap = RenderPage(saved_page.get());
-    CompareBitmapWithExpectationSuffix(page_bitmap.get(),
-                                       kSplitStreamsRemovedStream1Png);
-  }
+  VerifySavedRenderingWithDisplayList(saved_page.get(),
+                                      "split_streams_removed_stream1");
 }
 
 TEST_F(FPDFEditEmbedderTest, RemoveAllFromSingleStream) {
@@ -2163,10 +2066,7 @@ TEST_F(FPDFEditEmbedderTest, RemoveAllFromSingleStream) {
 
   ASSERT_EQ(0, FPDFPage_CountObjects(page.get()));
 
-  {
-    ScopedFPDFBitmap page_bitmap = RenderPage(page.get());
-    CompareBitmap(page_bitmap.get(), kBlankPage200x200Png);
-  }
+  CompareDisplayList(RenderPageToDisplayList(page.get()), "blank_page_200x200");
 
   // Save the file
   EXPECT_TRUE(FPDF_SaveAsCopy(document(), this, 0));
@@ -2178,10 +2078,7 @@ TEST_F(FPDFEditEmbedderTest, RemoveAllFromSingleStream) {
   ASSERT_TRUE(saved_page);
 
   EXPECT_EQ(0, FPDFPage_CountObjects(saved_page.get()));
-  {
-    ScopedFPDFBitmap page_bitmap = RenderPage(saved_page.get());
-    CompareBitmap(page_bitmap.get(), kBlankPage200x200Png);
-  }
+  VerifySavedRenderingWithDisplayList(saved_page.get(), "blank_page_200x200");
 }
 
 TEST_F(FPDFEditEmbedderTest, RemoveFirstFromSingleStream) {
@@ -2221,11 +2118,8 @@ TEST_F(FPDFEditEmbedderTest, RemoveFirstFromSingleStream) {
   cpdf_page_object = CPDFPageObjectFromFPDFPageObject(page_object);
   ASSERT_EQ(0, cpdf_page_object->GetContentStream());
 
-  {
-    ScopedFPDFBitmap page_bitmap = RenderPage(page.get());
-    CompareBitmapWithExpectationSuffix(page_bitmap.get(),
-                                       kHelloWorldRemovedHelloWorldPng);
-  }
+  CompareDisplayList(RenderPageToDisplayList(page.get()),
+                     "hello_world_removed_hello_world");
 
   // Save the file
   EXPECT_TRUE(FPDF_SaveAsCopy(document(), this, 0));
@@ -2241,11 +2135,8 @@ TEST_F(FPDFEditEmbedderTest, RemoveFirstFromSingleStream) {
   ASSERT_TRUE(page_object);
   cpdf_page_object = CPDFPageObjectFromFPDFPageObject(page_object);
   ASSERT_EQ(0, cpdf_page_object->GetContentStream());
-  {
-    ScopedFPDFBitmap page_bitmap = RenderPage(saved_page.get());
-    CompareBitmapWithExpectationSuffix(page_bitmap.get(),
-                                       kHelloWorldRemovedHelloWorldPng);
-  }
+  VerifySavedRenderingWithDisplayList(saved_page.get(),
+                                      "hello_world_removed_hello_world");
 }
 
 TEST_F(FPDFEditEmbedderTest, RemoveLastFromSingleStream) {
@@ -2285,12 +2176,8 @@ TEST_F(FPDFEditEmbedderTest, RemoveLastFromSingleStream) {
   cpdf_page_object = CPDFPageObjectFromFPDFPageObject(page_object);
   ASSERT_EQ(0, cpdf_page_object->GetContentStream());
 
-  using pdfium::kHelloWorldRemovedPng;
-  {
-    ScopedFPDFBitmap page_bitmap = RenderPage(page.get());
-    CompareBitmapWithExpectationSuffix(page_bitmap.get(),
-                                       kHelloWorldRemovedPng);
-  }
+  CompareDisplayList(RenderPageToDisplayList(page.get()),
+                     "hello_world_removed");
 
   // Save the file
   EXPECT_TRUE(FPDF_SaveAsCopy(document(), this, 0));
@@ -2306,11 +2193,7 @@ TEST_F(FPDFEditEmbedderTest, RemoveLastFromSingleStream) {
   ASSERT_TRUE(page_object);
   cpdf_page_object = CPDFPageObjectFromFPDFPageObject(page_object);
   ASSERT_EQ(0, cpdf_page_object->GetContentStream());
-  {
-    ScopedFPDFBitmap page_bitmap = RenderPage(saved_page.get());
-    CompareBitmapWithExpectationSuffix(page_bitmap.get(),
-                                       kHelloWorldRemovedPng);
-  }
+  VerifySavedRenderingWithDisplayList(saved_page.get(), "hello_world_removed");
 }
 
 TEST_F(FPDFEditEmbedderTest, RemoveAllFromMultipleStreams) {
@@ -2340,10 +2223,7 @@ TEST_F(FPDFEditEmbedderTest, RemoveAllFromMultipleStreams) {
 
   ASSERT_EQ(0, FPDFPage_CountObjects(page.get()));
 
-  {
-    ScopedFPDFBitmap page_bitmap = RenderPage(page.get());
-    CompareBitmap(page_bitmap.get(), kBlankPage200x200Png);
-  }
+  CompareDisplayList(RenderPageToDisplayList(page.get()), "blank_page_200x200");
 
   // Save the file
   EXPECT_TRUE(FPDF_SaveAsCopy(document(), this, 0));
@@ -2355,10 +2235,7 @@ TEST_F(FPDFEditEmbedderTest, RemoveAllFromMultipleStreams) {
   ASSERT_TRUE(saved_page);
 
   EXPECT_EQ(0, FPDFPage_CountObjects(saved_page.get()));
-  {
-    ScopedFPDFBitmap page_bitmap = RenderPage(saved_page.get());
-    CompareBitmap(page_bitmap.get(), kBlankPage200x200Png);
-  }
+  VerifySavedRenderingWithDisplayList(saved_page.get(), "blank_page_200x200");
 }
 
 TEST_F(FPDFEditEmbedderTest, InsertPageObjectAndSave) {
@@ -2689,20 +2566,14 @@ TEST_F(FPDFEditEmbedderTest, AddAndRemovePaths) {
   EXPECT_TRUE(FPDFPageObj_SetFillColor(red_rect, 255, 0, 0, 255));
   EXPECT_TRUE(FPDFPath_SetDrawMode(red_rect, FPDF_FILLMODE_ALTERNATE, 0));
   EXPECT_TRUE(FPDFPage_InsertObject(page.get(), red_rect_deleter.release()));
-  {
-    ScopedFPDFBitmap page_bitmap = RenderPage(page.get());
-    CompareBitmap(page_bitmap.get(), kRedRectanglePng);
-  }
+  CompareDisplayList(RenderPageToDisplayList(page.get()), "red_rectangle");
   EXPECT_EQ(1, FPDFPage_CountObjects(page.get()));
 
   // Remove rectangle and verify it does not render anymore and the bitmap is
   // back to a blank one.
   EXPECT_TRUE(FPDFPage_RemoveObject(page.get(), red_rect));
   red_rect_deleter.reset(red_rect);
-  {
-    ScopedFPDFBitmap page_bitmap = RenderPage(page.get());
-    CompareBitmap(page_bitmap.get(), kBlankPage612By792Png);
-  }
+  CompareDisplayList(RenderPageToDisplayList(page.get()), "blank_page_612x792");
   EXPECT_EQ(0, FPDFPage_CountObjects(page.get()));
 
   // Trying to remove an object not in the page should return false.
@@ -2964,13 +2835,9 @@ TEST_F(FPDFEditEmbedderTest, AddStandardFontText) {
   EXPECT_TRUE(FPDFPageObj_SetMatrix(text_object1, &kMatrix1));
   EXPECT_TRUE(FPDFPage_InsertObject(page.get(), text_object1));
   EXPECT_TRUE(FPDFPage_GenerateContent(page.get()));
-  {
-    ScopedFPDFBitmap page_bitmap = RenderPage(page.get());
-    CompareBitmapWithExpectationSuffix(page_bitmap.get(), kBottomTextPng);
-
-    EXPECT_TRUE(FPDF_SaveAsCopy(document(), this, 0));
-    VerifySavedDocumentWithExpectationSuffix(kBottomTextPng);
-  }
+  CompareDisplayList(RenderPageToDisplayList(page.get()), "bottom_text");
+  EXPECT_TRUE(FPDF_SaveAsCopy(document(), this, 0));
+  VerifySavedDocumentWithDisplayList("bottom_text");
 
   // Try another font
   FPDF_PAGEOBJECT text_object2 =
@@ -2982,16 +2849,10 @@ TEST_F(FPDFEditEmbedderTest, AddStandardFontText) {
   FPDFPageObj_Transform(text_object2, 1, 0, 0, 1, 100, 600);
   EXPECT_TRUE(FPDFPage_InsertObject(page.get(), text_object2));
   EXPECT_TRUE(FPDFPage_GenerateContent(page.get()));
-  {
-    static constexpr char kBottomTextAddedBoldTextPng[] =
-        "bottom_text_added_bold_text";
-    ScopedFPDFBitmap page_bitmap = RenderPage(page.get());
-    CompareBitmapWithExpectationSuffix(page_bitmap.get(),
-                                       kBottomTextAddedBoldTextPng);
-
-    EXPECT_TRUE(FPDF_SaveAsCopy(document(), this, 0));
-    VerifySavedDocumentWithExpectationSuffix(kBottomTextAddedBoldTextPng);
-  }
+  CompareDisplayList(RenderPageToDisplayList(page.get()),
+                     "bottom_text_added_bold_text");
+  EXPECT_TRUE(FPDF_SaveAsCopy(document(), this, 0));
+  VerifySavedDocumentWithDisplayList("bottom_text_added_bold_text");
 
   // And some randomly transformed text
   FPDF_PAGEOBJECT text_object3 =
@@ -3002,17 +2863,11 @@ TEST_F(FPDFEditEmbedderTest, AddStandardFontText) {
   FPDFPageObj_Transform(text_object3, 1, 1.5, 2, 0.5, 200, 200);
   EXPECT_TRUE(FPDFPage_InsertObject(page.get(), text_object3));
   EXPECT_TRUE(FPDFPage_GenerateContent(page.get()));
-  {
-    static constexpr char kBottomTextAddedBoldAndStretchedTextPng[] =
-        "bottom_text_added_bold_and_stretched_text";
-    ScopedFPDFBitmap page_bitmap = RenderPage(page.get());
-    CompareBitmapWithExpectationSuffix(page_bitmap.get(),
-                                       kBottomTextAddedBoldAndStretchedTextPng);
-
-    EXPECT_TRUE(FPDF_SaveAsCopy(document(), this, 0));
-    VerifySavedDocumentWithExpectationSuffix(
-        kBottomTextAddedBoldAndStretchedTextPng);
-  }
+  CompareDisplayList(RenderPageToDisplayList(page.get()),
+                     "bottom_text_added_bold_and_stretched_text");
+  EXPECT_TRUE(FPDF_SaveAsCopy(document(), this, 0));
+  VerifySavedDocumentWithDisplayList(
+      "bottom_text_added_bold_and_stretched_text");
 
   FS_MATRIX matrix;
 
@@ -3538,8 +3393,7 @@ TEST_F(FPDFEditEmbedderTest, AddStandardFontText2) {
   EXPECT_TRUE(FPDFText_SetText(text_object, text.get()));
   FPDFPageObj_Transform(text_object, 1, 0, 0, 1, 20, 20);
   EXPECT_TRUE(FPDFPage_InsertObject(page.get(), text_object));
-  ScopedFPDFBitmap page_bitmap = RenderPage(page.get());
-  CompareBitmapWithExpectationSuffix(page_bitmap.get(), kBottomTextPng);
+  CompareDisplayList(RenderPageToDisplayList(page.get()), "bottom_text");
 }
 
 TEST_F(FPDFEditEmbedderTest, LoadStandardFonts) {
@@ -3642,9 +3496,6 @@ TEST_F(FPDFEditEmbedderTest, GraphicsData) {
 }
 
 TEST_F(FPDFEditEmbedderTest, DoubleGenerating) {
-  static constexpr char kRedRectangleAlphaPng[] = "red_rectangle_alpha";
-  static constexpr char kBlueRectangleAlphaPng[] = "blue_rectangle_alpha";
-
   // Start with a blank page
   ScopedFPDFPage page(FPDFPage_New(CreateNewDocument(), 0, 612, 792));
 
@@ -3663,11 +3514,8 @@ TEST_F(FPDFEditEmbedderTest, DoubleGenerating) {
   EXPECT_THAT(graphics_dict->GetKeys(),
               UnorderedElementsAreArray({"FXE1", "FXE2"}));
 
-  // Check the bitmap
-  {
-    ScopedFPDFBitmap page_bitmap = RenderPage(page.get());
-    CompareBitmap(page_bitmap.get(), kRedRectangleAlphaPng);
-  }
+  CompareDisplayList(RenderPageToDisplayList(page.get()),
+                     "red_rectangle_alpha");
 
   // Never mind, my new favorite color is blue, increase alpha.
   // The red graphics state goes away. The remaining generated resource name is
@@ -3678,20 +3526,15 @@ TEST_F(FPDFEditEmbedderTest, DoubleGenerating) {
   EXPECT_THAT(graphics_dict->GetKeys(), SizeIs(2));
   EXPECT_TRUE(graphics_dict->KeyExist("FXE1"));
 
-  // Check that bitmap displays changed content
-  {
-    ScopedFPDFBitmap page_bitmap = RenderPage(page.get());
-    CompareBitmap(page_bitmap.get(), kBlueRectangleAlphaPng);
-  }
+  CompareDisplayList(RenderPageToDisplayList(page.get()),
+                     "blue_rectangle_alpha");
 
   // And now generate, without changes
   EXPECT_TRUE(FPDFPage_GenerateContent(page.get()));
   EXPECT_THAT(graphics_dict->GetKeys(), SizeIs(2));
   EXPECT_TRUE(graphics_dict->KeyExist("FXE1"));
-  {
-    ScopedFPDFBitmap page_bitmap = RenderPage(page.get());
-    CompareBitmap(page_bitmap.get(), kBlueRectangleAlphaPng);
-  }
+  CompareDisplayList(RenderPageToDisplayList(page.get()),
+                     "blue_rectangle_alpha");
 
   // Add some text to the page, which starts out with no fonts.
   RetainPtr<const CPDF_Dictionary> font_dict =
@@ -3902,8 +3745,7 @@ TEST_F(FPDFEditEmbedderTest, AddTrueTypeFontText) {
     EXPECT_TRUE(FPDFText_SetText(text_object, text.get()));
     FPDFPageObj_Transform(text_object, 1, 0, 0, 1, 400, 400);
     EXPECT_TRUE(FPDFPage_InsertObject(page.get(), text_object));
-    ScopedFPDFBitmap page_bitmap = RenderPage(page.get());
-    CompareBitmapWithExpectationSuffix(page_bitmap.get(), kLoadedTextPng);
+    CompareDisplayList(RenderPageToDisplayList(page.get()), "loaded_text");
 
     // Add some more text, same font
     FPDF_PAGEOBJECT text_object2 =
@@ -3913,14 +3755,12 @@ TEST_F(FPDFEditEmbedderTest, AddTrueTypeFontText) {
     FPDFPageObj_Transform(text_object2, 1, 0, 0, 1, 200, 200);
     EXPECT_TRUE(FPDFPage_InsertObject(page.get(), text_object2));
   }
-  static constexpr char kTruetypeFontTextPng[] = "truetype_font_text";
-  ScopedFPDFBitmap page_bitmap2 = RenderPage(page.get());
-  CompareBitmapWithExpectationSuffix(page_bitmap2.get(), kTruetypeFontTextPng);
+  CompareDisplayList(RenderPageToDisplayList(page.get()), "truetype_font_text");
 
   EXPECT_TRUE(FPDFPage_GenerateContent(page.get()));
   EXPECT_TRUE(FPDF_SaveAsCopy(document(), this, 0));
 
-  VerifySavedDocumentWithExpectationSuffix(kTruetypeFontTextPng);
+  VerifySavedDocumentWithDisplayList("truetype_font_text");
 }
 
 TEST_F(FPDFEditEmbedderTest, TransformAnnot) {
@@ -3982,19 +3822,14 @@ TEST_F(FPDFEditEmbedderTest, AddCIDFontText) {
     EXPECT_TRUE(FPDFPage_InsertObject(page.get(), text_object2));
   }
 
-  // Check that the text renders properly.
-  static constexpr char kJapaneseCidFontTextPng[] = "japanese_cid_font_text";
-  {
-    ScopedFPDFBitmap page_bitmap = RenderPage(page.get());
-    CompareBitmapWithExpectationSuffix(page_bitmap.get(),
-                                       kJapaneseCidFontTextPng);
-  }
+  CompareDisplayList(RenderPageToDisplayList(page.get()),
+                     "japanese_cid_font_text");
 
   // Save the document.
   EXPECT_TRUE(FPDFPage_GenerateContent(page.get()));
   EXPECT_TRUE(FPDF_SaveAsCopy(document(), this, 0));
 
-  VerifySavedDocumentWithExpectationSuffix(kJapaneseCidFontTextPng);
+  VerifySavedDocumentWithDisplayList("japanese_cid_font_text");
 }
 #endif  // BUILDFLAG(IS_LINUX) || BUILDFLAG(IS_CHROMEOS)
 
@@ -4462,11 +4297,8 @@ TEST_F(FPDFEditEmbedderTest, AddMarkedText) {
   EXPECT_EQ(kBlobLen, out_buffer_len);
   EXPECT_EQ(pdfium::span(kBlobData), blob_buffer);
 
-  // Render and check the bitmap is the expected one.
-  {
-    ScopedFPDFBitmap page_bitmap = RenderPage(page.get());
-    CompareBitmapWithExpectationSuffix(page_bitmap.get(), kLoadedTextPng);
-  }
+  // Render and check the display list is the expected one.
+  CompareDisplayList(RenderPageToDisplayList(page.get()), "loaded_text");
 
   // Now save the result.
   EXPECT_EQ(1, FPDFPage_CountObjects(page.get()));
@@ -4532,11 +4364,8 @@ TEST_F(FPDFEditEmbedderTest, AddMarkedTextWithFloat) {
   EXPECT_TRUE(FPDFPageObjMark_GetParamFloatValue(mark, "Pi", &float_value));
   EXPECT_FLOAT_EQ(3.14159f, float_value);
 
-  // Render and check the bitmap is the expected one.
-  {
-    ScopedFPDFBitmap page_bitmap = RenderPage(page.get());
-    CompareBitmapWithExpectationSuffix(page_bitmap.get(), kLoadedTextPng);
-  }
+  // Render and check the display list is the expected one.
+  CompareDisplayList(RenderPageToDisplayList(page.get()), "loaded_text");
 
   // Now save the result.
   EXPECT_EQ(1, FPDFPage_CountObjects(page.get()));
@@ -5929,7 +5758,7 @@ TEST_F(FPDFEditEmbedderTest, FormModifyObject) {
   // Save the document to the internal buffer
   EXPECT_TRUE(FPDF_SaveAsCopy(document(), this, 0));
 
-  VerifySavedDocument("form_object_with_image_removed_image");
+  VerifySavedDocumentWithDisplayList("form_object_with_image_removed_image");
 }
 
 // Paths parsed under one `cm` store their matrix once; transforming one of them
@@ -5991,14 +5820,10 @@ TEST_F(FPDFEditEmbedderTest, Bug410996566) {
   }
   ASSERT_TRUE(FPDFPage_GenerateContent(page.get()));
 
-  static constexpr char kExpected[] = "bug_410996566";
-  {
-    ScopedFPDFBitmap bitmap = RenderPage(page.get());
-    CompareBitmapWithExpectationSuffix(bitmap.get(), kExpected);
-  }
+  CompareDisplayList(RenderPageToDisplayList(page.get()), "bug_410996566");
 
   ASSERT_TRUE(FPDF_SaveAsCopy(document(), this, 0));
-  VerifySavedDocumentWithExpectationSuffix(kExpected);
+  VerifySavedDocumentWithDisplayList("bug_410996566");
 }
 
 TEST_F(FPDFEditEmbedderTest, Bug461845674) {

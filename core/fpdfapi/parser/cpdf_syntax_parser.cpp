@@ -86,26 +86,17 @@ class ReadableSubStream final : public IFX_SeekableReadStream {
 // EmbedPDF(thread-confined-globals): each thread parses with its own depth.
 EPDF_TLS uint32_t CPDF_SyntaxParser::s_CurrentRecursionDepth = 0;
 
-// static
-std::unique_ptr<CPDF_SyntaxParser> CPDF_SyntaxParser::CreateForTesting(
-    RetainPtr<IFX_SeekableReadStream> pFileAccess,
-    FX_FILESIZE HeaderOffset) {
-  return std::make_unique<CPDF_SyntaxParser>(
-      pdfium::MakeRetain<CPDF_ReadValidator>(std::move(pFileAccess), nullptr),
-      HeaderOffset);
-}
-
 CPDF_SyntaxParser::CPDF_SyntaxParser(
-    RetainPtr<IFX_SeekableReadStream> pFileAccess)
+    RetainPtr<IFX_SeekableReadStream> file_access)
     : CPDF_SyntaxParser(
-          pdfium::MakeRetain<CPDF_ReadValidator>(std::move(pFileAccess),
+          pdfium::MakeRetain<CPDF_ReadValidator>(std::move(file_access),
                                                  nullptr),
-          0) {}
+          /*header_offset_=*/0) {}
 
 CPDF_SyntaxParser::CPDF_SyntaxParser(RetainPtr<CPDF_ReadValidator> validator,
-                                     FX_FILESIZE HeaderOffset)
+                                     FX_FILESIZE header_offset)
     : file_access_(std::move(validator)),
-      header_offset_(HeaderOffset),
+      header_offset_(header_offset),
       file_len_(file_access_->GetSize()) {
   DCHECK_LE(header_offset_, file_len_);
 }
@@ -113,8 +104,7 @@ CPDF_SyntaxParser::CPDF_SyntaxParser(RetainPtr<CPDF_ReadValidator> validator,
 CPDF_SyntaxParser::~CPDF_SyntaxParser() = default;
 
 bool CPDF_SyntaxParser::GetCharAt(FX_FILESIZE pos, uint8_t& ch) {
-  AutoRestorer<FX_FILESIZE> save_pos(&pos_);
-  pos_ = pos;
+  AutoRestorer<FX_FILESIZE> save_pos(&pos_, pos);
   return GetNextChar(ch);
 }
 
@@ -594,10 +584,10 @@ RetainPtr<CPDF_Object> CPDF_SyntaxParser::GetObjectBodyInternal(
   }
 
   if (word == "(") {
-    return pdfium::MakeRetain<CPDF_String>(pool_, ReadString());
+    return pdfium::MakeRetain<CPDF_String>(ReadString());
   }
   if (word == "<") {
-    return pdfium::MakeRetain<CPDF_String>(pool_, ReadHexString(),
+    return pdfium::MakeRetain<CPDF_String>(ReadHexString(),
                                            CPDF_String::DataType::kIsHex);
   }
   if (word == "[") {
