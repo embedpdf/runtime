@@ -99,7 +99,8 @@ TEST_F(EPDFTextEmbedderTest, GetCharGeometry) {
 
 // A text object with no width is left out of the text page (upstream
 // 49042621c, Feb 2026), so a zero font size gives no characters to measure.
-// An empty character box is covered by FPDFTextEmbedderTest.Bug399689604.
+// Only a space between words stays (ChromeType3TextKeepsSpaces). An empty
+// character box is covered by FPDFTextEmbedderTest.Bug399689604.
 TEST_F(EPDFTextEmbedderTest, ZeroFontSizeTextHasNoChars) {
   ASSERT_TRUE(OpenDocument("font_size_zero.pdf"));
   ScopedPage page = LoadScopedPage(0);
@@ -108,6 +109,56 @@ TEST_F(EPDFTextEmbedderTest, ZeroFontSizeTextHasNoChars) {
   ScopedFPDFTextPage text_page(FPDFText_LoadPage(page.get()));
   ASSERT_TRUE(text_page);
   EXPECT_EQ(0, FPDFText_CountChars(text_page.get()));
+}
+
+// Chrome and Skia print each glyph as its own text object, so a space is an
+// object without ink, and so without width. It still separates the words.
+TEST_F(EPDFTextEmbedderTest, ChromeType3TextKeepsSpaces) {
+  ASSERT_TRUE(OpenDocument("embedpdf_chrome_type3_text.pdf"));
+  ScopedPage page = LoadScopedPage(0);
+  ASSERT_TRUE(page);
+
+  ScopedFPDFTextPage text_page(FPDFText_LoadPage(page.get()));
+  ASSERT_TRUE(text_page);
+
+  static constexpr char kExpected[] = "to pixels";
+  static constexpr int kExpectedSize = std::size(kExpected);
+  ASSERT_EQ(kExpectedSize - 1, FPDFText_CountChars(text_page.get()));
+  unsigned short buffer[16] = {};
+  ASSERT_EQ(kExpectedSize,
+            FPDFText_GetText(text_page.get(), 0, std::size(buffer), buffer));
+  EXPECT_THAT(pdfium::span(buffer).first<kExpectedSize>(),
+              ElementsAreArray(kExpected));
+}
+
+// A Type3 font has no ascent or descent, so its characters' loose boxes take
+// the top and bottom of /FontBBox: one line, one height, whatever each glyph's
+// ink. The space between the words has the same box.
+TEST_F(EPDFTextEmbedderTest, ChromeType3TextLooseBoxesShareTheLine) {
+  ASSERT_TRUE(OpenDocument("embedpdf_chrome_type3_text.pdf"));
+  ScopedPage page = LoadScopedPage(0);
+  ASSERT_TRUE(page);
+
+  ScopedFPDFTextPage text_page(FPDFText_LoadPage(page.get()));
+  ASSERT_TRUE(text_page);
+
+  // 20pt text on a baseline at y = 50; /FontBBox runs from 200 below the
+  // baseline to 750 above it, in thousandths of the font size.
+  static constexpr float kTop = 65.0f;
+  static constexpr float kBottom = 46.0f;
+  const int char_count = FPDFText_CountChars(text_page.get());
+  ASSERT_GT(char_count, 0);
+  for (int i = 0; i < char_count; ++i) {
+    FS_RECTF loose;
+    ASSERT_TRUE(FPDFText_GetLooseCharBox(text_page.get(), i, &loose));
+    EXPECT_FLOAT_EQ(kTop, loose.top) << i;
+    EXPECT_FLOAT_EQ(kBottom, loose.bottom) << i;
+
+    EPDF_CHAR_GEOMETRY geometry = {};
+    ASSERT_TRUE(EPDFText_GetCharGeometry(text_page.get(), i, &geometry));
+    EXPECT_FLOAT_EQ(kTop, geometry.loose_box.top) << i;
+    EXPECT_FLOAT_EQ(kBottom, geometry.loose_box.bottom) << i;
+  }
 }
 
 TEST_F(EPDFTextEmbedderTest, GetRotatedCharGeometry) {

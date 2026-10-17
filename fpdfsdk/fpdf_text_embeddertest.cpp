@@ -2464,15 +2464,15 @@ TEST_F(FPDFTextEmbedderTest, Bug444176962) {
   ScopedFPDFTextPage textpage(FPDFText_LoadPage(page.get()));
   ASSERT_TRUE(textpage);
 
-  // TODO(crbug.com/444176962): FPDFText_GetText() should return 10.
-  // kMissingSpaceResult should be replaced with kResult as "local act"
+  // EmbedPDF(bug-fix): the space drawn as its own object between the words
+  // stays (crbug.com/444176962), so FPDFText_GetText() returns 10.
   unsigned short buffer[128] = {};
-  static constexpr char kMissingSpaceResult[] = "localact";
-  static constexpr int kExpectedSize = std::size(kMissingSpaceResult);
+  static constexpr char kResult[] = "local act";
+  static constexpr int kExpectedSize = std::size(kResult);
   ASSERT_EQ(kExpectedSize,
             FPDFText_GetText(textpage.get(), 0, std::size(buffer), buffer));
   EXPECT_THAT(pdfium::span(buffer).first<kExpectedSize>(),
-              ElementsAreArray(kMissingSpaceResult));
+              ElementsAreArray(kResult));
 }
 
 TEST_F(FPDFTextEmbedderTest, Bug491161396) {
