@@ -222,6 +222,13 @@ class CPDF_Annot {
 
   bool IsHidden() const;
 
+  // EmbedPDF(bug-fix): whether the Invisible flag leaves |annot_dict| undrawn.
+  // ISO 32000-2 12.5.3 limits the flag to a type that isn't a standard one,
+  // which no handler draws; on a standard annotation it means nothing. Upstream
+  // drew such an unknown annotation anyway, and its flatten skipped every
+  // annotation with the flag. The renderer and flatten both ask here.
+  static bool IsHiddenByInvisibleFlag(const CPDF_Dictionary* annot_dict);
+
   // EmbedPDF(annot-appearance): draw this state of an appearance subdictionary
   // (/AP /N /Yes), whatever /AS says. Only a stored state is drawn: a mode
   // whose entry is a single stream, a state the subdictionary lacks, or no
@@ -237,6 +244,13 @@ class CPDF_Annot {
   // hidden annotation, or a kind PDFium draws only by generating an
   // appearance into the file).
   std::optional<CFX_FloatRect> GetDrawingRect(AppearanceMode mode);
+
+  // EmbedPDF(annot-appearance, reads-dont-write): what flattening paints for
+  // an annotation without a stored appearance.
+  // The normal appearance PDFium draws in memory when there is no stored one,
+  // built without writing anything. This object keeps it, and the fonts it
+  // uses, alive. Null when there is a stored appearance or nothing to draw.
+  RetainPtr<const CPDF_Stream> GetAppearanceDrawnInMemory();
 
   bool DrawAppearance(CPDF_Page* pPage,
                       CFX_RenderDevice* pDevice,

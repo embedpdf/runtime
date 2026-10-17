@@ -307,6 +307,12 @@ std::optional<CFX_FloatRect> CPDF_Annot::GetDrawingRect(AppearanceMode mode) {
   return GetRect();
 }
 
+// EmbedPDF(annot-appearance, reads-dont-write): what flattening paints for an
+// annotation without a stored appearance.
+RetainPtr<const CPDF_Stream> CPDF_Annot::GetAppearanceDrawnInMemory() {
+  return GetOrBuildEphemeralAP(AppearanceMode::kNormal);
+}
+
 CPDF_Annot::Subtype CPDF_Annot::GetSubtype() const {
   return subtype_;
 }
@@ -338,6 +344,20 @@ uint32_t CPDF_Annot::GetFlags() const {
 
 bool CPDF_Annot::IsHidden() const {
   return !!(GetFlags() & pdfium::annotation_flags::kHidden);
+}
+
+// EmbedPDF(bug-fix): the Invisible flag applies to unknown types only (header).
+// static
+bool CPDF_Annot::IsHiddenByInvisibleFlag(const CPDF_Dictionary* annot_dict) {
+  if (!(annot_dict->GetIntegerFor(pdfium::annotation::kF) &
+        pdfium::annotation_flags::kInvisible)) {
+    return false;
+  }
+  const ByteString subtype =
+      annot_dict->GetNameFor(pdfium::annotation::kSubtype);
+  // Projection is standard since PDF 2.0, though PDFium has no Subtype for it.
+  return StringToAnnotSubtype(subtype) == Subtype::UNKNOWN &&
+         subtype != "Projection";
 }
 
 // EmbedPDF(reads-dont-write): reads take a const dictionary.
