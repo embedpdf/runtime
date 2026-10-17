@@ -7,7 +7,7 @@
 #ifndef CORE_FXCRT_BYTESTRING_POOL_H_
 #define CORE_FXCRT_BYTESTRING_POOL_H_
 
-#include <unordered_set>
+#include <memory>
 
 #include "core/fxcrt/bytestring.h"
 
@@ -15,17 +15,19 @@ namespace fxcrt {
 
 class ByteStringPool {
  public:
-  ByteStringPool();
-  ~ByteStringPool();
+  // Never returns nullptr.
+  static std::unique_ptr<ByteStringPool> Create();
 
-  ByteString Intern(const ByteString& str);
+  virtual ~ByteStringPool() = default;
+
+  virtual ByteString Intern(const ByteString& str) = 0;
 
   // EmbedPDF(save-traversal): the save reader drops its interned strings
   // between objects, so a full rewrite does not keep every name it read.
-  void Clear() { pool_.clear(); }
+  virtual void Clear() = 0;
 
- private:
-  std::unordered_set<ByteString> pool_;
+ protected:
+  ByteStringPool() = default;
 };
 
 }  // namespace fxcrt

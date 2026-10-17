@@ -132,7 +132,7 @@ std::string MakeGenerationDocument(uint16_t generation,
     auto encrypted_title =
         crypto->EncryptContent(5, generation, pdfium::as_byte_span(title));
     auto title_object = pdfium::MakeRetain<CPDF_String>(
-        nullptr, encrypted_title, CPDF_String::DataType::kIsHex);
+        encrypted_title, CPDF_String::DataType::kIsHex);
     objects[4] = "<</Title " + SerializeObject(title_object.Get()) + ">>";
     objects.push_back(
         SerializeObject(encryption_source->GetEncryptDict().Get()));

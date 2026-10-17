@@ -110,8 +110,8 @@ bool CFX_AggDeviceDriver::DrawDeviceText(
     const CFX_Matrix& mtObject2Device,
     float font_size,
     uint32_t color,
-    const CFX_TextRenderOptions& /*options*/) {
-  if (!font) {
+    const CFX_TextRenderOptions& options) {
+  if (!font || !font->ShouldDrawDeviceText(options)) {
     return false;
   }
 
@@ -176,13 +176,3 @@ bool CFX_AggDeviceDriver::DrawDeviceText(
 }
 
 }  // namespace pdfium
-
-void CFX_Font::ReleasePlatformResource() {
-  if (platform_font_) {
-    CQuartz2D& quartz2d =
-        static_cast<CApplePlatform*>(CFX_GEModule::Get()->GetPlatform())
-            ->quartz_2d_;
-    quartz2d.DestroyFont(platform_font_);
-    platform_font_ = nullptr;
-  }
-}
