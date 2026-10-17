@@ -455,8 +455,21 @@ bool CPDF_RenderStatus::ProcessPath(CPDF_PathObject* path_obj,
                                     const CFX_Matrix& mtObj2Device) {
   CFX_FillRenderOptions::FillType fill_type = path_obj->filltype();
   bool stroke = path_obj->stroke();
+  // EmbedPDF(bug-fix): upstream drew a pattern stroke before the path's solid
+  // fill, so with B and B* the fill covered the stroke's inner half. The
+  // pattern stroke is held back here and drawn after the fill.
+  const CPDF_Color* pattern_stroke =
+      stroke && path_obj->color_state().GetStrokeColor()->IsPattern()
+          ? path_obj->color_state().GetStrokeColor()
+          : nullptr;
+  if (pattern_stroke) {
+    stroke = false;
+  }
   ProcessPathPattern(path_obj, mtObj2Device, &fill_type, &stroke);
   if (fill_type == CFX_FillRenderOptions::FillType::kNoFill && !stroke) {
+    if (pattern_stroke) {
+      DrawPathWithPattern(path_obj, mtObj2Device, pattern_stroke, true);
+    }
     return true;
   }
 
@@ -479,11 +492,18 @@ bool CPDF_RenderStatus::ProcessPath(CPDF_PathObject* path_obj,
     return true;
   }
 
-  return device_->DrawPath(
+  // EmbedPDF(bug-fix): the held-back pattern stroke goes on top of the fill.
+  // When DrawPath() fails, the caller redraws the whole object, stroke
+  // included, so the stroke is skipped here.
+  const bool result = device_->DrawPath(
       *path_obj->path().GetObject(), &path_matrix,
       path_obj->graph_state().GetObject(), fill_argb, stroke_argb,
       GetFillOptionsForDrawPathWithBlend(options, path_obj, fill_type, stroke,
                                          type3_char_));
+  if (result && pattern_stroke) {
+    DrawPathWithPattern(path_obj, mtObj2Device, pattern_stroke, true);
+  }
+  return result;
 }
 
 RetainPtr<CPDF_TransferFunc> CPDF_RenderStatus::GetTransferFunc(
