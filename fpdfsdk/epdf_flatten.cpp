@@ -114,8 +114,11 @@ bool IsEligibleForUsage(const CPDF_Dictionary* annotation, int usage) {
   if (flags & pdfium::annotation_flags::kHidden) {
     return false;
   }
+  // On screen the renderer skips a no-view annotation (ISO 32000-2 12.5.3:
+  // it may still print), on paper one without the print flag.
   return usage == FLAT_NORMALDISPLAY
-             ? !(flags & pdfium::annotation_flags::kInvisible)
+             ? !(flags & (pdfium::annotation_flags::kInvisible |
+                          pdfium::annotation_flags::kNoView))
              : !!(flags & pdfium::annotation_flags::kPrint);
 }
 

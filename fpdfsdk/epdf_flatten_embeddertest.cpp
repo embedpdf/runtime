@@ -826,6 +826,37 @@ TEST_F(EPDFFlattenEmbedderTest, ExportPagesFlattenedPaintsTheChosenKinds) {
   EXPECT_EQ(6, FPDFPage_GetAnnotCount(page.get()));
 }
 
+TEST_F(EPDFFlattenEmbedderTest, FlattenForDisplayLeavesANoViewAnnotation) {
+  ASSERT_TRUE(OpenDocument("flatten_selective.pdf"));
+  CPDF_Document* pdf = CPDFDocumentFromFPDFDocument(document());
+  // The visible square (4) becomes no-view: printed, never shown.
+  RetainPtr<CPDF_Dictionary> square =
+      ToDictionary(pdf->GetMutableIndirectObject(4u));
+  ASSERT_TRUE(square);
+  square->SetNewFor<CPDF_Number>(
+      "F", FPDF_ANNOT_FLAG_NOVIEW | FPDF_ANNOT_FLAG_PRINT);
+
+  const int index = 0;
+  ScopedFPDFDocument shown(
+      EPDFDoc_ExportPagesFlattened(document(), &index, 1, FLAT_NORMALDISPLAY,
+                                   EPDF_EXPORT_FLATTENED_ANNOTATIONS));
+  ScopedFPDFDocument printed(EPDFDoc_ExportPagesFlattened(
+      document(), &index, 1, FLAT_PRINT, EPDF_EXPORT_FLATTENED_ANNOTATIONS));
+  ASSERT_TRUE(shown);
+  ASSERT_TRUE(printed);
+  // On screen: the Text annotation (6) and the unflagged square (16).
+  EXPECT_EQ(2u, CountPaintedAppearances(shown.get(), 0));
+  // On paper: the no-view square.
+  EXPECT_EQ(1u, CountPaintedAppearances(printed.get(), 0));
+
+  ScopedPage page = LoadScopedPage(0);
+  ASSERT_TRUE(page);
+  ScopedFPDFAnnotation no_view(EPDFPage_GetAnnotByObjectNumber(page.get(), 4u));
+  ASSERT_TRUE(no_view);
+  EXPECT_EQ(FLATTEN_NOTHINGTODO,
+            FlattenOne(page.get(), no_view.get(), FLAT_NORMALDISPLAY));
+}
+
 TEST_F(EPDFFlattenEmbedderTest,
        ExportPagesFlattenedCopiesPagesInTheGivenOrder) {
   ScopedFPDFDocument doc(FPDF_CreateNewDocument());
