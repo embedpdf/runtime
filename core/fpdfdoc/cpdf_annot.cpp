@@ -346,6 +346,20 @@ bool CPDF_Annot::IsHidden() const {
   return !!(GetFlags() & pdfium::annotation_flags::kHidden);
 }
 
+// EmbedPDF(bug-fix): the Invisible flag applies to unknown types only (header).
+// static
+bool CPDF_Annot::IsHiddenByInvisibleFlag(const CPDF_Dictionary* annot_dict) {
+  if (!(annot_dict->GetIntegerFor(pdfium::annotation::kF) &
+        pdfium::annotation_flags::kInvisible)) {
+    return false;
+  }
+  const ByteString subtype =
+      annot_dict->GetNameFor(pdfium::annotation::kSubtype);
+  // Projection is standard since PDF 2.0, though PDFium has no Subtype for it.
+  return StringToAnnotSubtype(subtype) == Subtype::UNKNOWN &&
+         subtype != "Projection";
+}
+
 // EmbedPDF(reads-dont-write): reads take a const dictionary.
 RetainPtr<CPDF_Stream> GetAnnotAP(const CPDF_Dictionary* pAnnotDict,
                                   CPDF_Annot::AppearanceMode eMode) {

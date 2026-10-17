@@ -211,6 +211,12 @@ void CPDF_AnnotList::DisplayPass(CPDF_RenderContext* context,
       continue;
     }
 
+    // EmbedPDF(bug-fix): an unknown type with the Invisible flag isn't drawn;
+    // upstream drew it.
+    if (CPDF_Annot::IsHiddenByInvisibleFlag(pAnnot->GetAnnotDict())) {
+      continue;
+    }
+
     if (bPrinting && (annot_flags & pdfium::annotation_flags::kPrint) == 0) {
       continue;
     }

@@ -110,15 +110,17 @@ bool IsEligibleForUsage(const CPDF_Dictionary* annotation, int usage) {
     return false;
   }
 
+  // The renderer's rules (CPDF_AnnotList::DisplayPass), so flatten paints what
+  // it draws.
   const int flags = annotation->GetIntegerFor("F");
-  if (flags & pdfium::annotation_flags::kHidden) {
+  if ((flags & pdfium::annotation_flags::kHidden) ||
+      CPDF_Annot::IsHiddenByInvisibleFlag(annotation)) {
     return false;
   }
   // On screen the renderer skips a no-view annotation (ISO 32000-2 12.5.3:
   // it may still print), on paper one without the print flag.
   return usage == FLAT_NORMALDISPLAY
-             ? !(flags & (pdfium::annotation_flags::kInvisible |
-                          pdfium::annotation_flags::kNoView))
+             ? !(flags & pdfium::annotation_flags::kNoView)
              : !!(flags & pdfium::annotation_flags::kPrint);
 }
 

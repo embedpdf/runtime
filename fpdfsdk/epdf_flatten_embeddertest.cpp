@@ -215,7 +215,7 @@ TEST_F(EPDFFlattenEmbedderTest,
   ASSERT_EQ(FLATTEN_SUCCESS, EPDFPage_Flatten(page.get(), FLAT_NORMALDISPLAY));
   // The Text annotation (object 6) has no appearance; the renderer draws its
   // icon in memory, and flatten paints what the renderer draws. The hidden
-  // square (5) and the invisible one (9) stay.
+  // square (5) and the unknown type flagged Invisible (9) stay.
   EXPECT_EQ(2, FPDFPage_GetAnnotCount(page.get()));
   EXPECT_FALSE(EPDFPage_GetAnnotByObjectNumber(page.get(), 4u));
   EXPECT_FALSE(EPDFPage_GetAnnotByObjectNumber(page.get(), 6u));
@@ -385,15 +385,15 @@ TEST_F(EPDFFlattenEmbedderTest, FlattenAnnotationSetReportsPerEntry) {
   ASSERT_TRUE(page);
   ASSERT_EQ(6, FPDFPage_GetAnnotCount(page.get()));
 
-  // 4: visible square; 5: hidden square; 9: print-only square (invisible
-  // for display, so skipped).
+  // 4: visible square; 5: hidden square; 9: an unknown type flagged
+  // Invisible, which nothing draws, so skipped.
   ScopedFPDFAnnotation visible(EPDFPage_GetAnnotByObjectNumber(page.get(), 4u));
   ScopedFPDFAnnotation hidden(EPDFPage_GetAnnotByObjectNumber(page.get(), 5u));
-  ScopedFPDFAnnotation print_only(
+  ScopedFPDFAnnotation invisible(
       EPDFPage_GetAnnotByObjectNumber(page.get(), 9u));
   ASSERT_TRUE(visible);
   ASSERT_TRUE(hidden);
-  ASSERT_TRUE(print_only);
+  ASSERT_TRUE(invisible);
 
   int status = -1;
   EXPECT_EQ(FLATTEN_FAIL,
@@ -412,7 +412,7 @@ TEST_F(EPDFFlattenEmbedderTest, FlattenAnnotationSetReportsPerEntry) {
   EXPECT_EQ(EPDF_FLATTEN_STATUS_NOT_ON_PAGE, status);
   EXPECT_EQ(6, FPDFPage_GetAnnotCount(page.get()));
 
-  FPDF_ANNOTATION set[] = {hidden.get(), visible.get(), print_only.get()};
+  FPDF_ANNOTATION set[] = {hidden.get(), visible.get(), invisible.get()};
   int statuses[3] = {-1, -1, -1};
   ASSERT_EQ(FLATTEN_SUCCESS,
             EPDFPage_FlattenAnnotations(page.get(), set, 3, FLAT_NORMALDISPLAY,
@@ -519,16 +519,16 @@ TEST_F(EPDFFlattenEmbedderTest, ExportAnnotationsIsAllOrNothing) {
   ASSERT_TRUE(page);
   ScopedFPDFAnnotation visible(EPDFPage_GetAnnotByObjectNumber(page.get(), 4u));
   ScopedFPDFAnnotation hidden(EPDFPage_GetAnnotByObjectNumber(page.get(), 5u));
-  ScopedFPDFAnnotation print_only(
+  ScopedFPDFAnnotation invisible(
       EPDFPage_GetAnnotByObjectNumber(page.get(), 9u));
   ASSERT_TRUE(visible);
   ASSERT_TRUE(hidden);
-  ASSERT_TRUE(print_only);
+  ASSERT_TRUE(invisible);
 
   FPDF_ANNOTATION with_hidden[] = {visible.get(), hidden.get()};
   EXPECT_FALSE(
       EPDFPage_ExportAnnotationsAsDocument(page.get(), with_hidden, 2));
-  FPDF_ANNOTATION with_invisible[] = {visible.get(), print_only.get()};
+  FPDF_ANNOTATION with_invisible[] = {visible.get(), invisible.get()};
   EXPECT_FALSE(
       EPDFPage_ExportAnnotationsAsDocument(page.get(), with_invisible, 2));
   FPDF_ANNOTATION null_entry[] = {nullptr};
@@ -803,7 +803,8 @@ TEST_F(EPDFFlattenEmbedderTest, ExportPagesFlattenedKeepsTheLayersPrintState) {
 TEST_F(EPDFFlattenEmbedderTest, ExportPagesFlattenedPaintsTheChosenKinds) {
   ASSERT_TRUE(OpenDocument("flatten_selective.pdf"));
   // For print: the square (4) and the widget (13); the hidden (5), the
-  // invisible (9) and the unflagged (6, 16) annotations don't print.
+  // invisible unknown type (9) and the unflagged (6, 16) annotations don't
+  // print.
   const int index = 0;
   struct {
     int flags;
@@ -855,6 +856,62 @@ TEST_F(EPDFFlattenEmbedderTest, FlattenForDisplayLeavesANoViewAnnotation) {
   ASSERT_TRUE(no_view);
   EXPECT_EQ(FLATTEN_NOTHINGTODO,
             FlattenOne(page.get(), no_view.get(), FLAT_NORMALDISPLAY));
+}
+
+// ISO 32000-2 12.5.3: the Invisible flag leaves out only an annotation of a
+// type that isn't standard. A standard one draws whatever the flag says,
+// Projection too (standard since PDF 2.0; PDFium has no Subtype for it). The
+// renderer and flatten agree, on screen and on paper.
+TEST_F(EPDFFlattenEmbedderTest, InvisibleLeavesOutOnlyAnUnknownType) {
+  struct Case {
+    const char* subtype;
+    int flags;
+    bool drawn;
+  };
+  constexpr int kInvisible = FPDF_ANNOT_FLAG_INVISIBLE | FPDF_ANNOT_FLAG_PRINT;
+  const Case cases[] = {
+      {"Square", kInvisible, true},
+      {"Projection", kInvisible, true},
+      {"MyCompanyMark", FPDF_ANNOT_FLAG_PRINT, true},
+      {"MyCompanyMark", kInvisible, false},
+  };
+  for (const Case& test : cases) {
+    SCOPED_TRACE(testing::Message() << test.subtype << " /F " << test.flags);
+    ScopedFPDFDocument doc(FPDF_CreateNewDocument());
+    ASSERT_TRUE(doc);
+    {
+      ScopedFPDFPage blank(FPDFPage_New(doc.get(), 0, 200, 200));
+      ASSERT_TRUE(blank);
+      ScopedFPDFAnnotation annot = MakeSquareWithAppearance(
+          blank.get(), {20, 120, 120, 20}, L"0 0 10 10 re f", nullptr);
+      ASSERT_TRUE(annot);
+      RetainPtr<CPDF_Dictionary> dict =
+          CPDFAnnotContextFromFPDFAnnotation(annot.get())
+              ->GetMutableAnnotDict();
+      dict->SetNewFor<CPDF_Name>("Subtype", test.subtype);
+      dict->SetNewFor<CPDF_Number>("F", test.flags);
+    }
+
+    ScopedFPDFPage page(FPDF_LoadPage(doc.get(), 0));
+    ASSERT_TRUE(page);
+    const std::string blank = HashBitmap(WhiteBitmap(200, 200).get());
+    ScopedFPDFBitmap on_screen =
+        RenderPageWithFlags(page.get(), nullptr, FPDF_ANNOT);
+    ScopedFPDFBitmap on_paper =
+        RenderPageWithFlags(page.get(), nullptr, FPDF_ANNOT | FPDF_PRINTING);
+    EXPECT_EQ(test.drawn, HashBitmap(on_screen.get()) != blank);
+    EXPECT_EQ(test.drawn, HashBitmap(on_paper.get()) != blank);
+
+    const int index = 0;
+    for (int usage : {FLAT_NORMALDISPLAY, FLAT_PRINT}) {
+      ScopedFPDFDocument copy(
+          EPDFDoc_ExportPagesFlattened(doc.get(), &index, 1, usage, kAllKinds));
+      ASSERT_TRUE(copy);
+      EXPECT_EQ(test.drawn ? 1u : 0u, CountPaintedAppearances(copy.get(), 0));
+    }
+    EXPECT_EQ(test.drawn ? FLATTEN_SUCCESS : FLATTEN_NOTHINGTODO,
+              EPDFPage_Flatten(page.get(), FLAT_NORMALDISPLAY));
+  }
 }
 
 TEST_F(EPDFFlattenEmbedderTest,

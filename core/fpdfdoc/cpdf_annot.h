@@ -222,6 +222,13 @@ class CPDF_Annot {
 
   bool IsHidden() const;
 
+  // EmbedPDF(bug-fix): whether the Invisible flag leaves |annot_dict| undrawn.
+  // ISO 32000-2 12.5.3 limits the flag to a type that isn't a standard one,
+  // which no handler draws; on a standard annotation it means nothing. Upstream
+  // drew such an unknown annotation anyway, and its flatten skipped every
+  // annotation with the flag. The renderer and flatten both ask here.
+  static bool IsHiddenByInvisibleFlag(const CPDF_Dictionary* annot_dict);
+
   // EmbedPDF(annot-appearance): draw this state of an appearance subdictionary
   // (/AP /N /Yes), whatever /AS says. Only a stored state is drawn: a mode
   // whose entry is a single stream, a state the subdictionary lacks, or no
