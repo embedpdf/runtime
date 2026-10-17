@@ -271,6 +271,7 @@ int CheckEmbedPDFCApi(void) {
   CHK(EPDFText_RedactInRect);
 
   // epdf_flatten.h
+  CHK(EPDFDoc_ExportPagesFlattened);
   CHK(EPDFPage_ExportAnnotationsAsDocument);
   CHK(EPDFPage_Flatten);
   CHK(EPDFPage_FlattenAnnotations);

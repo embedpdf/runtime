@@ -238,6 +238,13 @@ class CPDF_Annot {
   // appearance into the file).
   std::optional<CFX_FloatRect> GetDrawingRect(AppearanceMode mode);
 
+  // EmbedPDF(annot-appearance, reads-dont-write): what flattening paints for
+  // an annotation without a stored appearance.
+  // The normal appearance PDFium draws in memory when there is no stored one,
+  // built without writing anything. This object keeps it, and the fonts it
+  // uses, alive. Null when there is a stored appearance or nothing to draw.
+  RetainPtr<const CPDF_Stream> GetAppearanceDrawnInMemory();
+
   bool DrawAppearance(CPDF_Page* pPage,
                       CFX_RenderDevice* pDevice,
                       const CFX_Matrix& mtUser2Device,

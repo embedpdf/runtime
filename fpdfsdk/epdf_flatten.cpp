@@ -9,6 +9,7 @@
 #include <limits.h>
 
 #include <algorithm>
+#include <memory>
 #include <optional>
 #include <set>
 #include <sstream>
@@ -19,23 +20,27 @@
 #include "constants/annotation_flags.h"
 #include "constants/font_encodings.h"
 #include "constants/page_object.h"
-#include "core/fxcrt/stream_write_utils.h"
 #include "core/fpdfapi/page/cpdf_annotcontext.h"
+#include "core/fpdfapi/page/cpdf_occontext.h"
 #include "core/fpdfapi/page/cpdf_page.h"
 #include "core/fpdfapi/parser/cpdf_array.h"
 #include "core/fpdfapi/parser/cpdf_dictionary.h"
 #include "core/fpdfapi/parser/cpdf_document.h"
+#include "core/fpdfapi/parser/cpdf_document_view_scope.h"
 #include "core/fpdfapi/parser/cpdf_name.h"
 #include "core/fpdfapi/parser/cpdf_number.h"
 #include "core/fpdfapi/parser/cpdf_reference.h"
 #include "core/fpdfapi/parser/cpdf_stream.h"
 #include "core/fpdfapi/parser/fpdf_parser_utility.h"
 #include "core/fpdfdoc/cpdf_annot.h"
+#include "core/fxcrt/compiler_specific.h"
 #include "core/fxcrt/fx_string_wrappers.h"
+#include "core/fxcrt/numerics/safe_conversions.h"
 #include "core/fxcrt/span.h"
+#include "core/fxcrt/stream_write_utils.h"
 #include "fpdfsdk/cpdfsdk_helpers.h"
-#include "fpdfsdk/epdf_appearance_exporter.h"
 #include "fpdfsdk/epdf_form_helpers.h"
+#include "fpdfsdk/epdf_object_copier.h"
 #include "fpdfsdk/epdf_object_helpers.h"
 #include "public/epdf_flatten.h"
 #include "public/fpdf_edit.h"
@@ -47,6 +52,9 @@ struct FlattenCandidate {
   uint32_t annotation_object_number = 0;
   RetainPtr<const CPDF_Dictionary> annotation;
   RetainPtr<const CPDF_Stream> appearance;
+  // Set when the annotation has no stored appearance and |appearance| is the
+  // one the renderer draws in memory: it owns that stream and its fonts.
+  std::unique_ptr<CPDF_Annot> drawn;
   CFX_FloatRect annotation_rect;
   CFX_FloatRect appearance_rect;
   CFX_Matrix appearance_matrix;
@@ -76,6 +84,17 @@ struct PreparedAppearance {
 
 bool IsValidUsage(int usage) {
   return usage == FLAT_NORMALDISPLAY || usage == FLAT_PRINT;
+}
+
+// Which annotations a plan paints: EPDF_EXPORT_FLATTENED_* bits.
+constexpr int kAllKinds =
+    EPDF_EXPORT_FLATTENED_ANNOTATIONS | EPDF_EXPORT_FLATTENED_FORM_FIELDS;
+
+bool IsOfKinds(const CPDF_Dictionary* annotation, int kinds) {
+  const bool widget =
+      annotation->GetByteStringFor(pdfium::annotation::kSubtype) == "Widget";
+  return !!(kinds & (widget ? EPDF_EXPORT_FLATTENED_FORM_FIELDS
+                            : EPDF_EXPORT_FLATTENED_ANNOTATIONS));
 }
 
 uint32_t GetObjectNumber(const CPDF_Object* entry,
@@ -160,19 +179,35 @@ std::optional<FlattenCandidate> MakeCandidate(
     size_t annotation_index,
     const CPDF_Object* entry,
     RetainPtr<const CPDF_Dictionary> annotation,
-    int usage) {
-  if (!IsEligibleForUsage(annotation.Get(), usage)) {
+    int usage,
+    int kinds) {
+  if (!IsEligibleForUsage(annotation.Get(), usage) ||
+      !IsOfKinds(annotation.Get(), kinds)) {
     return std::nullopt;
   }
 
+  // Flatten paints what the renderer draws: the stored appearance, or, when
+  // there is none, the one the renderer builds in memory, placed where the
+  // renderer places it (which can reach past /Rect: a cloudy border, a
+  // dimension label).
   RetainPtr<const CPDF_Stream> appearance =
       GetNormalAppearance(document, annotation.Get());
-  if (!appearance) {
-    return std::nullopt;
+  std::unique_ptr<CPDF_Annot> drawn;
+  CFX_FloatRect annotation_rect;
+  if (appearance) {
+    annotation_rect = annotation->GetRectFor(pdfium::annotation::kRect);
+  } else {
+    // As the annotation list does: drawing from memory writes nothing, so a
+    // read-only dictionary serves.
+    drawn = std::make_unique<CPDF_Annot>(
+        pdfium::WrapRetain(const_cast<CPDF_Dictionary*>(annotation.Get())),
+        document, CPDF_Annot::MissingAppearance::kGenerateWhenDrawn);
+    appearance = drawn->GetAppearanceDrawnInMemory();
+    if (!appearance) {
+      return std::nullopt;
+    }
+    annotation_rect = drawn->GetRect();
   }
-
-  CFX_FloatRect annotation_rect =
-      annotation->GetRectFor(pdfium::annotation::kRect);
   annotation_rect.Normalize();
   if (annotation_rect.IsEmpty()) {
     return std::nullopt;
@@ -202,6 +237,7 @@ std::optional<FlattenCandidate> MakeCandidate(
   candidate.annotation_object_number = GetObjectNumber(entry, annotation.Get());
   candidate.annotation = std::move(annotation);
   candidate.appearance = std::move(appearance);
+  candidate.drawn = std::move(drawn);
   candidate.annotation_rect = annotation_rect;
   candidate.appearance_rect = appearance_rect;
   candidate.appearance_matrix = appearance_matrix;
@@ -215,7 +251,8 @@ std::optional<FlattenCandidate> MakeCandidate(
 FlattenPlan BuildFlattenPlan(CPDF_Document* document,
                              const CPDF_Dictionary* page,
                              pdfium::span<const FlattenTarget> targets,
-                             int usage) {
+                             int usage,
+                             int kinds = kAllKinds) {
   FlattenPlan plan;
   plan.target_outcomes.assign(targets.size(), kTargetNotOnPage);
   RetainPtr<const CPDF_Object> annotations_entry =
@@ -259,8 +296,8 @@ FlattenPlan BuildFlattenPlan(CPDF_Document* document,
       }
     }
 
-    std::optional<FlattenCandidate> candidate =
-        MakeCandidate(document, i, entry.Get(), std::move(annotation), usage);
+    std::optional<FlattenCandidate> candidate = MakeCandidate(
+        document, i, entry.Get(), std::move(annotation), usage, kinds);
     if (candidate) {
       if (slot.has_value()) {
         plan.target_outcomes[*slot] = static_cast<int>(plan.candidates.size());
@@ -702,9 +739,14 @@ int ApplyFlattenPlan(CPDF_Document* document,
 
   std::vector<PreparedAppearance> prepared;
   prepared.reserve(candidates.size());
+  // An appearance drawn in memory keeps its fonts in a store of its own:
+  // copied into the document with everything it reaches.
+  epdf::ObjectCopier copier(document);
   for (FlattenCandidate& candidate : candidates) {
     RetainPtr<CPDF_Stream> stream =
-        ToStream(candidate.appearance->CloneForHolder(document));
+        candidate.drawn
+            ? copier.CopyStream(candidate.appearance.Get())
+            : ToStream(candidate.appearance->CloneForHolder(document));
     if (!stream) {
       continue;
     }
@@ -800,6 +842,9 @@ int FlattenPage(CPDF_Page* page,
   if (!document || !const_page || !IsValidUsage(usage)) {
     return FLATTEN_FAIL;
   }
+  // Reads the page's annotations and what their appearances need (fonts,
+  // the form's defaults) as this layer sees them.
+  CPDF_DocumentViewScope document_view(document);
 
   FlattenPlan plan =
       BuildFlattenPlan(document, const_page.Get(), targets, usage);
@@ -824,6 +869,116 @@ int FlattenPage(CPDF_Page* page,
     }
   }
   return rc;
+}
+
+// The keys of a page dictionary that say how the page draws: all a copy of
+// the page as it draws keeps. Left out with the rest: /Annots, the page's
+// actions (/AA), its article beads (/B), its structure and its thumbnail.
+constexpr const char* kDrawingKeys[] = {
+    pdfium::page_object::kMediaBox,
+    pdfium::page_object::kCropBox,
+    pdfium::page_object::kBleedBox,
+    pdfium::page_object::kTrimBox,
+    pdfium::page_object::kArtBox,
+    "BoxColorInfo",
+    pdfium::page_object::kRotate,
+    "UserUnit",
+    pdfium::page_object::kResources,
+    pdfium::page_object::kContents,
+    "Group",
+};
+
+// Of those, the ones a page takes from the page tree when it has none.
+bool IsInheritable(ByteStringView key) {
+  return key == pdfium::page_object::kMediaBox ||
+         key == pdfium::page_object::kCropBox ||
+         key == pdfium::page_object::kResources ||
+         key == pdfium::page_object::kRotate;
+}
+
+RetainPtr<const CPDF_Object> GetPageEntry(const CPDF_Dictionary* page,
+                                          ByteStringView key) {
+  std::set<const CPDF_Dictionary*> visited;
+  const CPDF_Dictionary* current = page;
+  while (current && !visited.contains(current)) {
+    RetainPtr<const CPDF_Object> value = current->GetObjectFor(key);
+    if (value || !IsInheritable(key)) {
+      return value;
+    }
+    visited.insert(current);
+    current = current->GetDictFor(pdfium::page_object::kParent).Get();
+  }
+  return nullptr;
+}
+
+// Makes |dest| draw as |source| does: its drawing keys copied, inherited ones
+// included, and nothing interactive.
+void CopyPageDrawing(epdf::ObjectCopier& copier,
+                     const CPDF_Dictionary* source,
+                     CPDF_Dictionary* dest) {
+  for (const char* key : kDrawingKeys) {
+    RetainPtr<CPDF_Object> value = copier.Copy(GetPageEntry(source, key).Get());
+    if (value) {
+      dest->SetFor(key, std::move(value));
+    }
+  }
+  // As page import does without a media box: the crop box, else US Letter.
+  if (!dest->KeyExist(pdfium::page_object::kMediaBox)) {
+    CFX_FloatRect crop_box = dest->GetRectFor(pdfium::page_object::kCropBox);
+    crop_box.Normalize();
+    dest->SetRectFor(
+        pdfium::page_object::kMediaBox,
+        crop_box.IsEmpty() ? CFX_FloatRect(0, 0, 612, 792) : crop_box);
+  }
+  if (!dest->KeyExist(pdfium::page_object::kResources)) {
+    dest->SetNewFor<CPDF_Dictionary>(pdfium::page_object::kResources);
+  }
+}
+
+// Gives the copy's optional content the state the source's has for |usage|.
+// The copy has no configuration of its own, and a viewer turns on a group it
+// finds in none, so the groups that are off for |usage| are off in the copy's
+// default configuration. A group's own /Usage travels with it.
+void KeepOptionalContentState(CPDF_Document* source,
+                              CPDF_Document* dest,
+                              const epdf::ObjectCopier& copier,
+                              int usage) {
+  auto context = pdfium::MakeRetain<CPDF_OCContext>(
+      source,
+      usage == FLAT_PRINT ? CPDF_OCContext::kPrint : CPDF_OCContext::kView);
+  std::vector<uint32_t> groups;
+  std::vector<uint32_t> off;
+  for (const auto& [object, number] : copier.copied()) {
+    const CPDF_Dictionary* group = object->AsDictionary();
+    if (!group || group->GetNameFor("Type") != "OCG") {
+      continue;
+    }
+    groups.push_back(number);
+    if (!context->CheckOCGDictVisible(group)) {
+      off.push_back(number);
+    }
+  }
+  if (groups.empty()) {
+    return;
+  }
+  // In object order, so the same pages make the same file.
+  std::sort(groups.begin(), groups.end());
+  std::sort(off.begin(), off.end());
+
+  RetainPtr<CPDF_Dictionary> properties =
+      dest->GetMutableRoot()->SetNewFor<CPDF_Dictionary>("OCProperties");
+  RetainPtr<CPDF_Array> all = properties->SetNewFor<CPDF_Array>("OCGs");
+  for (uint32_t number : groups) {
+    all->AppendNew<CPDF_Reference>(dest, number);
+  }
+  RetainPtr<CPDF_Dictionary> config =
+      properties->SetNewFor<CPDF_Dictionary>("D");
+  if (!off.empty()) {
+    RetainPtr<CPDF_Array> off_array = config->SetNewFor<CPDF_Array>("OFF");
+    for (uint32_t number : off) {
+      off_array->AppendNew<CPDF_Reference>(dest, number);
+    }
+  }
 }
 
 }  // namespace
@@ -867,6 +1022,7 @@ EPDFPage_ExportAnnotationsAsDocument(FPDF_PAGE page,
   if (!src_doc || !src_page) {
     return nullptr;
   }
+  CPDF_DocumentViewScope document_view(src_doc);
 
   std::vector<FlattenTarget> targets;
   targets.reserve(annot_count);
@@ -912,15 +1068,15 @@ EPDFPage_ExportAnnotationsAsDocument(FPDF_PAGE page,
     return nullptr;
   }
 
-  // One exporter for the whole set: resources shared between appearances
-  // (a font used by three stamps) are cloned once.
-  AnnotAppearanceExporter exporter(dest_doc, src_doc);
+  // One copier for the whole set: resources shared between appearances (a
+  // font used by three stamps) are copied once.
+  epdf::ObjectCopier copier(dest_doc);
   std::vector<PreparedAppearance> prepared;
   prepared.reserve(plan.candidates.size());
   bool ok = true;
   for (FlattenCandidate& candidate : plan.candidates) {
     RetainPtr<CPDF_Stream> stream =
-        exporter.ExportFormXObject(candidate.appearance);
+        copier.CopyStream(candidate.appearance.Get());
     if (!stream) {
       ok = false;
       break;
@@ -938,5 +1094,80 @@ EPDFPage_ExportAnnotationsAsDocument(FPDF_PAGE page,
     FPDF_CloseDocument(exported);
     return nullptr;
   }
+  return exported;
+}
+
+FPDF_EXPORT FPDF_DOCUMENT FPDF_CALLCONV
+EPDFDoc_ExportPagesFlattened(FPDF_DOCUMENT document,
+                             const int* page_indices,
+                             unsigned long length,
+                             int usage,
+                             int flags) {
+  CPDF_Document* src_doc = CPDFDocumentFromFPDFDocument(document);
+  if (!src_doc || !page_indices || length == 0 || !IsValidUsage(usage) ||
+      (flags & ~kAllKinds)) {
+    return nullptr;
+  }
+  CPDF_DocumentViewScope document_view(src_doc);
+  // SAFETY: required from caller.
+  auto indices = UNSAFE_BUFFERS(
+      pdfium::span(page_indices, pdfium::checked_cast<size_t>(length)));
+  const int page_count = src_doc->GetPageCount();
+  for (int index : indices) {
+    if (index < 0 || index >= page_count) {
+      return nullptr;
+    }
+  }
+
+  FPDF_DOCUMENT exported = FPDF_CreateNewDocument();
+  CPDF_Document* dest_doc = CPDFDocumentFromFPDFDocument(exported);
+  if (!dest_doc) {
+    if (exported) {
+      FPDF_CloseDocument(exported);
+    }
+    return nullptr;
+  }
+
+  // One copier for every page: what pages and appearances share (a font, an
+  // image, a resource dictionary) is copied once.
+  epdf::ObjectCopier copier(dest_doc);
+  bool ok = true;
+  for (size_t i = 0; ok && i < indices.size(); ++i) {
+    RetainPtr<const CPDF_Dictionary> src_page =
+        src_doc->GetPageDictionary(indices[i]);
+    RetainPtr<CPDF_Dictionary> dest_page =
+        dest_doc->CreateNewPage(pdfium::checked_cast<int>(i));
+    if (!src_page || !dest_page) {
+      ok = false;
+      break;
+    }
+    CopyPageDrawing(copier, src_page.Get(), dest_page.Get());
+    if (!flags) {
+      continue;
+    }
+
+    // The same plan, and the same placement, as flattening the page in place.
+    FlattenPlan plan =
+        BuildFlattenPlan(src_doc, src_page.Get(), {}, usage, flags);
+    std::vector<PreparedAppearance> prepared;
+    prepared.reserve(plan.candidates.size());
+    for (FlattenCandidate& candidate : plan.candidates) {
+      RetainPtr<CPDF_Stream> stream =
+          copier.CopyStream(candidate.appearance.Get());
+      if (!stream) {
+        ok = false;
+        break;
+      }
+      prepared.push_back({std::move(candidate), std::move(stream)});
+    }
+    if (ok && !prepared.empty()) {
+      ok = PaintAppearances(dest_doc, dest_page.Get(), prepared, CFX_PointF());
+    }
+  }
+  if (!ok) {
+    FPDF_CloseDocument(exported);
+    return nullptr;
+  }
+  KeepOptionalContentState(src_doc, dest_doc, copier, usage);
   return exported;
 }

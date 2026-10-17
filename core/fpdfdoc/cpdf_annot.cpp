@@ -307,6 +307,12 @@ std::optional<CFX_FloatRect> CPDF_Annot::GetDrawingRect(AppearanceMode mode) {
   return GetRect();
 }
 
+// EmbedPDF(annot-appearance, reads-dont-write): what flattening paints for an
+// annotation without a stored appearance.
+RetainPtr<const CPDF_Stream> CPDF_Annot::GetAppearanceDrawnInMemory() {
+  return GetOrBuildEphemeralAP(AppearanceMode::kNormal);
+}
+
 CPDF_Annot::Subtype CPDF_Annot::GetSubtype() const {
   return subtype_;
 }

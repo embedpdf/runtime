@@ -28,6 +28,9 @@ source_set("fpdfsdk") {
     "epdf_form.cpp",
     # EmbedPDF: layer-safe selective page and annotation flattening.
     "epdf_flatten.cpp",
+    # EmbedPDF: copies objects across documents and in-memory stores.
+    "epdf_object_copier.cpp",
+    "epdf_object_copier.h",
     "epdf_layer.cpp",
     "epdf_outline.cpp",
     # EmbedPDF: the catalog's /Names /Pages and /Templates name trees.
