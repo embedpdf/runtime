@@ -1,0 +1,205 @@
+{{header}}
+{{object 1 0}} <<
+  /Type /Catalog
+  /Pages 2 0 R
+>>
+endobj
+{{object 2 0}} <<
+  /Type /Pages
+  /Count 1
+  /Kids [3 0 R]
+>>
+endobj
+{{object 3 0}} <<
+  /Type /Page
+  /Parent 2 0 R
+  /MediaBox [0 0 200 100]
+  /Resources <<
+    /Font <<
+      /F1 4 0 R
+    >>
+  >>
+  /Contents 8 0 R
+>>
+endobj
+% Printed the way Chrome and Skia print text: a Type3 font in a y-down glyph
+% space whose char codes number its glyphs, a descriptor without /Ascent or
+% /Descent, one glyph per Tj, and a space drawn as an inkless glyph of its
+% own. The heading's CSS letter-spacing (-0.03em) puts each glyph 0.6 short of
+% its /Widths advance.
+{{object 4 0}} <<
+  /Type /Font
+  /Subtype /Type3
+  /FontMatrix [0.0005 0 0 -0.0005 0 0]
+  /FontBBox [0 400 1200 -1500]
+  /FirstChar 65
+  /LastChar 231
+  /Widths [
+    1200 0 0 0 1200 0 0 600 0 0 0 600 0 0 0 1200 0 0 1100 0 0 0 0 0
+    0 1100 0 0 0 0 0 0 0 0 0 0 0 0 1100 0 0 0 0 0 0 0 0 0
+    0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0
+    0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0
+    0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0
+    0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0
+    0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 400
+  ]
+  /Encoding <<
+    /Type /Encoding
+    /Differences [65 /g41 69 /g45 72 /g48 76 /g4C 80 /g50 83 /g53 90 /g5A 103 /g67 231 /gE7]
+  >>
+  /CharProcs 5 0 R
+  /ToUnicode 6 0 R
+  /FontDescriptor 7 0 R
+  /Resources << >>
+>>
+endobj
+{{object 5 0}} <<
+  /g41 10 0 R
+  /g45 11 0 R
+  /g48 12 0 R
+  /g4C 13 0 R
+  /g50 14 0 R
+  /g53 15 0 R
+  /g5A 16 0 R
+  /g67 17 0 R
+  /gE7 18 0 R
+>>
+endobj
+{{object 6 0}} <<
+  {{streamlen}}
+>>
+stream
+/CIDInit /ProcSet findresource begin
+12 dict begin
+begincmap
+/CIDSystemInfo <<
+  /Registry (Adobe)
+  /Ordering (UCS)
+  /Supplement 0
+>> def
+/CMapName /Adobe-Identity-UCS def
+/CMapType 2 def
+1 begincodespacerange
+<00> <FF>
+endcodespacerange
+9 beginbfchar
+<41> <006F>
+<45> <0065>
+<48> <0069>
+<4C> <006C>
+<50> <0070>
+<53> <0073>
+<5A> <0074>
+<67> <0078>
+<E7> <0020>
+endbfchar
+endcmap
+CMapName currentdict /CMap defineresource pop
+end
+end
+endstream
+endobj
+{{object 7 0}} <<
+  /Type /FontDescriptor
+  /FontName /AAAAAA+ChromeType3
+  /Flags 4
+  /ItalicAngle 0
+  /CapHeight 1400
+  /StemV 80
+>>
+endobj
+{{object 8 0}} <<
+  {{streamlen}}
+>>
+stream
+1 0 0 -1 0 100 cm
+BT
+/F1 20 Tf
+1 0 0 -1 10 50 Tm
+<5A> Tj
+10.4 0 Td <41> Tj
+11.4 0 Td <E7> Tj
+3.4 0 Td <50> Tj
+11.4 0 Td <48> Tj
+5.4 0 Td <67> Tj
+10.4 0 Td <45> Tj
+11.4 0 Td <4C> Tj
+5.4 0 Td <53> Tj
+ET
+endstream
+endobj
+{{object 10 0}} <<
+  {{streamlen}}
+>>
+stream
+1200 0 d0
+100 -1000 1000 1000 re f
+endstream
+endobj
+{{object 11 0}} <<
+  {{streamlen}}
+>>
+stream
+1200 0 d0
+100 -1000 1000 1000 re f
+endstream
+endobj
+{{object 12 0}} <<
+  {{streamlen}}
+>>
+stream
+600 0 d0
+100 -1400 400 1400 re f
+endstream
+endobj
+{{object 13 0}} <<
+  {{streamlen}}
+>>
+stream
+600 0 d0
+100 -1500 400 1500 re f
+endstream
+endobj
+{{object 14 0}} <<
+  {{streamlen}}
+>>
+stream
+1200 0 d0
+100 -1000 1000 1400 re f
+endstream
+endobj
+{{object 15 0}} <<
+  {{streamlen}}
+>>
+stream
+1100 0 d0
+100 -1000 900 1000 re f
+endstream
+endobj
+{{object 16 0}} <<
+  {{streamlen}}
+>>
+stream
+1100 0 d0
+100 -1300 900 1300 re f
+endstream
+endobj
+{{object 17 0}} <<
+  {{streamlen}}
+>>
+stream
+1100 0 d0
+100 -1000 900 1000 re f
+endstream
+endobj
+{{object 18 0}} <<
+  {{streamlen}}
+>>
+stream
+400 0 d0
+endstream
+endobj
+{{xref}}
+{{trailer}}
+{{startxref}}
+%%EOF

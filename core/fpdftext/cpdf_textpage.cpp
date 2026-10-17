@@ -279,6 +279,48 @@ float GetFontSize(const CPDF_TextObject* text_object) {
   return has_font ? text_object->GetFontSize() : kDefaultFontSize;
 }
 
+// EmbedPDF(bug-fix): the top and bottom of a character's loose box, in glyph
+// units from its origin: the font's ascent and descent, bounded by /FontBBox
+// (upstream ff5e04acc, 2558d5d97). A Type3 font takes /FontBBox itself, as the
+// loose box did before ff5e04acc. A Type3 font declares no ascent or descent;
+// CPDF_Font::CheckFontMetrics() takes the glyphs of char codes 65 and 103 ('A'
+// and 'g'), but a Type3 font's codes are its own (Chrome and Skia number their
+// glyphs), so those are any two glyphs, and the boxes of one line get uneven
+// heights. /FontBBox may be given in either corner order.
+std::pair<int, int> LooseAscentDescent(const CPDF_Font& font) {
+  const FX_RECT& font_bbox = font.GetFontBBox();
+  if (font.IsType3Font() && font_bbox.top != font_bbox.bottom) {
+    return {std::max(font_bbox.top, font_bbox.bottom),
+            std::min(font_bbox.top, font_bbox.bottom)};
+  }
+  int ascent = font.GetTypeAscent();
+  int descent = font.GetTypeDescent();
+  if (font_bbox.top > font_bbox.bottom) {
+    ascent = std::min(ascent, font_bbox.top);
+    descent = std::max(descent, font_bbox.bottom);
+  }
+  return {ascent, descent};
+}
+
+// EmbedPDF(bug-fix): whether `text_obj` draws only spaces. A space has no ink,
+// so its object has no width, but it separates words: a producer that draws
+// each character as its own object (Chrome and Skia do) draws every space that
+// way. Two spaces in a row collapse in CloseTempLine().
+bool DrawsOnlySpaces(const CPDF_TextObject* text_obj) {
+  RetainPtr<CPDF_Font> font = text_obj->GetFont();
+  if (!font || text_obj->CharCount() == 0) {
+    return false;
+  }
+  for (size_t i = 0; i < text_obj->CharCount(); ++i) {
+    const uint32_t char_code = text_obj->GetCharCode(i);
+    if (char_code == CPDF_Font::kInvalidCharCode ||
+        font->UnicodeFromCharCode(char_code) != L" ") {
+      return false;
+    }
+  }
+  return true;
+}
+
 // EmbedPDF(text-geometry): a character's loose and tight boxes in its text
 // object's space. The tight box is upstream's char box, moved here from
 // ProcessTextObjectItems() so the text page and EPDFText_GetCharGeometry
@@ -321,15 +363,8 @@ std::optional<CPDF_TextPage::CharLocalGeometry> GetCharLocalBoxes(
         local_origin.x + offset_x, local_origin.y + offset_y + height,
         local_origin.x + offset_x + font_size, local_origin.y + offset_y);
   } else {
-    // GetLooseBounds()'s ascent and descent from the glyph's origin, bounded
-    // by /FontBBox (upstream ff5e04acc, 2558d5d97).
-    int ascent = font->GetTypeAscent();
-    int descent = font->GetTypeDescent();
-    const FX_RECT& font_bbox = font->GetFontBBox();
-    if (font_bbox.top > font_bbox.bottom) {
-      ascent = std::min(ascent, font_bbox.top);
-      descent = std::max(descent, font_bbox.bottom);
-    }
+    // GetLooseBounds()'s ascent and descent from the glyph's origin.
+    const auto [ascent, descent] = LooseAscentDescent(*font);
     if (ascent != descent) {
       const float width = text_object->GetCharWidth(char_code);
       loose_box = CFX_FloatRect(
@@ -373,13 +408,8 @@ CFX_FloatRect GetLooseBounds(const CPDF_TextPage::CharInfo& charinfo) {
       return char_box;
     }
 
-    int ascent = font->GetTypeAscent();
-    int descent = font->GetTypeDescent();
-    const FX_RECT& font_bbox = font->GetFontBBox();
-    if (font_bbox.top > font_bbox.bottom) {
-      ascent = std::min(ascent, font_bbox.top);
-      descent = std::max(descent, font_bbox.bottom);
-    }
+    // EmbedPDF(bug-fix): /FontBBox for a Type3 font.
+    const auto [ascent, descent] = LooseAscentDescent(*font);
     if (ascent != descent) {
       // Compute `left` and `right` based on the individual character's `width`.
       float width = text_object->GetCharWidth(charinfo.char_code());
@@ -1022,7 +1052,11 @@ void CPDF_TextPage::ProcessTextObject(
     const CFX_Matrix& form_matrix,
     const CPDF_PageObjectHolder* obj_list,
     CPDF_PageObjectHolder::const_iterator obj_iter) {
-  if (fabs(text_obj->GetRect().Width()) < kSizeEpsilon) {
+  // EmbedPDF(bug-fix): a space-only object joins its line though it has no
+  // width, which upstream 49042621c drops it for. Where it doesn't separate
+  // text, ProcessTransformedTextObjects() drops it after all.
+  if (fabs(text_obj->GetRect().Width()) < kSizeEpsilon &&
+      !DrawsOnlySpaces(text_obj)) {
     return;
   }
 
@@ -1223,7 +1257,11 @@ void CPDF_TextPage::ReverseTempTextBufs(size_t char_list_index,
 void CPDF_TextPage::ProcessTransformedTextObjects() {
   for (const TransformedTextObject& obj : text_objects_) {
     CPDF_TextObject* const text_obj = obj.text_obj_;
-    if (fabs(text_obj->GetRect().Width()) < kSizeEpsilon) {
+    // EmbedPDF(bug-fix): a space-only object stays where it separates text
+    // on its line; at either end of the line it goes, as upstream drops it.
+    if (fabs(text_obj->GetRect().Width()) < kSizeEpsilon &&
+        (!DrawsOnlySpaces(text_obj) || &obj == &text_objects_.front() ||
+         &obj == &text_objects_.back())) {
       continue;
     }
 
