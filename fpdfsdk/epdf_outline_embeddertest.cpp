@@ -561,6 +561,41 @@ TEST_F(EPDFOutlineEmbedderTest, SetActionReplacesTheDestination) {
   EXPECT_FALSE(a->KeyExist("Dest"));
 }
 
+// A new target, or none, replaces the item's own /A: an action object it
+// shares with another item is never written, on a plain document or a layer.
+TEST_F(EPDFOutlineEmbedderTest, SetActionLeavesASharedActionAlone) {
+  const std::string bytes = MakeDocumentWith({
+      "<< /Type /Outlines /First 5 0 R /Last 6 0 R /Count 2 >>",
+      "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 300 300] >>",
+      "<< /Title (One) /Parent 3 0 R /Next 6 0 R /A 7 0 R >>",
+      "<< /Title (Two) /Parent 3 0 R /Prev 5 0 R /A 7 0 R >>",
+      "<< /S /GoTo /D [4 0 R /Fit] >>",
+  });
+  {
+    ScopedFPDFDocument doc = OpenPlain(bytes);
+    ASSERT_TRUE(doc);
+    CPDF_Document* pdf = CPDFDocumentFromFPDFDocument(doc.get());
+    const std::string shared = ObjectGraph(pdf).at(7);
+    ASSERT_TRUE(EPDFOutline_SetAction(doc.get(), 5, GoTo(doc.get(), 4)));
+    const uint32_t replaced = RefOf(DictOf(doc.get(), 5).Get(), "A");
+    EXPECT_TRUE(replaced);
+    EXPECT_NE(7u, replaced);
+    EXPECT_EQ(7u, RefOf(DictOf(doc.get(), 6).Get(), "A"));
+    ASSERT_TRUE(EPDFOutline_SetAction(doc.get(), 6, nullptr));
+    EXPECT_FALSE(DictOf(doc.get(), 6)->KeyExist("A"));
+    EXPECT_EQ(shared, ObjectGraph(pdf).at(7));
+  }
+  ScopedFPDFDocument layer = OpenLayer(bytes);
+  ASSERT_TRUE(layer);
+  CPDF_LayerDocument* pdf = CPDF_LayerDocument::FromDocument(
+      CPDFDocumentFromFPDFDocument(layer.get()));
+  ASSERT_TRUE(EPDFOutline_SetAction(layer.get(), 5, GoTo(layer.get(), 4)));
+  EXPECT_TRUE(pdf->FindLayerVersion(5));
+  EXPECT_FALSE(pdf->FindLayerVersion(6));
+  EXPECT_FALSE(pdf->FindLayerVersion(7));
+  EXPECT_EQ(7u, RefOf(DictOf(layer.get(), 6).Get(), "A"));
+}
+
 // A /Next that comes back ends the list; the next write of that list
 // straightens it.
 TEST_F(EPDFOutlineEmbedderTest, ALoopEndsTheList) {
