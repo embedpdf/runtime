@@ -107,6 +107,30 @@ EPDFForm_ImportFieldRaw(FPDF_DOCUMENT document,
                         const void* capture,
                         unsigned long size);
 
+// Experimental EmbedPDF Extension API.
+// The outline item |objnum| as EPDFOutline_DeleteItem() removes it: the item
+// and the items under it, with every object the layer holds a version of
+// that they reach (their actions and destinations, not their structure
+// elements), and the item's place: its parent, and the sibling it followed.
+// NULL when |objnum| is not an item in the outline (public/epdf_outline.h),
+// or a list it is in holds an item that isn't an indirect object.
+FPDF_EXPORT void* FPDF_CALLCONV
+EPDFOutline_ExportItemRawToOwnedBuffer(FPDF_DOCUMENT document,
+                                       uint32_t objnum,
+                                       unsigned long* out_size);
+
+// Experimental EmbedPDF Extension API.
+// Puts the outline item of |capture| back with the items under it: their
+// objects where the layer holds no version, then the item among its parent's
+// children, right after the sibling it followed while that is still one of
+// them, else first. Counts are kept, as every outline write keeps them.
+// False outside a transaction, for a malformed capture, when its parent is no
+// longer an item in the outline, or when the item is in the outline already.
+FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV
+EPDFOutline_ImportItemRaw(FPDF_DOCUMENT document,
+                          const void* capture,
+                          unsigned long size);
+
 #ifdef __cplusplus
 }  // extern "C"
 #endif

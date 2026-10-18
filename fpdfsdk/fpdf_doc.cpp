@@ -143,7 +143,9 @@ inline ByteStringView StatusToTrappedName(FPDF_TRAPPED_STATUS status) {
 
 FPDF_EXPORT FPDF_BOOKMARK FPDF_CALLCONV
 FPDFBookmark_GetFirstChild(FPDF_DOCUMENT document, FPDF_BOOKMARK bookmark) {
-  CPDF_Document* doc = CPDFDocumentFromFPDFDocument(document);
+  // EmbedPDF(view-scope): read through the document's view scope.
+  ScopedFPDFDocumentView document_view(document);
+  CPDF_Document* doc = document_view.Get();
   if (!doc) {
     return nullptr;
   }
@@ -156,7 +158,9 @@ FPDFBookmark_GetFirstChild(FPDF_DOCUMENT document, FPDF_BOOKMARK bookmark) {
 
 FPDF_EXPORT FPDF_BOOKMARK FPDF_CALLCONV
 FPDFBookmark_GetNextSibling(FPDF_DOCUMENT document, FPDF_BOOKMARK bookmark) {
-  CPDF_Document* doc = CPDFDocumentFromFPDFDocument(document);
+  // EmbedPDF(view-scope): read through the document's view scope.
+  ScopedFPDFDocumentView document_view(document);
+  CPDF_Document* doc = document_view.Get();
   if (!doc) {
     return nullptr;
   }
@@ -198,7 +202,9 @@ FPDF_EXPORT int FPDF_CALLCONV FPDFBookmark_GetCount(FPDF_BOOKMARK bookmark) {
 
 FPDF_EXPORT FPDF_BOOKMARK FPDF_CALLCONV
 FPDFBookmark_Find(FPDF_DOCUMENT document, FPDF_WIDESTRING title) {
-  CPDF_Document* doc = CPDFDocumentFromFPDFDocument(document);
+  // EmbedPDF(view-scope): read through the document's view scope.
+  ScopedFPDFDocumentView document_view(document);
+  CPDF_Document* doc = document_view.Get();
   if (!doc) {
     return nullptr;
   }
@@ -217,7 +223,9 @@ FPDFBookmark_Find(FPDF_DOCUMENT document, FPDF_WIDESTRING title) {
 
 FPDF_EXPORT FPDF_DEST FPDF_CALLCONV
 FPDFBookmark_GetDest(FPDF_DOCUMENT document, FPDF_BOOKMARK bookmark) {
-  CPDF_Document* doc = CPDFDocumentFromFPDFDocument(document);
+  // EmbedPDF(view-scope): read through the document's view scope.
+  ScopedFPDFDocumentView document_view(document);
+  CPDF_Document* doc = document_view.Get();
   if (!doc) {
     return nullptr;
   }

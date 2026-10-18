@@ -11,6 +11,7 @@ class CPDF_AnnotContext;
 class CPDF_Array;
 class CPDF_Dictionary;
 class CPDF_Document;
+class CPDF_Object;
 class CPDF_Page;
 
 namespace epdf {
@@ -29,6 +30,13 @@ RetainPtr<CPDF_Array> GetMutableArrayMember(CPDF_Document* doc,
 // dictionary when either has no object number). Object numbers alone don't
 // say it: another document numbers its own objects.
 bool IsAnnotationOfPage(CPDF_Page* page, CPDF_AnnotContext* annotation);
+
+// Whether |object| is an indirect object of |doc|: the one |doc| holds under
+// its number, or on a layer any version of it. A handle read before a layer
+// transaction holds the committed (or base) version, which a write in the
+// transaction copies: still this document's. Another document's object, or a
+// direct one, never is.
+bool IsIndirectObjectOf(const CPDF_Document* doc, const CPDF_Object* object);
 
 }  // namespace epdf
 
