@@ -12,7 +12,8 @@ extern "C" {
 #endif  // __cplusplus
 
 // EmbedPDF's additions to public/fpdf_doc.h: document metadata and its trapped
-// status, destinations, named destinations, actions and bookmarks.
+// status, destinations, named destinations and actions. The outline's
+// writers are in public/epdf_outline.h.
 
 // The trapped status of the document. See section 14.10.2.4 "Trapped" of the
 // ISO 32000-1:2008 spec.
@@ -131,7 +132,7 @@ EPDF_GetMetaKeyName(FPDF_DOCUMENT document,
 //
 // Notes:
 //  * The returned object is an INDIRECT array suitable for use by
-//    EPDFBookmark_SetDest() or EPDFAction_CreateGoTo().
+//    EPDFAction_CreateGoTo().
 //  * Unspecified fields are encoded as PDF nulls.
 FPDF_EXPORT FPDF_DEST FPDF_CALLCONV EPDFDest_CreateXYZ(FPDF_PAGE page,
                                                        FPDF_BOOL has_left,
@@ -389,144 +390,6 @@ EPDFAction_CreateURI(FPDF_DOCUMENT document, FPDF_BYTESTRING uri);
 // make sense is the caller's choice.
 FPDF_EXPORT FPDF_ACTION FPDF_CALLCONV
 EPDFAction_CreateNamed(FPDF_DOCUMENT document, FPDF_BYTESTRING name);
-
-// -----------------------------------------------------------------------------
-// Outlines / bookmarks
-// -----------------------------------------------------------------------------
-
-// Experimental EmbedPDF Outline API.
-// Create a new top-level bookmark appended to the end of the outline.
-//
-//   document - handle to the document.
-//   title    - UTF-16LE encoded title string; may be empty.
-//
-// Returns a handle to the created bookmark, or NULL on error.
-//
-// Notes:
-//  * Creates the document's /Outlines dictionary if it does not exist.
-//  * The new node is inserted as the last top-level item.
-//  * The bookmark is created without a destination or action; use
-//    EPDFBookmark_SetDest() or EPDFBookmark_SetAction() to set a target.
-FPDF_EXPORT FPDF_BOOKMARK FPDF_CALLCONV
-EPDFBookmark_Create(FPDF_DOCUMENT document, FPDF_WIDESTRING title);
-
-// Experimental EmbedPDF Outline API.
-// Delete a bookmark subtree rooted at |bookmark|.
-//
-//   document - handle to the document.
-//   bookmark - handle to the root of the subtree to delete.
-//
-// Returns true on success.
-//
-// Notes:
-//  * Removes the node from its parent's list and deletes the entire subtree,
-//    fixing /First, /Last, /Prev, /Next as needed.
-//  * Fails if |bookmark| does not belong to |document|.
-FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV EPDFBookmark_Delete(FPDF_DOCUMENT document,
-                                                        FPDF_BOOKMARK bookmark);
-
-// Experimental EmbedPDF Outline API.
-// Create and append a new child bookmark under |parent|.
-//
-//   document - handle to the document.
-//   parent   - handle to the parent bookmark; NULL inserts at top level.
-//   title    - UTF-16LE encoded title string; may be empty.
-//
-// Returns a handle to the created bookmark, or NULL on error.
-//
-// Notes:
-//  * If |parent| is NULL, the node is appended as a top-level item.
-//  * The bookmark is created without a destination or action; set one
-//    with EPDFBookmark_SetDest() or EPDFBookmark_SetAction().
-FPDF_EXPORT FPDF_BOOKMARK FPDF_CALLCONV
-EPDFBookmark_AppendChild(FPDF_DOCUMENT document,
-                         FPDF_BOOKMARK parent,
-                         FPDF_WIDESTRING title);
-
-// Experimental EmbedPDF Outline API.
-// Create and insert a new child under |parent| right after |after_sibling|.
-//
-//   document      - handle to the document.
-//   parent        - handle to the parent bookmark; NULL means top level.
-//   after_sibling - handle to the sibling to insert after; if NULL, inserts
-//                   as the first child under |parent|.
-//   title         - UTF-16LE encoded title string; may be empty.
-//
-// Returns a handle to the created bookmark, or NULL on error.
-//
-// Notes:
-//  * |after_sibling| (if non-NULL) must be a direct child of |parent|.
-//  * The bookmark is created without a destination or action; set one
-//    with EPDFBookmark_SetDest() or EPDFBookmark_SetAction().
-FPDF_EXPORT FPDF_BOOKMARK FPDF_CALLCONV
-EPDFBookmark_InsertAfter(FPDF_DOCUMENT document,
-                         FPDF_BOOKMARK parent,
-                         FPDF_BOOKMARK after_sibling,
-                         FPDF_WIDESTRING title);
-
-// Experimental EmbedPDF Extension API.
-// Set a bookmark's UTF-16LE title.
-//
-//   bookmark - handle to the bookmark.
-//   title    - UTF-16LE encoded title string; may be empty.
-//
-// Returns true on success.
-FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV
-EPDFBookmark_SetTitle(FPDF_BOOKMARK bookmark, FPDF_WIDESTRING title);
-
-// Experimental EmbedPDF Extension API.
-// Set the target of |bookmark| to |dest| (clears any existing action).
-//
-//   document - handle to the document that owns |bookmark| and |dest|.
-//   bookmark - handle to the bookmark.
-//   dest     - handle to an in-document destination (created via EPDFDest_*()).
-//
-// Returns true on success.
-//
-// Notes:
-//  * On success, /Dest is set to an indirect reference to |dest| and any /A is
-//    removed.
-//  * |dest| must belong to |document| and be indirect; otherwise the call
-//  fails.
-FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV EPDFBookmark_SetDest(FPDF_DOCUMENT document,
-                                                         FPDF_BOOKMARK bookmark,
-                                                         FPDF_DEST dest);
-
-// Experimental EmbedPDF Extension API.
-// Set the target of |bookmark| to |action| (clears any existing destination).
-//
-//   document - handle to the document that owns |bookmark| and |action|.
-//   bookmark - handle to the bookmark.
-//   action   - handle to an action dictionary (e.g. from EPDFAction_Create*()).
-//
-// Returns true on success.
-//
-// Notes:
-//  * On success, /A is set to an indirect reference to |action| and any /Dest
-//    is removed.
-//  * |action| must belong to |document| and be indirect; otherwise the call
-//  fails.
-FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV
-EPDFBookmark_SetAction(FPDF_DOCUMENT document,
-                       FPDF_BOOKMARK bookmark,
-                       FPDF_ACTION action);
-
-// Experimental EmbedPDF Extension API.
-// Clear any target from |bookmark| (removes both /Dest and /A).
-//
-//   bookmark - handle to the bookmark.
-//
-// Returns true on success.
-FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV
-EPDFBookmark_ClearTarget(FPDF_BOOKMARK bookmark);
-
-// Experimental EmbedPDF Outline API.
-// Clear all bookmarks from the document.
-//
-//   document - handle to the document.
-//
-// Returns true on success.
-FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV EPDFBookmark_Clear(FPDF_DOCUMENT document);
 
 #ifdef __cplusplus
 }  // extern "C"

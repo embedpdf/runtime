@@ -32,7 +32,14 @@ source_set("fpdfsdk") {
     "epdf_object_copier.cpp",
     "epdf_object_copier.h",
     "epdf_layer.cpp",
+    # EmbedPDF: destination, named destination and action creators
+    # (public/epdf_doc.h).
+    "epdf_doc.cpp",
+    # EmbedPDF: the document outline's writers (public/epdf_outline.h) and
+    # the mechanics its captures share.
     "epdf_outline.cpp",
+    "epdf_outline_helpers.cpp",
+    "epdf_outline_helpers.h",
     # EmbedPDF: the catalog's /Names /Pages and /Templates name trees.
     "epdf_named_pages.cpp",
     # EmbedPDF: digests (EPDF_DigestBuffer) and the hasher signatures share.
@@ -245,6 +252,8 @@ pdfium_embeddertest_source_set("embeddertests") {
     # EmbedPDF: covers appearance states and modes, widgets in page renders,
     # and the check box and radio button symbols.
     "epdf_appearance_state_embeddertest.cpp",
+    # EmbedPDF: covers the document outline's writers and captures.
+    "epdf_outline_embeddertest.cpp",
     # EmbedPDF: covers layer transactions (EPDFLayer_BeginTransaction).
     "epdf_transaction_embeddertest.cpp",
     # EmbedPDF: covers annotation identity: handle lifetimes, promotion and

@@ -24,6 +24,7 @@
 #include "public/epdf_layer.h"
 #include "public/epdf_measure.h"
 #include "public/epdf_named_pages.h"
+#include "public/epdf_outline.h"
 #include "public/epdf_pieceinfo.h"
 #include "public/epdf_png.h"
 #include "public/epdf_progressive.h"
@@ -220,6 +221,8 @@ int CheckEmbedPDFCApi(void) {
   CHK(EPDFDoc_ImportDictRaw);
   CHK(EPDFForm_ExportFieldRawToOwnedBuffer);
   CHK(EPDFForm_ImportFieldRaw);
+  CHK(EPDFOutline_ExportItemRawToOwnedBuffer);
+  CHK(EPDFOutline_ImportItemRaw);
   CHK(EPDFPage_ExportAnnotsRawToOwnedBuffer);
   CHK(EPDFPage_ImportAnnotsRaw);
 
@@ -237,15 +240,6 @@ int CheckEmbedPDFCApi(void) {
   CHK(EPDFAction_CreateRemoteGoToByName);
   CHK(EPDFAction_CreateRemoteGoToDest);
   CHK(EPDFAction_CreateURI);
-  CHK(EPDFBookmark_AppendChild);
-  CHK(EPDFBookmark_Clear);
-  CHK(EPDFBookmark_ClearTarget);
-  CHK(EPDFBookmark_Create);
-  CHK(EPDFBookmark_Delete);
-  CHK(EPDFBookmark_InsertAfter);
-  CHK(EPDFBookmark_SetAction);
-  CHK(EPDFBookmark_SetDest);
-  CHK(EPDFBookmark_SetTitle);
   CHK(EPDFDest_CreateRemoteView);
   CHK(EPDFDest_CreateRemoteXYZ);
   CHK(EPDFDest_CreateView);
@@ -442,6 +436,18 @@ int CheckEmbedPDFCApi(void) {
   CHK(EPDFDoc_RemoveNamedPage);
   CHK(EPDFDoc_RemoveNamedPagesForPage);
   CHK(EPDFDoc_SetNamedPage);
+
+  // epdf_outline.h
+  CHK(EPDFOutline_CreateItem);
+  CHK(EPDFOutline_DeleteItem);
+  CHK(EPDFOutline_GetItem);
+  CHK(EPDFOutline_GetObjectNumber);
+  CHK(EPDFOutline_MoveItem);
+  CHK(EPDFOutline_SetAction);
+  CHK(EPDFOutline_SetColor);
+  CHK(EPDFOutline_SetOpen);
+  CHK(EPDFOutline_SetStyle);
+  CHK(EPDFOutline_SetTitle);
 
   // epdf_pieceinfo.h
   CHK(EPDFDoc_ClearPagePieceInfoEntry);

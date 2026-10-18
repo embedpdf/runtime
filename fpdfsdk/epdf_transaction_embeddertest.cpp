@@ -34,6 +34,7 @@
 #include "public/epdf_attachment.h"
 #include "public/epdf_doc.h"
 #include "public/epdf_layer.h"
+#include "public/epdf_outline.h"
 #include "public/epdf_save.h"
 #include "public/fpdf_annot.h"
 #include "public/fpdf_attachment.h"
@@ -576,10 +577,10 @@ TEST_F(EPDFTransactionEmbedderTest, AttachmentWritesNeedAWriteHandle) {
   }
 }
 
-// Bookmarks: a handle read before a transaction belongs to a committed
-// version. Writers that take the document write the document's version of
-// it (a copy, in the transaction); those that don't refuse it.
-TEST_F(EPDFTransactionEmbedderTest, BookmarkWritesGoThroughTheDoor) {
+// The outline: its writers name an item by number, so an item made before a
+// transaction is written as the document's version of it (a copy, in the
+// transaction), and an abort drops what the transaction wrote.
+TEST_F(EPDFTransactionEmbedderTest, OutlineWritesGoThroughTheDoor) {
   auto title = [](FPDF_BOOKMARK bookmark) {
     unsigned long length = FPDFBookmark_GetTitle(bookmark, nullptr, 0);
     std::vector<FPDF_WCHAR> buffer(length / sizeof(FPDF_WCHAR) + 1);
@@ -599,22 +600,24 @@ TEST_F(EPDFTransactionEmbedderTest, BookmarkWritesGoThroughTheDoor) {
     ScopedFPDFDocument doc = Open();
     ASSERT_TRUE(doc);
     ScopedFPDFWideString chapter = GetFPDFWideString(L"Chapter");
-    ASSERT_TRUE(EPDFBookmark_AppendChild(doc.get(), nullptr, chapter.get()));
-    FPDF_BOOKMARK read = FPDFBookmark_GetFirstChild(doc.get(), nullptr);
-    ASSERT_EQ("Chapter", title(read));
+    const uint32_t item =
+        EPDFOutline_CreateItem(doc.get(), 0, 0, 0, chapter.get());
+    ASSERT_TRUE(item);
 
     ASSERT_TRUE(EPDFLayer_BeginTransaction(doc.get()));
     ScopedFPDFWideString renamed = GetFPDFWideString(L"Renamed");
-    EXPECT_FALSE(EPDFBookmark_SetTitle(read, renamed.get()));  // no document
+    EXPECT_TRUE(EPDFOutline_SetTitle(doc.get(), item, renamed.get()));
     ScopedFPDFWideString section = GetFPDFWideString(L"Section");
-    EXPECT_TRUE(EPDFBookmark_AppendChild(doc.get(), read, section.get()));
-    EXPECT_EQ(
-        1, children(doc.get(), FPDFBookmark_GetFirstChild(doc.get(), nullptr)));
+    EXPECT_TRUE(EPDFOutline_CreateItem(doc.get(), 0, item, 0, section.get()));
+    FPDF_BOOKMARK during = FPDFBookmark_GetFirstChild(doc.get(), nullptr);
+    EXPECT_EQ("Renamed", title(during));
+    EXPECT_EQ(1, children(doc.get(), during));
     ASSERT_TRUE(commit ? EPDFLayer_CommitTransaction(doc.get())
                        : EPDFLayer_AbortTransaction(doc.get()));
 
     FPDF_BOOKMARK after = FPDFBookmark_GetFirstChild(doc.get(), nullptr);
-    EXPECT_EQ("Chapter", title(after));
+    EXPECT_EQ(item, EPDFOutline_GetObjectNumber(after));
+    EXPECT_EQ(commit ? "Renamed" : "Chapter", title(after));
     EXPECT_EQ(commit ? 1 : 0, children(doc.get(), after));
   }
 }

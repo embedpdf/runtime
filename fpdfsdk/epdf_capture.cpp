@@ -32,6 +32,7 @@
 #include "fpdfsdk/cpdfsdk_helpers.h"
 #include "fpdfsdk/epdf_form_helpers.h"
 #include "fpdfsdk/epdf_object_helpers.h"
+#include "fpdfsdk/epdf_outline_helpers.h"
 #include "fpdfsdk/epdf_owned_buffer.h"
 
 namespace {
@@ -46,6 +47,14 @@ constexpr int kMaxFieldDepth = 32;
 // group.
 bool IsBoundaryKey(ByteStringView key) {
   return key == "P" || key == "Parent" || key == "IRT" || key == "OC";
+}
+
+// Keys of an outline item a capture doesn't follow: its links to its
+// siblings and children (a capture adds the items it holds one by one) and
+// its structure element.
+bool IsOutlineLinkKey(ByteStringView key) {
+  return key == "Prev" || key == "Next" || key == "First" || key == "Last" ||
+         key == "SE";
 }
 
 // Objects a capture never holds: the catalog, the page tree and its pages.
@@ -115,6 +124,13 @@ class CaptureWriter {
   void AddReachOf(const CPDF_Object* value) {
     CollectReferences(value);
     Drain();
+  }
+
+  // Captures the outline item |objnum| as AddObject() does, without following
+  // its outline links: the caller adds the items it means one by one.
+  void AddOutlineItem(uint32_t objnum) {
+    outline_items_.insert(objnum);
+    AddObject(objnum);
   }
 
   // The header, |manifest|, then every captured object in number order.
@@ -188,7 +204,26 @@ class CaptureWriter {
       if (RetainPtr<CPDF_Object> version = layer_->FindLayerVersion(objnum)) {
         objects_[objnum] = std::move(version);
       }
-      CollectReferences(object.Get());
+      if (outline_items_.contains(objnum)) {
+        CollectItemReferences(object->AsDictionary());
+      } else {
+        CollectReferences(object.Get());
+      }
+    }
+  }
+
+  // What an outline item's own keys reach, past its outline links. Only its
+  // own: an action it holds directly follows its /Next as any action does.
+  void CollectItemReferences(const CPDF_Dictionary* item) {
+    if (!item) {
+      return;
+    }
+    CPDF_DictionaryLocker locker(item);
+    for (const auto& [key, entry] : locker) {
+      if (!IsBoundaryKey(key.AsStringView()) &&
+          !IsOutlineLinkKey(key.AsStringView())) {
+        CollectReferences(entry.Get());
+      }
     }
   }
 
@@ -215,6 +250,7 @@ class CaptureWriter {
   }
 
   UnownedPtr<CPDF_LayerDocument> const layer_;
+  std::set<uint32_t> outline_items_;
   std::set<uint32_t> visited_;
   std::deque<uint32_t> pending_;
   std::map<uint32_t, RetainPtr<CPDF_Object>> objects_;
@@ -717,4 +753,117 @@ EPDFForm_ImportFieldRaw(FPDF_DOCUMENT document,
         static_cast<size_t>(std::max(entry->GetIntegerFor("Index"), 0)));
   }
   return true;
+}
+
+FPDF_EXPORT void* FPDF_CALLCONV
+EPDFOutline_ExportItemRawToOwnedBuffer(FPDF_DOCUMENT document,
+                                       uint32_t objnum,
+                                       unsigned long* out_size) {
+  if (out_size) {
+    *out_size = 0;
+  }
+  CPDF_LayerDocument* layer = LayerOf(document);
+  if (!layer || !objnum) {
+    return nullptr;
+  }
+  CPDF_DocumentViewScope view(layer);
+  std::optional<uint32_t> root = epdf::OutlineRootOf(layer);
+  if (!root || !epdf::IsOutlineItem(layer, *root, objnum)) {
+    return nullptr;
+  }
+  const uint32_t parent = epdf::OutlineParentOf(layer, objnum);
+  std::optional<std::vector<uint32_t>> siblings =
+      epdf::OutlineChildNumbers(layer, parent);
+  if (!siblings) {
+    return nullptr;
+  }
+  auto at = std::ranges::find(*siblings, objnum);
+  const uint32_t after = at == siblings->begin() ? 0 : *(at - 1);
+
+  // The item, where it was (In: its parent, 0 for the top level; After: the
+  // sibling it followed, 0 when it was the first), and the items under it.
+  auto manifest = pdfium::MakeRetain<CPDF_Dictionary>();
+  manifest->SetNewFor<CPDF_Name>("Kind", "OutlineItem");
+  manifest->SetNewFor<CPDF_Number>("Item", pdfium::checked_cast<int>(objnum));
+  manifest->SetNewFor<CPDF_Number>(
+      "In", parent == *root ? 0 : pdfium::checked_cast<int>(parent));
+  manifest->SetNewFor<CPDF_Number>("After", pdfium::checked_cast<int>(after));
+  auto items = manifest->SetNewFor<CPDF_Array>("Items");
+  CaptureWriter writer(layer);
+  for (uint32_t item : epdf::OutlineSubtreeOf(layer, objnum)) {
+    items->AppendNew<CPDF_Number>(pdfium::checked_cast<int>(item));
+    writer.AddOutlineItem(item);
+  }
+  return ToOwnedBuffer(writer.Write(manifest.Get()), out_size);
+}
+
+FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV
+EPDFOutline_ImportItemRaw(FPDF_DOCUMENT document,
+                          const void* capture,
+                          unsigned long size) {
+  CPDF_LayerDocument* layer = LayerOf(document);
+  if (!layer || !layer->InTransaction() || !capture || !size) {
+    return false;
+  }
+  CPDF_DocumentViewScope view(layer);
+  // SAFETY: required from caller.
+  std::optional<Capture> read = ReadCapture(
+      layer,
+      UNSAFE_BUFFERS(pdfium::span(static_cast<const uint8_t*>(capture), size)),
+      "OutlineItem");
+  if (!read) {
+    return false;
+  }
+  const int item = read->manifest->GetIntegerFor("Item");
+  const int in = read->manifest->GetIntegerFor("In");
+  const int after = read->manifest->GetIntegerFor("After");
+  std::optional<uint32_t> root = epdf::OutlineRootOf(layer);
+  if (item <= 0 || in < 0 || after < 0 || !root) {
+    return false;
+  }
+
+  // Where it goes must still be there, and it must not be back already.
+  if (in > 0 && !epdf::IsOutlineItem(layer, *root, in)) {
+    return false;
+  }
+  if (epdf::IsOutlineItem(layer, *root, item)) {
+    return false;
+  }
+  // It comes back from the capture, or as the version the layer reads now
+  // (the file's original, when the layer never edited it).
+  if (!read->objects.contains(item) &&
+      !ToDictionary(layer->GetOrParseIndirectObject(item))) {
+    return false;
+  }
+  std::vector<uint32_t> children;
+  if (const uint32_t node = in > 0 ? in : *root) {
+    std::optional<std::vector<uint32_t>> numbers =
+        epdf::OutlineChildNumbers(layer, node);
+    if (!numbers || std::ranges::find(*numbers, static_cast<uint32_t>(item)) !=
+                        numbers->end()) {
+      return false;
+    }
+    children = std::move(*numbers);
+  }
+  // After the sibling it followed while that is still a child here, else
+  // first.
+  size_t slot = 0;
+  if (auto at = std::ranges::find(children, static_cast<uint32_t>(after));
+      after > 0 && at != children.end()) {
+    slot = static_cast<size_t>(at - children.begin()) + 1;
+  }
+
+  if (!InstallObjects(layer, *read)) {
+    return false;
+  }
+  if (!*root) {
+    root = epdf::CreateOutlineRoot(layer);
+    if (!*root) {
+      return false;
+    }
+  }
+  const uint32_t node = in > 0 ? static_cast<uint32_t>(in) : *root;
+  children.insert(children.begin() + slot, static_cast<uint32_t>(item));
+  return epdf::WriteOutlineChildren(layer, node, children) &&
+         epdf::RecountOutline(layer, *root, item);
 }
