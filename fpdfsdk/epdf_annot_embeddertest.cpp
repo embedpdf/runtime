@@ -180,7 +180,7 @@ EPDF_FONT_ID RegisterDroidSansFallbackFullFont() {
   EPDF_FONT_ID font_id = EPDFFont_RegisterMemFont64(
       "DroidSansFallbackFull", /*weight=*/400, /*italic=*/0, font_data.data(),
       font_data.size());
-  if (font_id == 0 || !EPDFFont_AddFallbackFont(font_id)) {
+  if (font_id == 0 || !EPDFFont_AddFallbackFont(font_id, /*tier=*/0)) {
     ADD_FAILURE() << "Failed to register DroidSansFallbackFull as fallback";
     return 0;
   }
@@ -1353,7 +1353,7 @@ TEST_F(EPDFAnnotEmbedderTest, FreeTextAppearanceFallsBackToRegisteredFont) {
       EPDFFont_RegisterMemFont64("NotoSansSC", /*weight=*/400, /*italic=*/0,
                                  font_data.data(), font_data.size());
   ASSERT_NE(0u, font_id);
-  ASSERT_TRUE(EPDFFont_AddFallbackFont(font_id));
+  ASSERT_TRUE(EPDFFont_AddFallbackFont(font_id, /*tier=*/0));
 
   ScopedFPDFDocument doc(FPDF_CreateNewDocument());
   ASSERT_TRUE(doc);
@@ -2411,7 +2411,7 @@ TEST_F(EPDFAnnotEmbedderTest,
       "DroidSansFallbackFull", /*weight=*/400, /*italic=*/0,
       droid_preview.data(), droid_preview.size());
   ASSERT_NE(0u, droid_id);
-  ASSERT_TRUE(EPDFFont_AddFallbackFont(droid_id));
+  ASSERT_TRUE(EPDFFont_AddFallbackFont(droid_id, /*tier=*/0));
 
   ScopedFPDFDocument doc(FPDF_CreateNewDocument());
   ScopedFPDFPage page(FPDFPage_New(doc.get(), 0, 400, 400));
@@ -2969,7 +2969,7 @@ TEST_F(EPDFAnnotEmbedderTest,
       "NotoSansSC", /*weight=*/400, /*italic=*/0, noto.data(), noto.size());
   ASSERT_NE(0u, roboto_id);
   ASSERT_NE(0u, noto_id);
-  ASSERT_TRUE(EPDFFont_AddFallbackFont(noto_id));
+  ASSERT_TRUE(EPDFFont_AddFallbackFont(noto_id, /*tier=*/0));
 
   ScopedFPDFDocument doc(FPDF_CreateNewDocument());
   ASSERT_TRUE(doc);
@@ -4279,6 +4279,107 @@ TEST_F(EPDFAnnotEmbedderTest, RichTextRtlRunCarriesActualTextAndExtracts) {
       << "extracted: " << codepoints;
 }
 
+// A character no font has is written with the last-resort font, subset into
+// the appearance like any fallback, so every viewer shows the same box. Two
+// such characters share its one glyph, so the run carries its text as
+// ActualText and extracts as typed; the write reports both.
+TEST_F(EPDFAnnotEmbedderTest, RichTextLastResortDrawsWhatNoFontHas) {
+  ScopedRegisteredFonts scoped_fonts;
+  std::vector<uint8_t> roboto = LoadRobotoFontData();
+  std::vector<uint8_t> box = GetFileContents(
+      PathService::GetTestFilePath("fonts/last_resort.ttf").c_str());
+  ASSERT_FALSE(roboto.empty());
+  ASSERT_FALSE(box.empty());
+  ASSERT_NE(0u, EPDFFont_RegisterMemFont64("Roboto", /*weight=*/400,
+                                           /*italic=*/0, roboto.data(),
+                                           roboto.size()));
+  const EPDF_FONT_ID box_id = EPDFFont_RegisterMemFont64(
+      "Last Resort", /*weight=*/400, /*italic=*/0, box.data(), box.size());
+  ASSERT_NE(0u, box_id);
+  ASSERT_TRUE(EPDFFont_SetLastResortFont(box_id));
+
+  std::string saved;
+  {
+    ScopedFPDFDocument doc(FPDF_CreateNewDocument());
+    ScopedFPDFPage page(FPDFPage_New(doc.get(), 0, 400, 400));
+    ScopedFPDFAnnotation annot(
+        FPDFPage_CreateAnnot(page.get(), FPDF_ANNOT_FREETEXT));
+    ASSERT_TRUE(annot);
+    const FS_RECTF rect{50.0f, 320.0f, 350.0f, 250.0f};
+    ASSERT_TRUE(FPDFAnnot_SetRect(annot.get(), &rect));
+    ASSERT_TRUE(EPDFAnnot_SetRichTextJSON(
+        annot.get(),
+        "{\"body\":{\"family\":\"Roboto\",\"size\":18},"
+        "\"paragraphs\":[{\"runs\":[{\"text\":\"A\\u4E2D\\u4E2EB\"}]}]}"));
+    EXPECT_EQ(2, EPDFDoc_CountMissingCharacters(doc.get()));
+    RetainPtr<const CPDF_Dictionary> font =
+        GetAppearanceFontDict(annot.get(), RegisteredFontAlias(box_id));
+    ASSERT_TRUE(font);
+    RetainPtr<const CPDF_Dictionary> descriptor =
+        GetType0FontDescriptor(font.Get());
+    ASSERT_TRUE(descriptor);
+    EXPECT_TRUE(descriptor->GetStreamFor("FontFile2"));
+    EXPECT_THAT(GetNormalAppearance(annot.get()),
+                HasSubstr(L"/Span <</ActualText <FEFF4E2D4E2E>>> BDC"));
+
+    ASSERT_TRUE(FPDFPage_Flatten(page.get(), FLAT_NORMALDISPLAY));
+    unsigned long saved_size = 0;
+    void* saved_buffer =
+        EPDF_SaveDocumentToOwnedBuffer(doc.get(), /*flags=*/0, &saved_size);
+    ASSERT_TRUE(saved_buffer);
+    saved.assign(static_cast<const char*>(saved_buffer), saved_size);
+    EPDF_FreeBuffer(saved_buffer);
+  }
+  ScopedFPDFDocument doc(FPDF_LoadMemDocument(
+      saved.data(), static_cast<int>(saved.size()), nullptr));
+  ASSERT_TRUE(doc);
+  ScopedFPDFPage page(FPDF_LoadPage(doc.get(), 0));
+  ASSERT_TRUE(page);
+  EXPECT_NE(std::wstring::npos, ExtractPageText(page.get())
+                                    .find(L"A\x4E2D\x4E2E"
+                                          L"B"));
+}
+
+// A last resort whose licence allows preview and print only writes no new
+// text until the app authorizes it, like any other font.
+TEST_F(EPDFAnnotEmbedderTest, RichTextPreviewAndPrintLastResortWaits) {
+  ScopedRegisteredFonts scoped_fonts;
+  std::vector<uint8_t> roboto = LoadRobotoFontData();
+  std::vector<uint8_t> box = WithFsType(
+      GetFileContents(
+          PathService::GetTestFilePath("fonts/last_resort.ttf").c_str()),
+      0x0004);
+  ASSERT_FALSE(roboto.empty());
+  ASSERT_FALSE(box.empty());
+  ASSERT_NE(0u, EPDFFont_RegisterMemFont64("Roboto", /*weight=*/400,
+                                           /*italic=*/0, roboto.data(),
+                                           roboto.size()));
+  const EPDF_FONT_ID box_id = EPDFFont_RegisterMemFont64(
+      "Last Resort", /*weight=*/400, /*italic=*/0, box.data(), box.size());
+  ASSERT_NE(0u, box_id);
+  ASSERT_TRUE(EPDFFont_SetLastResortFont(box_id));
+
+  ScopedFPDFDocument doc(FPDF_CreateNewDocument());
+  ScopedFPDFPage page(FPDFPage_New(doc.get(), 0, 400, 400));
+  const char kJson[] =
+      "{\"body\":{\"family\":\"Roboto\",\"size\":18},"
+      "\"paragraphs\":[{\"runs\":[{\"text\":\"A\\u4E2DB\"}]}]}";
+  for (const bool authorized : {false, true}) {
+    SCOPED_TRACE(authorized);
+    if (authorized) {
+      ASSERT_TRUE(EPDFFont_AuthorizeEditing(box_id));
+    }
+    ScopedFPDFAnnotation annot(
+        FPDFPage_CreateAnnot(page.get(), FPDF_ANNOT_FREETEXT));
+    ASSERT_TRUE(annot);
+    const FS_RECTF rect{50.0f, 320.0f, 350.0f, 250.0f};
+    ASSERT_TRUE(FPDFAnnot_SetRect(annot.get(), &rect));
+    ASSERT_TRUE(EPDFAnnot_SetRichTextJSON(annot.get(), kJson));
+    EXPECT_EQ(authorized, !!GetAppearanceFontDict(annot.get(),
+                                                  RegisteredFontAlias(box_id)));
+  }
+}
+
 // Rung 2 of plan §3.3 (C note §1.3): a family that is no longer registered
 // but whose program is already in the document resolves to that program,
 // through a new Type0 dictionary that references the existing stream.
@@ -5073,7 +5174,7 @@ TEST_F(EPDFAnnotEmbedderTest, RegisteredFallbackFontRendersPageMissingGlyph) {
       EPDFFont_RegisterMemFont64("NotoSansSC", /*weight=*/400, /*italic=*/0,
                                  font_data.data(), font_data.size());
   ASSERT_NE(0u, font_id);
-  ASSERT_TRUE(EPDFFont_AddFallbackFont(font_id));
+  ASSERT_TRUE(EPDFFont_AddFallbackFont(font_id, /*tier=*/0));
 
   ScopedFPDFBitmap bitmap = render_broken_pdf(broken_pdf);
   ASSERT_TRUE(bitmap);

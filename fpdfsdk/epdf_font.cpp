@@ -180,12 +180,21 @@ EPDFDoc_GetFontEmbeddingPolicy(FPDF_DOCUMENT document) {
 }
 
 FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV
-EPDFFont_AddFallbackFont(EPDF_FONT_ID font_id) {
-  return CFX_FontRegistry::AddFallbackFont(font_id);
+EPDFFont_AddFallbackFont(EPDF_FONT_ID font_id, int tier) {
+  return CFX_FontRegistry::AddFallbackFont(font_id, tier);
 }
 
 FPDF_EXPORT void FPDF_CALLCONV EPDFFont_ClearFallbackFonts(void) {
   CFX_FontRegistry::ClearFallbackFonts();
+}
+
+FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV
+EPDFFont_SetLastResortFont(EPDF_FONT_ID font_id) {
+  return CFX_FontRegistry::SetLastResortFont(font_id);
+}
+
+FPDF_EXPORT EPDF_FONT_ID FPDF_CALLCONV EPDFFont_GetLastResortFont(void) {
+  return CFX_FontRegistry::GetLastResortFont();
 }
 
 // ---- Registered fonts: programs, coverage, fallback order -------------------
@@ -207,7 +216,7 @@ unsigned long CopyBytesAndReturnLength(pdfium::span<const uint8_t> bytes,
 // Writes (first, count) pairs into the caller's array, up to |capacity|
 // pairs; returns how many ranges there are either way.
 unsigned long CopyRangesAndReturnCount(
-    const std::vector<std::pair<uint32_t, uint32_t>>& ranges,
+    pdfium::span<const CFX_CodePointRange> ranges,
     uint32_t* out,
     unsigned long capacity) {
   if (out) {
@@ -217,7 +226,7 @@ unsigned long CopyRangesAndReturnCount(
         UNSAFE_BUFFERS(pdfium::span(out, count * 2));
     for (size_t i = 0; i < count; ++i) {
       destination[2 * i] = ranges[i].first;
-      destination[2 * i + 1] = ranges[i].second;
+      destination[2 * i + 1] = ranges[i].count;
     }
   }
   return pdfium::checked_cast<unsigned long>(ranges.size());
@@ -292,16 +301,8 @@ FPDF_EXPORT unsigned long FPDF_CALLCONV
 EPDFFont_GetCoverage(EPDF_FONT_ID font_id,
                      uint32_t* ranges,
                      unsigned long range_capacity) {
-  std::vector<std::pair<uint32_t, uint32_t>> result;
-  for (uint32_t scalar : CFX_FontRegistry::GetSupportedUnicodes(font_id)) {
-    if (!result.empty() &&
-        result.back().first + result.back().second == scalar) {
-      ++result.back().second;
-    } else {
-      result.emplace_back(scalar, 1);
-    }
-  }
-  return CopyRangesAndReturnCount(result, ranges, range_capacity);
+  return CopyRangesAndReturnCount(CFX_FontRegistry::GetCoverage(font_id),
+                                  ranges, range_capacity);
 }
 
 FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV EPDFFont_GetMetrics(EPDF_FONT_ID font_id,

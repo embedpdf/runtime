@@ -22,6 +22,7 @@
 #include "core/fxcrt/retain_ptr.h"
 #include "core/fxcrt/unowned_ptr.h"
 #include "core/fxcrt/widestring.h"
+#include "core/fxge/cfx_codepointrange.h"
 #include "core/fxge/cfx_fontregistry.h"
 
 class CPDF_Stream;
@@ -97,9 +98,9 @@ class CPDF_DocumentFonts final : public CPDF_Document::FontIndex {
   // empty when it can't draw it or |objnum| isn't one.
   DataVector<uint8_t> DisplayProgramData(uint32_t objnum);
   // The scalars a browser draws with it, which are the ones the engine writes
-  // with it, as [start, start + count) ranges in order; empty when it maps
-  // none or |objnum| isn't one.
-  std::vector<std::pair<uint32_t, uint32_t>> ProgramCoverage(uint32_t objnum);
+  // with it, as ranges in order; empty when it maps none or |objnum| isn't
+  // one.
+  std::vector<CFX_CodePointRange> ProgramCoverage(uint32_t objnum);
   // The program stream itself, for the writer; null when |objnum| isn't one.
   RetainPtr<CPDF_Stream> ProgramStream(uint32_t objnum);
 
@@ -132,14 +133,14 @@ class CPDF_DocumentFonts final : public CPDF_Document::FontIndex {
   struct Display {
     DataVector<uint8_t> bytes;
     DataVector<uint8_t> sha256;
-    std::vector<std::pair<uint32_t, uint32_t>> coverage;
+    std::vector<CFX_CodePointRange> coverage;
   };
 
   struct Inspected {
     RetainPtr<const CPDF_Stream> stream;  // the version inspected
     size_t raw_size = 0;
     Program facts;
-    std::optional<std::vector<std::pair<uint32_t, uint32_t>>> coverage;
+    std::optional<std::vector<CFX_CodePointRange>> coverage;
     // Built from the first font dictionary found to use the stream.
     bool display_built = false;
     std::optional<Display> display;

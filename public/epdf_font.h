@@ -71,7 +71,7 @@ EPDFFont_RegisterMemFont64(FPDF_BYTESTRING family_name,
                            size_t size);
 
 // Experimental EmbedPDF Extension API.
-// Clear all registered fonts and the fallback font order.
+// Clear all registered fonts, the fallback fonts and the last resort.
 //
 // Existing documents may still contain registered-font DA marker resources
 // after this call; those markers are invalid until their fonts are registered
@@ -143,20 +143,36 @@ FPDF_EXPORT int FPDF_CALLCONV
 EPDFDoc_GetFontEmbeddingPolicy(FPDF_DOCUMENT document);
 
 // Experimental EmbedPDF Extension API.
-// Add a registered font to the ordered fallback list used when the selected
-// font does not contain a glyph or a PDF page needs a substitute font.
+// Add a registered font to the fallback fonts: the fonts that draw a
+// character the selected font doesn't have, in new text and where a PDF page
+// needs a substitute font. They are tried tier by tier, lowest |tier| first.
+// Adding a font that is already one changes its tier only.
 FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV
-EPDFFont_AddFallbackFont(EPDF_FONT_ID font_id);
+EPDFFont_AddFallbackFont(EPDF_FONT_ID font_id, int tier);
 
 // Experimental EmbedPDF Extension API.
-// Clear the ordered fallback font list without unregistering fonts.
+// Clear the fallback fonts without unregistering them.
 FPDF_EXPORT void FPDF_CALLCONV EPDFFont_ClearFallbackFonts(void);
 
 // Experimental EmbedPDF Extension API.
+// Make a registered font the last resort: new text draws a character that
+// neither its font nor any fallback has with it, so the character shows as
+// that font's box and the text keeps it. Such a character is still reported
+// as missing (EPDFDoc_CountMissingCharacters()). A page's own text never uses
+// it. Pass 0 to clear it. Returns false for an unknown id.
+FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV
+EPDFFont_SetLastResortFont(EPDF_FONT_ID font_id);
+
+// Experimental EmbedPDF Extension API.
+// The last-resort font; 0 when there is none.
+FPDF_EXPORT EPDF_FONT_ID FPDF_CALLCONV EPDFFont_GetLastResortFont(void);
+
+// Experimental EmbedPDF Extension API.
 // The registered fallback fonts in the order new text tries them for a
-// style: the closest weight and italic first, then the order they were
-// added in; fonts not authorized for editing are left out. The first of
-// them that maps a character is the one that draws it.
+// style: tier by tier, lowest first; within a tier the closest weight and
+// italic first, then the order they were added in. Fonts not authorized for
+// editing are left out. The first of them that has a whole character
+// (a base character with its marks) is the one that draws it.
 //
 //   weight, italic - the style.
 //   ids            - receives up to |capacity| font ids; may be NULL.

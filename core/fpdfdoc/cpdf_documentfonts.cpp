@@ -228,19 +228,13 @@ bool IsSfnt(CPDF_DocumentFonts::Format format) {
          format == CPDF_DocumentFonts::Format::kOpenTypeCFF;
 }
 
-// |scalars| as [start, start + count) ranges, in order.
-std::vector<std::pair<uint32_t, uint32_t>> RangesOf(
-    std::vector<uint32_t> scalars) {
+// |scalars| as ranges, in order.
+std::vector<CFX_CodePointRange> RangesOf(std::vector<uint32_t> scalars) {
   std::ranges::sort(scalars);
-  std::vector<std::pair<uint32_t, uint32_t>> ranges;
+  scalars.erase(std::unique(scalars.begin(), scalars.end()), scalars.end());
+  std::vector<CFX_CodePointRange> ranges;
   for (uint32_t scalar : scalars) {
-    if (!ranges.empty() &&
-        ranges.back().first + ranges.back().second >= scalar) {
-      ranges.back().second =
-          std::max(ranges.back().second, scalar - ranges.back().first + 1);
-      continue;
-    }
-    ranges.emplace_back(scalar, 1);
+    CFX_AppendCodePoint(&ranges, scalar);
   }
   return ranges;
 }
@@ -450,7 +444,7 @@ DataVector<uint8_t> CPDF_DocumentFonts::DisplayProgramData(uint32_t objnum) {
   return {};
 }
 
-std::vector<std::pair<uint32_t, uint32_t>> CPDF_DocumentFonts::ProgramCoverage(
+std::vector<CFX_CodePointRange> CPDF_DocumentFonts::ProgramCoverage(
     uint32_t objnum) {
   Inspected* inspected = FindInspected(objnum);
   if (!inspected) {
@@ -465,7 +459,7 @@ std::vector<std::pair<uint32_t, uint32_t>> CPDF_DocumentFonts::ProgramCoverage(
   if (inspected->coverage.has_value()) {
     return *inspected->coverage;
   }
-  std::vector<uint32_t> scalars;
+  std::vector<CFX_CodePointRange> ranges;
   {
     DataVector<uint8_t> bytes = ProgramData(objnum);
     auto program = std::make_unique<CFX_Font>();
@@ -473,16 +467,10 @@ std::vector<std::pair<uint32_t, uint32_t>> CPDF_DocumentFonts::ProgramCoverage(
         program->LoadFaceZeroFromSpan(bytes, /*force_vertical=*/false,
                                       /*object_tag=*/0) &&
         program->GetFace()->SelectCharMap(fxge::FontEncoding::kUnicode)) {
-      for (const CharCodeAndIndex& item : program->GetCharCodesAndIndices(
-               pdfium::kMaximumSupplementaryCodePoint)) {
-        if (item.glyph_index != 0) {
-          scalars.push_back(item.char_code);
-        }
-      }
+      ranges = program->GetFace()->GetMappedCodePointRanges(
+          pdfium::kMaximumSupplementaryCodePoint);
     }
   }
-  std::vector<std::pair<uint32_t, uint32_t>> ranges =
-      RangesOf(std::move(scalars));
   inspected->coverage = ranges;
   return ranges;
 }

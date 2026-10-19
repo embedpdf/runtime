@@ -294,6 +294,13 @@ std::vector<RetainPtr<const CPDF_Dictionary>> DocumentFontDicts(
   return dicts;
 }
 
+// Joiners and variation selectors draw nothing of their own: a font covers a
+// grapheme without them, as the layout skips them.
+bool NeedsGlyph(char32_t cp) {
+  return cp != 0x200D && !(cp >= 0xFE00 && cp <= 0xFE0F) &&
+         !(cp >= 0xE0100 && cp <= 0xE01EF);
+}
+
 bool PDFontSupportsUnicode(const RetainPtr<CPDF_Font>& font, uint16_t word) {
   if (!font) {
     return false;
@@ -909,9 +916,8 @@ bool CPDF_AnnotFontMap::CoversText(int entry, WideStringView text) {
   // Scalars, not code units: on a 16-bit wchar_t platform a supplementary
   // character is a surrogate pair, and neither half has a glyph anywhere.
   for (char32_t cp : pdfium::CodePointView(text)) {
-    if (cp == 0x200D || (cp >= 0xFE00 && cp <= 0xFE0F) ||
-        (cp >= 0xE0100 && cp <= 0xE01EF)) {
-      continue;  // joiners and variation selectors, as the layout skips them
+    if (!NeedsGlyph(cp)) {
+      continue;
     }
     if (RichGlyphFor(entry, static_cast<uint32_t>(cp)) == 0) {
       return false;
@@ -1003,23 +1009,41 @@ int CPDF_AnnotFontMap::ResolveRichFaceUncached(const WideString& family,
   return entry;
 }
 
-int CPDF_AnnotFontMap::FindRichFallback(uint32_t unicode,
+int CPDF_AnnotFontMap::FindRichFallback(WideStringView grapheme,
                                         int weight,
                                         bool italic) {
   if (!allow_registered_fallbacks_) {
     return -1;
   }
-  std::optional<CFX_FontRegistry::FontId> font_id =
-      CFX_FontRegistry::FindFallbackFont(unicode, weight, italic,
-                                         /*for_authoring=*/true);
-  if (!font_id.has_value()) {
+  for (CFX_FontRegistry::FontId font_id : CFX_FontRegistry::GetFallbackOrder(
+           weight, italic, /*for_authoring=*/true)) {
+    const bool covers = std::ranges::all_of(
+        pdfium::CodePointView(grapheme), [font_id](char32_t cp) {
+          return !NeedsGlyph(cp) || CFX_FontRegistry::SupportsUnicode(
+                                        font_id, static_cast<uint32_t>(cp));
+        });
+    if (covers) {
+      return EntryForRegisteredFont(font_id);
+    }
+  }
+  return -1;
+}
+
+int CPDF_AnnotFontMap::FindLastResort() {
+  const CFX_FontRegistry::FontId font_id =
+      CFX_FontRegistry::GetLastResortFont();
+  if (!allow_registered_fallbacks_ ||
+      font_id == CFX_FontRegistry::kInvalidFontId ||
+      !CFX_FontRegistry::IsEditingAuthorized(font_id)) {
     return -1;
   }
-  int32_t existing = FindExistingRegisteredFont(*font_id);
-  if (existing >= 0) {
-    return existing;
-  }
-  return AddRegisteredFallbackFont(*font_id);
+  return EntryForRegisteredFont(font_id);
+}
+
+int CPDF_AnnotFontMap::EntryForRegisteredFont(
+    CFX_FontRegistry::FontId font_id) {
+  const int32_t existing = FindExistingRegisteredFont(font_id);
+  return existing >= 0 ? existing : AddRegisteredFallbackFont(font_id);
 }
 
 CPDF_AnnotFontMap::RichFace CPDF_AnnotFontMap::GetRichFace(int entry) const {

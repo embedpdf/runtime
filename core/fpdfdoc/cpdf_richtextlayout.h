@@ -104,11 +104,12 @@ class CPDF_RichTextLayout {
   static std::vector<bool> GraphemeStarts(const WideString& text);
 
   // The font a grapheme draws with when its run's face is |face_entry|: the
-  // face, when it maps every character of the grapheme; else the fallback
-  // font its base character picks (the closest style, then the order the
-  // fallbacks were added in), when that one maps every character. |covered|
-  // is false when neither does: the grapheme draws as the face's missing
-  // glyph. Joiners and variation selectors don't need a glyph.
+  // face, when it maps every character of the grapheme; else the first
+  // fallback font, in the order for the style, that maps every character.
+  // |covered| is false when none does: the grapheme draws as the last-resort
+  // font's box, or as the face's missing glyph when there is no last resort
+  // or the grapheme draws nothing. Joiners and variation selectors don't
+  // need a glyph.
   struct GraphemeMatch {
     int entry = -1;
     bool covered = false;

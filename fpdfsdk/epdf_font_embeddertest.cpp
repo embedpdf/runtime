@@ -283,8 +283,8 @@ TEST_F(EPDFFontEmbedderTest, RegisteredFontProgramCoverageAndFallbackOrder) {
   EXPECT_EQ(EPDF_FONT_FORMAT_TRUETYPE, EPDFFont_GetProgramFormat(regular));
   EXPECT_EQ(-1, EPDFFont_GetProgramFormat(9999));
 
-  ASSERT_TRUE(EPDFFont_AddFallbackFont(regular));
-  ASSERT_TRUE(EPDFFont_AddFallbackFont(bold));
+  ASSERT_TRUE(EPDFFont_AddFallbackFont(regular, /*tier=*/0));
+  ASSERT_TRUE(EPDFFont_AddFallbackFont(bold, /*tier=*/0));
   EPDF_FONT_ID order[2] = {};
   ASSERT_EQ(2u, EPDFFont_GetFallbackOrder(700, false, order, 2));
   EXPECT_EQ(bold, order[0]);
@@ -292,6 +292,45 @@ TEST_F(EPDFFontEmbedderTest, RegisteredFontProgramCoverageAndFallbackOrder) {
   ASSERT_EQ(2u, EPDFFont_GetFallbackOrder(400, false, order, 2));
   EXPECT_EQ(regular, order[0]);
   EXPECT_EQ(bold, order[1]);
+
+  // A lower tier comes first, whatever the style: moved to tier 1, the
+  // regular font follows the bold one for regular text too.
+  ASSERT_TRUE(EPDFFont_AddFallbackFont(regular, /*tier=*/1));
+  ASSERT_EQ(2u, EPDFFont_GetFallbackOrder(400, false, order, 2));
+  EXPECT_EQ(bold, order[0]);
+  EXPECT_EQ(regular, order[1]);
+}
+
+// The last resort maps every code point but the controls and the surrogates
+// to one box: two ranges, however many code points they hold. It isn't a
+// fallback, and goes with the registered fonts.
+TEST_F(EPDFFontEmbedderTest, LastResortFont) {
+  ScopedRegisteredFonts scoped_fonts;
+  std::vector<uint8_t> box = GetFileContents(
+      PathService::GetTestFilePath("fonts/last_resort.ttf").c_str());
+  ASSERT_FALSE(box.empty());
+  const EPDF_FONT_ID last_resort = EPDFFont_RegisterMemFont64(
+      "Last Resort", /*weight=*/400, /*italic=*/0, box.data(), box.size());
+  ASSERT_NE(0u, last_resort);
+  uint32_t ranges[4] = {};
+  ASSERT_EQ(2u, EPDFFont_GetCoverage(last_resort, ranges, 2));
+  EXPECT_EQ(0x20u, ranges[0]);
+  EXPECT_EQ(0xD800u - 0x20u, ranges[1]);
+  EXPECT_EQ(0xE000u, ranges[2]);
+  EXPECT_EQ(0x110000u - 0xE000u, ranges[3]);
+
+  EXPECT_EQ(0u, EPDFFont_GetLastResortFont());
+  EXPECT_FALSE(EPDFFont_SetLastResortFont(9999));
+  ASSERT_TRUE(EPDFFont_SetLastResortFont(last_resort));
+  EXPECT_EQ(last_resort, EPDFFont_GetLastResortFont());
+  EPDFFont_ClearFallbackFonts();
+  EXPECT_EQ(last_resort, EPDFFont_GetLastResortFont());
+  EXPECT_EQ(0u, EPDFFont_GetFallbackOrder(400, false, nullptr, 0));
+  ASSERT_TRUE(EPDFFont_SetLastResortFont(0));
+  EXPECT_EQ(0u, EPDFFont_GetLastResortFont());
+  ASSERT_TRUE(EPDFFont_SetLastResortFont(last_resort));
+  EPDFFont_ClearRegisteredFonts();
+  EXPECT_EQ(0u, EPDFFont_GetLastResortFont());
 }
 
 // A whole program the document holds is listed with its facts, and its bytes
@@ -462,7 +501,7 @@ TEST_F(EPDFFontEmbedderTest, ResolvesTheFontsAWriteWouldUse) {
                                  /*italic=*/0, droid.data(), droid.size());
   ASSERT_NE(0u, roboto_id);
   ASSERT_NE(0u, droid_id);
-  ASSERT_TRUE(EPDFFont_AddFallbackFont(droid_id));
+  ASSERT_TRUE(EPDFFont_AddFallbackFont(droid_id, /*tier=*/0));
 
   CreateEmptyDocument();
   ScopedFPDFWideString text0 = GetFPDFWideString(L"Hello \x4E2D");

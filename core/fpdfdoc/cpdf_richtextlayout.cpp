@@ -239,21 +239,15 @@ CPDF_RichTextLayout::GraphemeMatch CPDF_RichTextLayout::MatchGrapheme(
   if (fonts->CoversText(face_entry, grapheme)) {
     return {face_entry, true};
   }
-  // The grapheme's base scalar picks the fallback font.
-  uint32_t base = 0;
-  for (char32_t cp : pdfium::CodePointView(grapheme)) {
-    if (base == 0 || !IsMark(static_cast<uint32_t>(cp))) {
-      base = static_cast<uint32_t>(cp);
-      if (!IsMark(base)) {
-        break;
-      }
-    }
-  }
-  const int fallback = fonts->FindRichFallback(base, weight, italic);
-  if (fallback >= 0 && fonts->CoversText(fallback, grapheme)) {
+  const int fallback = fonts->FindRichFallback(grapheme, weight, italic);
+  if (fallback >= 0) {
     return {fallback, true};
   }
-  return {face_entry, false};
+  // No font has it: the last resort draws it as its box. A grapheme that
+  // draws nothing stays with the face, which hides it.
+  const int last_resort =
+      IsInvisibleGrapheme(grapheme) ? -1 : fonts->FindLastResort();
+  return {last_resort >= 0 ? last_resort : face_entry, false};
 }
 
 // static

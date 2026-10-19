@@ -19,7 +19,8 @@
 #include "core/fxcrt/observed_ptr.h"
 #include "core/fxcrt/retain_ptr.h"
 #include "core/fxcrt/span.h"
-#include "core/fxge/cfx_glyphoutline.h"  // EmbedPDF(fonts)
+#include "core/fxge/cfx_codepointrange.h"  // EmbedPDF(fonts)
+#include "core/fxge/cfx_glyphoutline.h"    // EmbedPDF(fonts)
 #include "core/fxge/fx_font.h"
 #include "core/fxge/fx_fontencoding.h"
 
@@ -152,6 +153,9 @@ class CFX_Face final : public Retainable, public Observable {
   FX_RECT GetCharBBox(uint32_t code, int glyph_index);
 
   std::vector<CharCodeAndIndex> GetCharCodesAndIndices(char32_t max_char);
+  // EmbedPDF(fonts): the code points up to |max_char| the current charmap
+  // maps to a glyph, as ranges (cfx_codepointrange.cpp).
+  std::vector<CFX_CodePointRange> GetMappedCodePointRanges(char32_t max_char);
 
   CharMap GetCurrentCharMap() const;
   std::optional<fxge::FontEncoding> GetCurrentCharMapEncoding() const;

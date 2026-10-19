@@ -13,7 +13,6 @@
 #include <vector>
 
 #include "core/fdrm/fx_crypt_sha.h"
-#include "core/fxcrt/containers/contains.h"
 #include "core/fxcrt/data_vector.h"
 #include "core/fxcrt/epdf_tls.h"
 #include "core/fxcrt/fx_codepage.h"
@@ -35,7 +34,7 @@ struct RegisteredFont {
   ByteString family_name;  // as registered, spaces kept
   int weight = pdfium::kFontWeightNormal;
   bool italic = false;
-  std::vector<uint32_t> supported_unicodes;
+  std::vector<CFX_CodePointRange> coverage;
   DataVector<uint8_t> memory_data;
   RetainPtr<IFX_SeekableReadStream> stream;
   CFX_FontRegistry::EmbeddingPermission permission =
@@ -131,10 +130,16 @@ Instancing InstanceVariableFont(pdfium::span<const uint8_t> data,
   return outcome;
 }
 
+struct Fallback {
+  CFX_FontRegistry::FontId id;
+  int tier;
+};
+
 struct RegistryState {
   CFX_FontRegistry::FontId next_font_id = 1;
   std::vector<std::unique_ptr<RegisteredFont>> fonts;
-  std::vector<CFX_FontRegistry::FontId> fallback_order;
+  std::vector<Fallback> fallbacks;  // in the order they were added
+  CFX_FontRegistry::FontId last_resort = CFX_FontRegistry::kInvalidFontId;
 };
 
 EPDF_TLS RegistryState* g_registry = nullptr;
@@ -213,26 +218,12 @@ std::unique_ptr<CFX_Font> LoadFont(pdfium::span<const uint8_t> data) {
   return font;
 }
 
-std::vector<uint32_t> CollectSupportedUnicodes(CFX_Font* font) {
-  if (!font) {
+std::vector<CFX_CodePointRange> CollectCoverage(CFX_Font* font) {
+  RetainPtr<CFX_Face> face = font ? font->GetFace() : nullptr;
+  if (!face) {
     return {};
   }
-
-  auto char_codes_and_indices =
-      font->GetCharCodesAndIndices(pdfium::kMaximumSupplementaryCodePoint);
-  std::vector<uint32_t> supported_unicodes;
-  supported_unicodes.reserve(char_codes_and_indices.size());
-  for (const auto& item : char_codes_and_indices) {
-    if (item.glyph_index != 0) {
-      supported_unicodes.push_back(item.char_code);
-    }
-  }
-
-  std::ranges::sort(supported_unicodes);
-  supported_unicodes.erase(
-      std::unique(supported_unicodes.begin(), supported_unicodes.end()),
-      supported_unicodes.end());
-  return supported_unicodes;
+  return face->GetMappedCodePointRanges(pdfium::kMaximumSupplementaryCodePoint);
 }
 
 CFX_FontRegistry::FontId RegisterLoadedFontSource(
@@ -297,9 +288,8 @@ CFX_FontRegistry::FontId RegisterLoadedFontSource(
     }
   }
 
-  std::vector<uint32_t> supported_unicodes =
-      CollectSupportedUnicodes(font.get());
-  if (supported_unicodes.empty()) {
+  std::vector<CFX_CodePointRange> coverage = CollectCoverage(font.get());
+  if (coverage.empty()) {
     return CFX_FontRegistry::kInvalidFontId;
   }
 
@@ -327,7 +317,7 @@ CFX_FontRegistry::FontId RegisterLoadedFontSource(
   registered_font->family_name.Trim(' ');
   registered_font->weight = NormalizeWeight(weight, *font);
   registered_font->italic = NormalizeItalic(italic, *font);
-  registered_font->supported_unicodes = std::move(supported_unicodes);
+  registered_font->coverage = std::move(coverage);
   registered_font->memory_data = std::move(memory_data);
   registered_font->stream = std::move(stream);
 
@@ -402,7 +392,8 @@ void CFX_FontRegistry::ClearRegisteredFonts() {
   if (!g_registry) {
     return;
   }
-  g_registry->fallback_order.clear();
+  g_registry->fallbacks.clear();
+  g_registry->last_resort = kInvalidFontId;
   g_registry->fonts.clear();
   // EmbedPDF: do not reset next_font_id. Documents can keep registered-font
   // marker resources after ClearRegisteredFonts(); reusing ids could make an
@@ -411,16 +402,19 @@ void CFX_FontRegistry::ClearRegisteredFonts() {
 }
 
 // static
-bool CFX_FontRegistry::AddFallbackFont(FontId font_id) {
+bool CFX_FontRegistry::AddFallbackFont(FontId font_id, int tier) {
   if (!IsValidFont(font_id)) {
     return false;
   }
 
   RegistryState* registry = GetRegistry();
-  if (pdfium::Contains(registry->fallback_order, font_id)) {
+  auto existing =
+      std::ranges::find(registry->fallbacks, font_id, &Fallback::id);
+  if (existing != registry->fallbacks.end()) {
+    existing->tier = tier;
     return true;
   }
-  registry->fallback_order.push_back(font_id);
+  registry->fallbacks.push_back({font_id, tier});
   return true;
 }
 
@@ -429,12 +423,26 @@ void CFX_FontRegistry::ClearFallbackFonts() {
   if (!g_registry) {
     return;
   }
-  g_registry->fallback_order.clear();
+  g_registry->fallbacks.clear();
 }
 
 // static
 bool CFX_FontRegistry::HasFallbackFonts() {
-  return g_registry && !g_registry->fallback_order.empty();
+  return g_registry && !g_registry->fallbacks.empty();
+}
+
+// static
+bool CFX_FontRegistry::SetLastResortFont(FontId font_id) {
+  if (font_id != kInvalidFontId && !IsValidFont(font_id)) {
+    return false;
+  }
+  GetRegistry()->last_resort = font_id;
+  return true;
+}
+
+// static
+CFX_FontRegistry::FontId CFX_FontRegistry::GetLastResortFont() {
+  return g_registry ? g_registry->last_resort : kInvalidFontId;
 }
 
 // static
@@ -512,11 +520,11 @@ CFX_FontRegistry::ProgramFormat CFX_FontRegistry::GetProgramFormat(
 }
 
 // static
-pdfium::span<const uint32_t> CFX_FontRegistry::GetSupportedUnicodes(
+pdfium::span<const CFX_CodePointRange> CFX_FontRegistry::GetCoverage(
     FontId font_id) {
   RegisteredFont* font = GetRegisteredFont(font_id);
-  return font ? pdfium::span<const uint32_t>(font->supported_unicodes)
-              : pdfium::span<const uint32_t>();
+  return font ? pdfium::span<const CFX_CodePointRange>(font->coverage)
+              : pdfium::span<const CFX_CodePointRange>();
 }
 
 // static
@@ -599,7 +607,7 @@ bool CFX_FontRegistry::SupportsUnicode(FontId font_id, uint32_t unicode) {
   if (!font) {
     return false;
   }
-  return std::ranges::binary_search(font->supported_unicodes, unicode);
+  return CFX_CodePointRangesContain(font->coverage, unicode);
 }
 
 // static
@@ -608,28 +616,12 @@ std::optional<CFX_FontRegistry::FontId> CFX_FontRegistry::FindFallbackFont(
     int weight,
     bool italic,
     bool for_authoring) {
-  if (!g_registry) {
-    return std::nullopt;
-  }
-
-  std::optional<FontId> best_font_id;
-  int best_score = std::numeric_limits<int>::max();
-  for (FontId font_id : g_registry->fallback_order) {
-    RegisteredFont* font = GetRegisteredFont(font_id);
-    if (!font || !SupportsUnicode(font_id, unicode)) {
-      continue;
-    }
-    if (for_authoring && !font->editing_authorized) {
-      continue;  // preview-and-print: may render, may not write new text
-    }
-
-    const int score = StyleScore(*font, weight, italic);
-    if (!best_font_id.has_value() || score < best_score) {
-      best_font_id = font_id;
-      best_score = score;
+  for (FontId font_id : GetFallbackOrder(weight, italic, for_authoring)) {
+    if (SupportsUnicode(font_id, unicode)) {
+      return font_id;
     }
   }
-  return best_font_id;
+  return std::nullopt;
 }
 
 // static
@@ -639,21 +631,24 @@ std::vector<CFX_FontRegistry::FontId> CFX_FontRegistry::GetFallbackOrder(
     bool for_authoring) {
   struct Ranked {
     FontId id;
+    int tier;
     int score;
   };
   std::vector<Ranked> ranked;
   if (g_registry) {
-    for (FontId font_id : g_registry->fallback_order) {
-      RegisteredFont* font = GetRegisteredFont(font_id);
+    for (const Fallback& fallback : g_registry->fallbacks) {
+      RegisteredFont* font = GetRegisteredFont(fallback.id);
       if (!font || (for_authoring && !font->editing_authorized)) {
-        continue;
+        continue;  // preview-and-print: may render, may not write new text
       }
-      ranked.push_back({font_id, StyleScore(*font, weight, italic)});
+      ranked.push_back(
+          {fallback.id, fallback.tier, StyleScore(*font, weight, italic)});
     }
   }
-  // Stable: among equal scores the font added first stays first, as in
-  // FindFallbackFont().
-  std::ranges::stable_sort(ranked, {}, &Ranked::score);
+  // Stable: among equal tiers and scores the font added first stays first.
+  std::ranges::stable_sort(ranked, [](const Ranked& a, const Ranked& b) {
+    return a.tier != b.tier ? a.tier < b.tier : a.score < b.score;
+  });
   std::vector<FontId> order;
   order.reserve(ranked.size());
   for (const Ranked& entry : ranked) {

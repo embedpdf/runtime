@@ -5,12 +5,14 @@
 
 #include <stdint.h>
 
+#include <memory>
 #include <string>
 #include <vector>
 
 #include "core/fpdfapi/font/cpdf_font.h"
 #include "core/fpdfapi/parser/cpdf_document.h"
 #include "core/fpdfdoc/cpdf_annotfontmap.h"
+#include "core/fpdfdoc/cpdf_documentfonts.h"
 #include "core/fpdfdoc/cpdf_richtext.h"
 #include "core/fxcrt/fx_coordinates.h"
 #include "core/fxcrt/widestring.h"
@@ -19,6 +21,7 @@
 #include "public/epdf_font.h"
 #include "public/fpdf_edit.h"
 #include "testing/embedder_test.h"
+#include "testing/fx_string_testhelpers.h"
 #include "testing/gtest/include/gtest/gtest.h"
 #include "testing/utils/file_util.h"
 #include "testing/utils/path_service.h"
@@ -53,22 +56,38 @@ class EPDFRichTextLayoutEmbedderTest : public EmbedderTest {
   void SetUp() override {
     EmbedderTest::SetUp();
     EPDFFont_ClearRegisteredFonts();
-    const std::string path = PathService::GetThirdPartyFilePath(
-        "test_fonts/test_fonts/Arimo-Regular.ttf");
-    ASSERT_FALSE(path.empty());
-    arimo_ = GetFileContents(path.c_str());
-    ASSERT_FALSE(arimo_.empty());
-    ASSERT_NE(0u, EPDFFont_RegisterMemFont64("Arimo", /*weight=*/400,
-                                             /*italic=*/0, arimo_.data(),
-                                             arimo_.size()));
+    arimo_ = Register("Arimo", TestFont("Arimo-Regular.ttf"));
+    ASSERT_NE(0u, arimo_);
     doc_.reset(FPDF_CreateNewDocument());
     ASSERT_TRUE(doc_);
   }
 
   void TearDown() override {
+    fonts_.reset();
     doc_.reset();
     EPDFFont_ClearRegisteredFonts();
     EmbedderTest::TearDown();
+  }
+
+  static std::string TestFont(const char* name) {
+    return PathService::GetThirdPartyFilePath(
+        std::string("test_fonts/test_fonts/") + name);
+  }
+
+  static EPDF_FONT_ID Register(const char* family, const std::string& path) {
+    const std::vector<uint8_t> data = GetFileContents(path.c_str());
+    EXPECT_FALSE(data.empty()) << path;
+    return EPDFFont_RegisterMemFont64(family, /*weight=*/400, /*italic=*/0,
+                                      data.data(), data.size());
+  }
+
+  // The registered font |run| draws with; 0 for any other.
+  EPDF_FONT_ID FontOf(const GlyphRun& run) const {
+    return fonts_->DescribeEntry(run.font_entry).registered_font_id;
+  }
+
+  CPDF_DocumentFonts* DocumentFonts() {
+    return CPDF_DocumentFonts::For(CPDFDocumentFromFPDFDocument(doc_.get()));
   }
 
   // One paragraph of |text| in |family| at 12 pt, in a box |width| wide.
@@ -94,18 +113,21 @@ class EPDFRichTextLayoutEmbedderTest : public EmbedderTest {
     paragraph.props = props;
     paragraph.runs.push_back({text, {}});
     document.paragraphs.push_back(std::move(paragraph));
-    CPDF_AnnotFontMap fonts(CPDFDocumentFromFPDFDocument(doc_.get()),
-                            /*default_font=*/nullptr, ByteString(),
-                            /*allow_registered_fallbacks=*/true);
-    CPDF_RichTextLayout layout(&fonts, options);
+    fonts_ = std::make_unique<CPDF_AnnotFontMap>(
+        CPDFDocumentFromFPDFDocument(doc_.get()),
+        /*default_font=*/nullptr, ByteString(),
+        /*allow_registered_fallbacks=*/true);
+    CPDF_RichTextLayout layout(fonts_.get(), options);
     return layout
         .Arrange(document, CFX_FloatRect(0, 0, width, 300),
                  CPDF_Annot::VerticalAlignment::kTop)
         .lines;
   }
 
-  std::vector<uint8_t> arimo_;
+  EPDF_FONT_ID arimo_ = 0;
   ScopedFPDFDocument doc_;
+  // The fonts of the last Arrange().
+  std::unique_ptr<CPDF_AnnotFontMap> fonts_;
 };
 
 // Hebrew and digits in a left-to-right paragraph: the digits take the
@@ -249,4 +271,79 @@ TEST_F(EPDFRichTextLayoutEmbedderTest, JustifiedInkReachesBothEdges) {
     }
   }
   EXPECT_NEAR(50.0f, ink_end, 0.01f);
+}
+
+// A cluster goes to the first fallback, in order, that has all of it. Gelasio
+// has "e" but not the combining acute, so "e" + U+0301 goes to Arimo, added
+// after it; Helvetica, the face, has neither whole.
+TEST_F(EPDFRichTextLayoutEmbedderTest, FallbackHasTheWholeCluster) {
+  const EPDF_FONT_ID gelasio =
+      Register("Gelasio", TestFont("Gelasio-Regular.ttf"));
+  ASSERT_NE(0u, gelasio);
+  ASSERT_TRUE(EPDFFont_AddFallbackFont(gelasio, /*tier=*/0));
+  ASSERT_TRUE(EPDFFont_AddFallbackFont(arimo_, /*tier=*/0));
+  const std::vector<Line> lines =
+      Arrange(L"e\x0301", /*rtl=*/false, kBoxWidth, "Helvetica");
+  ASSERT_EQ(1u, lines.size());
+  ASSERT_EQ(1u, lines[0].runs.size());
+  EXPECT_EQ(arimo_, FontOf(lines[0].runs[0]));
+  EXPECT_TRUE(DocumentFonts()->missing_characters().empty());
+}
+
+// Fallbacks are tried tier by tier: Tinos, added after Arimo in a lower tier,
+// draws the Hebrew both have.
+TEST_F(EPDFRichTextLayoutEmbedderTest, FallbackTiers) {
+  const EPDF_FONT_ID tinos = Register("Tinos", TestFont("Tinos-Regular.ttf"));
+  ASSERT_NE(0u, tinos);
+  ASSERT_TRUE(EPDFFont_AddFallbackFont(arimo_, /*tier=*/1));
+  ASSERT_TRUE(EPDFFont_AddFallbackFont(tinos, /*tier=*/0));
+  const std::vector<Line> lines =
+      Arrange(L"\x05E9\x05DC", /*rtl=*/false, kBoxWidth, "Helvetica");
+  ASSERT_EQ(1u, lines.size());
+  ASSERT_EQ(1u, lines[0].runs.size());
+  EXPECT_EQ(tinos, FontOf(lines[0].runs[0]));
+}
+
+// A character no font has is drawn with the last resort, as its box, and is
+// still reported; one that draws nothing stays with the face.
+TEST_F(EPDFRichTextLayoutEmbedderTest, LastResortDrawsWhatNoFontHas) {
+  // Without a last resort, the face draws its missing glyph (a run of its
+  // own: another script).
+  std::vector<Line> lines = Arrange(
+      L"A\x4E2D"
+      L"B",
+      /*rtl=*/false);
+  ASSERT_EQ(1u, lines.size());
+  ASSERT_EQ(3u, lines[0].runs.size());
+  for (const GlyphRun& run : lines[0].runs) {
+    EXPECT_EQ(arimo_, FontOf(run));
+  }
+
+  const EPDF_FONT_ID box = Register(
+      "Last Resort", PathService::GetTestFilePath("fonts/last_resort.ttf"));
+  ASSERT_NE(0u, box);
+  ASSERT_TRUE(EPDFFont_SetLastResortFont(box));
+  DocumentFonts()->ClearMissingCharacters();
+  lines = Arrange(
+      L"A\x4E2D"
+      L"B",
+      /*rtl=*/false);
+  ASSERT_EQ(1u, lines.size());
+  ASSERT_EQ(3u, lines[0].runs.size());
+  EXPECT_EQ(arimo_, FontOf(lines[0].runs[0]));
+  EXPECT_EQ(box, FontOf(lines[0].runs[1]));
+  EXPECT_EQ(arimo_, FontOf(lines[0].runs[2]));
+  ASSERT_EQ(1u, lines[0].runs[1].glyphs.size());
+  EXPECT_NE(0u, lines[0].runs[1].glyphs[0].gid);
+  EXPECT_EQ(std::vector<WideString>{L"\x4E2D"},
+            DocumentFonts()->missing_characters());
+
+  // An invisible separator Arimo lacks is hidden by it, not boxed.
+  lines = Arrange(
+      L"A\x2063"
+      L"B",
+      /*rtl=*/false);
+  ASSERT_EQ(1u, lines.size());
+  ASSERT_EQ(1u, lines[0].runs.size());
+  EXPECT_EQ(arimo_, FontOf(lines[0].runs[0]));
 }

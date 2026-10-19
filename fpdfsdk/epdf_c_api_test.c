@@ -318,6 +318,7 @@ int CheckEmbedPDFCApi(void) {
   CHK(EPDFFont_GetEmbeddingPermission);
   CHK(EPDFFont_GetFallbackOrder);
   CHK(EPDFFont_GetFamilyName);
+  CHK(EPDFFont_GetLastResortFont);
   CHK(EPDFFont_GetMetrics);
   CHK(EPDFFont_GetPostScriptName);
   CHK(EPDFFont_GetProgramData);
@@ -330,6 +331,7 @@ int CheckEmbedPDFCApi(void) {
   CHK(EPDFFont_RegisterFont);
   CHK(EPDFFont_RegisterMemFont);
   CHK(EPDFFont_RegisterMemFont64);
+  CHK(EPDFFont_SetLastResortFont);
 
   // epdf_form.h
   CHK(EPDFForm_AttachWidget);

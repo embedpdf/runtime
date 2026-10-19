@@ -180,9 +180,14 @@ class CPDF_AnnotFontMap final : public IPVT_FontMap {
   // subset name), so the rich layout keeps naming the /DA alias, exactly as
   // CPVT always did. A pinned face wins over every resolution step.
   void PinRichFace(const WideString& family, int weight, bool italic, int entry);
-  // A registered fallback font, authorised for authoring, covering
-  // |unicode|; -1 when there is none or fallbacks are not allowed.
-  int FindRichFallback(uint32_t unicode, int weight, bool italic);
+  // The first registered fallback font, in the order for the style
+  // (CFX_FontRegistry::GetFallbackOrder()), that has every character of
+  // |grapheme|; -1 when none does or fallbacks are not allowed.
+  int FindRichFallback(WideStringView grapheme, int weight, bool italic);
+  // The registered last-resort font (CFX_FontRegistry::GetLastResortFont()),
+  // which draws a grapheme no font has as its box; -1 when there is none or
+  // fallbacks are not allowed.
+  int FindLastResort();
   RichFace GetRichFace(int entry) const;
   // The glyph of |entry| for a scalar; 0 when the face lacks it. For a
   // standard-14 face this is the charcode (one glyph per character).
@@ -284,6 +289,8 @@ class CPDF_AnnotFontMap final : public IPVT_FontMap {
       CFX_FontRegistry::FontId font_id);
   int32_t FindExistingRegisteredFont(CFX_FontRegistry::FontId font_id) const;
   int32_t AddRegisteredFallbackFont(CFX_FontRegistry::FontId font_id);
+  // The entry drawing with a registered font, added when it is the first.
+  int EntryForRegisteredFont(CFX_FontRegistry::FontId font_id);
   int ResolveRichFaceUncached(const WideString& family,
                               int weight,
                               bool italic,
