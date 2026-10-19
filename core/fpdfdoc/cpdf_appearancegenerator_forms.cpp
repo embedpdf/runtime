@@ -752,10 +752,15 @@ bool GenerateFormAPToTarget(APGenerationTarget* target,
         ResolveDaFontForEphemeralTarget(doc, dr_font_dict.Get(), font_name);
   }
   font_dict = da_font.font_dict;
+  // A /DA font that is a document program (reserved this session, or the
+  // composite font the writer installed for one) lays out through the same
+  // map: CPVT_FontMap can only write the characters its ToUnicode names.
   const bool use_registered_font_map =
       target->IsPersistent() &&
       (CFX_FontRegistry::HasFallbackFonts() ||
-       da_font.registered_font_id != CFX_FontRegistry::kInvalidFontId);
+       da_font.registered_font_id != CFX_FontRegistry::kInvalidFontId ||
+       da_font.document_program ||
+       CPDF_AnnotFontMap::IsDocumentProgramFont(font_dict.Get()));
   if (!font_dict && !use_registered_font_map) {
     // Ephemeral render of a widget whose /DA names a registered font that has
     // no /DR entry yet: draw with the fallback rather than nothing.
@@ -834,6 +839,7 @@ bool GenerateFormAPToTarget(APGenerationTarget* target,
         doc, std::move(default_font), font_name,
         /*allow_registered_fallbacks=*/true, da_font.registered_font_id,
         /*install_dr_entry=*/true, CPDF_AnnotFontMap::Owner::kWidget);
+    da_font.ApplyTo(&map);
     if (!map.HasDefaultFont()) {
       return false;
     }

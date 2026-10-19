@@ -228,6 +228,55 @@ std::vector<bool> CPDF_RichTextLayout::GraphemeStarts(const WideString& text) {
 }
 
 // static
+CPDF_RichTextLayout::GraphemeMatch CPDF_RichTextLayout::MatchGrapheme(
+    CPDF_AnnotFontMap* fonts,
+    int face_entry,
+    WideStringView grapheme,
+    int weight,
+    bool italic) {
+  if (face_entry < 0) {
+    return {};
+  }
+  if (fonts->CoversText(face_entry, grapheme)) {
+    return {face_entry, true};
+  }
+  // The grapheme's base scalar picks the fallback font.
+  uint32_t base = 0;
+  for (char32_t cp : pdfium::CodePointView(grapheme)) {
+    if (base == 0 || !IsMark(static_cast<uint32_t>(cp))) {
+      base = static_cast<uint32_t>(cp);
+      if (!IsMark(base)) {
+        break;
+      }
+    }
+  }
+  const int fallback = fonts->FindRichFallback(base, weight, italic);
+  if (fallback >= 0 && fonts->CoversText(fallback, grapheme)) {
+    return {fallback, true};
+  }
+  return {face_entry, false};
+}
+
+// static
+bool CPDF_RichTextLayout::IsInvisibleGrapheme(WideStringView grapheme) {
+  for (char32_t cp : pdfium::CodePointView(grapheme)) {
+    const bool invisible =
+        cp < 0x20 || (cp >= 0x7F && cp <= 0x9F) || cp == 0x00AD ||
+        cp == 0x034F || cp == 0x061C || (cp >= 0x115F && cp <= 0x1160) ||
+        (cp >= 0x17B4 && cp <= 0x17B5) || (cp >= 0x180B && cp <= 0x180F) ||
+        (cp >= 0x200B && cp <= 0x200F) || (cp >= 0x202A && cp <= 0x202E) ||
+        (cp >= 0x2060 && cp <= 0x206F) || cp == 0x3164 ||
+        (cp >= 0xFE00 && cp <= 0xFE0F) || cp == 0xFEFF || cp == 0xFFA0 ||
+        (cp >= 0xFFF0 && cp <= 0xFFF8) || (cp >= 0x1BCA0 && cp <= 0x1BCA3) ||
+        (cp >= 0x1D173 && cp <= 0x1D17A) || (cp >= 0xE0000 && cp <= 0xE0FFF);
+    if (!invisible) {
+      return false;
+    }
+  }
+  return true;
+}
+
+// static
 std::vector<bool> CPDF_RichTextLayout::BreakOpportunities(
     const WideString& text) {
   const size_t length = text.GetLength();
@@ -316,23 +365,6 @@ struct CPDF_RichTextLayout::Impl {
 
   uint32_t GlyphFor(int entry, wchar_t ch) {
     return fonts->RichGlyphFor(entry, static_cast<uint32_t>(ch));
-  }
-
-  // Does |entry| have a glyph for every character of the grapheme at
-  // [begin, end)? Joiners and variation selectors may be missing.
-  bool Covers(int entry, const WideString& text, size_t begin, size_t end) {
-    // Scalars, not code units: a supplementary character is one grapheme
-    // of two units on a 16-bit wchar_t platform.
-    for (char32_t cp : pdfium::CodePointView(
-             text.AsStringView().Substr(begin, end - begin))) {
-      if (cp == 0x200D || IsVariationSelector(cp)) {
-        continue;
-      }
-      if (fonts->RichGlyphFor(entry, static_cast<uint32_t>(cp)) == 0) {
-        return false;
-      }
-    }
-    return true;
   }
 
   // Shapes one item into glyphs with absolute clusters.
@@ -555,27 +587,17 @@ struct CPDF_RichTextLayout::Impl {
       }
       const int style = segment->style_of[begin];
       const CPDF_RichTextStyle& resolved = styles[style].style;
-      int entry = fonts->ResolveRichFace(resolved.family, resolved.weight,
-                                         resolved.italic);
-      if (entry >= 0 && !Covers(entry, text, begin, end)) {
-        // The grapheme's base scalar picks the fallback font.
-        uint32_t base = 0;
-        for (char32_t cp : pdfium::CodePointView(
-                 text.AsStringView().Substr(begin, end - begin))) {
-          if (base == 0 || !IsMark(static_cast<uint32_t>(cp))) {
-            base = static_cast<uint32_t>(cp);
-            if (!IsMark(base)) {
-              break;
-            }
-          }
-        }
-        const int fallback =
-            fonts->FindRichFallback(base, resolved.weight, resolved.italic);
-        if (fallback >= 0 && Covers(fallback, text, begin, end)) {
-          entry = fallback;
-        }
+      const WideStringView grapheme =
+          text.AsStringView().Substr(begin, end - begin);
+      const GraphemeMatch match =
+          MatchGrapheme(fonts,
+                        fonts->ResolveRichFace(resolved.family, resolved.weight,
+                                               resolved.italic),
+                        grapheme, resolved.weight, resolved.italic);
+      if (!match.covered && !IsInvisibleGrapheme(grapheme)) {
+        fonts->NoteMissingCharacter(WideString(grapheme));
       }
-      pieces.push_back({begin, end, style, script, entry});
+      pieces.push_back({begin, end, style, script, match.entry});
       begin = end;
     }
     // A leading common-script piece takes the script that follows it.

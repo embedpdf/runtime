@@ -74,6 +74,11 @@ class CPDF_AnnotFontMap final : public IPVT_FontMap {
       const CPDF_Document* doc,
       const ByteString& alias);
 
+  // Whether a /DA font is a composite font over a program the layout can
+  // write any character of: what the writer installs for a document
+  // program, which the map then lays out with that program's own cmap.
+  static bool IsDocumentProgramFont(const CPDF_Dictionary* font_dict);
+
   bool HasDefaultFont() const;
   // The /DA font is one of the standard 14 (a non-embedded base-14 Type1):
   // its metrics are PDFium's, not Acrobat's, so the rich layout resolves a
@@ -200,6 +205,38 @@ class CPDF_AnnotFontMap final : public IPVT_FontMap {
   void SetDefaultAppearanceEntry(int entry, const ByteString& alias);
   int GetDefaultAppearanceEntry() const { return da_entry_; }
 
+  // Makes the /DA entry a program already in the document, under the alias
+  // the /DA string names: what a /DA font a session reserved for a document
+  // program draws with before its /DR entry exists. False, and the entry
+  // stays as it was, when the program can't author text (see
+  // FindDocumentProgram()).
+  bool UseDocumentProgramForDefault(
+      RetainPtr<CPDF_Stream> program,
+      const ByteString& base_font_name,
+      const CPDF_AnnotFontSubset::FaceIdentity& identity);
+
+  // What an entry is, for a resolver read: where its program comes from and
+  // which one it is.
+  struct EntryFacts {
+    Source source = Source::kStandard14;
+    CFX_FontRegistry::FontId registered_font_id =
+        CFX_FontRegistry::kInvalidFontId;
+    // kDocumentProgram's stream, and kDocumentFontDict's when it embeds one.
+    uint32_t program_objnum = 0;
+    // kStandard14: the standard name; else the font's /BaseFont.
+    ByteString base_font_name;
+    // The face it draws: its family, weight and italic.
+    WideString family;
+    int weight = 400;
+    bool italic = false;
+    bool degraded = false;
+  };
+  EntryFacts DescribeEntry(int entry) const;
+
+  // A grapheme drawn with no font that has it, for the write's report
+  // (CPDF_DocumentFonts::NoteMissingCharacter()).
+  void NoteMissingCharacter(const WideString& grapheme);
+
   // IPVT_FontMap:
   RetainPtr<CPDF_Font> GetPDFFont(int32_t font_index) override;
   ByteString GetPDFFontAlias(int32_t font_index) override;
@@ -260,6 +297,13 @@ class CPDF_AnnotFontMap final : public IPVT_FontMap {
   int AddDocumentProgram(RetainPtr<CPDF_Stream> stream,
                          const ByteString& base_font_name,
                          const CPDF_AnnotFontSubset::FaceIdentity& identity);
+  // The entry for a document program, when it can author text: an sfnt that
+  // loads, has glyphs and a Unicode cmap, and whose licence allows editing.
+  // Its layout font is what CPVT reads widths and charcodes from.
+  std::optional<FontEntry> MakeDocumentProgramEntry(
+      RetainPtr<CPDF_Stream> stream,
+      const ByteString& base_font_name,
+      const CPDF_AnnotFontSubset::FaceIdentity& identity);
   int AddStandardFont(const ByteString& base_font_name);
   const CPDF_AnnotFontSubset::GlyphIdentity* GlyphIdentityOf(FontEntry* entry);
 

@@ -19,7 +19,7 @@
 #include <sstream>
 #include <vector>
 
-#include "core/fxcrt/stream_write_utils.h"
+#include "core/fpdfapi/parser/cpdf_stream.h"
 #include "core/fpdfdoc/cpdf_annot.h"
 #include "core/fpdfdoc/cpdf_annotfontmap.h"
 #include "core/fpdfdoc/cpdf_appearancegenerator.h"
@@ -30,6 +30,7 @@
 #include "core/fxcrt/fx_string_wrappers.h"
 #include "core/fxcrt/retain_ptr.h"
 #include "core/fxcrt/span.h"
+#include "core/fxcrt/stream_write_utils.h"
 #include "core/fxcrt/widestring.h"
 #include "core/fxge/cfx_color.h"
 #include "core/fxge/cfx_fontregistry.h"
@@ -116,6 +117,15 @@ struct DaFontResolution {
   RetainPtr<CPDF_Dictionary> font_dict;
   CFX_FontRegistry::FontId registered_font_id =
       CFX_FontRegistry::kInvalidFontId;
+  // An alias this session reserved for a program already in the document
+  // (CPDF_DocumentFonts): the program the /DA entry draws with until the
+  // appearance installs its /DR entry.
+  RetainPtr<CPDF_Stream> document_program;
+  ByteString document_program_base_font;
+  CPDF_AnnotFontSubset::FaceIdentity document_program_identity;
+
+  // Makes |map|'s /DA entry the reserved document program, if there is one.
+  void ApplyTo(CPDF_AnnotFontMap* map) const;
 };
 
 struct APGenerationTarget {

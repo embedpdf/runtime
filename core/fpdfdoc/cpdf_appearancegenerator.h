@@ -129,6 +129,17 @@ class CPDF_AppearanceGenerator {
       float font_size,
       const CFX_Color& color);
 
+  // EmbedPDF: set /DA to a program already in the document, by its stream's
+  // object number (CPDF_DocumentFonts). Like a registered font, /DA names a
+  // session alias; the appearance installs the /DR entry. False for a
+  // program the layout can't write new text with: not an sfnt, no Unicode
+  // cmap, or a licence that doesn't allow editing.
+  static bool UpdateDefaultAppearanceDocumentFont(CPDF_Document* doc,
+                                                  CPDF_Dictionary* annot_dict,
+                                                  uint32_t program_objnum,
+                                                  float font_size,
+                                                  const CFX_Color& color);
+
   // EmbedPDF (Phase D): a FreeText appearance laid out from a rich text
   // document, in the two halves of the Phase C note §6. Prepare lays out
   // and builds the stream and its font resources off to the side: no

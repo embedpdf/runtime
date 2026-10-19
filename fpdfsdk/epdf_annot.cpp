@@ -23,7 +23,6 @@
 #include "constants/appearance.h"
 #include "constants/form_fields.h"
 #include "core/fdrm/fx_crypt.h"
-#include "core/fxcrt/stream_write_utils.h"
 #include "core/fpdfapi/edit/cpdf_stringarchivestream.h"
 #include "core/fpdfapi/page/cpdf_annotcontext.h"
 #include "core/fpdfapi/page/cpdf_form.h"
@@ -46,6 +45,7 @@
 #include "core/fpdfdoc/cpdf_annot_rotation.h"
 #include "core/fpdfdoc/cpdf_appearancegenerator.h"
 #include "core/fpdfdoc/cpdf_color_utils.h"
+#include "core/fpdfdoc/cpdf_documentfonts.h"
 #include "core/fpdfdoc/cpdf_embed_metadata.h"
 #include "core/fpdfdoc/cpdf_fontface.h"
 #include "core/fpdfdoc/cpdf_formfield.h"
@@ -56,6 +56,7 @@
 #include "core/fxcrt/fx_string_wrappers.h"
 #include "core/fxcrt/numerics/safe_conversions.h"
 #include "core/fxcrt/stl_util.h"
+#include "core/fxcrt/stream_write_utils.h"
 #include "core/fxge/cfx_color.h"
 #include "core/fxge/cfx_fontregistry.h"
 #include "fpdfsdk/cpdfsdk_helpers.h"
@@ -2283,6 +2284,113 @@ EPDFAnnot_GetDefaultAppearanceFontFace(FPDF_ANNOTATION annot,
   // SAFETY: required from caller.
   return Utf16EncodeMaybeCopyAndReturnLength(
       face.family, UNSAFE_BUFFERS(SpanFromFPDFApiArgs(family, buflen)));
+}
+
+FPDF_EXPORT unsigned long FPDF_CALLCONV
+EPDFAnnot_GetDefaultAppearanceFontPostScriptName(FPDF_ANNOTATION annot,
+                                                 char* buffer,
+                                                 unsigned long buflen) {
+  ScopedFPDFAnnotationView annot_view(annot);
+  CPDF_AnnotContext* context = CPDFAnnotContextFromFPDFAnnotation(annot);
+  if (!context) {
+    return 0;
+  }
+  FPDF_ANNOTATION_SUBTYPE subtype = FPDFAnnot_GetSubtype(annot);
+  if (subtype != FPDF_ANNOT_FREETEXT && subtype != FPDF_ANNOT_WIDGET &&
+      subtype != FPDF_ANNOT_REDACT) {
+    return 0;
+  }
+  CPDF_Document* doc = context->GetPage()->GetDocument();
+  if (!doc) {
+    return 0;
+  }
+  CPDF_DocumentViewScope document_view(doc);
+  const CPDF_Dictionary* annot_dict = context->GetAnnotDict();
+  if (!annot_dict) {
+    return 0;
+  }
+  const CPDF_Dictionary* root_dict = doc->GetRoot();
+  RetainPtr<const CPDF_Dictionary> acroform_dict =
+      root_dict ? root_dict->GetDictFor("AcroForm") : nullptr;
+  CPDF_DefaultAppearance da(annot_dict, acroform_dict.Get());
+  std::optional<CPDF_DefaultAppearance::FontNameAndSize> font_info =
+      da.GetFont();
+  if (!font_info.has_value() || font_info.value().name.IsEmpty()) {
+    return 0;
+  }
+  const ByteString& font_name = font_info.value().name;
+  ByteString base_font;
+  // The same /DR lookup as EPDFAnnot_GetDefaultAppearanceFontFace().
+  RetainPtr<const CPDF_Dictionary> inherited_dr =
+      ToDictionary(CPDF_FormField::GetFieldAttrForDict(annot_dict, "DR"));
+  RetainPtr<const CPDF_Dictionary> acroform_dr =
+      acroform_dict ? acroform_dict->GetDictFor("DR") : nullptr;
+  for (const CPDF_Dictionary* dr : {inherited_dr.Get(), acroform_dr.Get()}) {
+    RetainPtr<const CPDF_Dictionary> fonts =
+        dr ? dr->GetDictFor("Font") : nullptr;
+    RetainPtr<const CPDF_Dictionary> font_dict =
+        fonts ? fonts->GetDictFor(font_name.AsStringView()) : nullptr;
+    if (!font_dict) {
+      continue;
+    }
+    base_font = font_dict->GetNameFor("BaseFont");
+    if (font_dict->GetNameFor("Subtype") == "Type0") {
+      RetainPtr<const CPDF_Array> descendants =
+          font_dict->GetArrayFor("DescendantFonts");
+      RetainPtr<const CPDF_Dictionary> descendant =
+          descendants ? descendants->GetDictAt(0) : nullptr;
+      if (descendant && !descendant->GetNameFor("BaseFont").IsEmpty()) {
+        base_font = descendant->GetNameFor("BaseFont");
+      }
+    }
+    break;
+  }
+  if (base_font.IsEmpty()) {
+    CPDF_DocumentFonts* fonts = CPDF_DocumentFonts::Find(doc);
+    std::optional<CPDF_DocumentFonts::ReservedProgram> program =
+        fonts ? fonts->ProgramForAlias(font_name) : std::nullopt;
+    if (program.has_value()) {
+      base_font = program->base_font_name;
+    }
+  }
+  base_font = BaseFontNameWithoutSubsetTag(base_font);
+  if (base_font.IsEmpty()) {
+    return 0;
+  }
+  // SAFETY: required from caller.
+  return NulTerminateMaybeCopyAndReturnLength(
+      base_font, UNSAFE_BUFFERS(SpanFromFPDFApiArgs(buffer, buflen)));
+}
+
+FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV
+EPDFAnnot_SetDefaultAppearanceDocumentFont(FPDF_ANNOTATION annot,
+                                           unsigned long program_objnum,
+                                           float font_size,
+                                           unsigned int R,
+                                           unsigned int G,
+                                           unsigned int B) {
+  ScopedFPDFAnnotationView annot_view(annot);
+  CPDF_AnnotContext* context = CPDFAnnotContextFromFPDFAnnotation(annot);
+  if (!context) {
+    return false;
+  }
+  RetainPtr<CPDF_Dictionary> annot_dict = context->GetMutableAnnotDict();
+  if (!annot_dict) {
+    return false;
+  }
+  FPDF_ANNOTATION_SUBTYPE subtype = FPDFAnnot_GetSubtype(annot);
+  if (subtype != FPDF_ANNOT_FREETEXT && subtype != FPDF_ANNOT_WIDGET &&
+      subtype != FPDF_ANNOT_REDACT) {
+    return false;
+  }
+  CPDF_Document* doc = context->GetPage()->GetDocument();
+  if (!doc || program_objnum == 0 || font_size < 0 || R > 255 || G > 255 ||
+      B > 255) {
+    return false;
+  }
+  return CPDF_AppearanceGenerator::UpdateDefaultAppearanceDocumentFont(
+      doc, annot_dict.Get(), static_cast<uint32_t>(program_objnum), font_size,
+      CFX_Color::MakeRGBBytes(R, G, B));
 }
 
 FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV

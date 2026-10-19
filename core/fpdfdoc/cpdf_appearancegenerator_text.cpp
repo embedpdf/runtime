@@ -14,7 +14,6 @@
 #include <sstream>
 
 #include "constants/font_encodings.h"
-#include "core/fxcrt/stream_write_utils.h"
 #include "core/fpdfapi/font/cpdf_font.h"
 #include "core/fpdfapi/parser/cpdf_dictionary.h"
 #include "core/fpdfapi/parser/cpdf_document.h"
@@ -28,11 +27,13 @@
 #include "core/fpdfdoc/cpdf_annotfontsubset.h"
 #include "core/fpdfdoc/cpdf_appearancegenerator_internal.h"
 #include "core/fpdfdoc/cpdf_defaultappearance.h"
+#include "core/fpdfdoc/cpdf_documentfonts.h"
 #include "core/fpdfdoc/cpdf_embed_metadata.h"
 #include "core/fpdfdoc/cpvt_variabletext.h"
 #include "core/fpdfdoc/cpvt_word.h"
 #include "core/fxcrt/fx_string_wrappers.h"
 #include "core/fxcrt/fx_system.h"
+#include "core/fxcrt/stream_write_utils.h"
 #include "core/fxge/cfx_fontregistry.h"
 
 using appearance_generator::DaFontResolution;
@@ -348,6 +349,27 @@ RetainPtr<CPDF_Dictionary> GetFontFromDrFontDictOrGenerateFallback(
   return new_font_dict;
 }
 
+// A /DA alias this session reserved for a document program.
+bool ResolveReservedDocumentProgram(const CPDF_Document* doc,
+                                    const ByteString& font_name,
+                                    DaFontResolution* result) {
+  CPDF_DocumentFonts* fonts = CPDF_DocumentFonts::Find(doc);
+  std::optional<CPDF_DocumentFonts::ReservedProgram> reserved =
+      fonts ? fonts->ProgramForAlias(font_name) : std::nullopt;
+  if (!reserved.has_value()) {
+    return false;
+  }
+  result->document_program = fonts->ProgramStream(reserved->objnum);
+  if (!result->document_program) {
+    return false;
+  }
+  result->document_program_base_font = reserved->base_font_name;
+  result->document_program_identity.family = reserved->family.ToUTF8();
+  result->document_program_identity.weight = reserved->weight;
+  result->document_program_identity.italic = reserved->italic;
+  return true;
+}
+
 DaFontResolution ResolveDaFontForPersistentTarget(CPDF_Document* doc,
                                                   CPDF_Dictionary* dr_font_dict,
                                                   const ByteString& font_name) {
@@ -362,6 +384,9 @@ DaFontResolution ResolveDaFontForPersistentTarget(CPDF_Document* doc,
   if (std::optional<CFX_FontRegistry::FontId> font_id =
           CPDF_AnnotFontMap::RegisteredFontIdFromAlias(doc, font_name)) {
     result.registered_font_id = *font_id;
+    return result;
+  }
+  if (ResolveReservedDocumentProgram(doc, font_name, &result)) {
     return result;
   }
   // EmbedPDF: the fallback is a write, so it goes into /DR/Font as the
@@ -405,8 +430,19 @@ DaFontResolution ResolveDaFontForEphemeralTarget(
     result.registered_font_id = *font_id;
     return result;
   }
+  if (ResolveReservedDocumentProgram(doc, font_name, &result)) {
+    return result;
+  }
   result.font_dict = GenerateDirectFallbackFontDict();
   return result;
+}
+
+void DaFontResolution::ApplyTo(CPDF_AnnotFontMap* map) const {
+  if (document_program) {
+    map->UseDocumentProgramForDefault(document_program,
+                                      document_program_base_font,
+                                      document_program_identity);
+  }
 }
 
 RetainPtr<CPDF_Dictionary> GenerateResourceFontDict(

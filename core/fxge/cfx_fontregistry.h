@@ -11,8 +11,10 @@
 
 #include <memory>
 #include <optional>
+#include <vector>
 
 #include "core/fxcrt/bytestring.h"
+#include "core/fxcrt/data_vector.h"
 #include "core/fxcrt/retain_ptr.h"
 #include "core/fxcrt/span.h"
 
@@ -72,6 +74,16 @@ class CFX_FontRegistry {
   // SHA-256 of the registered (instanced) bytes: the source identity a font
   // pool shares programs by. Empty for an unknown id.
   static pdfium::span<const uint8_t> GetSourceHash(FontId font_id);
+  // The registered program's bytes: exactly what the writer embeds and
+  // GetSourceHash() names (the static instance for a variable font). Empty
+  // for an unknown id.
+  static DataVector<uint8_t> GetProgramData(FontId font_id);
+  // What the registered program is (registration accepts kTrueType and
+  // kOpenTypeCFF only); kUnsupported for an unknown id.
+  static ProgramFormat GetProgramFormat(FontId font_id);
+  // The scalars the program maps to a glyph, sorted and unique. Empty for an
+  // unknown id.
+  static pdfium::span<const uint32_t> GetSupportedUnicodes(FontId font_id);
   // True when the registered bytes are a static instance made from a
   // variable font at registration. A variable font that cannot be instanced
   // is refused, so every registered program is static.
@@ -100,6 +112,12 @@ class CFX_FontRegistry {
                                                 int weight,
                                                 bool italic,
                                                 bool for_authoring = false);
+  // The fallback fonts in the order FindFallbackFont() tries them for a
+  // style: the closest weight and italic first, then the order they were
+  // added in. The first of them that maps a scalar is the one it returns.
+  static std::vector<FontId> GetFallbackOrder(int weight,
+                                              bool italic,
+                                              bool for_authoring);
   static std::unique_ptr<CFX_Font> CreateFont(FontId font_id);
 
   static void DestroyGlobals();

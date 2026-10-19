@@ -333,7 +333,8 @@ bool AppendRedactOverlayOps(CPDF_Document* doc,
           ? CPDF_DocPageData::FromDocument(doc)->GetFont(da_font.font_dict)
           : nullptr;
   if (!default_font &&
-      da_font.registered_font_id == CFX_FontRegistry::kInvalidFontId) {
+      da_font.registered_font_id == CFX_FontRegistry::kInvalidFontId &&
+      !da_font.document_program) {
     return has_fill;
   }
 
@@ -341,6 +342,7 @@ bool AppendRedactOverlayOps(CPDF_Document* doc,
                         /*allow_registered_fallbacks=*/true,
                         da_font.registered_font_id,
                         /*install_dr_entry=*/true);
+  da_font.ApplyTo(&map);
   if (!map.HasDefaultFont()) {
     return has_fill;
   }

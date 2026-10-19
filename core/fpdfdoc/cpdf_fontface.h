@@ -11,6 +11,7 @@
 #include "core/fxcrt/retain_ptr.h"
 #include "core/fxcrt/widestring.h"
 
+class CFX_Font;
 class CPDF_Dictionary;
 class CPDF_Document;
 
@@ -21,6 +22,22 @@ struct CPDF_FontFace {
   int weight = 400;
   bool italic = false;
 };
+
+// The key two family names compare by: case, spaces, hyphens, underscores
+// and quotes don't count, so "Noto Sans" == "NotoSans" == "noto-sans".
+ByteString FontFamilyKey(const WideString& family);
+ByteString FontFamilyKey(const ByteString& family_utf8);
+
+// A program's line metrics as the layout reads them: its hhea ascender and
+// descender over its units per em (Acrobat's choice for TrueType and CFF),
+// descent positive. 0.83 and 0.17 when the program has none.
+void ProgramLineMetrics(const CFX_Font* program, float* ascent, float* descent);
+
+// A /BaseFont name without its subset tag: "ABCDEF+MinionPro-Bold" is
+// "MinionPro-Bold".
+ByteString BaseFontNameWithoutSubsetTag(const ByteString& base_font);
+// "ABCDEF+NotoSans": six capital letters and a plus, a producer's subset.
+bool HasFontSubsetTag(const ByteString& base_font);
 
 // The face a standard 14 name or one of Acrobat's aliases (Helv, TiBo, ...)
 // stands for: its standard family ("Arial" is Helvetica).

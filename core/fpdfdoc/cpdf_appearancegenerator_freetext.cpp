@@ -18,7 +18,6 @@
 #include <vector>
 
 #include "constants/annotation_common.h"
-#include "core/fxcrt/stream_write_utils.h"
 #include "core/fpdfapi/font/cpdf_font.h"
 #include "core/fpdfapi/page/cpdf_docpagedata.h"
 #include "core/fpdfapi/parser/cpdf_array.h"
@@ -32,12 +31,14 @@
 #include "core/fpdfdoc/cpdf_appearancegenerator_internal.h"
 #include "core/fpdfdoc/cpdf_color_utils.h"
 #include "core/fpdfdoc/cpdf_defaultappearance.h"
+#include "core/fpdfdoc/cpdf_documentfonts.h"
 #include "core/fpdfdoc/cpdf_interactiveform.h"
 #include "core/fpdfdoc/cpdf_richtext.h"
 #include "core/fpdfdoc/cpdf_richtextlayout.h"
 #include "core/fpdfdoc/cpdf_richtextparser.h"
 #include "core/fxcrt/fx_string_wrappers.h"
 #include "core/fxcrt/fx_system.h"
+#include "core/fxcrt/stream_write_utils.h"
 #include "core/fxcrt/utf16.h"
 #include "core/fxge/cfx_fontregistry.h"
 
@@ -353,6 +354,8 @@ struct RichFreeTextInputs {
   ByteString font_name;               // its alias
   CFX_FontRegistry::FontId registered_font_id =
       CFX_FontRegistry::kInvalidFontId;
+  // The /DA alias resolved to a reserved document program, if it did.
+  DaFontResolution da_font;
   bool persistent = true;
   bool author_default_appearance = false;  // writer: body face -> /DA
 };
@@ -373,6 +376,7 @@ PrepareRichFreeTextAPInternal(CPDF_Document* doc,
       /*install_dr_entry=*/in.persistent,
       CPDF_AnnotFontMap::Owner::kAnnotation);
   CPDF_AnnotFontMap& map = *prepared->fonts;
+  in.da_font.ApplyTo(&map);
   if (!in.author_default_appearance &&
       in.document->source == CPDF_RichTextDocument::Source::kContents &&
       map.HasDefaultFont() && !map.DefaultFontIsStandard()) {
@@ -531,6 +535,7 @@ bool GenerateRichFreeTextAP(APGenerationTarget* target,
   in.default_font = std::move(default_font);
   in.font_name = font_name;
   in.registered_font_id = da_font.registered_font_id;
+  in.da_font = da_font;
   in.persistent = target->IsPersistent();
   std::unique_ptr<CPDF_AppearanceGenerator::PreparedRichFreeTextAP> prepared =
       PrepareRichFreeTextAPInternal(doc, annot_dict, blend_name, std::move(in));
@@ -844,7 +849,8 @@ bool GenerateFreeTextAP(APGenerationTarget* target,
   RetainPtr<CPDF_Font> default_font =
       da_font.font_dict ? doc_page_data->GetFont(da_font.font_dict) : nullptr;
   if (!default_font &&
-      da_font.registered_font_id == CFX_FontRegistry::kInvalidFontId) {
+      da_font.registered_font_id == CFX_FontRegistry::kInvalidFontId &&
+      !da_font.document_program) {
     return false;
   }
 
@@ -1003,6 +1009,47 @@ bool CPDF_AppearanceGenerator::UpdateDefaultAppearanceRegisteredFont(
     return false;
   }
 
+  ByteString da_font_part = DefaultAppearanceFontPart(resource_key, font_size);
+  if (da_font_part.IsEmpty()) {
+    return false;
+  }
+  ByteString da_color_part = GenerateColorAP(color, PaintOperation::kFill);
+  da_color_part.TrimBack('\n');
+
+  annot_dict->SetNewFor<CPDF_String>("DA", da_color_part + " " + da_font_part);
+  return true;
+}
+
+bool CPDF_AppearanceGenerator::UpdateDefaultAppearanceDocumentFont(
+    CPDF_Document* doc,
+    CPDF_Dictionary* annot_dict,
+    uint32_t program_objnum,
+    float font_size,
+    const CFX_Color& color) {
+  if (!doc || !annot_dict || program_objnum == 0) {
+    return false;
+  }
+  CPDF_DocumentFonts* fonts = CPDF_DocumentFonts::For(doc);
+  // The program must be one the walk found, and one the layout can author
+  // with (the same test the font map applies before it writes with one).
+  bool can_author = false;
+  for (const CPDF_DocumentFonts::Face& face : fonts->CollectFaces()) {
+    for (const CPDF_DocumentFonts::Program& program : face.programs) {
+      if (program.objnum != program_objnum) {
+        continue;
+      }
+      can_author = program.maps_unicode && program.permission.has_value() &&
+                   (*program.permission ==
+                        CFX_FontRegistry::EmbeddingPermission::kInstallable ||
+                    *program.permission ==
+                        CFX_FontRegistry::EmbeddingPermission::kEditable);
+    }
+  }
+  ByteString resource_key;
+  if (!can_author ||
+      !fonts->ReserveProgramAlias(program_objnum, &resource_key)) {
+    return false;
+  }
   ByteString da_font_part = DefaultAppearanceFontPart(resource_key, font_size);
   if (da_font_part.IsEmpty()) {
     return false;

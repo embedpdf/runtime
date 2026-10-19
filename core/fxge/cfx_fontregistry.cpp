@@ -482,6 +482,44 @@ pdfium::span<const uint8_t> CFX_FontRegistry::GetSourceHash(FontId font_id) {
 }
 
 // static
+DataVector<uint8_t> CFX_FontRegistry::GetProgramData(FontId font_id) {
+  RegisteredFont* font = GetRegisteredFont(font_id);
+  if (!font) {
+    return {};
+  }
+  if (!font->memory_data.empty()) {
+    return font->memory_data;
+  }
+  return ReadStreamToData(font->stream.Get());
+}
+
+// static
+CFX_FontRegistry::ProgramFormat CFX_FontRegistry::GetProgramFormat(
+    FontId font_id) {
+  RegisteredFont* font = GetRegisteredFont(font_id);
+  if (!font) {
+    return ProgramFormat::kUnsupported;
+  }
+  if (!font->memory_data.empty()) {
+    return DetectProgramFormat(font->memory_data);
+  }
+  uint8_t head[4] = {};
+  if (!font->stream ||
+      !font->stream->ReadBlockAtOffset(pdfium::span(head), /*offset=*/0)) {
+    return ProgramFormat::kUnsupported;
+  }
+  return DetectProgramFormat(head);
+}
+
+// static
+pdfium::span<const uint32_t> CFX_FontRegistry::GetSupportedUnicodes(
+    FontId font_id) {
+  RegisteredFont* font = GetRegisteredFont(font_id);
+  return font ? pdfium::span<const uint32_t>(font->supported_unicodes)
+              : pdfium::span<const uint32_t>();
+}
+
+// static
 bool CFX_FontRegistry::IsInstanced(FontId font_id) {
   RegisteredFont* font = GetRegisteredFont(font_id);
   return font && font->instanced;
@@ -592,6 +630,36 @@ std::optional<CFX_FontRegistry::FontId> CFX_FontRegistry::FindFallbackFont(
     }
   }
   return best_font_id;
+}
+
+// static
+std::vector<CFX_FontRegistry::FontId> CFX_FontRegistry::GetFallbackOrder(
+    int weight,
+    bool italic,
+    bool for_authoring) {
+  struct Ranked {
+    FontId id;
+    int score;
+  };
+  std::vector<Ranked> ranked;
+  if (g_registry) {
+    for (FontId font_id : g_registry->fallback_order) {
+      RegisteredFont* font = GetRegisteredFont(font_id);
+      if (!font || (for_authoring && !font->editing_authorized)) {
+        continue;
+      }
+      ranked.push_back({font_id, StyleScore(*font, weight, italic)});
+    }
+  }
+  // Stable: among equal scores the font added first stays first, as in
+  // FindFallbackFont().
+  std::ranges::stable_sort(ranked, {}, &Ranked::score);
+  std::vector<FontId> order;
+  order.reserve(ranked.size());
+  for (const Ranked& entry : ranked) {
+    order.push_back(entry.id);
+  }
+  return order;
 }
 
 // static

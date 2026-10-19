@@ -26,6 +26,12 @@ source_set("fpdfdoc") {
     # EmbedPDF: a font as a face (family, weight, italic), one reader for all.
     "cpdf_fontface.cpp",
     "cpdf_fontface.h",
+    # EmbedPDF: the fonts a document uses and what each program is, and the
+    # fonts a write would draw text with (a resolver read).
+    "cpdf_documentfonts.cpp",
+    "cpdf_documentfonts.h",
+    "cpdf_fontresolver.cpp",
+    "cpdf_fontresolver.h",
     "cpdf_richtext.h",
     "cpdf_richtextjson.cpp",
     "cpdf_richtextjson.h",

@@ -230,6 +230,9 @@ pdfium_embeddertest_source_set("embeddertests") {
     "epdf_annot_embeddertest.cpp",
     # EmbedPDF: covers attachments (public/epdf_attachment.h).
     "epdf_attachment_embeddertest.cpp",
+    # EmbedPDF: covers a document's fonts, the resolver read and the
+    # registry's program reads (public/epdf_font.h).
+    "epdf_font_embeddertest.cpp",
     # EmbedPDF: covers flattening and annotation export (public/epdf_flatten.h).
     "epdf_flatten_embeddertest.cpp",
     # EmbedPDF: covers base documents and layers (public/epdf_layer.h).
