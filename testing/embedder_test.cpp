@@ -987,6 +987,11 @@ std::string EmbedderTest::RenderPageWithFlagsToDisplayList(
     FPDF_PAGE page,
     FPDF_FORMHANDLE handle,
     int flags) {
+  // EmbedPDF(layer-mode): no form-fill drawing in layer mode, as in
+  // RenderPageWithFlags(); the form handle would create the page view.
+  if (embedpdf_test::IsLayerModeEnabled()) {
+    handle = nullptr;
+  }
   return DisplayListRenderer::RenderPage(page, handle, flags);
 }
 
