@@ -20,6 +20,7 @@
 #include "core/fxcrt/span.h"
 #include "core/fxcrt/widestring.h"
 #include "fpdfsdk/cpdfsdk_helpers.h"
+#include "fpdfsdk/epdf_named_pages_helpers.h"
 
 namespace {
 
@@ -95,6 +96,43 @@ int RemoveAllByKey(CPDF_NameTree* tree, const WideString& key) {
 }
 
 }  // namespace
+
+namespace epdf {
+
+std::vector<WideString> NamedPageKeysOf(CPDF_Document* doc,
+                                        uint32_t page_objnum) {
+  std::vector<WideString> keys;
+  auto name_tree = CPDF_NameTree::CreateForReading(doc, "Pages");
+  const size_t count = name_tree ? name_tree->GetCount() : 0;
+  for (size_t i = 0; i < count; ++i) {
+    WideString key;
+    RetainPtr<CPDF_Object> value = name_tree->LookupValueAndName(i, &key);
+    const CPDF_Dictionary* dict = value ? value->AsDictionary() : nullptr;
+    if (dict && dict->GetObjNum() == page_objnum) {
+      keys.push_back(std::move(key));
+    }
+  }
+  return keys;
+}
+
+bool AddNamedPageIfFree(CPDF_Document* doc,
+                        const WideString& key,
+                        uint32_t page_objnum) {
+  if (key.IsEmpty() || doc->GetPageIndex(page_objnum) < 0) {
+    return false;
+  }
+  if (auto existing = CPDF_NameTree::CreateForReading(doc, "Pages");
+      existing && FindIndexByKey(*existing, key).has_value()) {
+    return false;
+  }
+  // Mutable catalog path, as EPDFDoc_SetNamedPage() takes.
+  auto name_tree = CPDF_NameTree::CreateWithRootNameArray(doc, "Pages");
+  return name_tree &&
+         name_tree->AddValueAndName(
+             pdfium::MakeRetain<CPDF_Reference>(doc, page_objnum), key);
+}
+
+}  // namespace epdf
 
 FPDF_EXPORT int FPDF_CALLCONV EPDFDoc_GetNamedPageCount(FPDF_DOCUMENT document,
                                                         int tree) {
