@@ -4,8 +4,9 @@
 // EmbedPDF: lays a CPDF_RichTextDocument out into lines of shaped glyph
 // runs, the way Acrobat does it (plan §4.4, Phase C note §4): HarfBuzz
 // shaping per run, UAX #14 break opportunities snapped to grapheme
-// boundaries, and the measured line model (ascent = max, descent = the last
-// run's, leading = 0.2 em of the largest size). Fonts come from a
+// boundaries, the Unicode bidi algorithm (UAX #9) ordering each line, and the
+// measured line model (ascent = max, descent = the last run's, leading =
+// 0.2 em of the largest size). Fonts come from a
 // CPDF_AnnotFontMap, which the layout extends with fallbacks as it goes.
 // Nothing here touches a document.
 
@@ -46,8 +47,8 @@ class CPDF_RichTextLayout {
     WideString text;           // the logical text this run draws
     size_t text_begin = 0;     // range within the paragraph's logical text
     size_t text_end = 0;
-    uint8_t bidi_level = 0;           // D: 0 or 1 from the run's script
-    bool rtl = false;                 // shaped right-to-left
+    uint8_t bidi_level = 0;  // resolved embedding level; odd = right to left
+    bool rtl = false;        // shaped right to left
     std::vector<ShapedGlyph> glyphs;  // visual order for the run's direction
     float x = 0;        // start, from the text area's left edge, pt
     float width = 0;    // sum of advances
@@ -73,6 +74,9 @@ class CPDF_RichTextLayout {
     bool typographic_features = false;
     // Acrobat's line descent is the last run's; false = max over runs.
     bool parity_descent = true;
+    // A paragraph reads in the direction of its first strong character (left
+    // to right when it has none), as a form field does, instead of its dir.
+    bool direction_from_text = false;
   };
 
   struct Result {

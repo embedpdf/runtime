@@ -13,6 +13,7 @@
 
 #include "core/fpdfapi/font/cpdf_font.h"
 #include "core/fpdfdoc/cpdf_annotfontmap.h"
+#include "core/fxcrt/cfx_bidiparagraph.h"
 #include "core/fxcrt/code_point_view.h"
 #include "core/fxcrt/fx_linebreak.h"
 #include "core/fxcrt/fx_unicode.h"
@@ -109,10 +110,6 @@ bool IsCommonScript(hb_script_t script) {
          script == HB_SCRIPT_UNKNOWN;
 }
 
-bool IsRtlScript(hb_script_t script) {
-  return hb_script_get_horizontal_direction(script) == HB_DIRECTION_RTL;
-}
-
 // Scripts whose shaping is a matter of default features only: the Latin
 // features Acrobat leaves off are turned off for them (C note §4.2).
 bool IsSimpleScript(hb_script_t script) {
@@ -178,14 +175,15 @@ struct ResolvedStyle {
   bool has_size_override = false;
 };
 
-// One shaping unit: one font entry, one style, one script and direction,
-// covering [begin, end) of the segment's text.
+// One shaping unit: one font entry, one style, one script and one bidi
+// level, covering [begin, end) of the segment's text.
 struct Item {
   int entry = -1;
   int style_index = 0;
   size_t begin = 0;
   size_t end = 0;
   hb_script_t script = HB_SCRIPT_COMMON;
+  uint8_t level = 0;  // odd: shaped right to left
   bool rtl = false;
   std::vector<ShapedGlyph> glyphs;  // clusters are absolute segment indices
   float ascent = 0;                 // pt
@@ -198,6 +196,7 @@ struct Segment {
   WideString text;                 // without the hard break
   std::vector<int> style_of;       // per character
   std::vector<size_t> source_pos;  // per character: index in the paragraph
+  std::optional<CFX_BidiParagraph> bidi;
   std::vector<Item> items;
   int break_style = 0;  // the style at the hard break, for an empty line
   bool ends_with_hard_break = false;
@@ -379,14 +378,19 @@ struct CPDF_RichTextLayout::Impl {
     item->ascent = face.ascent * size;
     item->descent = face.descent * size;
     item->degraded = face.degraded;
-    item->rtl = IsRtlScript(item->script);
+    item->rtl = (item->level & 1) != 0;
 
     HbFont* hb = face.program ? HbFontOf(item->entry) : nullptr;
     if (!hb) {
       // Standard 14 (or a program HarfBuzz refused): one glyph per
-      // character through the font's encoding.
+      // character through the font's encoding; right to left, in reverse
+      // and mirrored, as HarfBuzz would.
       for (size_t i = item->begin; i < item->end; ++i) {
-        const uint32_t code = GlyphFor(item->entry, text[i]);
+        uint32_t ch = static_cast<uint32_t>(text[i]);
+        if (item->rtl) {
+          ch = hb_unicode_mirroring(hb_unicode_funcs_get_default(), ch);
+        }
+        const uint32_t code = GlyphFor(item->entry, static_cast<wchar_t>(ch));
         ShapedGlyph glyph;
         glyph.gid = code;
         glyph.cluster = pdfium::checked_cast<uint32_t>(i);
@@ -395,7 +399,10 @@ struct CPDF_RichTextLayout::Impl {
         glyph.x_advance = (width * size / 1000.0f + letter_spacing) * scale_x;
         item->glyphs.push_back(glyph);
       }
-      item->needs_actual_text = false;
+      if (item->rtl) {
+        std::reverse(item->glyphs.begin(), item->glyphs.end());
+      }
+      item->needs_actual_text = item->rtl;
       return;
     }
 
@@ -499,12 +506,8 @@ struct CPDF_RichTextLayout::Impl {
     return width;
   }
 
-  // Ink width of the segment's text in [begin, end): trailing spaces do
-  // not count (Acrobat centres and wraps without them).
-  static float InkWidth(const Segment& segment, size_t begin, size_t end) {
-    while (end > begin && IsSpace(segment.text[end - 1])) {
-      --end;
-    }
+  // Width of the segment's text in [begin, end).
+  static float RangeWidth(const Segment& segment, size_t begin, size_t end) {
     float width = 0;
     for (const Item& item : segment.items) {
       if (item.end <= begin || item.begin >= end) {
@@ -514,6 +517,19 @@ struct CPDF_RichTextLayout::Impl {
           WidthOf(item, std::max(begin, item.begin), std::min(end, item.end));
     }
     return width;
+  }
+
+  // Where the ink of [begin, end) ends: trailing spaces do not count
+  // (Acrobat centres and wraps without them).
+  static size_t InkEnd(const Segment& segment, size_t begin, size_t end) {
+    while (end > begin && IsSpace(segment.text[end - 1])) {
+      --end;
+    }
+    return end;
+  }
+
+  static float InkWidth(const Segment& segment, size_t begin, size_t end) {
+    return RangeWidth(segment, begin, InkEnd(segment, begin, end));
   }
 
   static bool IsClusterBoundary(const Segment& segment, size_t pos) {
@@ -554,22 +570,28 @@ struct CPDF_RichTextLayout::Impl {
     }
   }
 
-  // Builds the items of a segment: runs of one style, split by script and
-  // by the face that covers each grapheme, then shaped.
-  void Itemize(Segment* segment, const std::vector<ResolvedStyle>& styles) {
+  // Builds the items of a segment of a paragraph that reads right to left
+  // when |rtl|: runs of one style, split by script, by bidi level and by the
+  // face that covers each grapheme, then shaped.
+  void Itemize(Segment* segment,
+               bool rtl,
+               const std::vector<ResolvedStyle>& styles) {
     const WideString& text = segment->text;
     const size_t length = text.GetLength();
     segment->items.clear();
+    segment->bidi.emplace(text, rtl);
     if (length == 0) {
       return;
     }
     const std::vector<bool> grapheme_starts = GraphemeStarts(text);
+    const std::vector<uint8_t>& levels = segment->bidi->levels();
 
-    // Per grapheme: style, script, entry.
+    // Per grapheme: style, script, level, entry.
     struct Piece {
       size_t begin, end;
       int style;
       hb_script_t script;
+      uint8_t level;
       int entry;
     };
     std::vector<Piece> pieces;
@@ -597,7 +619,7 @@ struct CPDF_RichTextLayout::Impl {
       if (!match.covered && !IsInvisibleGrapheme(grapheme)) {
         fonts->NoteMissingCharacter(WideString(grapheme));
       }
-      pieces.push_back({begin, end, style, script, match.entry});
+      pieces.push_back({begin, end, style, script, levels[begin], match.entry});
       begin = end;
     }
     // A leading common-script piece takes the script that follows it.
@@ -610,7 +632,7 @@ struct CPDF_RichTextLayout::Impl {
     for (const Piece& piece : pieces) {
       Item* last = segment->items.empty() ? nullptr : &segment->items.back();
       if (last && last->style_index == piece.style &&
-          last->entry == piece.entry &&
+          last->entry == piece.entry && last->level == piece.level &&
           (last->script == piece.script || IsCommonScript(piece.script))) {
         last->end = piece.end;
         continue;
@@ -621,6 +643,7 @@ struct CPDF_RichTextLayout::Impl {
       item.begin = piece.begin;
       item.end = piece.end;
       item.script = piece.script;
+      item.level = piece.level;
       segment->items.push_back(std::move(item));
     }
     for (Item& item : segment->items) {
@@ -631,46 +654,73 @@ struct CPDF_RichTextLayout::Impl {
     }
   }
 
-  // The runs of a line covering [begin, end) of the segment.
-  std::vector<GlyphRun> RunsFor(const Segment& segment,
-                                size_t begin,
-                                size_t end,
-                                const std::vector<ResolvedStyle>& styles) {
-    std::vector<GlyphRun> runs;
-    for (const Item& item : segment.items) {
-      if (item.end <= begin || item.begin >= end) {
-        continue;
+  // The run drawing [begin, end) of |item| at bidi level |level|.
+  static GlyphRun RunOf(const Segment& segment,
+                        const Item& item,
+                        size_t begin,
+                        size_t end,
+                        uint8_t level,
+                        const ResolvedStyle& resolved) {
+    GlyphRun run;
+    run.font_entry = item.entry;
+    run.style = resolved.style;
+    run.style.size = resolved.drawn_size;
+    run.rise = resolved.rise;
+    run.text = segment.text.Substr(begin, end - begin);
+    run.text_begin = segment.source_pos[begin];
+    run.text_end = end < segment.source_pos.size()
+                       ? segment.source_pos[end]
+                       : segment.source_pos[end - 1] + 1;
+    run.rtl = item.rtl;
+    run.bidi_level = level;
+    run.ascent = item.ascent;
+    run.descent = item.descent;
+    run.needs_actual_text = item.needs_actual_text;
+    run.degraded = item.degraded;
+    for (const ShapedGlyph& glyph : item.glyphs) {
+      if (glyph.cluster >= begin && glyph.cluster < end) {
+        ShapedGlyph copy = glyph;
+        copy.cluster -= pdfium::checked_cast<uint32_t>(begin);
+        run.glyphs.push_back(copy);
+        run.width += glyph.x_advance;
       }
-      const size_t run_begin = std::max(begin, item.begin);
-      const size_t run_end = std::min(end, item.end);
-      const ResolvedStyle& resolved = styles[item.style_index];
-      GlyphRun run;
-      run.font_entry = item.entry;
-      run.style = resolved.style;
-      run.style.size = resolved.drawn_size;
-      run.rise = resolved.rise;
-      run.text = segment.text.Substr(run_begin, run_end - run_begin);
-      run.text_begin = segment.source_pos[run_begin];
-      run.text_end = run_end < segment.source_pos.size()
-                         ? segment.source_pos[run_end]
-                         : segment.source_pos[run_end - 1] + 1;
-      run.rtl = item.rtl;
-      run.bidi_level = item.rtl ? 1 : 0;
-      run.ascent = item.ascent;
-      run.descent = item.descent;
-      run.needs_actual_text = item.needs_actual_text;
-      run.degraded = item.degraded;
-      for (const ShapedGlyph& glyph : item.glyphs) {
-        if (glyph.cluster >= run_begin && glyph.cluster < run_end) {
-          ShapedGlyph copy = glyph;
-          copy.cluster -= pdfium::checked_cast<uint32_t>(run_begin);
-          run.glyphs.push_back(copy);
-          run.width += glyph.x_advance;
-        }
-      }
-      runs.push_back(std::move(run));
     }
-    return runs;
+    return run;
+  }
+
+  // The runs of a line covering [begin, end) of the segment, in the order
+  // they are drawn, left to right.
+  static std::vector<GlyphRun> RunsFor(
+      const Segment& segment,
+      size_t begin,
+      size_t end,
+      const std::vector<ResolvedStyle>& styles) {
+    // Whitespace ending the line takes the paragraph's level, so an item's
+    // last characters may run at another level than the rest of it.
+    const std::vector<uint8_t> levels = segment.bidi->LineLevels(begin, end);
+    std::vector<GlyphRun> runs;
+    std::vector<uint8_t> run_levels;
+    for (const Item& item : segment.items) {
+      const size_t item_end = std::min(end, item.end);
+      for (size_t run_begin = std::max(begin, item.begin);
+           run_begin < item_end;) {
+        const uint8_t level = levels[run_begin - begin];
+        size_t run_end = run_begin + 1;
+        while (run_end < item_end && levels[run_end - begin] == level) {
+          ++run_end;
+        }
+        runs.push_back(RunOf(segment, item, run_begin, run_end, level,
+                             styles[item.style_index]));
+        run_levels.push_back(level);
+        run_begin = run_end;
+      }
+    }
+    std::vector<GlyphRun> visual;
+    visual.reserve(runs.size());
+    for (size_t index : CFX_BidiParagraph::VisualOrder(run_levels)) {
+      visual.push_back(std::move(runs[index]));
+    }
+    return visual;
   }
 };
 
@@ -842,12 +892,23 @@ CPDF_RichTextLayout::Result CPDF_RichTextLayout::Arrange(
       }
       segments.back().break_style = last_style;
 
+      // The direction the paragraph reads in: its dir, or its text's.
+      bool rtl = props.rtl;
+      if (options_.direction_from_text) {
+        WideString text;
+        for (const Segment& segment : segments) {
+          text += segment.text;
+        }
+        rtl = CFX_BidiParagraph::FirstStrongIsRtl(text.AsStringView())
+                  .value_or(false);
+      }
+
       // 3. Each segment: itemise, shape, break into lines.
       const float margin_left = std::max(0.0f, props.margin_left);
       const float margin_right = std::max(0.0f, props.margin_right);
       bool first_line_of_paragraph = true;
       for (Segment& segment : segments) {
-        impl.Itemize(&segment, styles);
+        impl.Itemize(&segment, rtl, styles);
         const size_t length = segment.text.GetLength();
         const std::vector<bool> opportunities =
             BreakOpportunities(segment.text);
@@ -942,11 +1003,13 @@ CPDF_RichTextLayout::Result CPDF_RichTextLayout::Arrange(
             line.leading = kLeadingFactor * max_size;
           }
           // 5. Horizontal placement.
-          line.width = Impl::InkWidth(segment, pos, best);
+          const size_t ink_end = Impl::InkEnd(segment, pos, best);
+          line.width = Impl::RangeWidth(segment, pos, ink_end);
           const float slack = std::max(0.0f, avail - line.width);
+          // A paragraph whose dir is rtl names its sides from where it
+          // starts: left (the default) is its right side.
           Align align = props.align;
           if (props.rtl) {
-            std::reverse(line.runs.begin(), line.runs.end());
             if (align == Align::kLeft) {
               align = Align::kRight;
             } else if (align == Align::kRight) {
@@ -956,7 +1019,8 @@ CPDF_RichTextLayout::Result CPDF_RichTextLayout::Arrange(
           const bool justify_this_line = align == Align::kJustify &&
                                          best < length &&
                                          !line.ends_with_hard_break;
-          float start = margin_left + indent;
+          // The indent is on the side the paragraph starts from.
+          float start = margin_left + (rtl ? 0 : indent);
           switch (align) {
             case Align::kLeft:
             case Align::kJustify:
@@ -969,11 +1033,20 @@ CPDF_RichTextLayout::Result CPDF_RichTextLayout::Arrange(
               break;
           }
           if (justify_this_line) {
+            // The spaces between words stretch; the line's trailing ones
+            // hang.
+            const size_t ink_source_end =
+                segment.source_pos[pos] + (ink_end - pos);
+            auto stretches = [&](const GlyphRun& run,
+                                 const ShapedGlyph& glyph) {
+              return glyph.cluster < run.text.GetLength() &&
+                     IsSpace(run.text[glyph.cluster]) &&
+                     run.text_begin + glyph.cluster < ink_source_end;
+            };
             int spaces = 0;
             for (const GlyphRun& run : line.runs) {
               for (const ShapedGlyph& glyph : run.glyphs) {
-                if (glyph.cluster < run.text.GetLength() &&
-                    IsSpace(run.text[glyph.cluster])) {
+                if (stretches(run, glyph)) {
                   ++spaces;
                 }
               }
@@ -982,8 +1055,7 @@ CPDF_RichTextLayout::Result CPDF_RichTextLayout::Arrange(
               const float extra = slack / spaces;
               for (GlyphRun& run : line.runs) {
                 for (ShapedGlyph& glyph : run.glyphs) {
-                  if (glyph.cluster < run.text.GetLength() &&
-                      IsSpace(run.text[glyph.cluster])) {
+                  if (stretches(run, glyph)) {
                     glyph.x_advance += extra;
                     run.width += extra;
                   }
@@ -991,8 +1063,13 @@ CPDF_RichTextLayout::Result CPDF_RichTextLayout::Arrange(
               }
             }
           }
+          // The line's trailing spaces hang past its end: past the left
+          // edge when the paragraph reads right to left.
           line.start_x = start;
           float x = start;
+          if (rtl) {
+            x -= Impl::RangeWidth(segment, ink_end, best);
+          }
           for (GlyphRun& run : line.runs) {
             run.x = x;
             x += run.width;
