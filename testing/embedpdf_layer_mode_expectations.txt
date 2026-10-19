@@ -22,10 +22,10 @@ FPDFAnnotEmbedderTest.GetFontSize* Needs the form-fill page view (FPDF_FORMHANDL
 FPDFAnnotEmbedderTest.GetFontColor Needs the form-fill page view (FPDF_FORMHANDLE APIs).
 FPDFAnnotEmbedderTest.IsChecked* Needs the form-fill page view (FPDF_FORMHANDLE APIs).
 FPDFAnnotEmbedderTest.GetFormFieldExportValue* Needs the form-fill page view (FPDF_FORMHANDLE APIs).
-FPDFFlattenEmbedderTest.Bug861842 Pixel test of a form; layer mode doesn't draw with FPDF_FFLDraw.
-FPDFFlattenEmbedderTest.Bug889099 Pixel test of a form; layer mode doesn't draw with FPDF_FFLDraw.
-FPDFFlattenEmbedderTest.Bug890322 Pixel test of a form; layer mode doesn't draw with FPDF_FFLDraw.
-FPDFFlattenEmbedderTest.Bug896366 Pixel test of a form; layer mode doesn't draw with FPDF_FFLDraw.
+FPDFFlattenEmbedderTest.Bug861842 Draws a form; layer mode doesn't draw the form-fill layer.
+FPDFFlattenEmbedderTest.Bug889099 Draws a form; layer mode doesn't draw the form-fill layer.
+FPDFFlattenEmbedderTest.Bug890322 Draws a form; layer mode doesn't draw the form-fill layer.
+FPDFFlattenEmbedderTest.Bug896366 Draws a form; layer mode doesn't draw the form-fill layer.
 
 # --- Upstream write APIs the engine doesn't call; they write in place, past
 # the layer's copy-up door. Make one layer-safe before the engine uses it.
