@@ -312,6 +312,10 @@ class CPDF_Document : public Observable,
   // when the number can't take it or the page can't be inserted; nothing
   // changes then.
   RetainPtr<CPDF_Dictionary> CreateNewPageAt(int iPage, uint32_t objnum);
+  // EmbedPDF(epdf-api): puts |page_dict|, a page out of the page tree, back
+  // into it at |iPage|, for EPDFPage_ImportRaw(). False when |iPage| is out of
+  // range or the page tree can't take it.
+  bool InsertExistingPage(int iPage, RetainPtr<CPDF_Dictionary> page_dict);
 
   void IncrementParsedPageCount() { ++parsed_page_count_; }
   uint32_t GetParsedPageCountForTesting() { return parsed_page_count_; }

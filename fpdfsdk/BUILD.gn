@@ -40,8 +40,10 @@ source_set("fpdfsdk") {
     "epdf_outline.cpp",
     "epdf_outline_helpers.cpp",
     "epdf_outline_helpers.h",
-    # EmbedPDF: the catalog's /Names /Pages and /Templates name trees.
+    # EmbedPDF: the catalog's /Names /Pages and /Templates name trees, and
+    # the lookups page captures share.
     "epdf_named_pages.cpp",
+    "epdf_named_pages_helpers.h",
     # EmbedPDF: digests (EPDF_DigestBuffer) and the hasher signatures share.
     "epdf_digest.cpp",
     "epdf_hasher.h",

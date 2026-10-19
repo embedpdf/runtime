@@ -131,6 +131,30 @@ EPDFOutline_ImportItemRaw(FPDF_DOCUMENT document,
                           const void* capture,
                           unsigned long size);
 
+// Experimental EmbedPDF Extension API.
+// The page |page_objnum| as EPDFDoc_DeletePageByObjectNumber() removes it:
+// the page and every object the layer holds a version of that it reaches
+// (its contents, resources and annotations, with their appearances; never
+// another page or the form's fields), the /Names /Pages keys that name it,
+// and its place: the page it followed. NULL when |page_objnum| is not a page
+// in the page tree.
+FPDF_EXPORT void* FPDF_CALLCONV
+EPDFPage_ExportRawToOwnedBuffer(FPDF_DOCUMENT document,
+                                uint32_t page_objnum,
+                                unsigned long* out_size);
+
+// Experimental EmbedPDF Extension API.
+// Puts the page of |capture| back: its objects where the layer holds no
+// version, the page itself also over the null a delete leaves for a page the
+// layer made; then the page into the page tree right after the page it
+// followed while that is still in it, else first; then each of its keys that
+// no registration holds now. False outside a transaction, for a malformed
+// capture, or when the page is in the page tree already.
+FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV
+EPDFPage_ImportRaw(FPDF_DOCUMENT document,
+                   const void* capture,
+                   unsigned long size);
+
 #ifdef __cplusplus
 }  // extern "C"
 #endif

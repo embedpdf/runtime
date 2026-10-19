@@ -224,7 +224,9 @@ int CheckEmbedPDFCApi(void) {
   CHK(EPDFOutline_ExportItemRawToOwnedBuffer);
   CHK(EPDFOutline_ImportItemRaw);
   CHK(EPDFPage_ExportAnnotsRawToOwnedBuffer);
+  CHK(EPDFPage_ExportRawToOwnedBuffer);
   CHK(EPDFPage_ImportAnnotsRaw);
+  CHK(EPDFPage_ImportRaw);
 
   // epdf_catalog.h
   CHK(EPDFCatalog_GetLanguage);

@@ -21,6 +21,7 @@
 #include "core/fpdfapi/parser/cpdf_number.h"
 #include "core/fpdfapi/parser/cpdf_reference.h"
 #include "core/fpdfapi/parser/cpdf_stream.h"
+#include "core/fpdfapi/parser/cpdf_string.h"
 #include "core/fpdfapi/parser/cpdf_syntax_parser.h"
 #include "core/fxcrt/bytestring.h"
 #include "core/fxcrt/cfx_read_only_span_stream.h"
@@ -29,8 +30,10 @@
 #include "core/fxcrt/fx_string_wrappers.h"
 #include "core/fxcrt/numerics/safe_conversions.h"
 #include "core/fxcrt/span.h"
+#include "core/fxcrt/widestring.h"
 #include "fpdfsdk/cpdfsdk_helpers.h"
 #include "fpdfsdk/epdf_form_helpers.h"
+#include "fpdfsdk/epdf_named_pages_helpers.h"
 #include "fpdfsdk/epdf_object_helpers.h"
 #include "fpdfsdk/epdf_outline_helpers.h"
 #include "fpdfsdk/epdf_owned_buffer.h"
@@ -57,7 +60,8 @@ bool IsOutlineLinkKey(ByteStringView key) {
          key == "SE";
 }
 
-// Objects a capture never holds: the catalog, the page tree and its pages.
+// Objects a capture never holds: the catalog, the page tree and its pages,
+// save the page a page capture is of (CaptureWriter::AddPage()).
 bool IsBoundaryObject(const CPDF_Object* object) {
   RetainPtr<const CPDF_Dictionary> dict = object->GetDict();
   if (!dict) {
@@ -133,6 +137,13 @@ class CaptureWriter {
     AddObject(objnum);
   }
 
+  // Captures the page |objnum| as AddObject() does: a page is a boundary
+  // object, but not the page the capture is of.
+  void AddPage(uint32_t objnum) {
+    pages_.insert(objnum);
+    AddObject(objnum);
+  }
+
   // The header, |manifest|, then every captured object in number order.
   DataVector<uint8_t> Write(const CPDF_Dictionary* manifest) const {
     fxcrt::ostringstream text;
@@ -198,7 +209,8 @@ class CaptureWriter {
       pending_.pop_front();
       RetainPtr<const CPDF_Object> object =
           layer_->GetOrParseIndirectObject(objnum);
-      if (!object || IsBoundaryObject(object.Get())) {
+      if (!object ||
+          (IsBoundaryObject(object.Get()) && !pages_.contains(objnum))) {
         continue;
       }
       if (RetainPtr<CPDF_Object> version = layer_->FindLayerVersion(objnum)) {
@@ -251,6 +263,7 @@ class CaptureWriter {
 
   UnownedPtr<CPDF_LayerDocument> const layer_;
   std::set<uint32_t> outline_items_;
+  std::set<uint32_t> pages_;
   std::set<uint32_t> visited_;
   std::deque<uint32_t> pending_;
   std::map<uint32_t, RetainPtr<CPDF_Object>> objects_;
@@ -866,4 +879,110 @@ EPDFOutline_ImportItemRaw(FPDF_DOCUMENT document,
   children.insert(children.begin() + slot, static_cast<uint32_t>(item));
   return epdf::WriteOutlineChildren(layer, node, children) &&
          epdf::RecountOutline(layer, *root, item);
+}
+
+FPDF_EXPORT void* FPDF_CALLCONV
+EPDFPage_ExportRawToOwnedBuffer(FPDF_DOCUMENT document,
+                                uint32_t page_objnum,
+                                unsigned long* out_size) {
+  if (out_size) {
+    *out_size = 0;
+  }
+  CPDF_LayerDocument* layer = LayerOf(document);
+  if (!layer || !page_objnum) {
+    return nullptr;
+  }
+  CPDF_DocumentViewScope view(layer);
+  const int page_index = layer->GetPageIndex(page_objnum);
+  if (page_index < 0) {
+    return nullptr;
+  }
+  RetainPtr<const CPDF_Dictionary> before =
+      page_index > 0 ? layer->GetPageDictionary(page_index - 1) : nullptr;
+
+  // The page, where it was (After: the page it followed, 0 when it was the
+  // first), and the keys that name it.
+  auto manifest = pdfium::MakeRetain<CPDF_Dictionary>();
+  manifest->SetNewFor<CPDF_Name>("Kind", "Page");
+  manifest->SetNewFor<CPDF_Number>("Page",
+                                   pdfium::checked_cast<int>(page_objnum));
+  manifest->SetNewFor<CPDF_Number>(
+      "After", before ? pdfium::checked_cast<int>(before->GetObjNum()) : 0);
+  auto names = manifest->SetNewFor<CPDF_Array>("Names");
+  for (const WideString& key : epdf::NamedPageKeysOf(layer, page_objnum)) {
+    names->AppendNew<CPDF_String>(key.AsStringView());
+  }
+  CaptureWriter writer(layer);
+  writer.AddPage(page_objnum);
+  return ToOwnedBuffer(writer.Write(manifest.Get()), out_size);
+}
+
+FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV
+EPDFPage_ImportRaw(FPDF_DOCUMENT document,
+                   const void* capture,
+                   unsigned long size) {
+  CPDF_LayerDocument* layer = LayerOf(document);
+  if (!layer || !layer->InTransaction() || !capture || !size) {
+    return false;
+  }
+  CPDF_DocumentViewScope view(layer);
+  // SAFETY: required from caller.
+  std::optional<Capture> read = ReadCapture(
+      layer,
+      UNSAFE_BUFFERS(pdfium::span(static_cast<const uint8_t*>(capture), size)),
+      "Page");
+  if (!read) {
+    return false;
+  }
+  const int page_number = read->manifest->GetIntegerFor("Page");
+  const int after = read->manifest->GetIntegerFor("After");
+  if (page_number <= 0 || after < 0 ||
+      static_cast<uint32_t>(page_number) > layer->GetLastObjNum()) {
+    return false;
+  }
+  const uint32_t page = static_cast<uint32_t>(page_number);
+  // It must not be back already.
+  if (layer->GetPageIndex(page) >= 0) {
+    return false;
+  }
+  // It comes back from the capture, or as the page the layer reads now (the
+  // file's original, when the layer never edited it).
+  auto captured = read->objects.find(page);
+  const bool in_capture = captured != read->objects.end();
+  RetainPtr<const CPDF_Dictionary> reads_now =
+      ToDictionary(layer->GetOrParseIndirectObject(page));
+  const CPDF_Dictionary* comes_back =
+      in_capture ? captured->second->AsDictionary() : reads_now.Get();
+  if (!comes_back || comes_back->GetNameFor("Type") != "Page") {
+    return false;
+  }
+  // After the page it followed while that is still in the page tree, else
+  // first.
+  const int anchor =
+      after > 0 ? layer->GetPageIndex(static_cast<uint32_t>(after)) : -1;
+  const int slot = anchor >= 0 ? anchor + 1 : 0;
+
+  // A page the layer made reads as null once deleted (SetPageToNullObject(),
+  // so nothing that still points at it saves it): it comes back over that
+  // null.
+  if (in_capture) {
+    RetainPtr<const CPDF_Object> held = layer->FindLayerVersion(page);
+    if (held && held->IsNull()) {
+      layer->DeleteIndirectObject(page);
+    }
+  }
+  if (!InstallObjects(layer, *read)) {
+    return false;
+  }
+  RetainPtr<CPDF_Dictionary> page_dict =
+      ToDictionary(layer->GetMutableIndirectObject(page));
+  if (!page_dict || !layer->InsertExistingPage(slot, std::move(page_dict))) {
+    return false;
+  }
+  // A key another page holds now stays with it.
+  RetainPtr<const CPDF_Array> names = read->manifest->GetArrayFor("Names");
+  for (size_t i = 0; names && i < names->size(); ++i) {
+    epdf::AddNamedPageIfFree(layer, names->GetUnicodeTextAt(i), page);
+  }
+  return true;
 }
