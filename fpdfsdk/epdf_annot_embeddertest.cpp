@@ -50,6 +50,7 @@
 #include "core/fxcrt/fx_safe_types.h"
 #include "core/fxcrt/fx_string_wrappers.h"
 #include "core/fxcrt/span.h"
+#include "core/fxge/cfx_face.h"
 #include "core/fxge/cfx_font.h"
 #include "core/fxge/cfx_fontregistry.h"
 #include "fpdfsdk/cpdfsdk_helpers.h"
@@ -3040,9 +3041,11 @@ TEST_F(EPDFAnnotEmbedderTest, RegisteredLayoutFontAllocatesNoDocumentObject) {
         CPDF_AnnotFontSubset::CreateLayoutFont(cpdf_doc, roboto_id);
     ASSERT_TRUE(layout.font);
     ASSERT_TRUE(layout.scratch);
-    EXPECT_NE(0u, layout.font->CharCodeFromUnicode('A'));
-    EXPECT_GT(layout.font->GetCharWidth(layout.font->CharCodeFromUnicode('A')),
-              0);
+    // It measures glyphs, found through the program's own cmap: a
+    // TrueType program's glyph is its CID.
+    const int glyph = layout.font->GetFont()->GetFace()->GetCharIndex('A');
+    ASSERT_GT(glyph, 0);
+    EXPECT_GT(layout.font->GetCharWidth(static_cast<uint32_t>(glyph)), 0);
     EXPECT_EQ(0u, layout.font->GetFontDict()->GetObjNum());
   }
   EXPECT_EQ(last_obj_before, cpdf_doc->GetLastObjNum());
@@ -4318,7 +4321,11 @@ TEST_F(EPDFAnnotEmbedderTest, RichTextLastResortDrawsWhatNoFontHas) {
     RetainPtr<const CPDF_Dictionary> descriptor =
         GetType0FontDescriptor(font.Get());
     ASSERT_TRUE(descriptor);
-    EXPECT_TRUE(descriptor->GetStreamFor("FontFile2"));
+    RetainPtr<const CPDF_Stream> program =
+        descriptor->GetStreamFor("FontFile2");
+    ASSERT_TRUE(program);
+    // The box costs what the font does, not a cmap entry per code point.
+    EXPECT_EQ(box.size(), program->GetRawSize());
     EXPECT_THAT(GetNormalAppearance(annot.get()),
                 HasSubstr(L"/Span <</ActualText <FEFF4E2D4E2E>>> BDC"));
 
@@ -4345,10 +4352,11 @@ TEST_F(EPDFAnnotEmbedderTest, RichTextLastResortDrawsWhatNoFontHas) {
 TEST_F(EPDFAnnotEmbedderTest, RichTextPreviewAndPrintLastResortWaits) {
   ScopedRegisteredFonts scoped_fonts;
   std::vector<uint8_t> roboto = LoadRobotoFontData();
+  // Preview and print, and still never subset.
   std::vector<uint8_t> box = WithFsType(
       GetFileContents(
           PathService::GetTestFilePath("fonts/last_resort.ttf").c_str()),
-      0x0004);
+      0x0104);
   ASSERT_FALSE(roboto.empty());
   ASSERT_FALSE(box.empty());
   ASSERT_NE(0u, EPDFFont_RegisterMemFont64("Roboto", /*weight=*/400,

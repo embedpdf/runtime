@@ -68,11 +68,11 @@ class CPDF_AnnotFontSubset final {
     std::map<uint16_t, uint32_t> cid_to_gid_;
   };
 
-  // A registered font as CPVT lays text out with it. Its program and
-  // ToUnicode streams live in |scratch|, a holder of its own, never in the
-  // document: laying out allocates no document object number and leaves
-  // nothing behind. |scratch| must outlive |font| (it is declared first, so
-  // it is destroyed last).
+  // A registered font as the layout measures it: a composite font over its
+  // program. The program stream lives in |scratch|, a holder of its own,
+  // never in the document: laying out allocates no document object number
+  // and leaves nothing behind. |scratch| must outlive |font| (it is declared
+  // first, so it is destroyed last).
   struct LayoutFont {
     LayoutFont();
     LayoutFont(LayoutFont&& that) noexcept;

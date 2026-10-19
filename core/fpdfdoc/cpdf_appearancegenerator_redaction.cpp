@@ -17,7 +17,6 @@
 #include <vector>
 
 #include "constants/annotation_common.h"
-#include "core/fxcrt/stream_write_utils.h"
 #include "core/fpdfapi/font/cpdf_font.h"
 #include "core/fpdfapi/page/cpdf_docpagedata.h"
 #include "core/fpdfapi/parser/cpdf_array.h"
@@ -32,16 +31,17 @@
 #include "core/fpdfdoc/cpdf_appearancegenerator_internal.h"
 #include "core/fpdfdoc/cpdf_color_utils.h"
 #include "core/fpdfdoc/cpdf_interactiveform.h"
-#include "core/fpdfdoc/cpvt_variabletext.h"
+#include "core/fpdfdoc/cpdf_richtextlayout.h"
 #include "core/fxcrt/fx_string_wrappers.h"
 #include "core/fxcrt/fx_system.h"
+#include "core/fxcrt/stream_write_utils.h"
 #include "core/fxge/cfx_fontregistry.h"
 
 using appearance_generator::APGenerationTarget;
 using appearance_generator::DaFontResolution;
 using appearance_generator::DefaultAppearanceInfo;
+using appearance_generator::EmitFieldTextBody;
 using appearance_generator::GenerateColorAP;
-using appearance_generator::GenerateEditAP;
 using appearance_generator::GenerateExtGStateDict;
 using appearance_generator::GenerateFallbackFontDict;
 using appearance_generator::GenerateResourcesDict;
@@ -55,7 +55,6 @@ using appearance_generator::MarkupQuad;
 using appearance_generator::PaintOperation;
 using appearance_generator::ReadMarkupQuad;
 using appearance_generator::ResolveDaFontForPersistentTarget;
-using appearance_generator::SetVtFontSize;
 
 namespace {
 
@@ -169,73 +168,71 @@ constexpr float kRedactRepeatFallbackFontSize = 12.0f;
 
 constexpr int kRedactMaxRepeatDoublings = 10;  // 2^10 = 1024 label instances
 
-// EmbedPDF: lay out the /OverlayText label for one redacted region with the
-// same CPVT + annotation-font-map stack as FreeText appearances, so /DA fonts
-// (standard, DR-resolved, or registered runtime fonts) shape and subset
-// identically. Top-aligned in reading order; ISO 32000-2 prescribes neither
-// the vertical placement nor the /Repeat tiling, so /Repeat is expressed as
-// "repeat the label, space-joined, wrapped to the region, clipped".
+// EmbedPDF: lay out the /OverlayText label for one redacted region as a
+// form field's text, in the shared text engine with the annotation font map,
+// so /DA fonts (standard, DR-resolved, or registered runtime fonts) shape and
+// subset as every appearance's do. Top-aligned in reading order; ISO 32000-2
+// prescribes neither the vertical placement nor the /Repeat tiling, so
+// /Repeat is expressed as "repeat the label, space-joined, wrapped to the
+// region, clipped".
 void AppendRedactLabelForRegion(CPDF_AnnotFontMap& map,
+                                const CPDF_RichTextLayout::Options& options,
                                 const CPDF_Dictionary* annot_dict,
                                 const WideString& overlay_text,
                                 float da_font_size,
                                 const CFX_Color& label_color,
                                 const CFX_FloatRect& region,
                                 fxcrt::ostringstream& stream) {
-  CPVT_VariableText::Provider provider(&map);
-  CPVT_VariableText vt(&provider);
-  vt.SetPlateRect(region);
-  vt.SetAlignment(
-      CPVT_VariableText::ToAlignment(annot_dict->GetIntegerFor("Q")));
+  const CPDF_AnnotFontMap::EntryFacts face = map.DescribeEntry(0);
+  CPDF_RichTextLayout::Field field;
+  field.text = overlay_text;
+  field.face_entry = 0;
+  field.weight = face.weight;
+  field.italic = face.italic;
+  const int q = annot_dict->GetIntegerFor("Q");
+  field.alignment = q == 1 || q == 2 ? q : 0;
 
   const bool repeat = annot_dict->GetBooleanFor("Repeat", false);
-  // A label shown once at auto-size (0) fits the region on one line: CPVT
-  // auto-sizes multi-line text only up to 12pt (the rule for multi-line form
+  // A label shown once at auto-size (0) fits the region on one line: a
+  // fitted size of several lines stops at 12pt (the rule for multi-line form
   // fields), which would leave a large region mostly empty. A label at a set
   // size, or a repeated one, wraps to the region.
   const bool fit_one_line = !repeat && FXSYS_IsFloatZero(da_font_size);
-  vt.SetMultiLine(!fit_one_line);
-  vt.SetAutoReturn(!fit_one_line);
-  // CPVT auto-sizing fits ALL text into the plate, so it cannot combine with
-  // /Repeat (more repetitions would only shrink the font); pin a concrete
-  // size for the repeat case when /DA asks for auto (size 0).
-  float font_size = da_font_size;
-  if (repeat && FXSYS_IsFloatZero(font_size)) {
-    font_size = kRedactRepeatFallbackFontSize;
+  field.multiline = !fit_one_line;
+  // A fitted size fits ALL the text into the region, so it cannot combine
+  // with /Repeat (more repetitions would only shrink the font); pin a
+  // concrete size for the repeat case when /DA asks for auto (size 0).
+  field.size = da_font_size;
+  if (repeat && FXSYS_IsFloatZero(field.size)) {
+    field.size = kRedactRepeatFallbackFontSize;
   }
-  SetVtFontSize(font_size, vt);
-  vt.Initialize();
-  vt.SetText(overlay_text);
-  vt.RearrangeAll();
+  CPDF_RichTextLayout layout(&map, options);
+  CPDF_RichTextLayout::Result laid = layout.ArrangeField(field, region);
 
   if (repeat) {
     // Double the space-joined text until the wrapped layout covers the region
     // vertically; the last row's surplus is removed by the region clip below.
     // Bounded to keep tiny-font/huge-region combinations sane.
-    WideString tiled = overlay_text;
-    for (int i = 0; i < kRedactMaxRepeatDoublings &&
-                    vt.GetContentRect().Height() < region.Height();
+    for (int i = 0;
+         i < kRedactMaxRepeatDoublings && laid.content_height < region.Height();
          ++i) {
-      WideString doubled = tiled;
+      WideString doubled = field.text;
       doubled += L' ';
-      doubled += tiled;
-      tiled = std::move(doubled);
-      vt.SetText(tiled);
-      vt.RearrangeAll();
+      doubled += field.text;
+      field.text = std::move(doubled);
+      laid = layout.ArrangeField(field, region);
     }
   }
 
-  const ByteString body =
-      GenerateEditAP(vt.GetProvider()->GetFontMap(), vt.GetIterator(),
-                     CFX_PointF(0.0f, 0.0f), /*continuous=*/true,
-                     /*sub_word=*/0);
-  if (body.IsEmpty()) {
+  fxcrt::ostringstream body;
+  EmitFieldTextBody(body, laid, map, region);
+  if (body.str().empty()) {
     return;
   }
   stream << "q\n";
   WriteRect(stream, region) << " re W n\n";
   stream << "BT\n"
-         << GenerateColorAP(label_color, PaintOperation::kFill) << body
+         << GenerateColorAP(label_color, PaintOperation::kFill) << body.str()
          << "ET\nQ\n";
 }
 
@@ -346,9 +343,11 @@ bool AppendRedactOverlayOps(CPDF_Document* doc,
   if (!map.HasDefaultFont()) {
     return has_fill;
   }
+  CPDF_RichTextLayout::Options options;
+  options.typographic_features = doc->GetTypographicFeaturesEnabled();
   for (const RedactOverlayRegion& region : regions) {
-    AppendRedactLabelForRegion(map, annot_dict, overlay_text, da_font_size,
-                               label_color, region.bbox, stream);
+    AppendRedactLabelForRegion(map, options, annot_dict, overlay_text,
+                               da_font_size, label_color, region.bbox, stream);
   }
   *out_font_resources = map.CreateFontResourceDict();
   return !!*out_font_resources;

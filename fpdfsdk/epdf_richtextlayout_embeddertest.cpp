@@ -14,6 +14,9 @@
 #include "core/fpdfdoc/cpdf_annotfontmap.h"
 #include "core/fpdfdoc/cpdf_documentfonts.h"
 #include "core/fpdfdoc/cpdf_richtext.h"
+#include "core/fpdfdoc/cpvt_fontmap.h"
+#include "core/fpdfdoc/cpvt_variabletext.h"
+#include "core/fpdfdoc/cpvt_word.h"
 #include "core/fxcrt/fx_coordinates.h"
 #include "core/fxcrt/widestring.h"
 #include "fpdfsdk/cpdfsdk_helpers.h"
@@ -346,4 +349,174 @@ TEST_F(EPDFRichTextLayoutEmbedderTest, LastResortDrawsWhatNoFontHas) {
   ASSERT_EQ(1u, lines.size());
   ASSERT_EQ(1u, lines[0].runs.size());
   EXPECT_EQ(arimo_, FontOf(lines[0].runs[0]));
+}
+
+namespace {
+
+// A character a field draws, where its baseline starts.
+struct PlacedCharacter {
+  wchar_t ch;
+  float x;
+  float y;
+};
+
+}  // namespace
+
+// The field layout keeps the geometry of PDFium's form filler (CPVT) where
+// CPVT drew correctly: the same characters at the same places, for the
+// standard fonts, the sizes, fitted sizes, alignments, several lines, long
+// words, passwords, limits and combs the forms parity gate draws.
+TEST_F(EPDFRichTextLayoutEmbedderTest, FieldMatchesCpvt) {
+  struct Case {
+    const char* font;
+    const wchar_t* text;
+    float size;
+    int alignment;
+    bool multiline;
+    bool password;
+    size_t limit;
+    size_t cells;
+    CFX_FloatRect plate;
+  };
+  const CFX_FloatRect line(20, 20, 180, 44);
+  const CFX_FloatRect block(20, 20, 170, 110);
+  const wchar_t* const kParagraphs =
+      L"The quick brown fox jumps over the lazy dog, again and again.\n"
+      L"Second paragraph here\n\nAfter a blank line";
+  std::vector<Case> cases;
+  for (const char* font : {"Helvetica", "Helvetica-Bold", "Times-Roman",
+                           "Times-BoldItalic", "Courier-BoldOblique"}) {
+    for (float size : {0.0f, 8.0f, 11.0f, 14.0f}) {
+      cases.push_back({font,
+                       L"H\x00E9g, quick \x20AC"
+                       L"12.50 \x201C"
+                       L"fox\x201D",
+                       size, 0, false, false, 0, 0, line});
+    }
+  }
+  for (int alignment : {0, 1, 2}) {
+    for (const wchar_t* text : {L"Wide WWW text", L"i", L""}) {
+      cases.push_back(
+          {"Helvetica", text, 10, alignment, false, false, 0, 0, line});
+    }
+    for (float size : {0.0f, 9.0f}) {
+      cases.push_back({"Helvetica", kParagraphs, size, alignment, true, false,
+                       0, 0, block});
+    }
+    for (size_t cells : {6u, 10u}) {
+      cases.push_back({"Courier", L"AiW1\x00E9", 12, alignment, false, false, 0,
+                       cells, line});
+    }
+  }
+  cases.push_back({"Helvetica",
+                   L"A long value that will not fit in this box at all", 0, 0,
+                   false, false, 0, 0, line});
+  cases.push_back({"Times-Roman", L"Tall", 0, 0, false, false, 0, 0,
+                   CFX_FloatRect(20, 20, 140, 90)});
+  cases.push_back({"Times-Roman", L"Supercalifragilisticexpialidocious word",
+                   12, 0, true, false, 0, 0, CFX_FloatRect(20, 20, 100, 80)});
+  cases.push_back({"Helvetica",
+                   L"Words (in brackets) and [more] text {here} to (wrap)", 11,
+                   0, true, false, 0, 0, CFX_FloatRect(20, 20, 95, 110)});
+  cases.push_back({"Helvetica", L"secret", 10, 0, false, true, 0, 0, line});
+  cases.push_back(
+      {"Helvetica", L"truncate me please", 10, 0, false, false, 8, 0, line});
+  cases.push_back({"Helvetica", L"AiWm.", 12, 0, false, false, 0, 7, line});
+  cases.push_back({"Helvetica", L"1234", 0, 0, false, false, 0, 4, line});
+
+  CPDF_Document* doc = CPDFDocumentFromFPDFDocument(doc_.get());
+  for (const Case& c : cases) {
+    SCOPED_TRACE(testing::Message()
+                 << c.font << " " << c.size << " q" << c.alignment
+                 << (c.multiline ? " multiline" : "")
+                 << (c.password ? " password" : "") << " limit " << c.limit
+                 << " cells " << c.cells << " \"" << WideString(c.text).ToUTF8()
+                 << "\"");
+    RetainPtr<CPDF_Font> font = CPDF_Font::GetStockFont(doc, c.font);
+    ASSERT_TRUE(font);
+    const bool centered = !c.multiline;
+
+    // CPVT, as the form generator drove it.
+    std::vector<PlacedCharacter> expected;
+    {
+      CPVT_FontMap cpvt_fonts(doc, /*resources=*/nullptr, font, "F");
+      CPVT_VariableText::Provider provider(&cpvt_fonts);
+      CPVT_VariableText vt(&provider);
+      vt.SetPlateRect(c.plate);
+      vt.SetAlignment(CPVT_VariableText::ToAlignment(c.alignment));
+      if (c.size == 0) {
+        vt.SetAutoFontSize(true);
+      } else {
+        vt.SetFontSize(c.size);
+      }
+      if (c.multiline) {
+        vt.SetMultiLine(true);
+        vt.SetAutoReturn(true);
+      }
+      if (c.password) {
+        vt.SetPasswordChar('*');
+      }
+      if (c.cells > 0) {
+        vt.SetCharArray(static_cast<int32_t>(c.cells));
+      } else {
+        vt.SetLimitChar(static_cast<int32_t>(c.limit));
+      }
+      vt.Initialize();
+      vt.SetText(c.text);
+      vt.RearrangeAll();
+      const CFX_PointF offset(
+          0, centered ? (vt.GetContentRect().Height() - c.plate.Height()) / 2.0f
+                      : 0);
+      CPVT_VariableText::Iterator* it = vt.GetIterator();
+      it->SetAt(0);
+      while (it->NextWord()) {
+        CPVT_Word word;
+        if (it->GetWord(word)) {
+          const CFX_PointF at = word.location() + offset;
+          expected.push_back(
+              {c.password ? L'*' : static_cast<wchar_t>(word.word()), at.x,
+               at.y});
+        }
+      }
+    }
+
+    // The field layout.
+    std::vector<PlacedCharacter> actual;
+    {
+      CPDF_AnnotFontMap map(doc, font, "F",
+                            /*allow_registered_fallbacks=*/false);
+      ASSERT_TRUE(map.HasDefaultFont());
+      CPDF_RichTextLayout::Field field;
+      field.text = c.text;
+      field.face_entry = 0;
+      field.size = c.size;
+      field.alignment = c.alignment;
+      field.multiline = c.multiline;
+      field.password = c.password;
+      field.limit = c.limit;
+      field.cells = c.cells;
+      field.centered = centered;
+      CPDF_RichTextLayout layout(&map, {});
+      const CPDF_RichTextLayout::Result laid =
+          layout.ArrangeField(field, c.plate);
+      for (const Line& laid_line : laid.lines) {
+        const float y = c.plate.top - laid_line.baseline_y;
+        for (const GlyphRun& run : laid_line.runs) {
+          float x = c.plate.left + run.x;
+          for (const CPDF_RichTextLayout::ShapedGlyph& glyph : run.glyphs) {
+            actual.push_back({run.text[glyph.cluster], x, y});
+            x += glyph.x_advance;
+          }
+        }
+      }
+    }
+
+    ASSERT_EQ(expected.size(), actual.size());
+    for (size_t i = 0; i < expected.size(); ++i) {
+      SCOPED_TRACE(i);
+      EXPECT_EQ(expected[i].ch, actual[i].ch);
+      EXPECT_NEAR(expected[i].x, actual[i].x, 0.001f);
+      EXPECT_NEAR(expected[i].y, actual[i].y, 0.001f);
+    }
+  }
 }

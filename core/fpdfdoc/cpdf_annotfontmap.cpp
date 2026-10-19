@@ -29,10 +29,8 @@
 #include "core/fpdfdoc/cpdf_documentfonts.h"
 #include "core/fpdfdoc/cpdf_fontface.h"
 #include "core/fpdfdoc/cpdf_interactiveform.h"
-#include "core/fpdfdoc/cpdf_richtextlayout.h"
 #include "core/fxcrt/check.h"
 #include "core/fxcrt/code_point_view.h"
-#include "core/fxcrt/fx_codepage.h"
 #include "core/fxcrt/fx_safe_types.h"
 #include "core/fxcrt/numerics/safe_conversions.h"
 #include "core/fxcrt/stl_util.h"
@@ -739,102 +737,6 @@ ByteString CPDF_AnnotFontMap::GetPDFFontAlias(int32_t font_index) {
   // §6) even when every glyph it drew was glyph 0.
   fonts_[font_index].named = true;
   return fonts_[font_index].alias;
-}
-
-int32_t CPDF_AnnotFontMap::GetWordFontIndex(uint16_t word,
-                                            FX_Charset charset,
-                                            int32_t font_index) {
-  if (SupportsWord(font_index, word)) {
-    return font_index;
-  }
-  if (SupportsWord(0, word)) {
-    return 0;
-  }
-
-  for (size_t i = 1; i < fonts_.size(); ++i) {
-    if (SupportsWord(pdfium::checked_cast<int32_t>(i), word)) {
-      return pdfium::checked_cast<int32_t>(i);
-    }
-  }
-
-  const WideString character(static_cast<wchar_t>(word));
-  if (!allow_registered_fallbacks_ || !fonts_.front().font) {
-    if (!CPDF_RichTextLayout::IsInvisibleGrapheme(character.AsStringView())) {
-      NoteMissingCharacter(character);
-    }
-    return -1;
-  }
-
-  const int weight =
-      fonts_.front().font->GetFontWeight().value_or(pdfium::kFontWeightNormal);
-  const bool italic = fonts_.front().font->GetItalicAngle() != 0;
-  std::optional<CFX_FontRegistry::FontId> font_id =
-      CFX_FontRegistry::FindFallbackFont(word, weight, italic,
-                                         /*for_authoring=*/true);
-  if (!font_id.has_value()) {
-    if (!CPDF_RichTextLayout::IsInvisibleGrapheme(character.AsStringView())) {
-      NoteMissingCharacter(character);
-    }
-    return -1;
-  }
-
-  int32_t existing_font_index = FindExistingRegisteredFont(*font_id);
-  if (existing_font_index >= 0) {
-    return existing_font_index;
-  }
-
-  return AddRegisteredFallbackFont(*font_id);
-}
-
-int32_t CPDF_AnnotFontMap::CharCodeFromUnicode(int32_t font_index,
-                                               uint16_t word) {
-  RetainPtr<CPDF_Font> font = GetPDFFont(font_index);
-  if (!font) {
-    return -1;
-  }
-
-  uint32_t charcode = font->CharCodeFromUnicode(word);
-  if (charcode == CPDF_Font::kInvalidCharCode || (charcode == 0 && word != 0)) {
-    return -1;
-  }
-  if (fxcrt::IndexInBounds(fonts_, font_index)) {
-    FontEntry& entry = fonts_[font_index];
-    if (entry.registered_font_id != CFX_FontRegistry::kInvalidFontId ||
-        entry.source == Source::kDocumentProgram) {
-      entry.glyph_to_unicode.emplace(charcode, word);
-    }
-  }
-  return pdfium::checked_cast<int32_t>(charcode);
-}
-
-FX_Charset CPDF_AnnotFontMap::CharSetFromUnicode(uint16_t word,
-                                                 FX_Charset old_charset) {
-  if (word < 0x7F) {
-    return FX_Charset::kANSI;
-  }
-  if (old_charset != FX_Charset::kDefault) {
-    return old_charset;
-  }
-  return CFX_Font::GetCharSetFromUnicode(word);
-}
-
-bool CPDF_AnnotFontMap::SupportsWord(int32_t font_index, uint16_t word) const {
-  if (!fxcrt::IndexInBounds(fonts_, font_index)) {
-    return false;
-  }
-  const FontEntry& entry = fonts_[font_index];
-  if (!entry.font) {
-    return false;
-  }
-  if (entry.registered_font_id != CFX_FontRegistry::kInvalidFontId) {
-    return CFX_FontRegistry::SupportsUnicode(entry.registered_font_id, word);
-  }
-  if (entry.source == Source::kDocumentProgram) {
-    RetainPtr<CFX_Face> face =
-        entry.program ? entry.program->GetFace() : nullptr;
-    return face && face->GetCharIndex(word) > 0;
-  }
-  return PDFontSupportsUnicode(entry.font, word);
 }
 
 void CPDF_AnnotFontMap::ReleaseLayoutFonts() {

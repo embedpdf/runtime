@@ -31,6 +31,7 @@
 #include "core/fpdfdoc/cpdf_embed_metadata.h"
 #include "core/fpdfdoc/cpvt_variabletext.h"
 #include "core/fpdfdoc/cpvt_word.h"
+#include "core/fpdfdoc/ipvt_fontmap.h"
 #include "core/fxcrt/fx_string_wrappers.h"
 #include "core/fxcrt/fx_system.h"
 #include "core/fxcrt/stream_write_utils.h"
@@ -131,14 +132,6 @@ ByteString DefaultAppearanceFontPart(const ByteString& font_name,
     WriteFloat(font_stream, font_size) << " Tf";
   }
   return ByteString(font_stream);
-}
-
-void SetVtFontSize(float font_size, CPVT_VariableText& vt) {
-  if (FXSYS_IsFloatZero(font_size)) {
-    vt.SetAutoFontSize(true);
-  } else {
-    vt.SetFontSize(font_size);
-  }
 }
 
 std::optional<DefaultAppearanceInfo> GetDefaultAppearanceInfo(

@@ -17,7 +17,6 @@
 #include "core/fxcrt/widestring.h"
 
 #include "core/fpdfdoc/cpdf_annotfontsubset.h"
-#include "core/fpdfdoc/ipvt_fontmap.h"
 #include "core/fxcrt/bytestring.h"
 #include "core/fxcrt/retain_ptr.h"
 #include "core/fxcrt/unowned_ptr.h"
@@ -31,7 +30,7 @@ class CPDF_IndirectObjectHolder;
 class CPDF_Stream;
 class CPDF_StreamAcc;
 
-class CPDF_AnnotFontMap final : public IPVT_FontMap {
+class CPDF_AnnotFontMap final {
  public:
   // Whose text the appearance is, for the document's embedding policy (§2 of
   // the Phase C note): under the DEFAULT policy annotation text (FreeText,
@@ -52,7 +51,7 @@ class CPDF_AnnotFontMap final : public IPVT_FontMap {
                         CFX_FontRegistry::kInvalidFontId,
                     bool install_dr_entry = false,
                     Owner owner = Owner::kAnnotation);
-  ~CPDF_AnnotFontMap() override;
+  ~CPDF_AnnotFontMap();
 
   // Pick the /DR resource name a DA string uses for |font_id|: "ERegF<id>",
   // suffixed "_N" when a foreign entry already owns that key. Choose reads
@@ -242,14 +241,13 @@ class CPDF_AnnotFontMap final : public IPVT_FontMap {
   // (CPDF_DocumentFonts::NoteMissingCharacter()).
   void NoteMissingCharacter(const WideString& grapheme);
 
-  // IPVT_FontMap:
-  RetainPtr<CPDF_Font> GetPDFFont(int32_t font_index) override;
-  ByteString GetPDFFontAlias(int32_t font_index) override;
-  int32_t GetWordFontIndex(uint16_t word,
-                           FX_Charset charset,
-                           int32_t font_index) override;
-  int32_t CharCodeFromUnicode(int32_t font_index, uint16_t word) override;
-  FX_Charset CharSetFromUnicode(uint16_t word, FX_Charset old_charset) override;
+  // The font |font_index| lays out with (for a registered font or a
+  // document program, a composite font over its program); null out of
+  // range.
+  RetainPtr<CPDF_Font> GetPDFFont(int32_t font_index);
+  // The resource name the appearance draws |font_index| with. Naming it
+  // makes its resource part of the appearance.
+  ByteString GetPDFFontAlias(int32_t font_index);
 
  private:
   struct FontEntry {
@@ -278,7 +276,6 @@ class CPDF_AnnotFontMap final : public IPVT_FontMap {
     std::unique_ptr<CPDF_AnnotFontSubset::GlyphIdentity> glyph_identity;
   };
 
-  bool SupportsWord(int32_t font_index, uint16_t word) const;
   ByteString AllocateAppearanceAlias(const ByteString& preferred) const;
   CPDF_AnnotFontSubset::Embedding EmbeddingForRegisteredFonts() const;
   void InstallDrEntry(const ByteString& alias,

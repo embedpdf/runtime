@@ -17,6 +17,7 @@
 #include "core/fpdfapi/parser/cpdf_dictionary.h"
 #include "core/fpdfapi/parser/cpdf_document.h"
 #include "core/fpdfapi/parser/cpdf_stream.h"
+#include "core/fpdfapi/parser/cpdf_stream_acc.h"
 #include "core/fxcrt/bytestring.h"
 #include "core/fxcrt/widestring.h"
 #include "core/fxge/cfx_face.h"
@@ -159,6 +160,35 @@ std::vector<std::wstring> MissingCharacters(FPDF_DOCUMENT document) {
     missing.push_back(Utf16Of(std::move(buffer)));
   }
   return missing;
+}
+
+// The widget's normal appearance stream, decoded.
+std::string NormalAppearanceOf(FPDF_ANNOTATION annot) {
+  CPDF_AnnotContext* context = CPDFAnnotContextFromFPDFAnnotation(annot);
+  RetainPtr<const CPDF_Dictionary> ap =
+      context->GetAnnotDict()->GetDictFor("AP");
+  RetainPtr<const CPDF_Stream> normal = ap ? ap->GetStreamFor("N") : nullptr;
+  if (!normal) {
+    return std::string();
+  }
+  auto access = pdfium::MakeRetain<CPDF_StreamAcc>(normal);
+  access->LoadAllDataFiltered();
+  const pdfium::span<const uint8_t> data = access->GetSpan();
+  return std::string(data.begin(), data.end());
+}
+
+// Whether the widget's appearance names a registered font among its fonts.
+bool AppearanceUsesRegisteredFont(FPDF_ANNOTATION annot, EPDF_FONT_ID id) {
+  CPDF_AnnotContext* context = CPDFAnnotContextFromFPDFAnnotation(annot);
+  RetainPtr<const CPDF_Dictionary> ap =
+      context->GetAnnotDict()->GetDictFor("AP");
+  RetainPtr<const CPDF_Stream> normal = ap ? ap->GetStreamFor("N") : nullptr;
+  RetainPtr<const CPDF_Dictionary> resources =
+      normal ? normal->GetDict()->GetDictFor("Resources") : nullptr;
+  RetainPtr<const CPDF_Dictionary> fonts =
+      resources ? resources->GetDictFor("Font") : nullptr;
+  return fonts &&
+         fonts->KeyExist(ByteString::Format("ERegF%u", id).AsStringView());
 }
 
 ByteString DefaultAppearanceFontName(FPDF_ANNOTATION annot) {
@@ -956,4 +986,110 @@ TEST_F(EPDFFontEmbedderTest, BuildsADisplayProgramForAType1Font) {
   ExpectDisplayProgramDrawsTheKeptFont(
       FormWithFieldFont(type1, "FontFile", nullptr, "Roboto2-Regular"),
       EPDF_FONT_FORMAT_TYPE1);
+}
+
+// A form field draws each cluster in the first font that has it: Hebrew
+// typed into a Helvetica field comes from the fallback, in bidi order, under
+// ActualText, and nothing is reported missing.
+TEST_F(EPDFFontEmbedderTest, WidgetDrawsEachClusterInAFontThatHasIt) {
+  ScopedRegisteredFonts scoped_fonts;
+  std::vector<uint8_t> arimo =
+      LoadThirdPartyFont("test_fonts/test_fonts/Arimo-Regular.ttf");
+  ASSERT_FALSE(arimo.empty());
+  const EPDF_FONT_ID arimo_id = EPDFFont_RegisterMemFont64(
+      "Arimo", /*weight=*/400, /*italic=*/0, arimo.data(), arimo.size());
+  ASSERT_NE(0u, arimo_id);
+  ASSERT_TRUE(EPDFFont_AddFallbackFont(arimo_id, /*tier=*/0));
+
+  CreateEmptyDocument();
+  ScopedFPDFPage page(FPDFPage_New(document(), 0, 400, 400));
+  ScopedFPDFAnnotation annot(
+      EPDFPage_CreateAnnot(page.get(), FPDF_ANNOT_WIDGET));
+  ASSERT_TRUE(annot);
+  const FS_RECTF rect{50.0f, 300.0f, 350.0f, 270.0f};
+  ASSERT_TRUE(FPDFAnnot_SetRect(annot.get(), &rect));
+  ASSERT_TRUE(EPDFAnnot_SetDefaultAppearance(annot.get(), FPDF_FONT_HELVETICA,
+                                             12.0f, 0, 0, 0));
+  EPDFDoc_ClearMissingCharacters(document());
+  AttachAndFill(annot.get(), L"hebrew", L"Hello \x05E9\x05DC\x05D5\x05DD 123");
+
+  EXPECT_TRUE(AppearanceUsesRegisteredFont(annot.get(), arimo_id));
+  const std::string stream = NormalAppearanceOf(annot.get());
+  EXPECT_NE(std::string::npos,
+            stream.find("/Span <</ActualText <FEFF05E905DC05D505DD>>> BDC"))
+      << stream;
+  // Left to right: the Latin, the digits, then the Hebrew.
+  const size_t hello = stream.find("(Hello ) Tj");
+  const size_t digits = stream.find("(123) Tj");
+  const size_t hebrew = stream.find("/ActualText");
+  ASSERT_NE(std::string::npos, hello) << stream;
+  ASSERT_NE(std::string::npos, digits) << stream;
+  EXPECT_LT(hello, digits);
+  EXPECT_LT(digits, hebrew);
+  EXPECT_EQ(0, EPDFDoc_CountMissingCharacters(document()));
+}
+
+// A character no font has is drawn with the last resort, as its box, and
+// reported; a supplementary character stays whole.
+TEST_F(EPDFFontEmbedderTest, WidgetDrawsWhatNoFontHasWithTheLastResort) {
+  ScopedRegisteredFonts scoped_fonts;
+  std::vector<uint8_t> box = GetFileContents(
+      PathService::GetTestFilePath("fonts/last_resort.ttf").c_str());
+  ASSERT_FALSE(box.empty());
+  const EPDF_FONT_ID box_id = EPDFFont_RegisterMemFont64(
+      "Last Resort", /*weight=*/400, /*italic=*/0, box.data(), box.size());
+  ASSERT_NE(0u, box_id);
+  ASSERT_TRUE(EPDFFont_SetLastResortFont(box_id));
+
+  CreateEmptyDocument();
+  ScopedFPDFPage page(FPDFPage_New(document(), 0, 400, 400));
+  ScopedFPDFAnnotation annot(
+      EPDFPage_CreateAnnot(page.get(), FPDF_ANNOT_WIDGET));
+  ASSERT_TRUE(annot);
+  const FS_RECTF rect{50.0f, 300.0f, 350.0f, 270.0f};
+  ASSERT_TRUE(FPDFAnnot_SetRect(annot.get(), &rect));
+  ASSERT_TRUE(EPDFAnnot_SetDefaultAppearance(annot.get(), FPDF_FONT_HELVETICA,
+                                             12.0f, 0, 0, 0));
+  EPDFDoc_ClearMissingCharacters(document());
+  // As UTF-16 code units: the test's string helper writes one per wchar_t.
+  AttachAndFill(annot.get(), L"boxes",
+                L"A\x4E2D"
+                L"B\xD83D\xDE00");
+
+  EXPECT_TRUE(AppearanceUsesRegisteredFont(annot.get(), box_id));
+  const std::string stream = NormalAppearanceOf(annot.get());
+  EXPECT_NE(std::string::npos, stream.find("(A) Tj")) << stream;
+  EXPECT_NE(std::string::npos, stream.find("(B) Tj")) << stream;
+  EXPECT_NE(std::string::npos, stream.find("<FEFFD83DDE00>")) << stream;
+  // UTF-16, as the report hands them out.
+  EXPECT_EQ((std::vector<std::wstring>{L"\x4E2D", L"\xD83D\xDE00"}),
+            MissingCharacters(document()));
+}
+
+// A password field writes stars and nothing else: not the value, and no
+// ActualText that would carry it.
+TEST_F(EPDFFontEmbedderTest, PasswordFieldWritesOnlyStars) {
+  CreateEmptyDocument();
+  ScopedFPDFPage page(FPDFPage_New(document(), 0, 400, 400));
+  ScopedFPDFAnnotation annot(
+      EPDFPage_CreateAnnot(page.get(), FPDF_ANNOT_WIDGET));
+  ASSERT_TRUE(annot);
+  const FS_RECTF rect{50.0f, 300.0f, 350.0f, 270.0f};
+  ASSERT_TRUE(FPDFAnnot_SetRect(annot.get(), &rect));
+  ASSERT_TRUE(EPDFAnnot_SetDefaultAppearance(annot.get(), FPDF_FONT_HELVETICA,
+                                             12.0f, 0, 0, 0));
+  ScopedFPDFWideString name = GetFPDFWideString(L"secret");
+  const uint32_t field = EPDFForm_CreateField(
+      document(), 4 /* EPDF_FORMFIELD_FAMILY_TEXT */, name.get(), 0);
+  ASSERT_GT(field, 0u);
+  ASSERT_TRUE(EPDFForm_AttachWidget(
+      document(), field, EPDFAnnot_GetObjectNumber(annot.get()), nullptr, 0));
+  ASSERT_TRUE(EPDFForm_SetFieldFlags(document(), field, 1u << 13, 0));
+  ASSERT_TRUE(embedpdf_test::FillTextField(document(), field, L"hunter2"));
+  ASSERT_TRUE(EPDFAnnot_GenerateFormFieldAP(annot.get()));
+
+  const std::string stream = NormalAppearanceOf(annot.get());
+  EXPECT_NE(std::string::npos, stream.find("(*******) Tj")) << stream;
+  EXPECT_EQ(std::string::npos, stream.find("hunter")) << stream;
+  EXPECT_EQ(std::string::npos, stream.find("ActualText")) << stream;
 }

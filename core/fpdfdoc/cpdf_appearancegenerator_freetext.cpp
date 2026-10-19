@@ -545,21 +545,20 @@ bool GenerateRichFreeTextAP(APGenerationTarget* target,
   return PublishRichFreeTextAPToTarget(target, annot_dict, std::move(prepared));
 }
 
-}  // namespace
-
-namespace appearance_generator {
-
-// The text body of a rich FreeText appearance (C note §5): one Tj per
-// word, relative Td per word, state operators only when they change,
-// ActualText around runs whose glyphs do not spell their text.
-void EmitRichTextBody(fxcrt::ostringstream& s,
-                      const CPDF_RichTextLayout::Result& layout,
-                      CPDF_AnnotFontMap& map,
-                      const CFX_FloatRect& area) {
+// The runs of |layout|, inside a text object: relative Td per string, state
+// operators only when they change, ActualText around runs whose glyphs do
+// not spell their text. A FreeText writes a string per word in its runs'
+// colours, as Acrobat does, and collects its decorations; a form field
+// writes a string per run in the colour set before it, as form fillers do.
+void EmitTextRuns(fxcrt::ostringstream& s,
+                  const CPDF_RichTextLayout::Result& layout,
+                  CPDF_AnnotFontMap& map,
+                  const CFX_FloatRect& area,
+                  bool field,
+                  std::vector<DecorationSegment>* decorations) {
   using GlyphRun = CPDF_RichTextLayout::GlyphRun;
   using ShapedGlyph = CPDF_RichTextLayout::ShapedGlyph;
 
-  s << "BT\n";
   int cur_entry = -1;
   float cur_size = -1;
   std::optional<FX_ARGB> cur_color;
@@ -567,7 +566,6 @@ void EmitRichTextBody(fxcrt::ostringstream& s,
   float cur_ts = 0;
   float cur_tz = 100;
   CFX_PointF origin(0, 0);  // the last Td, in the form's space
-  std::vector<DecorationSegment> decorations;
 
   for (const CPDF_RichTextLayout::Line& line : layout.lines) {
     const float baseline = area.top - line.baseline_y;
@@ -586,7 +584,7 @@ void EmitRichTextBody(fxcrt::ostringstream& s,
         cur_entry = run.font_entry;
         cur_size = size;
       }
-      if (!cur_color.has_value() || *cur_color != run.style.color) {
+      if (!field && (!cur_color.has_value() || *cur_color != run.style.color)) {
         s << RichColorOperator(run.style.color, /*fill=*/true);
         cur_color = run.style.color;
       }
@@ -632,14 +630,15 @@ void EmitRichTextBody(fxcrt::ostringstream& s,
         return (width * size / 1000.0f + run.style.letter_spacing) * scale;
       };
 
-      // Words: a space ends the word it follows, as in Acrobat's streams.
-      // Run positions are relative to the text area's left edge.
+      // Words: a space ends the word it follows, as in Acrobat's streams;
+      // a field's run is one string. Run positions are relative to the text
+      // area's left edge.
       const float run_left = area.left + run.x;
       float x = run_left;
       size_t i = 0;
       const size_t count = run.glyphs.size();
       while (i < count) {
-        size_t j = i;
+        size_t j = field ? count : i;
         while (j < count) {
           const bool space = is_space(run.glyphs[j]);
           ++j;
@@ -741,14 +740,14 @@ void EmitRichTextBody(fxcrt::ostringstream& s,
       // baseline, 0.16 · descent thick; line-through 0.39 · ascent above,
       // 0.04 · ascent thick; `word` skips the spaces.
       const uint8_t decoration = run.style.decoration;
-      if (decoration) {
+      if (decoration && decorations) {
         const float run_baseline = baseline + run.rise;
         const float descent = face.descent * size;
         const float ascent = face.ascent * size;
         if (decoration & CPDF_RichTextStyle::kUnderline) {
-          decorations.push_back({run_left, run_left + run.width,
-                                 run_baseline - 0.44f * descent,
-                                 0.16f * descent, run.style.color});
+          decorations->push_back({run_left, run_left + run.width,
+                                  run_baseline - 0.44f * descent,
+                                  0.16f * descent, run.style.color});
         }
         if (decoration & CPDF_RichTextStyle::kWordUnderline) {
           float wx = run_left;
@@ -757,9 +756,9 @@ void EmitRichTextBody(fxcrt::ostringstream& s,
           for (const ShapedGlyph& glyph : run.glyphs) {
             if (is_space(glyph)) {
               if (in_word) {
-                decorations.push_back({word_start, wx,
-                                       run_baseline - 0.44f * descent,
-                                       0.16f * descent, run.style.color});
+                decorations->push_back({word_start, wx,
+                                        run_baseline - 0.44f * descent,
+                                        0.16f * descent, run.style.color});
                 in_word = false;
               }
             } else if (!in_word) {
@@ -769,19 +768,32 @@ void EmitRichTextBody(fxcrt::ostringstream& s,
             wx += glyph.x_advance;
           }
           if (in_word) {
-            decorations.push_back({word_start, wx,
-                                   run_baseline - 0.44f * descent,
-                                   0.16f * descent, run.style.color});
+            decorations->push_back({word_start, wx,
+                                    run_baseline - 0.44f * descent,
+                                    0.16f * descent, run.style.color});
           }
         }
         if (decoration & CPDF_RichTextStyle::kLineThrough) {
-          decorations.push_back({run_left, run_left + run.width,
-                                 run_baseline + 0.39f * ascent, 0.04f * ascent,
-                                 run.style.color});
+          decorations->push_back({run_left, run_left + run.width,
+                                  run_baseline + 0.39f * ascent, 0.04f * ascent,
+                                  run.style.color});
         }
       }
     }
   }
+}
+
+}  // namespace
+
+namespace appearance_generator {
+
+void EmitRichTextBody(fxcrt::ostringstream& s,
+                      const CPDF_RichTextLayout::Result& layout,
+                      CPDF_AnnotFontMap& map,
+                      const CFX_FloatRect& area) {
+  std::vector<DecorationSegment> decorations;
+  s << "BT\n";
+  EmitTextRuns(s, layout, map, area, /*field=*/false, &decorations);
   s << "ET\n";
   std::optional<FX_ARGB> stroke_color;
   for (const DecorationSegment& segment : decorations) {
@@ -798,6 +810,13 @@ void EmitRichTextBody(fxcrt::ostringstream& s,
     RichNum(s, segment.x1) << " ";
     RichNum(s, segment.y) << " l S\n";
   }
+}
+
+void EmitFieldTextBody(fxcrt::ostringstream& s,
+                       const CPDF_RichTextLayout::Result& layout,
+                       CPDF_AnnotFontMap& map,
+                       const CFX_FloatRect& plate) {
+  EmitTextRuns(s, layout, map, plate, /*field=*/true, /*decorations=*/nullptr);
 }
 
 bool GenerateFreeTextAP(APGenerationTarget* target,

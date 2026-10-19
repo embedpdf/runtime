@@ -201,7 +201,6 @@ ByteString StringFromFontNameAndSize(const ByteString& font_name,
                                      float font_size);
 ByteString DefaultAppearanceFontPart(const ByteString& font_name,
                                      float font_size);
-void SetVtFontSize(float font_size, CPVT_VariableText& vt);
 std::optional<DefaultAppearanceInfo> GetDefaultAppearanceInfo(
     const CPDF_Dictionary* annot_dict,
     const CPDF_Dictionary* acroform_dict);
@@ -308,10 +307,18 @@ bool GenerateCaretAP(APGenerationTarget* target,
                      const ByteString& blend_name);
 
 // cpdf_appearancegenerator_freetext.cpp
+// A FreeText's text, or a caption's, in its own text object: a string per
+// word, in its runs' colours, with their decorations.
 void EmitRichTextBody(fxcrt::ostringstream& s,
                       const CPDF_RichTextLayout::Result& layout,
                       CPDF_AnnotFontMap& map,
                       const CFX_FloatRect& area);
+// A form field's text (CPDF_RichTextLayout::ArrangeField()), inside the
+// caller's text object, in the colour it set: Td, Tf and a string per run.
+void EmitFieldTextBody(fxcrt::ostringstream& s,
+                       const CPDF_RichTextLayout::Result& layout,
+                       CPDF_AnnotFontMap& map,
+                       const CFX_FloatRect& plate);
 bool GenerateFreeTextAP(APGenerationTarget* target,
                         CPDF_Dictionary* annot_dict,
                         const ByteString& blend_name);

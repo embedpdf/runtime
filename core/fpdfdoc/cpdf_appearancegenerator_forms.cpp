@@ -12,6 +12,7 @@
 
 #include <array>
 #include <cmath>
+#include <memory>
 #include <optional>
 #include <sstream>
 #include <utility>
@@ -20,7 +21,6 @@
 #include "constants/appearance.h"
 #include "constants/form_fields.h"
 #include "constants/form_flags.h"
-#include "core/fxcrt/stream_write_utils.h"
 #include "core/fpdfapi/font/cpdf_font.h"
 #include "core/fpdfapi/page/cpdf_docpagedata.h"
 #include "core/fpdfapi/parser/cpdf_array.h"
@@ -37,10 +37,10 @@
 #include "core/fpdfdoc/cpdf_defaultappearance.h"
 #include "core/fpdfdoc/cpdf_formfield.h"
 #include "core/fpdfdoc/cpdf_interactiveform.h"
-#include "core/fpdfdoc/cpvt_fontmap.h"
-#include "core/fpdfdoc/cpvt_variabletext.h"
+#include "core/fpdfdoc/cpdf_richtextlayout.h"
 #include "core/fxcrt/fx_string_wrappers.h"
 #include "core/fxcrt/fx_system.h"
+#include "core/fxcrt/stream_write_utils.h"
 #include "core/fxge/cfx_fontregistry.h"
 #include "core/fxge/cfx_renderdevice.h"
 
@@ -48,17 +48,15 @@ using appearance_generator::AnnotationDimensionsAndColor;
 using appearance_generator::APGenerationTarget;
 using appearance_generator::AppearanceCharacteristics;
 using appearance_generator::BorderStyleInfo;
-using appearance_generator::CloneResourcesDictIfMissingFromStream;
 using appearance_generator::DaFontResolution;
 using appearance_generator::DefaultAppearanceInfo;
+using appearance_generator::EmitFieldTextBody;
 using appearance_generator::GenerateAPDict;
 using appearance_generator::GenerateBorderAP;
 using appearance_generator::GenerateColorAP;
 using appearance_generator::GenerateDirectFallbackFontDict;
-using appearance_generator::GenerateEditAP;
 using appearance_generator::GenerateEphemeralDefaultAcroFormDict;
 using appearance_generator::GenerateExtGStateDict;
-using appearance_generator::GenerateResourceFontDict;
 using appearance_generator::GenerateResourcesDict;
 using appearance_generator::GetAnnotationDimensionsAndColor;
 using appearance_generator::GetAppearanceCharacteristics;
@@ -67,77 +65,81 @@ using appearance_generator::GetDefaultAppearanceInfo;
 using appearance_generator::PaintOperation;
 using appearance_generator::ResolveDaFontForEphemeralTarget;
 using appearance_generator::ResolveDaFontForPersistentTarget;
-using appearance_generator::SetVtFontSize;
-using appearance_generator::ValidateOrCreateFontResources;
 
 namespace {
+
+// A field's text laid out in |plate| (CPDF_RichTextLayout::ArrangeField())
+// and written in the /DA font, which is |map|'s first entry: Td, Tf and a
+// string per run. |content_height| receives the height the lines take.
+ByteString FieldText(CPDF_AnnotFontMap& map,
+                     const CPDF_RichTextLayout::Options& options,
+                     CPDF_RichTextLayout::Field field,
+                     const CFX_FloatRect& plate,
+                     float* content_height = nullptr) {
+  const CPDF_AnnotFontMap::EntryFacts face = map.DescribeEntry(0);
+  field.face_entry = 0;
+  field.weight = face.weight;
+  field.italic = face.italic;
+  CPDF_RichTextLayout layout(&map, options);
+  const CPDF_RichTextLayout::Result laid = layout.ArrangeField(field, plate);
+  if (content_height) {
+    *content_height = laid.content_height;
+  }
+  fxcrt::ostringstream body;
+  EmitFieldTextBody(body, laid, map, plate);
+  return ByteString(body);
+}
+
+// /Q as an alignment: 0 left, 1 centre, 2 right; anything else is left.
+int FieldAlignment(int32_t q) {
+  return q == 1 || q == 2 ? q : 0;
+}
 
 ByteString GenerateTextFieldAP(const CPDF_Dictionary* annot_dict,
                                const CFX_FloatRect& body_rect,
                                float font_size,
-                               CPVT_VariableText& vt,
+                               CPDF_AnnotFontMap& map,
+                               const CPDF_RichTextLayout::Options& options,
                                const WideString* value_override) {
   RetainPtr<const CPDF_Object> v_field =
       CPDF_FormField::GetFieldAttrForDict(annot_dict, pdfium::form_fields::kV);
-  WideString value = value_override
-                         ? *value_override
-                         : (v_field ? v_field->GetUnicodeText() : WideString());
   RetainPtr<const CPDF_Object> q_field =
       CPDF_FormField::GetFieldAttrForDict(annot_dict, "Q");
-  const int32_t align = q_field ? q_field->GetInteger() : 0;
   RetainPtr<const CPDF_Object> ff_field =
       CPDF_FormField::GetFieldAttrForDict(annot_dict, pdfium::form_fields::kFf);
   const uint32_t flags = ff_field ? ff_field->GetInteger() : 0;
   RetainPtr<const CPDF_Object> max_len_field =
       CPDF_FormField::GetFieldAttrForDict(annot_dict, "MaxLen");
   const uint32_t max_len = max_len_field ? max_len_field->GetInteger() : 0;
-  vt.SetPlateRect(body_rect);
-  vt.SetAlignment(CPVT_VariableText::ToAlignment(align));
-  SetVtFontSize(font_size, vt);
 
-  bool is_multi_line = (flags >> 12) & 1;
-  if (is_multi_line) {
-    vt.SetMultiLine(true);
-    vt.SetAutoReturn(true);
-  }
-  uint16_t sub_word = 0;
-  if ((flags >> 13) & 1) {
-    sub_word = '*';
-    vt.SetPasswordChar(sub_word);
-  }
-  bool is_char_array = (flags >> 24) & 1;
-  if (is_char_array) {
-    vt.SetCharArray(max_len);
+  CPDF_RichTextLayout::Field field;
+  field.text = value_override
+                   ? *value_override
+                   : (v_field ? v_field->GetUnicodeText() : WideString());
+  field.size = font_size;
+  field.alignment = FieldAlignment(q_field ? q_field->GetInteger() : 0);
+  field.multiline = (flags >> 12) & 1;
+  field.password = (flags >> 13) & 1;
+  if ((flags >> 24) & 1) {
+    field.cells = max_len;
   } else {
-    vt.SetLimitChar(max_len);
+    field.limit = max_len;
   }
-
-  vt.Initialize();
-  vt.SetText(value);
-  vt.RearrangeAll();
-  CFX_PointF offset;
-  if (!is_multi_line) {
-    offset = CFX_PointF(
-        0.0f, (vt.GetContentRect().Height() - body_rect.Height()) / 2.0f);
-  }
-  return GenerateEditAP(vt.GetProvider()->GetFontMap(), vt.GetIterator(),
-                        offset, !is_char_array, sub_word);
+  field.centered = !field.multiline;
+  return FieldText(map, options, std::move(field), body_rect);
 }
 
 ByteString GenerateComboBoxAP(const CPDF_Dictionary* annot_dict,
                               const CFX_FloatRect& body_rect,
                               const CFX_Color& text_color,
                               float font_size,
-                              CPVT_VariableText::Provider& provider,
+                              CPDF_AnnotFontMap& map,
+                              const CPDF_RichTextLayout::Options& options,
                               const WideString* value_override) {
   fxcrt::ostringstream body_stream;
 
   RetainPtr<const CPDF_Object> v_field =
       CPDF_FormField::GetFieldAttrForDict(annot_dict, pdfium::form_fields::kV);
-  WideString value = value_override
-                         ? *value_override
-                         : (v_field ? v_field->GetUnicodeText() : WideString());
-  CPVT_VariableText vt(&provider);
   CFX_FloatRect button_rect = body_rect;
   button_rect.left = button_rect.right - 13;
   button_rect.Normalize();
@@ -145,17 +147,14 @@ ByteString GenerateComboBoxAP(const CPDF_Dictionary* annot_dict,
   edit_rect.right = button_rect.left;
   edit_rect.Normalize();
   edit_rect.Deflate(4.0f, 0);
-  vt.SetPlateRect(edit_rect);
-  SetVtFontSize(font_size, vt);
 
-  vt.Initialize();
-  vt.SetText(value);
-  vt.RearrangeAll();
-  CFX_FloatRect content_rect = vt.GetContentRect();
-  CFX_PointF offset =
-      CFX_PointF(0.0f, (content_rect.Height() - edit_rect.Height()) / 2.0f);
-  ByteString edit =
-      GenerateEditAP(provider.GetFontMap(), vt.GetIterator(), offset, true, 0);
+  CPDF_RichTextLayout::Field field;
+  field.text = value_override
+                   ? *value_override
+                   : (v_field ? v_field->GetUnicodeText() : WideString());
+  field.size = font_size;
+  field.centered = true;
+  const ByteString edit = FieldText(map, options, std::move(field), edit_rect);
   if (edit.GetLength() > 0) {
     body_stream << "/Tx BMC\nq\n";
     WriteRect(body_stream, edit_rect) << " re\nW\nn\n";
@@ -184,7 +183,8 @@ ByteString GenerateListBoxAP(const CPDF_Dictionary* annot_dict,
                              const CFX_FloatRect& body_rect,
                              const CFX_Color& text_color,
                              float font_size,
-                             CPVT_VariableText::Provider& provider) {
+                             CPDF_AnnotFontMap& map,
+                             const CPDF_RichTextLayout::Options& options) {
   RetainPtr<const CPDF_Array> opts =
       ToArray(CPDF_FormField::GetFieldAttrForDict(annot_dict, "Opt"));
   if (!opts) {
@@ -205,13 +205,13 @@ ByteString GenerateListBoxAP(const CPDF_Dictionary* annot_dict,
     }
 
     if (RetainPtr<const CPDF_Object> opt = opts->GetDirectObjectAt(i)) {
-      WideString item;
+      CPDF_RichTextLayout::Field field;
       if (opt->IsString()) {
-        item = opt->GetUnicodeText();
+        field.text = opt->GetUnicodeText();
       } else if (const CPDF_Array* opt_array = opt->AsArray()) {
         RetainPtr<const CPDF_Object> opt_item = opt_array->GetDirectObjectAt(1);
         if (opt_item) {
-          item = opt_item->GetUnicodeText();
+          field.text = opt_item->GetUnicodeText();
         }
       }
       bool is_selected = false;
@@ -224,15 +224,12 @@ ByteString GenerateListBoxAP(const CPDF_Dictionary* annot_dict,
           }
         }
       }
-      CPVT_VariableText vt(&provider);
-      vt.SetPlateRect(
-          CFX_FloatRect(body_rect.left, 0.0f, body_rect.right, 0.0f));
-      vt.SetFontSize(FXSYS_IsFloatZero(font_size) ? 12.0f : font_size);
-      vt.Initialize();
-      vt.SetText(item);
-      vt.RearrangeAll();
-
-      const float item_height = vt.GetContentRect().Height();
+      // A row is one line, from the top of what is left.
+      field.size = FXSYS_IsFloatZero(font_size) ? 12.0f : font_size;
+      float item_height = 0;
+      const ByteString row = FieldText(
+          map, options, std::move(field),
+          CFX_FloatRect(body_rect.left, fy, body_rect.right, fy), &item_height);
       if (is_selected) {
         CFX_FloatRect item_rect = CFX_FloatRect(
             body_rect.left, fy - item_height, body_rect.right, fy);
@@ -244,14 +241,10 @@ ByteString GenerateListBoxAP(const CPDF_Dictionary* annot_dict,
         body_stream << "BT\n"
                     << GenerateColorAP(CFX_Color::MakeGray(1),
                                        PaintOperation::kFill)
-                    << GenerateEditAP(provider.GetFontMap(), vt.GetIterator(),
-                                      CFX_PointF(0.0f, fy), true, 0)
-                    << "ET\n";
+                    << row << "ET\n";
       } else {
         body_stream << "BT\n"
-                    << GenerateColorAP(text_color, PaintOperation::kFill)
-                    << GenerateEditAP(provider.GetFontMap(), vt.GetIterator(),
-                                      CFX_PointF(0.0f, fy), true, 0)
+                    << GenerateColorAP(text_color, PaintOperation::kFill) << row
                     << "ET\n";
       }
       fy -= item_height;
@@ -264,7 +257,8 @@ void GenerateTextFieldFormAP(fxcrt::ostringstream& app_stream,
                              const CPDF_Dictionary* annot_dict,
                              const CFX_FloatRect& bbox,
                              const DefaultAppearanceInfo& da_info,
-                             CPVT_VariableText::Provider& provider,
+                             CPDF_AnnotFontMap& map,
+                             const CPDF_RichTextLayout::Options& options,
                              const WideString* value_override) {
   const AppearanceCharacteristics mk =
       GetAppearanceCharacteristics(annot_dict->GetDictFor("MK"));
@@ -311,9 +305,8 @@ void GenerateTextFieldFormAP(fxcrt::ostringstream& app_stream,
   clip_rect.Deflate(bw, bw);
   WriteRect(app_stream, clip_rect) << " re W n\n";
 
-  CPVT_VariableText vt(&provider);
-  ByteString body = GenerateTextFieldAP(annot_dict, body_rect,
-                                        da_info.font_size, vt, value_override);
+  ByteString body = GenerateTextFieldAP(
+      annot_dict, body_rect, da_info.font_size, map, options, value_override);
 
   app_stream << "BT\n";
   app_stream << GenerateColorAP(da_info.text_color, PaintOperation::kStroke);
@@ -332,7 +325,8 @@ void GenerateComboBoxFormAP(fxcrt::ostringstream& app_stream,
                             const CPDF_Dictionary* annot_dict,
                             const CFX_FloatRect& bbox,
                             const DefaultAppearanceInfo& da_info,
-                            CPVT_VariableText::Provider& provider,
+                            CPDF_AnnotFontMap& map,
+                            const CPDF_RichTextLayout::Options& options,
                             const WideString* value_override) {
   const AnnotationDimensionsAndColor dims =
       GetAnnotationDimensionsAndColor(annot_dict);
@@ -356,14 +350,16 @@ void GenerateComboBoxFormAP(fxcrt::ostringstream& app_stream,
   body_rect.Deflate(border_info.width, border_info.width);
 
   app_stream << GenerateComboBoxAP(annot_dict, body_rect, da_info.text_color,
-                                   da_info.font_size, provider, value_override);
+                                   da_info.font_size, map, options,
+                                   value_override);
 }
 
 void GenerateListBoxFormAP(fxcrt::ostringstream& app_stream,
                            const CPDF_Dictionary* annot_dict,
                            const CFX_FloatRect& bbox,
                            const DefaultAppearanceInfo& da_info,
-                           CPVT_VariableText::Provider& provider) {
+                           CPDF_AnnotFontMap& map,
+                           const CPDF_RichTextLayout::Options& options) {
   const AnnotationDimensionsAndColor dims =
       GetAnnotationDimensionsAndColor(annot_dict);
   const BorderStyleInfo border_info =
@@ -385,8 +381,9 @@ void GenerateListBoxFormAP(fxcrt::ostringstream& app_stream,
   CFX_FloatRect body_rect = bbox;
   body_rect.Deflate(border_info.width, border_info.width);
 
-  const ByteString body = GenerateListBoxAP(
-      annot_dict, body_rect, da_info.text_color, da_info.font_size, provider);
+  const ByteString body =
+      GenerateListBoxAP(annot_dict, body_rect, da_info.text_color,
+                        da_info.font_size, map, options);
   if (body.GetLength() > 0) {
     app_stream << "/Tx BMC\nq\n";
     WriteRect(app_stream, body_rect) << " re\nW\nn\n" << body << "Q\nEMC\n";
@@ -479,7 +476,8 @@ void GeneratePushButtonFormAP(fxcrt::ostringstream& app_stream,
                               const CPDF_Dictionary* annot_dict,
                               const CFX_FloatRect& bbox,
                               const DefaultAppearanceInfo& da_info,
-                              CPVT_VariableText::Provider& provider) {
+                              CPDF_AnnotFontMap& map,
+                              const CPDF_RichTextLayout::Options& options) {
   const AppearanceCharacteristics mk =
       GetAppearanceCharacteristics(annot_dict->GetDictFor("MK"));
   const BorderStyleInfo bs = GetBorderStyleInfo(annot_dict->GetDictFor("BS"));
@@ -494,17 +492,13 @@ void GeneratePushButtonFormAP(fxcrt::ostringstream& app_stream,
 
   CFX_FloatRect body_rect = bbox;
   body_rect.Deflate(2.0f * bw, bw);
-  CPVT_VariableText vt(&provider);
-  vt.SetPlateRect(body_rect);
-  vt.SetAlignment(CPVT_VariableText::Alignment::kCenter);
-  SetVtFontSize(da_info.font_size, vt);
-  vt.Initialize();
-  vt.SetText(mk.caption);
-  vt.RearrangeAll();
-  const CFX_PointF offset(
-      0.0f, (vt.GetContentRect().Height() - body_rect.Height()) / 2.0f);
+  CPDF_RichTextLayout::Field field;
+  field.text = mk.caption;
+  field.size = da_info.font_size;
+  field.alignment = 1;
+  field.centered = true;
   const ByteString caption =
-      GenerateEditAP(provider.GetFontMap(), vt.GetIterator(), offset, true, 0);
+      FieldText(map, options, std::move(field), body_rect);
   if (caption.IsEmpty()) {
     return;
   }
@@ -726,7 +720,6 @@ bool GenerateFormAPToTarget(APGenerationTarget* target,
   }
 
   const ByteString& font_name = default_appearance_info.value().font_name;
-  RetainPtr<CPDF_Dictionary> font_dict;
   DaFontResolution da_font;
   if (target->IsPersistent()) {
     RetainPtr<CPDF_Dictionary> mutable_dr_font_dict;
@@ -743,7 +736,6 @@ bool GenerateFormAPToTarget(APGenerationTarget* target,
       mutable_dr_font_dict =
           mutable_form_dict->GetOrCreateDictFor("DR")->GetOrCreateDictFor(
               "Font");
-      dr_dict = mutable_form_dict->GetDictFor("DR");
     }
     da_font = ResolveDaFontForPersistentTarget(doc, mutable_dr_font_dict.Get(),
                                                font_name);
@@ -751,144 +743,89 @@ bool GenerateFormAPToTarget(APGenerationTarget* target,
     da_font =
         ResolveDaFontForEphemeralTarget(doc, dr_font_dict.Get(), font_name);
   }
-  font_dict = da_font.font_dict;
-  // A /DA font that is a document program (reserved this session, or the
-  // composite font the writer installed for one) lays out through the same
-  // map: CPVT_FontMap can only write the characters its ToUnicode names.
-  const bool use_registered_font_map =
-      target->IsPersistent() &&
-      (CFX_FontRegistry::HasFallbackFonts() ||
-       da_font.registered_font_id != CFX_FontRegistry::kInvalidFontId ||
-       da_font.document_program ||
-       CPDF_AnnotFontMap::IsDocumentProgramFont(font_dict.Get()));
-  if (!font_dict && !use_registered_font_map) {
-    // Ephemeral render of a widget whose /DA names a registered font that has
-    // no /DR entry yet: draw with the fallback rather than nothing.
+  RetainPtr<CPDF_Dictionary> font_dict = da_font.font_dict;
+  if (!font_dict &&
+      da_font.registered_font_id == CFX_FontRegistry::kInvalidFontId &&
+      !da_font.document_program) {
+    // A /DA font the form doesn't have: draw with the fallback rather than
+    // nothing.
     font_dict = GenerateDirectFallbackFontDict();
   }
-  auto* doc_page_data = CPDF_DocPageData::FromDocument(doc);
   RetainPtr<CPDF_Font> default_font =
-      font_dict ? doc_page_data->GetFont(font_dict) : nullptr;
-  if (!default_font && !use_registered_font_map) {
+      font_dict ? CPDF_DocPageData::FromDocument(doc)->GetFont(font_dict)
+                : nullptr;
+
+  // The text lays out in the shared engine, through the annotation font
+  // map: the /DA font first, then the fallbacks and the last resort, each
+  // embedded as the field's appearance uses it.
+  auto owned_map = std::make_unique<CPDF_AnnotFontMap>(
+      doc, std::move(default_font), font_name,
+      /*allow_registered_fallbacks=*/true, da_font.registered_font_id,
+      /*install_dr_entry=*/target->IsPersistent(),
+      CPDF_AnnotFontMap::Owner::kWidget);
+  CPDF_AnnotFontMap& map = *owned_map;
+  da_font.ApplyTo(&map);
+  if (!map.HasDefaultFont()) {
     return false;
   }
+  CPDF_RichTextLayout::Options options;
+  options.typographic_features = doc->GetTypographicFeaturesEnabled();
 
   const AnnotationDimensionsAndColor dims =
       GetAnnotationDimensionsAndColor(annot_dict);
-
-  RetainPtr<CPDF_Dictionary> resources_dict;
-  RetainPtr<CPDF_Stream> normal_stream;
-  if (target->IsPersistent()) {
-    RetainPtr<CPDF_Dictionary> ap_dict =
-        annot_dict->GetOrCreateDictFor(pdfium::annotation::kAP);
-    normal_stream = ap_dict->GetMutableStreamFor("N");
-    if (normal_stream) {
-      RetainPtr<CPDF_Dictionary> stream_dict = normal_stream->GetMutableDict();
-      const bool cloned =
-          CloneResourcesDictIfMissingFromStream(stream_dict, dr_dict.Get());
-      if (!cloned) {
-        if (!ValidateOrCreateFontResources(doc, stream_dict, font_dict,
-                                           font_name)) {
-          return false;
-        }
-      }
-      resources_dict = stream_dict->GetMutableDictFor("Resources");
-    } else {
-      normal_stream =
-          doc->NewIndirect<CPDF_Stream>(pdfium::MakeRetain<CPDF_Dictionary>());
-      ap_dict->SetNewFor<CPDF_Reference>("N", doc, normal_stream->GetObjNum());
-    }
-  } else {
-    auto gs_dict = GenerateExtGStateDict(*annot_dict, "Normal");
-    auto resource_font_dict =
-        GenerateResourceFontDict(doc, font_name, font_dict.Get());
-    resources_dict = GenerateResourcesDict(doc, std::move(gs_dict),
-                                           std::move(resource_font_dict));
-  }
-
-  auto generate_form_stream = [&](CPVT_VariableText::Provider& provider,
-                                  fxcrt::ostringstream& app_stream) {
-    switch (type) {
-      case CPDF_AppearanceGenerator::kTextField:
-        GenerateTextFieldFormAP(app_stream, annot_dict, dims.bbox,
-                                default_appearance_info.value(), provider,
-                                value_override);
-        break;
-      case CPDF_AppearanceGenerator::kComboBox:
-        GenerateComboBoxFormAP(app_stream, annot_dict, dims.bbox,
-                               default_appearance_info.value(), provider,
-                               value_override);
-        break;
-      case CPDF_AppearanceGenerator::kListBox:
-        GenerateListBoxFormAP(app_stream, annot_dict, dims.bbox,
-                              default_appearance_info.value(), provider);
-        break;
-      case CPDF_AppearanceGenerator::kPushButton:
-        GeneratePushButtonFormAP(app_stream, annot_dict, dims.bbox,
-                                 default_appearance_info.value(), provider);
-        break;
-    }
-  };
-
-  if (use_registered_font_map) {
-    // EmbedPDF: form widgets need the same registered fallback/subset path as
-    // FreeText when their value/options contain glyphs outside the DA font.
-    // Keep the old CPVT_FontMap path unless a registered font is actually
-    // involved so existing form AP output remains stable by default.
-    CPDF_AnnotFontMap map(
-        doc, std::move(default_font), font_name,
-        /*allow_registered_fallbacks=*/true, da_font.registered_font_id,
-        /*install_dr_entry=*/true, CPDF_AnnotFontMap::Owner::kWidget);
-    da_font.ApplyTo(&map);
-    if (!map.HasDefaultFont()) {
-      return false;
-    }
-    CPVT_VariableText::Provider provider(&map);
-
-    fxcrt::ostringstream app_stream;
-    generate_form_stream(provider, app_stream);
-
-    normal_stream->SetDataFromStringstreamAndRemoveFilter(&app_stream);
-    RetainPtr<CPDF_Dictionary> stream_dict = normal_stream->GetMutableDict();
-    stream_dict->SetMatrixFor("Matrix", dims.matrix);
-    stream_dict->SetRectFor("BBox", dims.bbox);
-    RetainPtr<CPDF_Dictionary> stream_resources =
-        stream_dict->GetOrCreateDictFor("Resources");
-    RetainPtr<CPDF_Dictionary> resource_font_dict =
-        map.CreateFontResourceDict();
-    if (!resource_font_dict) {
-      return false;  // registered /DA font without a resource: no appearance
-    }
-    stream_resources->SetFor("Font", std::move(resource_font_dict));
-    return true;
-  }
-
-  RetainPtr<CPDF_Dictionary> ephemeral_resources_dict = resources_dict;
-  CPVT_FontMap map(doc, std::move(resources_dict), std::move(default_font),
-                   font_name);
-  CPVT_VariableText::Provider provider(&map);
-
   fxcrt::ostringstream app_stream;
-  generate_form_stream(provider, app_stream);
+  switch (type) {
+    case CPDF_AppearanceGenerator::kTextField:
+      GenerateTextFieldFormAP(app_stream, annot_dict, dims.bbox,
+                              default_appearance_info.value(), map, options,
+                              value_override);
+      break;
+    case CPDF_AppearanceGenerator::kComboBox:
+      GenerateComboBoxFormAP(app_stream, annot_dict, dims.bbox,
+                             default_appearance_info.value(), map, options,
+                             value_override);
+      break;
+    case CPDF_AppearanceGenerator::kListBox:
+      GenerateListBoxFormAP(app_stream, annot_dict, dims.bbox,
+                            default_appearance_info.value(), map, options);
+      break;
+    case CPDF_AppearanceGenerator::kPushButton:
+      GeneratePushButtonFormAP(app_stream, annot_dict, dims.bbox,
+                               default_appearance_info.value(), map, options);
+      break;
+  }
 
   if (!target->IsPersistent()) {
+    RetainPtr<CPDF_Dictionary> fonts = map.CreateEphemeralFontResourceDict();
+    if (!fonts) {
+      return false;
+    }
+    auto resources_dict = GenerateResourcesDict(
+        doc, GenerateExtGStateDict(*annot_dict, "Normal"), std::move(fonts));
+    target->ephemeral_fonts = std::move(owned_map);
     return GenerateAPDict(
-        target, annot_dict, &app_stream, std::move(ephemeral_resources_dict),
+        target, annot_dict, &app_stream, std::move(resources_dict),
         /*is_text_markup_annotation=*/false, dims.matrix, dims.bbox);
   }
 
+  RetainPtr<CPDF_Dictionary> resource_font_dict = map.CreateFontResourceDict();
+  if (!resource_font_dict) {
+    return false;  // registered /DA font without a resource: no appearance
+  }
+  RetainPtr<CPDF_Dictionary> ap_dict =
+      annot_dict->GetOrCreateDictFor(pdfium::annotation::kAP);
+  RetainPtr<CPDF_Stream> normal_stream = ap_dict->GetMutableStreamFor("N");
+  if (!normal_stream) {
+    normal_stream =
+        doc->NewIndirect<CPDF_Stream>(pdfium::MakeRetain<CPDF_Dictionary>());
+    ap_dict->SetNewFor<CPDF_Reference>("N", doc, normal_stream->GetObjNum());
+  }
   normal_stream->SetDataFromStringstreamAndRemoveFilter(&app_stream);
   RetainPtr<CPDF_Dictionary> stream_dict = normal_stream->GetMutableDict();
   stream_dict->SetMatrixFor("Matrix", dims.matrix);
   stream_dict->SetRectFor("BBox", dims.bbox);
-
-  const bool cloned =
-      CloneResourcesDictIfMissingFromStream(stream_dict, dr_dict);
-  if (cloned) {
-    return true;
-  }
-
-  ValidateOrCreateFontResources(doc, stream_dict, font_dict, font_name);
+  stream_dict->GetOrCreateDictFor("Resources")
+      ->SetFor("Font", std::move(resource_font_dict));
   return true;
 }
 

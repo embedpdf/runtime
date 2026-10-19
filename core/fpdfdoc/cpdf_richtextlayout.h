@@ -96,6 +96,37 @@ class CPDF_RichTextLayout {
                  const CFX_FloatRect& area,
                  CPDF_Annot::VerticalAlignment vertical_alignment);
 
+  // A form field's text, or a redaction label, laid out with the geometry
+  // PDFium's form filler gives it (CPVT): words break where CPVT breaks them,
+  // a line is as high as its fonts' ascent and descent with no leading and
+  // is aligned on its own, a size of 0 is the biggest of CPVT's sizes the
+  // text fits in (12 pt at most for several lines), and a comb puts one
+  // character in the middle of each cell. Fonts, shaping and order are this
+  // layout's: each cluster in the first font that has it, then the last
+  // resort; the Unicode bidi algorithm with the direction of the first strong
+  // character.
+  struct Field {
+    WideString text;
+    int face_entry = -1;  // the /DA font
+    int weight = 400;     // its style, for the fallbacks
+    bool italic = false;
+    float size = 0;          // pt; 0 fits the text
+    int alignment = 0;       // /Q: 0 left, 1 centre, 2 right
+    bool multiline = false;  // line breaks start lines; long lines wrap
+    bool password = false;   // each character drawn as '*'
+    // At most this many UTF-16 code units, line breaks counted (/MaxLen);
+    // 0 for no limit. A character is kept whole or not at all.
+    size_t limit = 0;
+    // A comb of this many cells, one character in each; 0 for none.
+    size_t cells = 0;
+    // The text's middle at the plate's middle (a one-line field), else its
+    // first line at the plate's top.
+    bool centered = false;
+  };
+  // Line positions come back relative to |plate|'s top-left corner, as
+  // Arrange()'s do; |Result::body_size| is the size laid out with.
+  Result ArrangeField(const Field& field, const CFX_FloatRect& plate);
+
   // Pure pieces, exposed for tests.
   // True at |i| when a line may start with character |i| (never at 0).
   static std::vector<bool> BreakOpportunities(const WideString& text);

@@ -642,35 +642,29 @@ CPDF_AnnotFontSubset::CreateLayoutFontForProgram(
     return result;
   }
 
-  auto char_codes_and_indices =
-      program->GetCharCodesAndIndices(pdfium::kMaximumSupplementaryCodePoint);
-  if (char_codes_and_indices.empty()) {
-    return result;
-  }
-
   // The layout font has the same shape as the resource that will be written,
   // so the charcodes it hands out (CIDs under Identity-H) are the ones the
   // appearance bytes carry. For a CID-keyed CFF that is the charset's CID.
+  // Every glyph has its width, shaping can draw glyphs the cmap doesn't
+  // reach (ligatures, alternates); there is no ToUnicode, the layout maps
+  // characters through the program itself.
   const GlyphIdentity glyphs(program);
-  std::multimap<uint32_t, uint32_t> to_unicode;
   std::map<uint32_t, uint32_t> widths;
-  for (const auto& item : char_codes_and_indices) {
-    std::optional<uint16_t> cid = glyphs.CidOf(item.glyph_index);
-    if (!cid.has_value()) {
-      continue;
+  RetainPtr<CFX_Face> face = program->GetFace();
+  const int glyph_count = face ? face->GetGlyphCount() : 0;
+  for (int gid = 0; gid < glyph_count; ++gid) {
+    std::optional<uint16_t> cid = glyphs.CidOf(gid);
+    if (cid.has_value() && !pdfium::Contains(widths, *cid)) {
+      widths[*cid] = program->GetGlyphWidth(gid);
     }
-    if (!pdfium::Contains(widths, *cid)) {
-      widths[*cid] = program->GetGlyphWidth(item.glyph_index);
-    }
-    to_unicode.emplace(*cid, item.char_code);
   }
-  if (widths.empty() || to_unicode.empty()) {
+  if (widths.empty()) {
     return result;
   }
 
   StagedFontResource parts;
   if (!BuildCompositeFontParts(program, base_font_name, program->GetFontSpan(),
-                               identity, widths, to_unicode, &parts)) {
+                               identity, widths, /*to_unicode=*/{}, &parts)) {
     return result;
   }
   // The streams go into a scratch holder of their own: CPDF_Font resolves

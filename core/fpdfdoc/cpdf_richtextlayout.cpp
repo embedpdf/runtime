@@ -13,11 +13,14 @@
 
 #include "core/fpdfapi/font/cpdf_font.h"
 #include "core/fpdfdoc/cpdf_annotfontmap.h"
+#include "core/fpdfdoc/cpvt_section.h"
 #include "core/fxcrt/cfx_bidiparagraph.h"
 #include "core/fxcrt/code_point_view.h"
 #include "core/fxcrt/fx_linebreak.h"
+#include "core/fxcrt/fx_system.h"
 #include "core/fxcrt/fx_unicode.h"
 #include "core/fxcrt/numerics/safe_conversions.h"
+#include "core/fxcrt/utf16.h"
 #include "core/fxge/cfx_face.h"
 #include "core/fxge/cfx_font.h"
 #include "hb-ot.h"  // nogncheck
@@ -39,7 +42,8 @@ constexpr float kSubRise = -0.15f;
 constexpr float kFallbackSize = 12.0f;
 constexpr float kEpsilon = 0.01f;
 
-// CPVT's auto font size ladder, kept for plain FreeText with a DA size of 0.
+// CPVT's auto font size ladder: plain FreeText and form fields with a DA
+// size of 0. A field of several lines tries its first quarter.
 constexpr std::array<float, 25> kAutoSizeSteps = {
     4,  6,  8,  9,  10, 12, 14, 18,  20,  25,  30,  35, 40,
     45, 50, 55, 60, 70, 80, 90, 100, 110, 120, 130, 144};
@@ -173,6 +177,7 @@ struct ResolvedStyle {
   float drawn_size = 0;      // after sub/superscript scaling
   float rise = 0;            // pt
   bool has_size_override = false;
+  int face_entry = -1;  // the face, when it isn't resolved from the style
 };
 
 // One shaping unit: one font entry, one style, one script and one bidi
@@ -339,6 +344,14 @@ struct CPDF_RichTextLayout::Impl {
   std::map<int, std::unique_ptr<HbFont>> hb_fonts;
   std::map<int, CPDF_AnnotFontMap::RichFace> faces;
   bool degraded = false;
+  // A form field: widths in CPVT's arithmetic, so its lines break where
+  // CPVT's did.
+  bool field = false;
+
+  // |width| thousandths of an em at |size| pt.
+  float Scaled(int width, float size) const {
+    return field ? width * size * 0.001f : width * size / 1000.0f;
+  }
 
   const CPDF_AnnotFontMap::RichFace& FaceOf(int entry) {
     auto it = faces.find(entry);
@@ -390,7 +403,7 @@ struct CPDF_RichTextLayout::Impl {
         glyph.cluster = pdfium::checked_cast<uint32_t>(i);
         const int width =
             face.pdf_font && code ? face.pdf_font->GetCharWidth(code) : 0;
-        glyph.x_advance = (width * size / 1000.0f + letter_spacing) * scale_x;
+        glyph.x_advance = (Scaled(width, size) + letter_spacing) * scale_x;
         item->glyphs.push_back(glyph);
       }
       if (item->rtl) {
@@ -457,7 +470,7 @@ struct CPDF_RichTextLayout::Impl {
       // it exactly so the appearance needs no TJ adjustment.
       float advance = positions[i].x_advance * unit;
       const float pdf_width =
-          face.program->GetGlyphWidth(glyph.gid) * size / 1000.0f;
+          Scaled(face.program->GetGlyphWidth(glyph.gid), size);
       if (std::fabs(advance - pdf_width) * 1000.0f / size < 0.75f) {
         advance = pdf_width;
       }
@@ -605,11 +618,13 @@ struct CPDF_RichTextLayout::Impl {
       const CPDF_RichTextStyle& resolved = styles[style].style;
       const WideStringView grapheme =
           text.AsStringView().Substr(begin, end - begin);
-      const GraphemeMatch match =
-          MatchGrapheme(fonts,
-                        fonts->ResolveRichFace(resolved.family, resolved.weight,
-                                               resolved.italic),
-                        grapheme, resolved.weight, resolved.italic);
+      const int face =
+          styles[style].face_entry >= 0
+              ? styles[style].face_entry
+              : fonts->ResolveRichFace(resolved.family, resolved.weight,
+                                       resolved.italic);
+      const GraphemeMatch match = MatchGrapheme(
+          fonts, face, grapheme, resolved.weight, resolved.italic);
       if (!match.covered && !IsInvisibleGrapheme(grapheme)) {
         fonts->NoteMissingCharacter(WideString(grapheme));
       }
@@ -1135,5 +1150,476 @@ CPDF_RichTextLayout::Result CPDF_RichTextLayout::Arrange(
     result.degraded = result.degraded || impl.degraded;
     return result;
   }
+  return result;
+}
+
+// ---- Form fields
+// --------------------------------------------------------------
+
+namespace {
+
+// A cluster of a field's text: what CPVT called a word.
+struct FieldUnit {
+  size_t begin = 0;  // in its segment's text
+  size_t end = 0;
+  float width = 0;
+  uint16_t code = 0;  // its first character, as CPVT's word breaking sees it
+  float ascent = 0;   // its font's at the size, as CPVT measures it
+  float descent = 0;  // negative
+};
+
+struct FieldLine {
+  int begin = -1;  // units; -1 for an empty section's one line
+  int end = -1;
+  float width = 0;
+  float ascent = 0;
+  float descent = 0;  // negative
+};
+
+// What a field's text breaks into at line breaks: CPVT's sections.
+struct FieldSection {
+  Segment segment;
+  std::vector<FieldUnit> units;
+  std::vector<FieldLine> lines;
+  std::vector<float> cell_x;  // a comb's: where each unit starts
+  float left = 0;  // the box its lines take, y down from the text's top
+  float top = 0;
+  float right = 0;
+  float bottom = 0;
+};
+
+struct FieldExtent {
+  float width = 0;   // the widest line
+  float height = 0;  // the lines' heights, summed
+};
+
+// CPVT's character for its word breaking: a code unit, so a supplementary
+// character is its high surrogate.
+uint16_t BreakCodeOf(wchar_t ch) {
+  const uint32_t code_point = static_cast<uint32_t>(ch);
+  if (pdfium::IsSupplementary(code_point)) {
+    return pdfium::SurrogatePair(static_cast<char32_t>(code_point)).high();
+  }
+  return static_cast<uint16_t>(code_point);
+}
+
+size_t Utf16LengthOf(WideStringView text) {
+  size_t length = 0;
+  for (char32_t code_point : pdfium::CodePointView(text)) {
+    length += pdfium::IsSupplementary(code_point) ? 2 : 1;
+  }
+  return length;
+}
+
+// The text's sections and characters as CPVT's SetText() takes them: line
+// breaks (CR, LF or both) start a section in a multi-line field and are
+// dropped in any other, a tab is a space, and the limit or the comb's cells
+// stop it. Characters (graphemes) are kept whole; a password's are '*'.
+std::vector<WideString> FieldSectionsOf(
+    const CPDF_RichTextLayout::Field& field) {
+  const WideString& text = field.text;
+  const std::vector<bool> starts = CPDF_RichTextLayout::GraphemeStarts(text);
+  std::vector<WideString> sections(1);
+  // What CPVT counts: the text taken, line breaks included, and what it
+  // kept, a break between sections included; the limit in code units, the
+  // cells in characters.
+  size_t taken_units = 0;
+  size_t taken_characters = 0;
+  size_t kept_units = 0;
+  size_t kept_characters = 0;
+  for (size_t begin = 0; begin < text.GetLength();) {
+    size_t end = begin + 1;
+    while (end < text.GetLength() && !starts[end]) {
+      ++end;
+    }
+    const WideStringView grapheme =
+        text.AsStringView().Substr(begin, end - begin);
+    const size_t units = Utf16LengthOf(grapheme);
+    if (field.limit > 0 && taken_units + units > field.limit) {
+      break;
+    }
+    if (field.cells > 0 && taken_characters >= field.cells) {
+      break;
+    }
+    const wchar_t first = text[begin];
+    if (first == L'\r' || first == L'\n') {
+      if (field.multiline) {
+        // CR LF is one break.
+        const wchar_t pair = first == L'\r' ? L'\n' : L'\r';
+        if (end < text.GetLength() && text[end] == pair) {
+          ++end;
+        }
+        sections.emplace_back();
+        ++kept_units;
+        ++kept_characters;
+      }
+    } else {
+      const bool full = (field.limit > 0 && kept_units + units > field.limit) ||
+                        (field.cells > 0 && kept_characters >= field.cells);
+      if (!full) {
+        if (field.password) {
+          sections.back() += L'*';
+        } else if (first == L'\t') {
+          sections.back() += L' ';
+        } else {
+          sections.back() += WideString(grapheme);
+        }
+        kept_units += units;
+        ++kept_characters;
+      }
+    }
+    taken_units += units;
+    ++taken_characters;
+    begin = end;
+  }
+  return sections;
+}
+
+// CPVT's SplitLines() over a section's units: the lines they break into
+// when |wrap| (before the word that would pass |typeset_width|, or before
+// the unit when one word is wider), and the box they take.
+FieldExtent SplitFieldLines(const std::vector<FieldUnit>& units,
+                            bool wrap,
+                            float typeset_width,
+                            float empty_ascent,
+                            float empty_descent,
+                            std::vector<FieldLine>* lines) {
+  if (units.empty()) {
+    if (lines) {
+      lines->push_back({-1, -1, 0, empty_ascent, empty_descent});
+    }
+    return {0, empty_ascent - empty_descent};
+  }
+  const int total = pdfium::checked_cast<int>(units.size());
+  int head = 0;
+  float max_x = 0;
+  float max_y = 0;
+  float line_width = 0;
+  float backup_width = 0;
+  float line_ascent = 0;
+  float backup_ascent = 0;
+  float line_descent = 0;
+  float backup_descent = 0;
+  int word_start = 0;
+  bool full_word = false;
+  int full_words = 0;
+  int char_index = 0;
+  bool opened = false;
+  auto add_line = [&](int tail) {
+    if (lines) {
+      lines->push_back({head, tail, line_width, line_ascent, line_descent});
+    }
+    max_y += line_ascent;
+    max_y -= line_descent;
+    max_x = std::max(line_width, max_x);
+  };
+  int i = 0;
+  while (i < total) {
+    const FieldUnit& unit = units[i];
+    const FieldUnit& previous = units[i > 0 ? i - 1 : i];
+    line_ascent = std::max(line_ascent, unit.ascent);
+    line_descent = std::min(line_descent, unit.descent);
+    if (!opened) {
+      if (CPVT_IsOpenStylePunctuation(unit.code)) {
+        opened = true;
+        full_word = true;
+      } else if (CPVT_NeedDivision(previous.code, unit.code)) {
+        full_word = true;
+      }
+    } else if (!CPVT_IsSpace(unit.code) &&
+               !CPVT_IsOpenStylePunctuation(unit.code)) {
+      opened = false;
+    }
+    if (full_word) {
+      full_word = false;
+      if (char_index > 0) {
+        ++full_words;
+      }
+      word_start = i;
+      backup_width = line_width;
+      backup_ascent = line_ascent;
+      backup_descent = line_descent;
+    }
+    ++char_index;
+    if (wrap && typeset_width > 0 && line_width + unit.width > typeset_width) {
+      if (full_words > 0) {
+        i = word_start;
+        line_width = backup_width;
+        line_ascent = backup_ascent;
+        line_descent = backup_descent;
+      }
+      if (char_index == 1) {
+        line_width = unit.width;
+        ++i;
+      }
+      add_line(i - 1);
+      head = i;
+      line_width = 0;
+      line_ascent = 0;
+      line_descent = 0;
+      char_index = 0;
+      full_words = 0;
+      full_word = false;
+    } else {
+      line_width += unit.width;
+      ++i;
+    }
+  }
+  if (head <= total - 1) {
+    add_line(total - 1);
+  }
+  return {max_x, max_y};
+}
+
+// Where a line |width| wide starts in |typeset_width|, by /Q.
+float FieldAlignmentOffset(int alignment, float typeset_width, float width) {
+  switch (alignment) {
+    case 1:
+      return (typeset_width - width) * 0.5f;
+    case 2:
+      return typeset_width - width;
+    default:
+      return 0.0f;
+  }
+}
+
+}  // namespace
+
+CPDF_RichTextLayout::Result CPDF_RichTextLayout::ArrangeField(
+    const Field& field,
+    const CFX_FloatRect& plate) {
+  Result result;
+  const float plate_width = plate.right - plate.left;
+  const float plate_height = plate.top - plate.bottom;
+  const std::vector<WideString> texts = FieldSectionsOf(field);
+  // A field reads in the direction of its first strong character.
+  WideString all_text;
+  for (const WideString& text : texts) {
+    all_text += text;
+  }
+  const bool rtl = CFX_BidiParagraph::FirstStrongIsRtl(all_text.AsStringView())
+                       .value_or(false);
+  const bool comb = field.cells > 0;
+
+  // The fonts' ascent and descent, as CPVT measures a line with them.
+  std::map<int, std::pair<int, int>> metrics;
+  auto metrics_of = [&](int entry) {
+    auto it = metrics.find(entry);
+    if (it == metrics.end()) {
+      RetainPtr<CPDF_Font> font = fonts_->GetPDFFont(entry);
+      it = metrics
+               .emplace(entry, font ? std::make_pair(font->GetTypeAscent(),
+                                                     font->GetTypeDescent())
+                                    : std::make_pair(0, 0))
+               .first;
+    }
+    return it->second;
+  };
+
+  // The sections, itemised and shaped at |size|, cut into units.
+  auto sections_at = [&](Impl* impl, float size) {
+    ResolvedStyle style;
+    style.style.size = size;
+    style.style.weight = field.weight;
+    style.style.italic = field.italic;
+    style.drawn_size = size;
+    style.face_entry = field.face_entry;
+    const std::vector<ResolvedStyle> styles = {style};
+    std::vector<FieldSection> sections(texts.size());
+    size_t source_pos = 0;
+    for (size_t s = 0; s < texts.size(); ++s) {
+      Segment& segment = sections[s].segment;
+      segment.text = texts[s];
+      segment.style_of.assign(segment.text.GetLength(), 0);
+      for (size_t i = 0; i < segment.text.GetLength(); ++i) {
+        segment.source_pos.push_back(source_pos++);
+      }
+      ++source_pos;  // the line break
+      impl->Itemize(&segment, rtl, styles);
+      const std::vector<bool> starts = GraphemeStarts(segment.text);
+      const size_t length = segment.text.GetLength();
+      for (size_t begin = 0; begin < length;) {
+        size_t end = begin + 1;
+        while (end < length &&
+               !(starts[end] && Impl::IsClusterBoundary(segment, end))) {
+          ++end;
+        }
+        FieldUnit unit;
+        unit.begin = begin;
+        unit.end = end;
+        unit.width = Impl::RangeWidth(segment, begin, end);
+        unit.code = BreakCodeOf(segment.text[begin]);
+        for (const Item& item : segment.items) {
+          if (begin >= item.begin && begin < item.end) {
+            const auto [ascent, descent] = metrics_of(item.entry);
+            unit.ascent = ascent * size * 0.001f;
+            unit.descent = descent * size * 0.001f;
+            break;
+          }
+        }
+        sections[s].units.push_back(unit);
+        begin = end;
+      }
+    }
+    return sections;
+  };
+  auto face_ascent = [&](float size) {
+    return metrics_of(field.face_entry).first * size * 0.001f;
+  };
+  auto face_descent = [&](float size) {
+    return metrics_of(field.face_entry).second * size * 0.001f;
+  };
+  const float typeset_width = std::max(plate_width, 0.0f);
+
+  // The size: the biggest step of the ladder the text fits in, searched as
+  // CPVT's std::lower_bound searches it.
+  float size = field.size;
+  if (FXSYS_IsFloatZero(size)) {
+    size = 0;
+    if (plate_width > 0) {
+      const size_t steps =
+          field.multiline ? kAutoSizeSteps.size() / 4 : kAutoSizeSteps.size();
+      auto too_big = [&](float candidate) {
+        Impl impl(fonts_, options_);
+        impl.field = true;
+        float width = 0;
+        float height = 0;
+        for (const FieldSection& section : sections_at(&impl, candidate)) {
+          const FieldExtent extent = SplitFieldLines(
+              section.units, field.multiline, typeset_width,
+              face_ascent(candidate), face_descent(candidate), nullptr);
+          width = std::max(extent.width, width);
+          height += extent.height;
+          if (FXSYS_IsFloatBigger(width, plate_width) ||
+              FXSYS_IsFloatBigger(height, plate_height)) {
+            return true;
+          }
+        }
+        return false;
+      };
+      size_t first = 0;
+      size_t count = steps;
+      while (count > 0) {
+        const size_t step = count / 2;
+        if (!too_big(kAutoSizeSteps[first + step])) {
+          first += step + 1;
+          count -= step + 1;
+        } else {
+          count = step;
+        }
+      }
+      size = first == steps ? kAutoSizeSteps[steps - 1]
+                            : kAutoSizeSteps[first == 0 ? 0 : first - 1];
+    }
+  }
+
+  Impl impl(fonts_, options_);
+  impl.field = true;
+  std::vector<FieldSection> sections = sections_at(&impl, size);
+  const std::vector<ResolvedStyle> styles = [&] {
+    ResolvedStyle style;
+    style.style.size = size;
+    style.drawn_size = size;
+    style.face_entry = field.face_entry;
+    return std::vector<ResolvedStyle>{style};
+  }();
+
+  // Each section's lines, placed as CPVT's RearrangeTypeset() and
+  // RearrangeCharArray() place them, the sections one under the other.
+  float position_y = 0;
+  float content_height = 0;
+  for (FieldSection& section : sections) {
+    if (comb) {
+      // Each unit in the middle of its cell, the cells filled from the
+      // left, the middle or the right; every baseline at the face's ascent.
+      const float node_width = plate_width / static_cast<float>(field.cells);
+      const int units = pdfium::checked_cast<int>(section.units.size());
+      const int cells = pdfium::checked_cast<int>(field.cells);
+      int start = 0;
+      if (field.alignment == 1) {
+        start = (cells - units) / 2;
+      } else if (field.alignment == 2) {
+        start = cells - units;
+      }
+      const float ascent = face_ascent(size);
+      float line_descent = face_descent(size);
+      float x = 0;
+      for (int i = 0; i < units && i < cells; ++i) {
+        const FieldUnit& unit = section.units[i];
+        // In double, as CPVT computes it.
+        x = static_cast<float>(node_width * (i + start + 0.5) -
+                               unit.width * 0.5f);
+        section.cell_x.push_back(x);
+        x += unit.width;
+        line_descent = std::min(line_descent, unit.descent);
+      }
+      section.lines = {
+          {units > 0 ? 0 : -1, units - 1, 0, ascent, line_descent}};
+      section.top = position_y;
+      section.right = x;
+      section.bottom = section.top + (ascent - line_descent);
+    } else {
+      const FieldExtent extent = SplitFieldLines(
+          section.units, field.multiline, typeset_width, face_ascent(size),
+          face_descent(size), &section.lines);
+      section.left =
+          FieldAlignmentOffset(field.alignment, typeset_width, extent.width);
+      section.right = section.left + extent.width;
+      section.top = position_y;
+      section.bottom = position_y + extent.height;
+    }
+    position_y += section.bottom - section.top;
+    content_height += section.bottom - section.top;
+  }
+
+  // A one-line field's text has its middle at the plate's middle.
+  const float offset_y =
+      field.centered ? (content_height - plate_height) / 2.0f : 0.0f;
+
+  for (FieldSection& section : sections) {
+    const Segment& segment = section.segment;
+    float line_top = 0;  // the baseline steps down from the section's top
+    for (const FieldLine& field_line : section.lines) {
+      Line line;
+      line.ascent = field_line.ascent;
+      line.descent = -field_line.descent;
+      line.width = field_line.width;
+      line_top += field_line.ascent;
+      line.baseline_y = (line_top + section.top) - offset_y;
+      line_top -= field_line.descent;
+      if (field_line.begin >= 0) {
+        if (comb) {
+          // A run per cell.
+          for (size_t i = 0; i < section.cell_x.size(); ++i) {
+            const FieldUnit& unit = section.units[i];
+            for (GlyphRun& run :
+                 Impl::RunsFor(segment, unit.begin, unit.end, styles)) {
+              run.x = section.cell_x[i];
+              line.runs.push_back(std::move(run));
+            }
+          }
+          line.start_x = line.runs.empty() ? 0 : line.runs.front().x;
+        } else {
+          const size_t begin = section.units[field_line.begin].begin;
+          const size_t end = section.units[field_line.end].end;
+          float x = FieldAlignmentOffset(field.alignment, typeset_width,
+                                         field_line.width);
+          line.start_x = (x - section.left) + section.left;
+          for (GlyphRun& run : Impl::RunsFor(segment, begin, end, styles)) {
+            run.x = (x - section.left) + section.left;
+            x += run.width;
+            line.runs.push_back(std::move(run));
+          }
+        }
+        for (const GlyphRun& run : line.runs) {
+          result.degraded = result.degraded || run.degraded;
+        }
+      }
+      result.lines.push_back(std::move(line));
+    }
+  }
+  result.content_height = content_height;
+  result.body_size = size;
+  result.degraded = result.degraded || impl.degraded;
   return result;
 }
