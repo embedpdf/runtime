@@ -52,10 +52,16 @@ source_set("fxge") {
     "cfx_glyphbitmap.h",
     "cfx_glyphcache.cpp",
     "cfx_glyphcache.h",
+    # EmbedPDF(fonts): a glyph's unscaled outline, and an OpenType font
+    # written from outlines (a document font's display program).
+    "cfx_glyphoutline.cpp",
+    "cfx_glyphoutline.h",
     "cfx_graphstate.cpp",
     "cfx_graphstate.h",
     "cfx_graphstatedata.cpp",
     "cfx_graphstatedata.h",
+    "cfx_opentypewriter.cpp",
+    "cfx_opentypewriter.h",
     "cfx_path.cpp",
     "cfx_path.h",
     "cfx_renderdevice.cpp",

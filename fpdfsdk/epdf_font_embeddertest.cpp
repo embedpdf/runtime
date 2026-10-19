@@ -10,13 +10,19 @@
 #include <vector>
 
 #include "core/fdrm/fx_crypt_sha.h"
+#include "core/fpdfapi/font/cpdf_font.h"
 #include "core/fpdfapi/page/cpdf_annotcontext.h"
+#include "core/fpdfapi/page/cpdf_docpagedata.h"
 #include "core/fpdfapi/parser/cpdf_array.h"
 #include "core/fpdfapi/parser/cpdf_dictionary.h"
 #include "core/fpdfapi/parser/cpdf_document.h"
 #include "core/fpdfapi/parser/cpdf_stream.h"
 #include "core/fxcrt/bytestring.h"
 #include "core/fxcrt/widestring.h"
+#include "core/fxge/cfx_face.h"
+#include "core/fxge/cfx_font.h"
+#include "core/fxge/cfx_glyphoutline.h"
+#include "core/fxge/fx_fontencoding.h"
 #include "fpdfsdk/cpdfsdk_helpers.h"
 #include "fpdfsdk/epdf_edit_test_util.h"
 #include "public/cpp/fpdf_scopers.h"
@@ -330,6 +336,12 @@ TEST_F(EPDFFontEmbedderTest, ListsADocumentProgramAndHandsOutItsBytes) {
   ASSERT_TRUE(EPDFFont_GetProgramHash(roboto_id, registered_hash));
   EXPECT_EQ(std::vector<uint8_t>(registered_hash, registered_hash + 32),
             std::vector<uint8_t>(hash, hash + 32));
+  // A browser loads it as it is.
+  unsigned char display_hash[32] = {};
+  ASSERT_TRUE(EPDFFontFaces_GetProgramDisplayHash(
+      faces, found->face, found->program, display_hash));
+  EXPECT_EQ(std::vector<uint8_t>(hash, hash + 32),
+            std::vector<uint8_t>(display_hash, display_hash + 32));
   float ascent = 0;
   float descent = 0;
   EXPECT_TRUE(EPDFFontFaces_GetProgramMetrics(
@@ -340,6 +352,9 @@ TEST_F(EPDFFontEmbedderTest, ListsADocumentProgramAndHandsOutItsBytes) {
             EPDFDoc_GetFontProgramData(document(), objnum, nullptr, 0));
   std::vector<uint8_t> bytes(roboto.size());
   ASSERT_EQ(roboto.size(), EPDFDoc_GetFontProgramData(
+                               document(), objnum, bytes.data(), bytes.size()));
+  EXPECT_EQ(roboto, bytes);
+  ASSERT_EQ(roboto.size(), EPDFDoc_GetFontDisplayProgramData(
                                document(), objnum, bytes.data(), bytes.size()));
   EXPECT_EQ(roboto, bytes);
   EXPECT_GT(EPDFDoc_GetFontProgramCoverage(document(), objnum, nullptr, 0), 0u);
@@ -589,6 +604,8 @@ TEST_F(EPDFFontEmbedderTest, FindsFontsWhereverADrawingUsesThem) {
   unsigned char hash[32] = {};
   EXPECT_FALSE(EPDFFontFaces_GetProgramHash(faces, georgia->face,
                                             georgia->program, hash));
+  EXPECT_FALSE(EPDFFontFaces_GetProgramDisplayHash(faces, georgia->face,
+                                                   georgia->program, hash));
   bool type3 = false;
   for (int face = 0; face < EPDFFontFaces_Count(faces); ++face) {
     for (int program = 0; program < EPDFFontFaces_CountPrograms(faces, face);
@@ -669,4 +686,235 @@ TEST_F(EPDFFontEmbedderTest, UnauthorizedRegisteredFontDoesNotTakeOverABox) {
   EXPECT_EQ(EPDF_FONT_SOURCE_DOCUMENT_FONT,
             EPDFFontResolution_GetSource(resolution, 0));
   EPDFFontResolution_Close(resolution);
+}
+
+namespace {
+
+std::vector<uint8_t> LoadTestFont(const char* path) {
+  std::string font_path = PathService::GetTestFilePath(path);
+  if (font_path.empty()) {
+    ADD_FAILURE() << "Failed to find " << path;
+    return {};
+  }
+  return GetFileContents(font_path.c_str());
+}
+
+// A form whose field writes with a simple font over |program| (embedded
+// under |font_file|, with |file_subtype| as the stream's /Subtype when it has
+// one), WinAnsi-encoded, every character 600 wide but "D" 700.
+std::string FormWithFieldFont(const std::vector<uint8_t>& program,
+                              const char* font_file,
+                              const char* file_subtype,
+                              const char* base_font) {
+  std::string widths;
+  for (int code = 32; code <= 126; ++code) {
+    widths += code == 'D' ? "700 " : "600 ";
+  }
+  const std::string data(program.begin(), program.end());
+  std::string file = "<< ";
+  if (file_subtype) {
+    file += std::string("/Subtype /") + file_subtype + " ";
+  }
+  file += "/Length " + std::to_string(data.size()) + " >>\nstream\n" + data +
+          "\nendstream";
+  return MakePdf({
+      "<< /Type /Catalog /Pages 2 0 R /AcroForm << /Fields [5 0 R] /DR << "
+      "/Font << /FKept 6 0 R >> >> >> >>",
+      "<< /Type /Pages /Kids [3 0 R] /Count 1 >>",
+      "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 300 300] /Annots [5 0 R] "
+      ">>",
+      file,
+      "<< /Type /Annot /Subtype /Widget /FT /Tx /T (kept) /P 3 0 R /Rect [20 "
+      "200 280 230] /DA (/FKept 12 Tf 0 g) /V (AB) >>",
+      std::string("<< /Type /Font /Subtype /Type1 /BaseFont /") + base_font +
+          " /FirstChar 32 /LastChar 126 /Widths [" + widths +
+          "] /Encoding /WinAnsiEncoding /FontDescriptor 7 0 R >>",
+      std::string("<< /Type /FontDescriptor /FontName /") + base_font +
+          " /Flags 32 /FontBBox [0 -250 1000 900] /ItalicAngle 0 /Ascent 900 "
+          "/Descent -250 /CapHeight 700 /StemV 80 /" +
+          font_file + " 4 0 R >>",
+  });
+}
+
+// An outline with zero-length lines left out: a contour's closing line is
+// written by one program and implied by another.
+std::vector<CFX_GlyphOutline::Segment> Drawn(const CFX_GlyphOutline& outline) {
+  std::vector<CFX_GlyphOutline::Segment> drawn;
+  CFX_PointF pen;
+  for (const CFX_GlyphOutline::Segment& segment : outline.segments) {
+    const CFX_PointF end = segment.op == CFX_GlyphOutline::Op::kCubic
+                               ? segment.points[2]
+                               : segment.points[0];
+    if (segment.op == CFX_GlyphOutline::Op::kLine && end == pen) {
+      continue;
+    }
+    pen = end;
+    drawn.push_back(segment);
+  }
+  return drawn;
+}
+
+void ExpectSameOutline(const CFX_GlyphOutline& expected,
+                       const CFX_GlyphOutline& actual) {
+  const std::vector<CFX_GlyphOutline::Segment> left = Drawn(expected);
+  const std::vector<CFX_GlyphOutline::Segment> right = Drawn(actual);
+  ASSERT_EQ(left.size(), right.size());
+  ASSERT_FALSE(left.empty());
+  for (size_t i = 0; i < left.size(); ++i) {
+    ASSERT_EQ(left[i].op, right[i].op) << i;
+    const size_t points = left[i].op == CFX_GlyphOutline::Op::kCubic ? 3 : 1;
+    for (size_t j = 0; j < points; ++j) {
+      EXPECT_NEAR(left[i].points[j].x, right[i].points[j].x, 0.01) << i;
+      EXPECT_NEAR(left[i].points[j].y, right[i].points[j].y, 0.01) << i;
+    }
+  }
+}
+
+bool Covers(const std::vector<uint32_t>& ranges, uint32_t scalar) {
+  for (size_t i = 0; i + 1 < ranges.size(); i += 2) {
+    if (ranges[i] <= scalar && scalar < ranges[i] + ranges[i + 1]) {
+      return true;
+    }
+  }
+  return false;
+}
+
+// The field font of a form from FormWithFieldFont(), as the engine sees it,
+// and its display program: an OpenType font a browser loads, with the same
+// glyphs, reached by exactly the characters the engine writes, at the
+// advances it lays them out with.
+void ExpectDisplayProgramDrawsTheKeptFont(const std::string& pdf,
+                                          int expected_format) {
+  ScopedFPDFDocument doc(FPDF_LoadMemDocument(pdf.data(), pdf.size(), nullptr));
+  ASSERT_TRUE(doc);
+  EPDF_FONT_FACES faces = EPDFFontFaces_Load(doc.get());
+  ASSERT_TRUE(faces);
+  std::optional<FoundProgram> found;
+  for (int face = 0; face < EPDFFontFaces_Count(faces) && !found; ++face) {
+    for (int program = 0; program < EPDFFontFaces_CountPrograms(faces, face);
+         ++program) {
+      if (EPDFFontFaces_GetProgramFormat(faces, face, program) ==
+          expected_format) {
+        found = FoundProgram{face, program};
+        break;
+      }
+    }
+  }
+  ASSERT_TRUE(found.has_value());
+  EXPECT_FALSE(
+      EPDFFontFaces_ProgramMapsUnicode(faces, found->face, found->program));
+  unsigned char source_hash[32] = {};
+  unsigned char display_hash[32] = {};
+  ASSERT_TRUE(EPDFFontFaces_GetProgramHash(faces, found->face, found->program,
+                                           source_hash));
+  ASSERT_TRUE(EPDFFontFaces_GetProgramDisplayHash(
+      faces, found->face, found->program, display_hash));
+  EXPECT_NE(std::vector<uint8_t>(source_hash, source_hash + 32),
+            std::vector<uint8_t>(display_hash, display_hash + 32));
+  const unsigned long objnum =
+      EPDFFontFaces_GetProgramObjNum(faces, found->face, found->program);
+  EPDFFontFaces_Close(faces);
+
+  const unsigned long length =
+      EPDFDoc_GetFontDisplayProgramData(doc.get(), objnum, nullptr, 0);
+  ASSERT_GT(length, 0u);
+  std::vector<uint8_t> display(length);
+  ASSERT_EQ(length, EPDFDoc_GetFontDisplayProgramData(doc.get(), objnum,
+                                                      display.data(), length));
+  const DataVector<uint8_t> hashed = CryptSha256Generate(display);
+  EXPECT_EQ(std::vector<uint8_t>(display_hash, display_hash + 32),
+            std::vector<uint8_t>(hashed.begin(), hashed.end()));
+  ASSERT_EQ('O', display[0]);  // 'OTTO': OpenType with CFF outlines
+
+  auto display_font = std::make_unique<CFX_Font>();
+  ASSERT_TRUE(display_font->LoadFaceZeroFromSpan(
+      display, /*force_vertical=*/false, /*object_tag=*/0));
+  RetainPtr<CFX_Face> display_face = display_font->GetFace();
+  ASSERT_TRUE(display_face->SelectCharMap(fxge::FontEncoding::kUnicode));
+
+  // The engine's view of the same font.
+  CPDF_Document* pdf_doc = CPDFDocumentFromFPDFDocument(doc.get());
+  RetainPtr<CPDF_Dictionary> font_dict = pdf_doc->GetMutableRoot()
+                                             ->GetMutableDictFor("AcroForm")
+                                             ->GetMutableDictFor("DR")
+                                             ->GetMutableDictFor("Font")
+                                             ->GetMutableDictFor("FKept");
+  RetainPtr<CPDF_Font> font =
+      CPDF_DocPageData::FromDocument(pdf_doc)->GetFont(font_dict);
+  ASSERT_TRUE(font);
+  RetainPtr<CFX_Face> source_face = font->GetFont()->GetFace();
+
+  // Every printable character the font has.
+  int compared = 0;
+  for (int character = 0x21; character <= 0x7e; ++character) {
+    const uint32_t code =
+        font->CharCodeFromUnicode(static_cast<wchar_t>(character));
+    const int source_glyph = font->GlyphFromCharCode(code, nullptr);
+    if (source_glyph <= 0) {
+      EXPECT_EQ(0, display_face->GetCharIndex(character)) << character;
+      continue;
+    }
+    ++compared;
+    const int display_glyph = display_face->GetCharIndex(character);
+    ASSERT_GT(display_glyph, 0) << character;
+    std::optional<CFX_GlyphOutline> expected =
+        source_face->LoadUnscaledGlyphOutline(source_glyph);
+    std::optional<CFX_GlyphOutline> actual =
+        display_face->LoadUnscaledGlyphOutline(display_glyph);
+    ASSERT_TRUE(expected.has_value());
+    ASSERT_TRUE(actual.has_value());
+    ExpectSameOutline(*expected, *actual);
+    ASSERT_EQ(0, display_face->LoadGlyph(display_glyph, /*scale=*/false));
+    EXPECT_EQ(character == 'D' ? 700 : 600,
+              display_face->GetGlyphTTWidth(display_glyph))
+        << character;
+  }
+  EXPECT_GE(compared, 5);
+
+  // The characters it draws are exactly the ones the engine writes.
+  const unsigned long range_count =
+      EPDFDoc_GetFontProgramCoverage(doc.get(), objnum, nullptr, 0);
+  ASSERT_GT(range_count, 0u);
+  std::vector<uint32_t> ranges(range_count * 2);
+  EPDFDoc_GetFontProgramCoverage(doc.get(), objnum, ranges.data(), range_count);
+  for (uint32_t scalar = 1; scalar < 0x3000; ++scalar) {
+    const uint32_t code =
+        font->CharCodeFromUnicode(static_cast<wchar_t>(scalar));
+    const bool written = code != CPDF_Font::kInvalidCharCode && code != 0 &&
+                         font->GlyphFromCharCode(code, nullptr) > 0 &&
+                         !font->UnicodeFromCharCode(code).IsEmpty();
+    EXPECT_EQ(written, Covers(ranges, scalar)) << scalar;
+    EXPECT_EQ(written, display_face->GetCharIndex(scalar) > 0) << scalar;
+  }
+
+  // The same bytes from another opening of the same file.
+  ScopedFPDFDocument again(
+      FPDF_LoadMemDocument(pdf.data(), pdf.size(), nullptr));
+  ASSERT_TRUE(again);
+  std::vector<uint8_t> rebuilt(length);
+  ASSERT_EQ(length, EPDFDoc_GetFontDisplayProgramData(again.get(), objnum,
+                                                      rebuilt.data(), length));
+  EXPECT_EQ(display, rebuilt);
+}
+
+}  // namespace
+
+// A form's field font that is bare CFF, which a browser can't load, gets a
+// display program it can.
+TEST_F(EPDFFontEmbedderTest, BuildsADisplayProgramForABareCffFont) {
+  std::vector<uint8_t> cff = LoadTestFont("fonts/foxit_fixed.cff");
+  ASSERT_FALSE(cff.empty());
+  ExpectDisplayProgramDrawsTheKeptFont(
+      FormWithFieldFont(cff, "FontFile3", "Type1C", "FoxitFixed"),
+      EPDF_FONT_FORMAT_CFF);
+}
+
+// So does one that is Type 1.
+TEST_F(EPDFFontEmbedderTest, BuildsADisplayProgramForAType1Font) {
+  std::vector<uint8_t> type1 =
+      LoadThirdPartyFont("skia/resources/fonts/Roboto2-Regular.pfb");
+  ASSERT_FALSE(type1.empty());
+  ExpectDisplayProgramDrawsTheKeptFont(
+      FormWithFieldFont(type1, "FontFile", nullptr, "Roboto2-Regular"),
+      EPDF_FONT_FORMAT_TYPE1);
 }

@@ -275,6 +275,7 @@ int CheckEmbedPDFCApi(void) {
   // epdf_font.h
   CHK(EPDFDoc_ClearMissingCharacters);
   CHK(EPDFDoc_CountMissingCharacters);
+  CHK(EPDFDoc_GetFontDisplayProgramData);
   CHK(EPDFDoc_GetFontEmbeddingPolicy);
   CHK(EPDFDoc_GetFontProgramCoverage);
   CHK(EPDFDoc_GetFontProgramData);
@@ -285,6 +286,7 @@ int CheckEmbedPDFCApi(void) {
   CHK(EPDFFontFaces_Count);
   CHK(EPDFFontFaces_CountPrograms);
   CHK(EPDFFontFaces_GetFamily);
+  CHK(EPDFFontFaces_GetProgramDisplayHash);
   CHK(EPDFFontFaces_GetProgramEmbedded);
   CHK(EPDFFontFaces_GetProgramEmbeddingPermission);
   CHK(EPDFFontFaces_GetProgramFormat);

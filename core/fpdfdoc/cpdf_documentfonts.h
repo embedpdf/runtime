@@ -55,6 +55,10 @@ class CPDF_DocumentFonts final : public CPDF_Document::FontIndex {
     bool maps_unicode = false;
     // SHA-256 of the decoded program; empty without one.
     DataVector<uint8_t> sha256;
+    // SHA-256 of what a browser loads for it: the program itself when it is
+    // an sfnt that maps characters through a Unicode cmap, else its display
+    // program (cpdf_displayprogram.h). Empty when a browser can't draw it.
+    DataVector<uint8_t> display_sha256;
     // Line metrics as the layout reads them (em, descent positive); 0 when
     // the program doesn't load.
     float ascent = 0;
@@ -89,8 +93,12 @@ class CPDF_DocumentFonts final : public CPDF_Document::FontIndex {
   // A program found by the walk, by its stream's object number: its decoded
   // bytes, the program as the layout reads it. Empty for any other number.
   DataVector<uint8_t> ProgramData(uint32_t objnum);
-  // The scalars it maps through its Unicode cmap, as [start, start + count)
-  // ranges in order; empty when it maps none or |objnum| isn't one.
+  // What a browser loads for such a program (see Program::display_sha256);
+  // empty when it can't draw it or |objnum| isn't one.
+  DataVector<uint8_t> DisplayProgramData(uint32_t objnum);
+  // The scalars a browser draws with it, which are the ones the engine writes
+  // with it, as [start, start + count) ranges in order; empty when it maps
+  // none or |objnum| isn't one.
   std::vector<std::pair<uint32_t, uint32_t>> ProgramCoverage(uint32_t objnum);
   // The program stream itself, for the writer; null when |objnum| isn't one.
   RetainPtr<CPDF_Stream> ProgramStream(uint32_t objnum);
@@ -121,16 +129,32 @@ class CPDF_DocumentFonts final : public CPDF_Document::FontIndex {
   void ClearMissingCharacters() { missing_characters_.clear(); }
 
  private:
+  struct Display {
+    DataVector<uint8_t> bytes;
+    DataVector<uint8_t> sha256;
+    std::vector<std::pair<uint32_t, uint32_t>> coverage;
+  };
+
   struct Inspected {
     RetainPtr<const CPDF_Stream> stream;  // the version inspected
     size_t raw_size = 0;
     Program facts;
     std::optional<std::vector<std::pair<uint32_t, uint32_t>>> coverage;
+    // Built from the first font dictionary found to use the stream.
+    bool display_built = false;
+    std::optional<Display> display;
   };
 
   // The facts about |stream|, inspected once per version.
   Program Inspect(RetainPtr<const CPDF_Stream> stream, Format format);
   Inspected* FindInspected(uint32_t objnum);
+  // |program|'s display hash, its display program built through
+  // |font_dict| once per stream version when it needs one.
+  DataVector<uint8_t> DisplayHashOf(const Program& program,
+                                    const CPDF_Dictionary* font_dict,
+                                    const WideString& family,
+                                    int weight,
+                                    bool italic);
 
   UnownedPtr<CPDF_Document> const doc_;
   std::map<uint32_t, Inspected> inspected_;  // by program stream objnum

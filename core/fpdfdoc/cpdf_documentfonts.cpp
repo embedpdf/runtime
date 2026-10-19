@@ -14,6 +14,7 @@
 #include "core/fpdfapi/parser/cpdf_dictionary.h"
 #include "core/fpdfapi/parser/cpdf_stream.h"
 #include "core/fpdfapi/parser/cpdf_stream_acc.h"
+#include "core/fpdfdoc/cpdf_displayprogram.h"
 #include "core/fpdfdoc/cpdf_fontface.h"
 #include "core/fxcrt/utf16.h"
 #include "core/fxge/cfx_face.h"
@@ -227,6 +228,23 @@ bool IsSfnt(CPDF_DocumentFonts::Format format) {
          format == CPDF_DocumentFonts::Format::kOpenTypeCFF;
 }
 
+// |scalars| as [start, start + count) ranges, in order.
+std::vector<std::pair<uint32_t, uint32_t>> RangesOf(
+    std::vector<uint32_t> scalars) {
+  std::ranges::sort(scalars);
+  std::vector<std::pair<uint32_t, uint32_t>> ranges;
+  for (uint32_t scalar : scalars) {
+    if (!ranges.empty() &&
+        ranges.back().first + ranges.back().second >= scalar) {
+      ranges.back().second =
+          std::max(ranges.back().second, scalar - ranges.back().first + 1);
+      continue;
+    }
+    ranges.emplace_back(scalar, 1);
+  }
+  return ranges;
+}
+
 }  // namespace
 
 CPDF_DocumentFonts::CPDF_DocumentFonts(CPDF_Document* doc) : doc_(doc) {}
@@ -271,6 +289,10 @@ std::vector<CPDF_DocumentFonts::Face> CPDF_DocumentFonts::CollectFaces() {
       program.format = format;
     }
     program.postscript_name = BaseFontNameWithoutSubsetTag(base_font);
+    if (stream) {
+      program.display_sha256 = DisplayHashOf(program, font.Get(), face.family,
+                                             face.weight, face.italic);
+    }
     const bool known =
         std::ranges::any_of(entry.programs, [&](const Program& other) {
           return program.objnum != 0
@@ -375,10 +397,69 @@ DataVector<uint8_t> CPDF_DocumentFonts::ProgramData(uint32_t objnum) {
   return bytes;
 }
 
+DataVector<uint8_t> CPDF_DocumentFonts::DisplayHashOf(
+    const Program& program,
+    const CPDF_Dictionary* font_dict,
+    const WideString& family,
+    int weight,
+    bool italic) {
+  if (program.sha256.empty()) {
+    return {};
+  }
+  // A browser loads it as it is.
+  if (IsSfnt(program.format) && program.maps_unicode) {
+    return program.sha256;
+  }
+  // An inline program can't be addressed, so nothing could fetch it.
+  if (program.objnum == 0) {
+    return {};
+  }
+  auto it = inspected_.find(program.objnum);
+  if (it == inspected_.end()) {
+    return {};
+  }
+  Inspected& inspected = it->second;
+  if (!inspected.display_built) {
+    inspected.display_built = true;
+    std::optional<CPDF_DisplayProgram> built =
+        BuildDisplayProgram(doc_, font_dict, program.postscript_name,
+                            CPDF_FontFace{family, weight, italic});
+    if (built.has_value()) {
+      Display display;
+      display.sha256 = CryptSha256Generate(built->bytes);
+      display.coverage = RangesOf(std::move(built->characters));
+      display.bytes = std::move(built->bytes);
+      inspected.display = std::move(display);
+    }
+  }
+  return inspected.display.has_value() ? inspected.display->sha256
+                                       : DataVector<uint8_t>();
+}
+
+DataVector<uint8_t> CPDF_DocumentFonts::DisplayProgramData(uint32_t objnum) {
+  Inspected* inspected = FindInspected(objnum);
+  if (!inspected) {
+    return {};
+  }
+  if (inspected->display.has_value()) {
+    return inspected->display->bytes;
+  }
+  if (IsSfnt(inspected->facts.format) && inspected->facts.maps_unicode) {
+    return ProgramData(objnum);
+  }
+  return {};
+}
+
 std::vector<std::pair<uint32_t, uint32_t>> CPDF_DocumentFonts::ProgramCoverage(
     uint32_t objnum) {
   Inspected* inspected = FindInspected(objnum);
-  if (!inspected || !inspected->facts.maps_unicode) {
+  if (!inspected) {
+    return {};
+  }
+  if (inspected->display.has_value()) {
+    return inspected->display->coverage;
+  }
+  if (!inspected->facts.maps_unicode) {
     return {};
   }
   if (inspected->coverage.has_value()) {
@@ -400,17 +481,8 @@ std::vector<std::pair<uint32_t, uint32_t>> CPDF_DocumentFonts::ProgramCoverage(
       }
     }
   }
-  std::ranges::sort(scalars);
-  std::vector<std::pair<uint32_t, uint32_t>> ranges;
-  for (uint32_t scalar : scalars) {
-    if (!ranges.empty() &&
-        ranges.back().first + ranges.back().second >= scalar) {
-      ranges.back().second =
-          std::max(ranges.back().second, scalar - ranges.back().first + 1);
-      continue;
-    }
-    ranges.emplace_back(scalar, 1);
-  }
+  std::vector<std::pair<uint32_t, uint32_t>> ranges =
+      RangesOf(std::move(scalars));
   inspected->coverage = ranges;
   return ranges;
 }

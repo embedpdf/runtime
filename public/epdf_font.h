@@ -306,6 +306,17 @@ EPDFFontFaces_GetProgramHash(EPDF_FONT_FACES faces,
                              int face,
                              int program,
                              unsigned char* sha256);
+// The SHA-256 of what a browser loads for the program into |sha256| (32
+// bytes): the program itself when it is TrueType or OpenType with a Unicode
+// cmap, else the display program built for it
+// (EPDFDoc_GetFontDisplayProgramData()). Returns false when a browser can't
+// draw it (Type 3, nothing embedded, a program that doesn't load) or for an
+// index out of range.
+FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV
+EPDFFontFaces_GetProgramDisplayHash(EPDF_FONT_FACES faces,
+                                    int face,
+                                    int program,
+                                    unsigned char* sha256);
 // The program's line metrics as the layout reads them (em, descent
 // positive). Returns false when it doesn't load or out of range.
 FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV
@@ -327,10 +338,27 @@ EPDFDoc_GetFontProgramData(FPDF_DOCUMENT document,
                            unsigned long buflen);
 
 // Experimental EmbedPDF Extension API.
-// The characters such a program maps through its Unicode cmap, as ranges:
-// |ranges| receives up to |range_capacity| pairs (first code point, count).
-// Returns the number of ranges, 0 when it maps none or isn't such a
-// program; pass NULL/0 to query it.
+// What a browser loads for such a program: the program itself when it is
+// TrueType or OpenType with a Unicode cmap. Otherwise (Type 1, bare CFF, a
+// program without a Unicode cmap) an OpenType font built from it: its
+// glyphs, a Unicode cmap holding exactly the characters the engine writes
+// with the font (each through the PDF's encoding to the glyph it draws), and
+// the advances the engine lays them out with (/Widths). The same bytes every
+// time. Returns the length, 0 when a browser can't draw it or
+// |program_objnum| isn't such a program; pass NULL/0 to query it. Nothing is
+// copied when |buflen| is too small.
+FPDF_EXPORT unsigned long FPDF_CALLCONV
+EPDFDoc_GetFontDisplayProgramData(FPDF_DOCUMENT document,
+                                  unsigned long program_objnum,
+                                  void* buffer,
+                                  unsigned long buflen);
+
+// Experimental EmbedPDF Extension API.
+// The characters a browser draws with such a program, which are the ones the
+// engine writes with it, as ranges: |ranges| receives up to
+// |range_capacity| pairs (first code point, count). Returns the number of
+// ranges, 0 when it maps none or isn't such a program; pass NULL/0 to query
+// it.
 FPDF_EXPORT unsigned long FPDF_CALLCONV
 EPDFDoc_GetFontProgramCoverage(FPDF_DOCUMENT document,
                                unsigned long program_objnum,

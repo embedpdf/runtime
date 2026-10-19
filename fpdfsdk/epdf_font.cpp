@@ -500,6 +500,15 @@ EPDFFontFaces_GetProgramHash(EPDF_FONT_FACES faces,
 }
 
 FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV
+EPDFFontFaces_GetProgramDisplayHash(EPDF_FONT_FACES faces,
+                                    int face,
+                                    int program,
+                                    unsigned char* sha256) {
+  const CPDF_DocumentFonts::Program* entry = ProgramAt(faces, face, program);
+  return entry && CopySha256(entry->display_sha256, sha256);
+}
+
+FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV
 EPDFFontFaces_GetProgramMetrics(EPDF_FONT_FACES faces,
                                 int face,
                                 int program,
@@ -526,6 +535,22 @@ EPDFDoc_GetFontProgramData(FPDF_DOCUMENT document,
   }
   const DataVector<uint8_t> data = CPDF_DocumentFonts::For(doc)->ProgramData(
       static_cast<uint32_t>(program_objnum));
+  return CopyBytesAndReturnLength(data, buffer, buflen);
+}
+
+FPDF_EXPORT unsigned long FPDF_CALLCONV
+EPDFDoc_GetFontDisplayProgramData(FPDF_DOCUMENT document,
+                                  unsigned long program_objnum,
+                                  void* buffer,
+                                  unsigned long buflen) {
+  ScopedFPDFDocumentView document_view(document);
+  CPDF_Document* doc = document_view.Get();
+  if (!doc || program_objnum == 0) {
+    return 0;
+  }
+  const DataVector<uint8_t> data =
+      CPDF_DocumentFonts::For(doc)->DisplayProgramData(
+          static_cast<uint32_t>(program_objnum));
   return CopyBytesAndReturnLength(data, buffer, buflen);
 }
 
