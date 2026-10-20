@@ -35,11 +35,13 @@
 #include "public/epdf_form.h"
 #include "public/epdf_layer.h"
 #include "public/epdf_named_pages.h"
+#include "public/epdf_outline.h"
 #include "public/epdf_save.h"
 #include "public/epdf_view.h"
 #include "public/fpdf_annot.h"
 #include "public/fpdf_edit.h"
 #include "public/fpdf_save.h"
+#include "public/fpdf_transformpage.h"
 #include "public/fpdfview.h"
 #include "testing/embedder_test.h"
 #include "testing/fx_string_testhelpers.h"
@@ -608,6 +610,32 @@ TEST_F(EPDFCaptureEmbedderTest, ImportRefusesWhatDoesNotFit) {
   ASSERT_TRUE(EPDFLayer_AbortTransaction(fresh.get()));
 }
 
+// A capture never holds the catalog, the page tree or a page it isn't of:
+// one that does (here an annotation capture with a catalog put in) is
+// refused whole, and nothing of it is put in.
+TEST_F(EPDFCaptureEmbedderTest, ImportRefusesACaptureHoldingTheCatalog) {
+  ScopedFPDFDocument layer = OpenLayer();
+  ASSERT_TRUE(layer);
+  ASSERT_TRUE(EPDFLayer_BeginTransaction(layer.get()));
+  ASSERT_TRUE(CreateSquare(layer.get(), 1, 20));
+  ASSERT_TRUE(EPDFLayer_CommitTransaction(layer.get()));
+  ASSERT_TRUE(EPDFLayer_BeginTransaction(layer.get()));
+  std::vector<uint8_t> capture = ExportAnnots(layer.get(), 1, {0});
+  ASSERT_FALSE(capture.empty());
+  ASSERT_TRUE(EPDFPage_RemoveAnnotRaw(layer.get(), 1, 0));
+  ASSERT_TRUE(EPDFLayer_CommitTransaction(layer.get()));
+
+  CPDF_Document* pdf = CPDFDocumentFromFPDFDocument(layer.get());
+  const std::string catalog = ObjectGraph(pdf).at(1);
+  const std::string forged = "1 0 obj\n<< /Type /Catalog >>\nendobj\n";
+  capture.insert(capture.end(), forged.begin(), forged.end());
+  ASSERT_TRUE(EPDFLayer_BeginTransaction(layer.get()));
+  EXPECT_FALSE(ImportAnnots(layer.get(), 1, capture));
+  ASSERT_TRUE(EPDFLayer_CommitTransaction(layer.get()));
+  EXPECT_EQ(catalog, ObjectGraph(pdf).at(1));
+  EXPECT_TRUE(Annots(layer.get(), 1).empty());
+}
+
 // A dictionary captured before an update comes back exactly: every key as it
 // was, none added, and the appearance under a deep key with its bytes, also
 // after a save and reopen dropped the old appearance.
@@ -1054,13 +1082,186 @@ TEST_F(EPDFPageCaptureEmbedderTest, ImportLeavesAKeyAnotherPageTook) {
   EXPECT_THAT(NamedPages(layer.get()), ElementsAre(L"Cover=3", L"Intro=5"));
 }
 
-// A capture holds its page, never another: the cover links to the body,
-// which the layer turned, and the page tree is its parent.
+// A page comes back with what it took from the page tree, as its own. The
+// page tree has two branches of different size, turn and resources; the
+// last page of the first branch comes back at its place, which is the start
+// of the second branch now, and still reads as the first branch made it.
+TEST_F(EPDFPageCaptureEmbedderTest, PageKeepsWhatItInheritedFromItsBranch) {
+  EPDF_ReleaseBaseDocument(base_);
+  input_ = MakePdf({
+      "<< /Type /Catalog /Pages 2 0 R >>",
+      "<< /Type /Pages /Kids [3 0 R 4 0 R] /Count 4 >>",
+      "<< /Type /Pages /Parent 2 0 R /Kids [5 0 R 6 0 R] /Count 2 "
+      "/MediaBox [0 0 200 100] /Rotate 90 /Resources 9 0 R >>",
+      "<< /Type /Pages /Parent 2 0 R /Kids [7 0 R 8 0 R] /Count 2 "
+      "/MediaBox [0 0 500 500] /Resources << >> >>",
+      "<< /Type /Page /Parent 3 0 R >>",
+      "<< /Type /Page /Parent 3 0 R >>",
+      "<< /Type /Page /Parent 4 0 R >>",
+      "<< /Type /Page /Parent 4 0 R >>",
+      "<< /ProcSet [/PDF] >>",
+  });
+  base_ = EPDF_LoadMemBaseDocument(input_.data(), input_.size(), nullptr);
+  ASSERT_TRUE(base_);
+  for (bool reopen : {false, true}) {
+    SCOPED_TRACE(reopen ? "reopened between delete and import"
+                        : "same session");
+    ScopedFPDFDocument layer = OpenLayer();
+    ASSERT_TRUE(layer);
+    ASSERT_TRUE(EPDFLayer_BeginTransaction(layer.get()));
+    const std::vector<uint8_t> capture = ExportPage(layer.get(), 6);
+    ASSERT_FALSE(capture.empty());
+    ASSERT_TRUE(EPDFDoc_DeletePageByObjectNumber(layer.get(), 6));
+    ASSERT_TRUE(EPDFLayer_CommitTransaction(layer.get()));
+    EXPECT_THAT(PageOrder(layer.get()), ElementsAre(5, 7, 8));
+
+    ScopedFPDFDocument target = reopen ? Reopen(layer.get()) : std::move(layer);
+    ASSERT_TRUE(target);
+    ASSERT_TRUE(EPDFLayer_BeginTransaction(target.get()));
+    ASSERT_TRUE(ImportPage(target.get(), capture));
+    ASSERT_TRUE(EPDFLayer_CommitTransaction(target.get()));
+    EXPECT_THAT(PageOrder(target.get()), ElementsAre(5, 6, 7, 8));
+    EXPECT_EQ(4u, RefOf(target.get(), 6, "Parent"));  // the other branch
+    EXPECT_EQ(9u, RefOf(target.get(), 6, "Resources"));
+    ScopedFPDFPage page(FPDF_LoadPage(target.get(), 1));
+    ASSERT_TRUE(page);
+    EXPECT_EQ(1, FPDFPage_GetRotation(page.get()));
+    float left = 0;
+    float bottom = 0;
+    float right = 0;
+    float top = 0;
+    ASSERT_TRUE(FPDFPage_GetMediaBox(page.get(), &left, &bottom, &right, &top));
+    EXPECT_EQ(200, right);
+    EXPECT_EQ(100, top);
+    // Turned a quarter, as the first branch turns its pages.
+    EXPECT_EQ(100, FPDF_GetPageWidthF(page.get()));
+    EXPECT_EQ(200, FPDF_GetPageHeightF(page.get()));
+  }
+}
+
+// A capture names the file it was taken on when the layer knows the file's
+// hash, and never makes the layer work it out.
+TEST_F(EPDFPageCaptureEmbedderTest, CaptureNamesItsFileWhenTheHashIsKnown) {
+  ScopedFPDFDocument layer = OpenLayer();
+  ASSERT_TRUE(layer);
+  const std::vector<uint8_t> unnamed = ExportPage(layer.get(), kIntro);
+  ASSERT_FALSE(unnamed.empty());
+  EXPECT_EQ(std::string::npos,
+            std::string(unnamed.begin(), unnamed.end()).find("/Base"));
+  unsigned char sha256[32] = {};
+  ASSERT_TRUE(EPDFLayer_GetBaseSha256(layer.get(), sha256));
+  const std::vector<uint8_t> named = ExportPage(layer.get(), kIntro);
+  EXPECT_NE(std::string::npos,
+            std::string(named.begin(), named.end()).find("/Base"));
+  // Both come back into a layer of this file.
+  for (const std::vector<uint8_t>* capture : {&unnamed, &named}) {
+    ASSERT_TRUE(EPDFLayer_BeginTransaction(layer.get()));
+    ASSERT_TRUE(EPDFDoc_DeletePageByObjectNumber(layer.get(), kIntro));
+    EXPECT_TRUE(ImportPage(layer.get(), *capture));
+    ASSERT_TRUE(EPDFLayer_AbortTransaction(layer.get()));
+  }
+}
+
+// A capture that names its file comes back only into a layer of that file:
+// in another file the same numbers are other objects.
+TEST_F(EPDFPageCaptureEmbedderTest, ImportRefusesACaptureOfAnotherFile) {
+  ScopedFPDFDocument layer = OpenLayer();
+  ASSERT_TRUE(layer);
+  // The layer knows its file's hash, as a host that keeps captures makes it.
+  unsigned char sha256[32] = {};
+  ASSERT_TRUE(EPDFLayer_GetBaseSha256(layer.get(), sha256));
+  const std::vector<uint8_t> capture = ExportPage(layer.get(), kIntro);
+  ASSERT_FALSE(capture.empty());
+
+  // The same objects, with other bytes after the end: another file.
+  const std::string other = input_ + "% another file\n";
+  EPDF_BASE_DOCUMENT other_base =
+      EPDF_LoadMemBaseDocument(other.data(), other.size(), nullptr);
+  ASSERT_TRUE(other_base);
+  {
+    ScopedFPDFDocument other_layer(
+        EPDFLayer_OpenLayer(other_base, nullptr, nullptr, nullptr));
+    ASSERT_TRUE(other_layer);
+    ASSERT_TRUE(EPDFLayer_BeginTransaction(other_layer.get()));
+    ASSERT_TRUE(EPDFDoc_DeletePageByObjectNumber(other_layer.get(), kIntro));
+    EXPECT_FALSE(ImportPage(other_layer.get(), capture));
+    ASSERT_TRUE(EPDFLayer_AbortTransaction(other_layer.get()));
+  }
+  EPDF_ReleaseBaseDocument(other_base);
+}
+
+// What goes back into the page tree is what the page's number holds once
+// the capture is in. A save drops the null a layer page's delete left, so
+// its number is free again; an outline item that took it never becomes a
+// page.
+TEST_F(EPDFPageCaptureEmbedderTest,
+       ImportRefusesWhenItsNumberHoldsSomethingElse) {
+  ScopedFPDFDocument layer = OpenLayer();
+  ASSERT_TRUE(layer);
+  ASSERT_TRUE(EPDFLayer_BeginTransaction(layer.get()));
+  ASSERT_TRUE(EPDFPage_InsertBlankRaw(layer.get(), 3, 300, 300, 20));
+  ASSERT_TRUE(EPDFLayer_CommitTransaction(layer.get()));
+  ASSERT_TRUE(EPDFLayer_BeginTransaction(layer.get()));
+  const std::vector<uint8_t> capture = ExportPage(layer.get(), 20);
+  ASSERT_FALSE(capture.empty());
+  ASSERT_TRUE(EPDFDoc_DeletePageByObjectNumber(layer.get(), 20));
+  ASSERT_TRUE(EPDFLayer_CommitTransaction(layer.get()));
+
+  ScopedFPDFDocument reopened = Reopen(layer.get());
+  ASSERT_TRUE(reopened);
+  ASSERT_TRUE(EPDFLayer_RaiseLastObjectNumber(reopened.get(), kRaised));
+  ASSERT_TRUE(EPDFLayer_BeginTransaction(reopened.get()));
+  ScopedFPDFWideString title = GetFPDFWideString(L"Taken");
+  ASSERT_EQ(20u, EPDFOutline_CreateItem(reopened.get(), 20, 0, 0, title.get()));
+  EXPECT_FALSE(ImportPage(reopened.get(), capture));
+  ASSERT_TRUE(EPDFLayer_CommitTransaction(reopened.get()));
+  EXPECT_THAT(PageOrder(reopened.get()), ElementsAre(kCover, kIntro, kBody));
+}
+
+// A page that comes back under the node it was under takes nothing as its
+// own: its dictionary reads as it did, so what was digested of it still
+// matches.
+TEST_F(EPDFPageCaptureEmbedderTest, PageBackUnderItsNodeGainsNoKeys) {
+  EPDF_ReleaseBaseDocument(base_);
+  input_ = MakePdf({
+      "<< /Type /Catalog /Pages 2 0 R >>",
+      "<< /Type /Pages /Kids [3 0 R 4 0 R] /Count 2 /MediaBox [0 0 200 100] "
+      "/Resources << >> >>",
+      "<< /Type /Page /Parent 2 0 R >>",
+      "<< /Type /Page /Parent 2 0 R >>",
+  });
+  base_ = EPDF_LoadMemBaseDocument(input_.data(), input_.size(), nullptr);
+  ASSERT_TRUE(base_);
+  ScopedFPDFDocument layer = OpenLayer();
+  ASSERT_TRUE(layer);
+  CPDF_Document* pdf = CPDFDocumentFromFPDFDocument(layer.get());
+  const std::string before = ObjectGraph(pdf).at(4);
+  ASSERT_TRUE(EPDFLayer_BeginTransaction(layer.get()));
+  const std::vector<uint8_t> capture = ExportPage(layer.get(), 4);
+  ASSERT_FALSE(capture.empty());
+  ASSERT_TRUE(EPDFDoc_DeletePageByObjectNumber(layer.get(), 4));
+  ASSERT_TRUE(EPDFLayer_CommitTransaction(layer.get()));
+  ASSERT_TRUE(EPDFLayer_BeginTransaction(layer.get()));
+  ASSERT_TRUE(ImportPage(layer.get(), capture));
+  ASSERT_TRUE(EPDFLayer_CommitTransaction(layer.get()));
+  EXPECT_THAT(PageOrder(layer.get()), ElementsAre(3, 4));
+  EXPECT_EQ(before, ObjectGraph(pdf).at(4));
+}
+
+// A capture holds its page, never another page, the page tree or the
+// catalog: the cover links to the body, which the layer turned, and reaches
+// the page tree and the catalog, which the delete changed, through a key a
+// capture follows.
 TEST_F(EPDFPageCaptureEmbedderTest, CaptureHoldsNoOtherPage) {
   ScopedFPDFDocument layer = OpenLayer();
   ASSERT_TRUE(layer);
   ASSERT_TRUE(EPDFLayer_BeginTransaction(layer.get()));
   ASSERT_TRUE(EPDFDoc_SetPageRotationByObjectNumber(layer.get(), kCover, 1));
+  CPDF_Document* pdf = CPDFDocumentFromFPDFDocument(layer.get());
+  RetainPtr<CPDF_Array> reach =
+      WritableDict(layer.get(), kCover)->SetNewFor<CPDF_Array>("Reach");
+  reach->AppendNew<CPDF_Reference>(pdf, 1);
+  reach->AppendNew<CPDF_Reference>(pdf, kPageTree);
   ASSERT_TRUE(EPDFDoc_SetPageRotationByObjectNumber(layer.get(), kBody, 2));
   ASSERT_TRUE(EPDFDoc_DeletePageByObjectNumber(layer.get(), kIntro));
   ASSERT_TRUE(EPDFLayer_CommitTransaction(layer.get()));

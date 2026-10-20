@@ -19,18 +19,25 @@ extern "C" {
 // A capture holds the layer's own versions of the objects involved and of
 // what they reach: what the layer made, and what it edited. It never holds
 // the uploaded file's originals, which always stay. It is PDF syntax: the
-// line "%EPDF-CAPTURE 1", a manifest dictionary naming what was captured and
-// where it was, then each object as "N G obj ... endobj", a stream with its
-// bytes as stored. Following references stops at the catalog, the page tree
-// and its pages, and at the keys /P, /Parent, /IRT and /OC.
+// line "%EPDF-CAPTURE 1", a manifest dictionary naming what was captured,
+// where it was and, when the layer knows its base's SHA-256, the file it was
+// taken on (/Base: supplied with EPDF_SetBaseDocumentSha256() or worked out
+// once, so taking a capture never hashes the file), then each object as
+// "N G obj ... endobj", a stream with its bytes as stored. Following references
+// stops at the catalog, the page tree and its pages, and at the keys /P,
+// /Parent, /IRT and /OC.
 //
 // An import runs inside a layer transaction (EPDFLayer_BeginTransaction()).
 // It puts an object back only where the layer holds no version of its number
 // now: a version the layer holds may be newer (a shared font grows its
-// subset), and numbers are never reused, so it is the same object. A capture
-// that names a number above the layer's last one is refused before anything
-// is written. Which objects to capture, and when to put them back, is the
-// caller's decision.
+// subset). What it puts back in its place (an annotation into /Annots, a page
+// into the page tree) is what the number holds once the objects are in, and
+// an import that would place something of another kind is refused: a save can
+// free a deleted object's number for another object. A capture that names
+// another file, one that names a number above the layer's last one, and one
+// that holds the catalog, the page tree or a page it isn't of are refused
+// before anything is written. Which objects to capture, and when to put them
+// back, is the caller's decision.
 //
 // Exports return a buffer the caller releases with EPDF_FreeBuffer(), its
 // size in |out_size|, or NULL. All of these work on layer documents only, and
@@ -125,7 +132,8 @@ EPDFOutline_ExportItemRawToOwnedBuffer(FPDF_DOCUMENT document,
 // children, right after the sibling it followed while that is still one of
 // them, else first. Counts are kept, as every outline write keeps them.
 // False outside a transaction, for a malformed capture, when its parent is no
-// longer an item in the outline, or when the item is in the outline already.
+// longer an item in the outline, when the item is in the outline already, or
+// when what its number holds isn't an outline item.
 FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV
 EPDFOutline_ImportItemRaw(FPDF_DOCUMENT document,
                           const void* capture,
@@ -136,8 +144,9 @@ EPDFOutline_ImportItemRaw(FPDF_DOCUMENT document,
 // the page and every object the layer holds a version of that it reaches
 // (its contents, resources and annotations, with their appearances; never
 // another page or the form's fields), the /Names /Pages keys that name it,
-// and its place: the page it followed. NULL when |page_objnum| is not a page
-// in the page tree.
+// its place (the page it followed), and what it takes from the page tree
+// above it: the /Resources, /MediaBox, /CropBox and /Rotate it doesn't hold
+// itself. NULL when |page_objnum| is not a page in the page tree.
 FPDF_EXPORT void* FPDF_CALLCONV
 EPDFPage_ExportRawToOwnedBuffer(FPDF_DOCUMENT document,
                                 uint32_t page_objnum,
@@ -147,9 +156,11 @@ EPDFPage_ExportRawToOwnedBuffer(FPDF_DOCUMENT document,
 // Puts the page of |capture| back: its objects where the layer holds no
 // version, the page itself also over the null a delete leaves for a page the
 // layer made; then the page into the page tree right after the page it
-// followed while that is still in it, else first; then each of its keys that
-// no registration holds now. False outside a transaction, for a malformed
-// capture, or when the page is in the page tree already.
+// followed while that is still in it, else first, holding what it took from
+// the page tree as its own keys where its place now gives otherwise; then each
+// of its keys that no registration holds now. False outside a transaction, for
+// a malformed capture, when the page is in the page tree already, or when what
+// its number holds is no page.
 FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV
 EPDFPage_ImportRaw(FPDF_DOCUMENT document,
                    const void* capture,

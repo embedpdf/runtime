@@ -14,6 +14,7 @@
 
 #include "core/fpdfapi/edit/cpdf_stringarchivestream.h"
 #include "core/fpdfapi/parser/cpdf_array.h"
+#include "core/fpdfapi/parser/cpdf_base_document.h"
 #include "core/fpdfapi/parser/cpdf_dictionary.h"
 #include "core/fpdfapi/parser/cpdf_document_view_scope.h"
 #include "core/fpdfapi/parser/cpdf_layer_document.h"
@@ -23,6 +24,7 @@
 #include "core/fpdfapi/parser/cpdf_stream.h"
 #include "core/fpdfapi/parser/cpdf_string.h"
 #include "core/fpdfapi/parser/cpdf_syntax_parser.h"
+#include "core/fpdfdoc/cpdf_bookmarktree.h"
 #include "core/fxcrt/bytestring.h"
 #include "core/fxcrt/cfx_read_only_span_stream.h"
 #include "core/fxcrt/compiler_specific.h"
@@ -60,6 +62,44 @@ bool IsOutlineLinkKey(ByteStringView key) {
          key == "SE";
 }
 
+// The keys a page inherits from the page tree above it (ISO 32000-2
+// 7.7.3.4).
+constexpr const char* kInheritableKeys[] = {"Resources", "MediaBox", "CropBox",
+                                            "Rotate"};
+
+bool IsInheritableKey(ByteStringView key) {
+  return std::ranges::any_of(kInheritableKeys, [key](const char* inheritable) {
+    return key == inheritable;
+  });
+}
+
+// The value the nearest /Pages node above |page| gives the inheritable |key|,
+// as that node holds it (a reference stays one), or null when none does.
+RetainPtr<const CPDF_Object> InheritedValueOf(const CPDF_Dictionary* page,
+                                              const char* key) {
+  std::set<const CPDF_Dictionary*> seen;
+  for (RetainPtr<const CPDF_Dictionary> node = page->GetDictFor("Parent");
+       node && seen.insert(node.Get()).second;
+       node = node->GetDictFor("Parent")) {
+    if (RetainPtr<const CPDF_Object> value = node->GetObjectFor(key)) {
+      return value;
+    }
+  }
+  return nullptr;
+}
+
+// |value| as PDF syntax, which tells two values apart: a reference reads as
+// its object number, anything else as what it holds.
+DataVector<uint8_t> SyntaxOf(const CPDF_Object* value) {
+  fxcrt::ostringstream text;
+  CPDF_StringArchiveStream archive(&text);
+  if (!value || !value->WriteTo(&archive, nullptr)) {
+    return {};
+  }
+  const auto bytes = text.str();
+  return DataVector<uint8_t>(bytes.begin(), bytes.end());
+}
+
 // Objects a capture never holds: the catalog, the page tree and its pages,
 // save the page a page capture is of (CaptureWriter::AddPage()).
 bool IsBoundaryObject(const CPDF_Object* object) {
@@ -75,6 +115,39 @@ bool IsBoundaryObject(const CPDF_Object* object) {
 CPDF_LayerDocument* LayerOf(FPDF_DOCUMENT document) {
   return CPDF_LayerDocument::FromDocument(
       CPDFDocumentFromFPDFDocument(document));
+}
+
+ByteString HexOf(const std::array<uint8_t, 32>& sha256) {
+  static constexpr char kHexDigits[] = "0123456789abcdef";
+  ByteString hex;
+  for (uint8_t byte : sha256) {
+    hex += kHexDigits[byte >> 4];
+    hex += kHexDigits[byte & 0xf];
+  }
+  return hex;
+}
+
+// A capture's manifest: its |kind|, and the file it was taken on (Base: the
+// SHA-256 of the layer's base, in hex) when the layer knows it already, so
+// taking a capture never costs hashing the file. A host that keeps captures
+// beyond a session supplies the hash (EPDF_SetBaseDocumentSha256()).
+RetainPtr<CPDF_Dictionary> NewManifest(CPDF_LayerDocument* layer,
+                                       const char* kind) {
+  auto manifest = pdfium::MakeRetain<CPDF_Dictionary>();
+  manifest->SetNewFor<CPDF_Name>("Kind", kind);
+  if (const std::array<uint8_t, 32>* sha256 =
+          layer->GetBaseDocument()->GetKnownRawBaseSha256()) {
+    manifest->SetNewFor<CPDF_String>("Base", HexOf(*sha256));
+  }
+  return manifest;
+}
+
+// Whether |manifest| comes from |layer|'s file, as far as it says: one that
+// names a file comes back only into a layer of that file.
+bool IsOfFile(const CPDF_Dictionary* manifest, CPDF_LayerDocument* layer) {
+  const ByteString base = manifest->GetByteStringFor("Base");
+  return base.IsEmpty() ||
+         base == HexOf(layer->GetBaseDocument()->GetRawBaseSha256());
 }
 
 // The object numbers |array| refers to, in order (0 for a direct entry).
@@ -276,8 +349,10 @@ struct Capture {
 };
 
 // Reads |data| into objects |layer| holds, or nullopt when it is not a
-// whole, well-formed capture of kind |kind|, or names a number above the
-// layer's last one. Nothing is written.
+// whole, well-formed capture of kind |kind|, names a file other than
+// |layer|'s or a number above the layer's last one, or holds an object no
+// capture holds (the catalog, the page tree, a page other than the one a
+// page capture is of). Nothing is written.
 std::optional<Capture> ReadCapture(CPDF_LayerDocument* layer,
                                    pdfium::span<const uint8_t> data,
                                    ByteStringView kind) {
@@ -290,9 +365,12 @@ std::optional<Capture> ReadCapture(CPDF_LayerDocument* layer,
   parser.SetPos(header.GetLength());
   Capture capture;
   capture.manifest = ToDictionary(parser.GetObjectBody(layer));
-  if (!capture.manifest || capture.manifest->GetNameFor("Kind") != kind) {
+  if (!capture.manifest || capture.manifest->GetNameFor("Kind") != kind ||
+      !IsOfFile(capture.manifest.Get(), layer)) {
     return std::nullopt;
   }
+  const int own_page =
+      kind == "Page" ? capture.manifest->GetIntegerFor("Page") : 0;
   while (true) {
     parser.ToNextWord();
     if (parser.GetPos() >= parser.GetDocumentSize()) {
@@ -305,7 +383,9 @@ std::optional<Capture> ReadCapture(CPDF_LayerDocument* layer,
     }
     const uint32_t objnum = object->GetObjNum();
     if (!objnum || objnum > layer->GetLastObjNum() ||
-        capture.objects.contains(objnum)) {
+        capture.objects.contains(objnum) ||
+        (IsBoundaryObject(object.Get()) &&
+         objnum != static_cast<uint32_t>(own_page))) {
       return std::nullopt;
     }
     // A stream read from the capture keeps its bytes in memory, as stored.
@@ -412,8 +492,7 @@ EPDFPage_ExportAnnotsRawToOwnedBuffer(FPDF_DOCUMENT document,
   }
   const std::vector<uint32_t> refs = RefsIn(annots.Get());
 
-  auto manifest = pdfium::MakeRetain<CPDF_Dictionary>();
-  manifest->SetNewFor<CPDF_Name>("Kind", "Annots");
+  RetainPtr<CPDF_Dictionary> manifest = NewManifest(layer, "Annots");
   manifest->SetNewFor<CPDF_Number>(
       "Page", pdfium::checked_cast<int>(page->GetObjNum()));
   auto members = manifest->SetNewFor<CPDF_Array>("Members");
@@ -506,8 +585,7 @@ EPDFDoc_ExportDictRawToOwnedBuffer(FPDF_DOCUMENT document,
   if (!dict) {
     return nullptr;
   }
-  auto manifest = pdfium::MakeRetain<CPDF_Dictionary>();
-  manifest->SetNewFor<CPDF_Name>("Kind", "Dict");
+  RetainPtr<CPDF_Dictionary> manifest = NewManifest(layer, "Dict");
   manifest->SetNewFor<CPDF_Number>("Obj", pdfium::checked_cast<int>(objnum));
   manifest->SetNewFor<CPDF_Number>(
       "Gen", pdfium::checked_cast<int>(dict->GetGenNum()));
@@ -614,8 +692,7 @@ EPDFForm_ExportFieldRawToOwnedBuffer(FPDF_DOCUMENT document,
     }
   }
 
-  auto manifest = pdfium::MakeRetain<CPDF_Dictionary>();
-  manifest->SetNewFor<CPDF_Name>("Kind", "Field");
+  RetainPtr<CPDF_Dictionary> manifest = NewManifest(layer, "Field");
   manifest->SetNewFor<CPDF_Number>("Field",
                                    pdfium::checked_cast<int>(field_objnum));
   CaptureWriter writer(layer);
@@ -795,8 +872,7 @@ EPDFOutline_ExportItemRawToOwnedBuffer(FPDF_DOCUMENT document,
 
   // The item, where it was (In: its parent, 0 for the top level; After: the
   // sibling it followed, 0 when it was the first), and the items under it.
-  auto manifest = pdfium::MakeRetain<CPDF_Dictionary>();
-  manifest->SetNewFor<CPDF_Name>("Kind", "OutlineItem");
+  RetainPtr<CPDF_Dictionary> manifest = NewManifest(layer, "OutlineItem");
   manifest->SetNewFor<CPDF_Number>("Item", pdfium::checked_cast<int>(objnum));
   manifest->SetNewFor<CPDF_Number>(
       "In", parent == *root ? 0 : pdfium::checked_cast<int>(parent));
@@ -842,10 +918,15 @@ EPDFOutline_ImportItemRaw(FPDF_DOCUMENT document,
   if (epdf::IsOutlineItem(layer, *root, item)) {
     return false;
   }
-  // It comes back from the capture, or as the version the layer reads now
-  // (the file's original, when the layer never edited it).
-  if (!read->objects.contains(item) &&
-      !ToDictionary(layer->GetOrParseIndirectObject(item))) {
+  // What the number holds once the capture is in, which must be an outline
+  // item: the layer's own version stays (InstallObjects()), else the
+  // capture's comes back, else the file's original.
+  auto captured = read->objects.find(static_cast<uint32_t>(item));
+  RetainPtr<const CPDF_Object> comes_back =
+      layer->FindLayerVersion(item) || captured == read->objects.end()
+          ? layer->GetOrParseIndirectObject(item)
+          : captured->second;
+  if (!CPDF_BookmarkTree::IsOutlineNode(ToDictionary(comes_back).Get())) {
     return false;
   }
   std::vector<uint32_t> children;
@@ -902,8 +983,7 @@ EPDFPage_ExportRawToOwnedBuffer(FPDF_DOCUMENT document,
 
   // The page, where it was (After: the page it followed, 0 when it was the
   // first), and the keys that name it.
-  auto manifest = pdfium::MakeRetain<CPDF_Dictionary>();
-  manifest->SetNewFor<CPDF_Name>("Kind", "Page");
+  RetainPtr<CPDF_Dictionary> manifest = NewManifest(layer, "Page");
   manifest->SetNewFor<CPDF_Number>("Page",
                                    pdfium::checked_cast<int>(page_objnum));
   manifest->SetNewFor<CPDF_Number>(
@@ -913,6 +993,19 @@ EPDFPage_ExportRawToOwnedBuffer(FPDF_DOCUMENT document,
     names->AppendNew<CPDF_String>(key.AsStringView());
   }
   CaptureWriter writer(layer);
+  // What it takes from the page tree above it (Inherited): an import may put
+  // it under another /Pages node, so it brings these back as its own.
+  RetainPtr<const CPDF_Dictionary> page = layer->GetPageDictionary(page_index);
+  auto inherited = manifest->SetNewFor<CPDF_Dictionary>("Inherited");
+  for (const char* key : kInheritableKeys) {
+    RetainPtr<const CPDF_Object> value = page && !page->KeyExist(key)
+                                             ? InheritedValueOf(page.Get(), key)
+                                             : nullptr;
+    if (value) {
+      inherited->SetFor(key, value->Clone());
+      writer.AddReachOf(value.Get());
+    }
+  }
   writer.AddPage(page_objnum);
   return ToOwnedBuffer(writer.Write(manifest.Get()), out_size);
 }
@@ -949,10 +1042,17 @@ EPDFPage_ImportRaw(FPDF_DOCUMENT document,
   // file's original, when the layer never edited it).
   auto captured = read->objects.find(page);
   const bool in_capture = captured != read->objects.end();
+  // What the number holds once the capture is in: the layer's own version
+  // stays (InstallObjects()), save the null a deleted layer page left, which
+  // the capture's page replaces; without a version of the layer's, the
+  // capture's, or the file's original.
+  RetainPtr<const CPDF_Object> held = layer->FindLayerVersion(page);
+  const bool over_null = held && held->IsNull();
   RetainPtr<const CPDF_Dictionary> reads_now =
       ToDictionary(layer->GetOrParseIndirectObject(page));
-  const CPDF_Dictionary* comes_back =
-      in_capture ? captured->second->AsDictionary() : reads_now.Get();
+  const CPDF_Dictionary* comes_back = in_capture && (!held || over_null)
+                                          ? captured->second->AsDictionary()
+                                          : reads_now.Get();
   if (!comes_back || comes_back->GetNameFor("Type") != "Page") {
     return false;
   }
@@ -965,19 +1065,33 @@ EPDFPage_ImportRaw(FPDF_DOCUMENT document,
   // A page the layer made reads as null once deleted (SetPageToNullObject(),
   // so nothing that still points at it saves it): it comes back over that
   // null.
-  if (in_capture) {
-    RetainPtr<const CPDF_Object> held = layer->FindLayerVersion(page);
-    if (held && held->IsNull()) {
-      layer->DeleteIndirectObject(page);
-    }
+  if (in_capture && over_null) {
+    layer->DeleteIndirectObject(page);
   }
   if (!InstallObjects(layer, *read)) {
     return false;
   }
   RetainPtr<CPDF_Dictionary> page_dict =
       ToDictionary(layer->GetMutableIndirectObject(page));
-  if (!page_dict || !layer->InsertExistingPage(slot, std::move(page_dict))) {
+  if (!page_dict || !layer->InsertExistingPage(slot, page_dict)) {
     return false;
+  }
+  // What it took from the page tree where it was, as its own key where its
+  // place now gives otherwise; back under the same node, nothing changes.
+  if (RetainPtr<const CPDF_Dictionary> inherited =
+          read->manifest->GetDictFor("Inherited")) {
+    CPDF_DictionaryLocker locker(inherited);
+    for (const auto& [key, value] : locker) {
+      if (!IsInheritableKey(key.AsStringView()) ||
+          page_dict->KeyExist(key.AsStringView())) {
+        continue;
+      }
+      RetainPtr<const CPDF_Object> now =
+          InheritedValueOf(page_dict.Get(), key.c_str());
+      if (SyntaxOf(now.Get()) != SyntaxOf(value.Get())) {
+        page_dict->SetFor(key, value->Clone());
+      }
+    }
   }
   // A key another page holds now stays with it.
   RetainPtr<const CPDF_Array> names = read->manifest->GetArrayFor("Names");
