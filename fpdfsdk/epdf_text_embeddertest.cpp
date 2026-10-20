@@ -6,11 +6,14 @@
 #include "public/epdf_text.h"
 
 #include <cstdint>
+#include <string>
+#include <vector>
 
 #include "core/fpdfapi/parser/cpdf_document.h"
 #include "core/fpdfapi/parser/cpdf_read_only_graph_guard.h"
 #include "core/fxcrt/notreached.h"
 #include "fpdfsdk/cpdfsdk_helpers.h"
+#include "fpdfsdk/epdf_edit_test_util.h"
 #include "public/cpp/fpdf_scopers.h"
 #include "public/fpdf_text.h"
 #include "testing/embedder_test.h"
@@ -158,6 +161,84 @@ TEST_F(EPDFTextEmbedderTest, ChromeType3TextLooseBoxesShareTheLine) {
     ASSERT_TRUE(EPDFText_GetCharGeometry(text_page.get(), i, &geometry));
     EXPECT_FLOAT_EQ(kTop, geometry.loose_box.top) << i;
     EXPECT_FLOAT_EQ(kBottom, geometry.loose_box.bottom) << i;
+  }
+}
+
+// /ActualText is boxed and placed in page space wherever it is drawn. The same
+// span drawn on the page, and through a form that doubles its size and moves
+// it 200 points down, has the same boxes and origins, 200 points lower.
+TEST_F(EPDFTextEmbedderTest, ActualTextInAFormIsInPageSpace) {
+  static constexpr char kSpan[] =
+      "/Span << /ActualText <FEFF05E905DC05D505DD> >> BDC (abcd) Tj EMC";
+  const std::string pdf = MakePdf({
+      "<< /Type /Catalog /Pages 2 0 R >>",
+      "<< /Type /Pages /Kids [3 0 R] /Count 1 >>",
+      "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 400 400] /Contents 4 0 R "
+      "/Resources << /Font << /F1 5 0 R >> /XObject << /Fm 6 0 R >> >> >>",
+      Stream(std::string("BT /F1 24 Tf 40 300 Td ") + kSpan +
+             " ET q 1 0 0 1 20 50 cm /Fm Do Q"),
+      "<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>",
+      Stream("/Type /XObject /Subtype /Form /BBox [0 0 200 100] "
+             "/Matrix [2 0 0 2 0 0] /Resources << /Font << /F1 5 0 R >> >>",
+             std::string("BT /F1 12 Tf 10 25 Td ") + kSpan + " ET"),
+  });
+  ScopedFPDFDocument doc(FPDF_LoadMemDocument(pdf.data(), pdf.size(), nullptr));
+  ASSERT_TRUE(doc);
+  ScopedFPDFPage page(FPDF_LoadPage(doc.get(), 0));
+  ASSERT_TRUE(page);
+  ScopedFPDFTextPage text_page(FPDFText_LoadPage(page.get()));
+  ASSERT_TRUE(text_page);
+
+  // The span's letters, on the page and then in the form.
+  std::vector<int> letters;
+  for (int i = 0; i < FPDFText_CountChars(text_page.get()); ++i) {
+    if (FPDFText_GetUnicode(text_page.get(), i) >= 0x05D0) {
+      letters.push_back(i);
+    }
+  }
+  ASSERT_EQ(8u, letters.size());
+  for (size_t k = 0; k < 4; ++k) {
+    SCOPED_TRACE(k);
+    const int on_page = letters[k];
+    const int in_form = letters[k + 4];
+    EXPECT_EQ(FPDFText_GetUnicode(text_page.get(), on_page),
+              FPDFText_GetUnicode(text_page.get(), in_form));
+
+    double page_box[4];
+    double form_box[4];
+    ASSERT_TRUE(FPDFText_GetCharBox(text_page.get(), on_page, &page_box[0],
+                                    &page_box[1], &page_box[2], &page_box[3]));
+    ASSERT_TRUE(FPDFText_GetCharBox(text_page.get(), in_form, &form_box[0],
+                                    &form_box[1], &form_box[2], &form_box[3]));
+    // Left, right, bottom, top.
+    EXPECT_NEAR(page_box[0], form_box[0], 0.01);
+    EXPECT_NEAR(page_box[1], form_box[1], 0.01);
+    EXPECT_NEAR(page_box[2] - 200, form_box[2], 0.01);
+    EXPECT_NEAR(page_box[3] - 200, form_box[3], 0.01);
+
+    FS_RECTF page_loose;
+    FS_RECTF form_loose;
+    ASSERT_TRUE(
+        FPDFText_GetLooseCharBox(text_page.get(), on_page, &page_loose));
+    ASSERT_TRUE(
+        FPDFText_GetLooseCharBox(text_page.get(), in_form, &form_loose));
+    EXPECT_NEAR(page_loose.left, form_loose.left, 0.01);
+    EXPECT_NEAR(page_loose.right, form_loose.right, 0.01);
+    EXPECT_NEAR(page_loose.top - 200, form_loose.top, 0.01);
+    EXPECT_NEAR(page_loose.bottom - 200, form_loose.bottom, 0.01);
+
+    double page_x;
+    double page_y;
+    double form_x;
+    double form_y;
+    ASSERT_TRUE(
+        FPDFText_GetCharOrigin(text_page.get(), on_page, &page_x, &page_y));
+    ASSERT_TRUE(
+        FPDFText_GetCharOrigin(text_page.get(), in_form, &form_x, &form_y));
+    EXPECT_NEAR(40, form_x, 0.01);
+    EXPECT_NEAR(100, form_y, 0.01);
+    EXPECT_NEAR(page_x, form_x, 0.01);
+    EXPECT_NEAR(page_y - 200, form_y, 0.01);
   }
 }
 

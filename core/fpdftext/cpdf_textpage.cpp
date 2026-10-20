@@ -1194,7 +1194,13 @@ bool CPDF_TextPage::ProcessMarkedContent(const TransformedTextObject& obj) {
       (prev_text_obj_ && IsRightToLeft(*prev_text_obj_) &&
        CFX_BidiString(actual_text, /*auto_order=*/true).OverallDirection() ==
            CFX_BidiChar::Direction::kRight);
-  CFX_Matrix matrix = text_obj->GetTextMatrix() * obj.form_matrix_;
+  // EmbedPDF(bug-fix): the characters are boxed and placed in page space, as
+  // every other character is. The text object's rect and position are in the
+  // space of the form XObject that draws it; upstream used them as they are,
+  // so /ActualText in a form drawn anywhere but the page's origin, such as a
+  // flattened field, was boxed in the wrong place.
+  const CFX_Matrix& form_matrix = obj.form_matrix_;
+  CFX_Matrix matrix = text_obj->GetTextMatrix() * form_matrix;
   CFX_FloatRect rect = text_obj->GetRect();
   float step = 0;
 
@@ -1220,9 +1226,9 @@ bool CPDF_TextPage::ProcessMarkedContent(const TransformedTextObject& obj) {
     char_box.Translate(k * step, 0);
     temp_text_buf_.AppendChar(wc);
     // EmbedPDF(text-geometry): not a real glyph, so no local origin.
-    temp_char_list_.push_back(
-        CharInfo::Synthetic(CharType::kActualText, wc, text_obj->GetPos(),
-                            char_box, matrix, text_obj));
+    temp_char_list_.push_back(CharInfo::Synthetic(
+        CharType::kActualText, wc, form_matrix.Transform(text_obj->GetPos()),
+        form_matrix.TransformRect(char_box), matrix, text_obj));
   }
   return is_rtl;
 }
