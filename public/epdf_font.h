@@ -324,10 +324,10 @@ EPDFFontFaces_GetProgramHash(EPDF_FONT_FACES faces,
                              unsigned char* sha256);
 // The SHA-256 of what a browser loads for the program into |sha256| (32
 // bytes): the program itself when it is TrueType or OpenType with a Unicode
-// cmap, else the display program built for it
-// (EPDFDoc_GetFontDisplayProgramData()). Returns false when a browser can't
-// draw it (Type 3, nothing embedded, a program that doesn't load) or for an
-// index out of range.
+// cmap and its tables where the font format puts them, else the display
+// program built for it (EPDFDoc_GetFontDisplayProgramData()). Returns false
+// when a browser can't draw it (Type 3, nothing embedded, a program that
+// doesn't load) or for an index out of range.
 FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV
 EPDFFontFaces_GetProgramDisplayHash(EPDF_FONT_FACES faces,
                                     int face,
@@ -355,7 +355,9 @@ EPDFDoc_GetFontProgramData(FPDF_DOCUMENT document,
 
 // Experimental EmbedPDF Extension API.
 // What a browser loads for such a program: the program itself when it is
-// TrueType or OpenType with a Unicode cmap. Otherwise (Type 1, bare CFF, a
+// TrueType or OpenType with a Unicode cmap. When such a program's tables
+// don't each start on a four-byte boundary (a browser refuses it, FreeType
+// doesn't), the same tables realigned. Otherwise (Type 1, bare CFF, a
 // program without a Unicode cmap) an OpenType font built from it: its
 // glyphs, a Unicode cmap holding exactly the characters the engine writes
 // with the font (each through the PDF's encoding to the glyph it draws), and

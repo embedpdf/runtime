@@ -11,6 +11,7 @@
 #include <map>
 
 #include "core/fxcrt/numerics/safe_conversions.h"
+#include "core/fxge/cfx_sfnt.h"
 
 CFX_OpenTypeFont::CFX_OpenTypeFont() = default;
 CFX_OpenTypeFont::CFX_OpenTypeFont(CFX_OpenTypeFont&&) noexcept = default;
@@ -443,56 +444,6 @@ DataVector<uint8_t> NameTable(
   return table.Take();
 }
 
-uint32_t Checksum(const DataVector<uint8_t>& bytes) {
-  uint32_t sum = 0;
-  for (size_t i = 0; i < bytes.size(); i += 4) {
-    uint32_t word = 0;
-    for (size_t j = 0; j < 4; ++j) {
-      word = (word << 8) | (i + j < bytes.size() ? bytes[i + j] : 0);
-    }
-    sum += word;
-  }
-  return sum;
-}
-
-// An sfnt from its tables, in tag order: the table directory, each table
-// padded to four bytes, then head's checksum adjustment.
-DataVector<uint8_t> Sfnt(
-    uint32_t version,
-    const std::map<ByteString, DataVector<uint8_t>>& tables) {
-  const size_t count = tables.size();
-  size_t entry_selector = 0;
-  while ((size_t{2} << entry_selector) <= count) {
-    ++entry_selector;
-  }
-  const size_t search_range = (size_t{1} << entry_selector) * 16;
-  Writer font;
-  font.U32(version)
-      .U16(count)
-      .U16(search_range)
-      .U16(entry_selector)
-      .U16(count * 16 - search_range);
-  size_t offset = 12 + count * 16;
-  size_t head_offset = 0;
-  for (const auto& [tag, table] : tables) {
-    if (tag == "head") {
-      head_offset = offset;
-    }
-    font.Tag(tag.c_str()).U32(Checksum(table)).U32(offset).U32(table.size());
-    offset += (table.size() + 3) / 4 * 4;
-  }
-  for (const auto& [tag, table] : tables) {
-    font.Bytes(table).Zeros((4 - table.size() % 4) % 4);
-  }
-  DataVector<uint8_t> bytes = font.Take();
-  const uint32_t adjustment = 0xb1b0afba - Checksum(bytes);
-  for (int i = 0; i < 4; ++i) {
-    bytes[head_offset + 8 + i] =
-        static_cast<uint8_t>(adjustment >> (24 - 8 * i));
-  }
-  return bytes;
-}
-
 ByteString StyleName(const CFX_OpenTypeFont& font) {
   const bool bold = font.weight >= 600;
   if (bold && font.italic) {
@@ -657,5 +608,5 @@ DataVector<uint8_t> WriteOpenTypeCFF(const CFX_OpenTypeFont& font) {
                               {4, full_name},
                               {6, font.postscript_name}});
   tables["cmap"] = CmapTable(font.cmap);
-  return Sfnt(0x4f54544f, tables);  // 'OTTO'
+  return WriteSfnt(0x4f54544f, tables);  // 'OTTO'
 }

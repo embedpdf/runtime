@@ -5,6 +5,8 @@
 
 #include <stdint.h>
 
+#include <algorithm>
+#include <map>
 #include <optional>
 #include <string>
 #include <vector>
@@ -23,6 +25,7 @@
 #include "core/fxge/cfx_face.h"
 #include "core/fxge/cfx_font.h"
 #include "core/fxge/cfx_glyphoutline.h"
+#include "core/fxge/cfx_sfnt.h"
 #include "core/fxge/fx_fontencoding.h"
 #include "fpdfsdk/cpdfsdk_helpers.h"
 #include "fpdfsdk/epdf_edit_test_util.h"
@@ -57,6 +60,53 @@ std::vector<uint8_t> LoadThirdPartyFont(const char* path) {
 
 std::vector<uint8_t> LoadRoboto() {
   return LoadThirdPartyFont("harfbuzz/src/perf/fonts/Roboto-Regular.ttf");
+}
+
+// |font| with every table one byte further on, as a font whose tables were
+// written back to back is: FreeType reads it, a browser refuses it.
+std::vector<uint8_t> WithTablesOffByOne(const std::vector<uint8_t>& font) {
+  const size_t count = (size_t{font[4]} << 8) | font[5];
+  const size_t tables_start = 12 + count * 16;
+  std::vector<uint8_t> moved(font.begin(), font.begin() + tables_start);
+  for (size_t i = 0; i < count; ++i) {
+    const size_t offset_at = 12 + i * 16 + 8;
+    uint32_t offset = 0;
+    for (size_t j = 0; j < 4; ++j) {
+      offset = (offset << 8) | moved[offset_at + j];
+    }
+    ++offset;
+    for (size_t j = 0; j < 4; ++j) {
+      moved[offset_at + j] = static_cast<uint8_t>(offset >> (24 - 8 * j));
+    }
+  }
+  moved.push_back(0);
+  moved.insert(moved.end(), font.begin() + tables_start, font.end());
+  return moved;
+}
+
+// The tables of an sfnt by tag, as written.
+std::map<std::string, std::vector<uint8_t>> TablesOf(
+    const std::vector<uint8_t>& font) {
+  auto u32 = [&](size_t at) {
+    return (uint32_t{font[at]} << 24) | (uint32_t{font[at + 1]} << 16) |
+           (uint32_t{font[at + 2]} << 8) | font[at + 3];
+  };
+  std::map<std::string, std::vector<uint8_t>> tables;
+  const size_t count = (size_t{font[4]} << 8) | font[5];
+  for (size_t i = 0; i < count; ++i) {
+    const size_t record = 12 + i * 16;
+    const std::string tag(font.begin() + record, font.begin() + record + 4);
+    const uint32_t offset = u32(record + 8);
+    const uint32_t length = u32(record + 12);
+    std::vector<uint8_t> table(font.begin() + offset,
+                               font.begin() + offset + length);
+    // checkSumAdjustment covers the whole font: it moves with the layout.
+    if (tag == "head") {
+      std::fill(table.begin() + 8, table.begin() + 12, 0);
+    }
+    tables[tag] = std::move(table);
+  }
+  return tables;
 }
 
 std::vector<uint8_t> LoadDroidSansFallback() {
@@ -429,6 +479,91 @@ TEST_F(EPDFFontEmbedderTest, ListsADocumentProgramAndHandsOutItsBytes) {
   EXPECT_GT(EPDFDoc_GetFontProgramCoverage(document(), objnum, nullptr, 0), 0u);
   // The catalog is an object, not a font program.
   EXPECT_EQ(0u, EPDFDoc_GetFontProgramData(document(), 1, nullptr, 0));
+}
+
+// A program whose tables don't start on four-byte boundaries goes to a
+// browser realigned: the same tables, where the font format puts them, under
+// a hash of their own. The engine writes with the program as it is.
+TEST_F(EPDFFontEmbedderTest, RealignsAProgramABrowserWouldRefuse) {
+  ScopedRegisteredFonts scoped_fonts;
+  std::vector<uint8_t> roboto = LoadRoboto();
+  ASSERT_FALSE(roboto.empty());
+  ASSERT_TRUE(SfntTablesAligned(roboto));
+  const std::vector<uint8_t> misaligned = WithTablesOffByOne(roboto);
+  ASSERT_FALSE(SfntTablesAligned(misaligned));
+  const EPDF_FONT_ID font_id =
+      EPDFFont_RegisterMemFont64("Roboto", /*weight=*/400, /*italic=*/0,
+                                 misaligned.data(), misaligned.size());
+  ASSERT_NE(0u, font_id);
+
+  CreateEmptyDocument();
+  ScopedFPDFPage page(FPDFPage_New(document(), 0, 400, 400));
+  ASSERT_TRUE(page);
+  AddRegisteredFontField(page.get(), font_id, L"name", 320.0f, L"hello");
+
+  EPDF_FONT_FACES faces = EPDFFontFaces_Load(document());
+  ASSERT_TRUE(faces);
+  std::optional<FoundProgram> found = FindProgram(faces, L"Roboto");
+  ASSERT_TRUE(found.has_value());
+  const unsigned long objnum =
+      EPDFFontFaces_GetProgramObjNum(faces, found->face, found->program);
+  ASSERT_NE(0u, objnum);
+  EXPECT_TRUE(
+      EPDFFontFaces_ProgramMapsUnicode(faces, found->face, found->program));
+  unsigned char hash[32] = {};
+  unsigned char display_hash[32] = {};
+  ASSERT_TRUE(
+      EPDFFontFaces_GetProgramHash(faces, found->face, found->program, hash));
+  ASSERT_TRUE(EPDFFontFaces_GetProgramDisplayHash(
+      faces, found->face, found->program, display_hash));
+  EPDFFontFaces_Close(faces);
+
+  // The document holds the program as it was registered.
+  std::vector<uint8_t> program(misaligned.size());
+  ASSERT_EQ(misaligned.size(),
+            EPDFDoc_GetFontProgramData(document(), objnum, program.data(),
+                                       program.size()));
+  EXPECT_EQ(misaligned, program);
+
+  const unsigned long length =
+      EPDFDoc_GetFontDisplayProgramData(document(), objnum, nullptr, 0);
+  ASSERT_GT(length, 0u);
+  std::vector<uint8_t> display(length);
+  ASSERT_EQ(length, EPDFDoc_GetFontDisplayProgramData(
+                        document(), objnum, display.data(), display.size()));
+  EXPECT_TRUE(SfntTablesAligned(display));
+  EXPECT_EQ(TablesOf(misaligned), TablesOf(display));
+  // Named by its own bytes, not the program's.
+  const DataVector<uint8_t> display_sha256 = CryptSha256Generate(display);
+  EXPECT_EQ(std::vector<uint8_t>(display_sha256.begin(), display_sha256.end()),
+            std::vector<uint8_t>(display_hash, display_hash + 32));
+  EXPECT_NE(std::vector<uint8_t>(hash, hash + 32),
+            std::vector<uint8_t>(display_hash, display_hash + 32));
+  // The whole font, padded to whole words, sums to the constant head's
+  // adjustment makes it.
+  ASSERT_EQ(0u, display.size() % 4);
+  uint32_t sum = 0;
+  for (size_t i = 0; i < display.size(); i += 4) {
+    sum += (uint32_t{display[i]} << 24) | (uint32_t{display[i + 1]} << 16) |
+           (uint32_t{display[i + 2]} << 8) | display[i + 3];
+  }
+  EXPECT_EQ(0xb1b0afbau, sum);
+  // A browser draws the characters the program's own cmap maps.
+  const unsigned long range_count =
+      EPDFDoc_GetFontProgramCoverage(document(), objnum, nullptr, 0);
+  std::vector<uint32_t> ranges(range_count * 2);
+  EPDFDoc_GetFontProgramCoverage(document(), objnum, ranges.data(),
+                                 range_count);
+  auto covers = [&](uint32_t scalar) {
+    for (size_t i = 0; i + 1 < ranges.size(); i += 2) {
+      if (scalar >= ranges[i] && scalar < ranges[i] + ranges[i + 1]) {
+        return true;
+      }
+    }
+    return false;
+  };
+  EXPECT_TRUE(covers('A'));
+  EXPECT_TRUE(covers(0xe9));
 }
 
 // A widget writes with a document program by its object number: /DA names a

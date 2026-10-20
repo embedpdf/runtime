@@ -69,6 +69,10 @@ source_set("fxge") {
     "cfx_path.h",
     "cfx_renderdevice.cpp",
     "cfx_renderdevice.h",
+    # EmbedPDF(fonts): the sfnt container: writing one, and its tables
+    # realigned for a browser.
+    "cfx_sfnt.cpp",
+    "cfx_sfnt.h",
     "cfx_standardfont.cpp",
     "cfx_standardfont.h",
     "cfx_substfont.cpp",

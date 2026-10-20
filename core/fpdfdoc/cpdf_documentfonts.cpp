@@ -19,6 +19,7 @@
 #include "core/fxcrt/utf16.h"
 #include "core/fxge/cfx_face.h"
 #include "core/fxge/cfx_font.h"
+#include "core/fxge/cfx_sfnt.h"
 #include "core/fxge/fx_fontencoding.h"
 
 namespace {
@@ -228,6 +229,13 @@ bool IsSfnt(CPDF_DocumentFonts::Format format) {
          format == CPDF_DocumentFonts::Format::kOpenTypeCFF;
 }
 
+// Whether a browser loads |program| as it is: an sfnt that maps characters
+// through a Unicode cmap, its tables where the font format puts them.
+bool LoadsAsIs(const CPDF_DocumentFonts::Program& program) {
+  return IsSfnt(program.format) && program.maps_unicode &&
+         program.tables_aligned;
+}
+
 // |scalars| as ranges, in order.
 std::vector<CFX_CodePointRange> RangesOf(std::vector<uint32_t> scalars) {
   std::ranges::sort(scalars);
@@ -335,6 +343,7 @@ CPDF_DocumentFonts::Program CPDF_DocumentFonts::Inspect(
         facts.permission =
             CFX_FontRegistry::ClassifyFsType(face->GetFsTypeFlags());
         facts.maps_unicode = face->SelectCharMap(fxge::FontEncoding::kUnicode);
+        facts.tables_aligned = SfntTablesAligned(data->GetSpan());
       }
     }
   }
@@ -380,9 +389,13 @@ DataVector<uint8_t> CPDF_DocumentFonts::ProgramData(uint32_t objnum) {
   if (!inspected || inspected->facts.sha256.empty()) {
     return {};
   }
+  return BytesOf(*inspected);
+}
+
+DataVector<uint8_t> CPDF_DocumentFonts::BytesOf(const Inspected& inspected) {
   CPDF_DocPageData* page_data = CPDF_DocPageData::FromDocument(doc_);
   RetainPtr<CPDF_StreamAcc> data =
-      page_data->GetFontFileStreamAcc(inspected->stream);
+      page_data->GetFontFileStreamAcc(inspected.stream);
   if (!data) {
     return {};
   }
@@ -400,8 +413,7 @@ DataVector<uint8_t> CPDF_DocumentFonts::DisplayHashOf(
   if (program.sha256.empty()) {
     return {};
   }
-  // A browser loads it as it is.
-  if (IsSfnt(program.format) && program.maps_unicode) {
+  if (LoadsAsIs(program)) {
     return program.sha256;
   }
   // An inline program can't be addressed, so nothing could fetch it.
@@ -415,15 +427,27 @@ DataVector<uint8_t> CPDF_DocumentFonts::DisplayHashOf(
   Inspected& inspected = it->second;
   if (!inspected.display_built) {
     inspected.display_built = true;
-    std::optional<CPDF_DisplayProgram> built =
-        BuildDisplayProgram(doc_, font_dict, program.postscript_name,
-                            CPDF_FontFace{family, weight, italic});
-    if (built.has_value()) {
-      Display display;
-      display.sha256 = CryptSha256Generate(built->bytes);
-      display.coverage = RangesOf(std::move(built->characters));
-      display.bytes = std::move(built->bytes);
-      inspected.display = std::move(display);
+    if (IsSfnt(program.format) && program.maps_unicode) {
+      // Only its tables are out of place: the same program, realigned. Its
+      // coverage is its own cmap's (ProgramCoverage).
+      DataVector<uint8_t> aligned = AlignSfntTables(BytesOf(inspected));
+      if (!aligned.empty()) {
+        Display display;
+        display.sha256 = CryptSha256Generate(aligned);
+        display.bytes = std::move(aligned);
+        inspected.display = std::move(display);
+      }
+    } else {
+      std::optional<CPDF_DisplayProgram> built =
+          BuildDisplayProgram(doc_, font_dict, program.postscript_name,
+                              CPDF_FontFace{family, weight, italic});
+      if (built.has_value()) {
+        Display display;
+        display.sha256 = CryptSha256Generate(built->bytes);
+        display.coverage = RangesOf(std::move(built->characters));
+        display.bytes = std::move(built->bytes);
+        inspected.display = std::move(display);
+      }
     }
   }
   return inspected.display.has_value() ? inspected.display->sha256
@@ -438,7 +462,7 @@ DataVector<uint8_t> CPDF_DocumentFonts::DisplayProgramData(uint32_t objnum) {
   if (inspected->display.has_value()) {
     return inspected->display->bytes;
   }
-  if (IsSfnt(inspected->facts.format) && inspected->facts.maps_unicode) {
+  if (LoadsAsIs(inspected->facts)) {
     return ProgramData(objnum);
   }
   return {};
@@ -450,11 +474,11 @@ std::vector<CFX_CodePointRange> CPDF_DocumentFonts::ProgramCoverage(
   if (!inspected) {
     return {};
   }
-  if (inspected->display.has_value()) {
-    return inspected->display->coverage;
-  }
+  // A program that maps Unicode is drawn through its own cmap, its tables
+  // realigned or not; any other through its display program's.
   if (!inspected->facts.maps_unicode) {
-    return {};
+    return inspected->display.has_value() ? inspected->display->coverage
+                                          : std::vector<CFX_CodePointRange>();
   }
   if (inspected->coverage.has_value()) {
     return *inspected->coverage;

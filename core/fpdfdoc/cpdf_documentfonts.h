@@ -54,11 +54,16 @@ class CPDF_DocumentFonts final : public CPDF_Document::FontIndex {
     // The program loads, has glyphs and maps characters through a Unicode
     // cmap: the layout can write any character it maps.
     bool maps_unicode = false;
+    // An sfnt whose tables each start on a four-byte boundary, as the font
+    // format puts them. FreeType reads one whose tables don't; a browser
+    // refuses it.
+    bool tables_aligned = false;
     // SHA-256 of the decoded program; empty without one.
     DataVector<uint8_t> sha256;
     // SHA-256 of what a browser loads for it: the program itself when it is
-    // an sfnt that maps characters through a Unicode cmap, else its display
-    // program (cpdf_displayprogram.h). Empty when a browser can't draw it.
+    // an sfnt that maps characters through a Unicode cmap, with its tables
+    // realigned when they aren't (cfx_sfnt.h); else its display program
+    // (cpdf_displayprogram.h). Empty when a browser can't draw it.
     DataVector<uint8_t> display_sha256;
     // Line metrics as the layout reads them (em, descent positive); 0 when
     // the program doesn't load.
@@ -130,6 +135,7 @@ class CPDF_DocumentFonts final : public CPDF_Document::FontIndex {
   void ClearMissingCharacters() { missing_characters_.clear(); }
 
  private:
+  // What a browser loads in place of a program it can't load as it is.
   struct Display {
     DataVector<uint8_t> bytes;
     DataVector<uint8_t> sha256;
@@ -149,6 +155,8 @@ class CPDF_DocumentFonts final : public CPDF_Document::FontIndex {
   // The facts about |stream|, inspected once per version.
   Program Inspect(RetainPtr<const CPDF_Stream> stream, Format format);
   Inspected* FindInspected(uint32_t objnum);
+  // The decoded bytes of the stream |inspected| is.
+  DataVector<uint8_t> BytesOf(const Inspected& inspected);
   // |program|'s display hash, its display program built through
   // |font_dict| once per stream version when it needs one.
   DataVector<uint8_t> DisplayHashOf(const Program& program,
