@@ -26,6 +26,7 @@
 #include "core/fpdfapi/parser/cpdf_string.h"
 #include "core/fpdfapi/parser/cpdf_syntax_parser.h"
 #include "core/fpdfdoc/cpdf_bookmarktree.h"
+#include "core/fpdfdoc/cpdf_nametree.h"
 #include "core/fxcrt/bytestring.h"
 #include "core/fxcrt/cfx_read_only_span_stream.h"
 #include "core/fxcrt/compiler_specific.h"
@@ -99,6 +100,13 @@ DataVector<uint8_t> SyntaxOf(const CPDF_Object* value) {
   }
   const auto bytes = text.str();
   return DataVector<uint8_t>(bytes.begin(), bytes.end());
+}
+
+// Whether |dict| can be an embedded file's file specification: it says so,
+// or it holds the file (/EF).
+bool IsFileSpec(const CPDF_Dictionary* dict) {
+  return dict &&
+         (dict->GetNameFor("Type") == "Filespec" || dict->KeyExist("EF"));
 }
 
 // Objects a capture never holds: the catalog, the page tree and its pages,
@@ -1162,4 +1170,139 @@ EPDFPage_ImportRaw(FPDF_DOCUMENT document,
     epdf::AddNamedPageIfFree(layer, names->GetUnicodeTextAt(i), page);
   }
   return true;
+}
+
+FPDF_EXPORT void* FPDF_CALLCONV
+EPDFAttachment_ExportRawToOwnedBuffer(FPDF_DOCUMENT document,
+                                      FPDF_WIDESTRING key,
+                                      unsigned long* out_size) {
+  if (out_size) {
+    *out_size = 0;
+  }
+  CPDF_LayerDocument* layer = LayerOf(document);
+  if (!layer || !key) {
+    return nullptr;
+  }
+  CPDF_DocumentViewScope view(layer);
+  // SAFETY: required from caller.
+  const WideString name = UNSAFE_BUFFERS(WideStringFromFPDFWideString(key));
+  auto tree = CPDF_NameTree::CreateForReading(layer, "EmbeddedFiles");
+  RetainPtr<const CPDF_Dictionary> spec =
+      tree && !name.IsEmpty() ? ToDictionary(tree->LookupValue(name)) : nullptr;
+  if (!spec) {
+    return nullptr;
+  }
+
+  // The file, under its key (Key): its file specification, an object of its
+  // own (Obj) or written in the tree (Value), and the objects the layer
+  // holds that it reaches.
+  RetainPtr<CPDF_Dictionary> manifest = NewManifest(layer, "Attachment");
+  manifest->SetNewFor<CPDF_String>("Key", name.AsStringView());
+  CaptureWriter writer(layer);
+  if (const uint32_t objnum = spec->GetObjNum()) {
+    manifest->SetNewFor<CPDF_Number>("Obj", pdfium::checked_cast<int>(objnum));
+    writer.AddObject(objnum);
+  } else {
+    manifest->SetFor("Value", spec->Clone());
+    writer.AddReachOf(spec.Get());
+  }
+  return ToOwnedBuffer(writer.Write(manifest.Get()), out_size);
+}
+
+FPDF_EXPORT void* FPDF_CALLCONV
+EPDFAttachment_ExportCanonicalToOwnedBuffer(FPDF_DOCUMENT document,
+                                            FPDF_WIDESTRING key,
+                                            unsigned long* out_size) {
+  if (out_size) {
+    *out_size = 0;
+  }
+  CPDF_LayerDocument* layer = LayerOf(document);
+  if (!layer || !key) {
+    return nullptr;
+  }
+  CPDF_DocumentViewScope view(layer);
+  // SAFETY: required from caller.
+  const WideString name = UNSAFE_BUFFERS(WideStringFromFPDFWideString(key));
+  auto tree = CPDF_NameTree::CreateForReading(layer, "EmbeddedFiles");
+  RetainPtr<const CPDF_Dictionary> spec =
+      tree && !name.IsEmpty() ? ToDictionary(tree->LookupValue(name)) : nullptr;
+  if (!spec) {
+    return nullptr;
+  }
+  // No /Base, as for EPDFDoc_ExportDictCanonicalToOwnedBuffer(). The number
+  // is part of what it reads as: another file under the key, even with the
+  // same bytes, is another file.
+  auto manifest = pdfium::MakeRetain<CPDF_Dictionary>();
+  manifest->SetNewFor<CPDF_Name>("Kind", "Attachment");
+  manifest->SetNewFor<CPDF_String>("Key", name.AsStringView());
+  if (const uint32_t objnum = spec->GetObjNum()) {
+    manifest->SetNewFor<CPDF_Number>("Obj", pdfium::checked_cast<int>(objnum));
+  }
+  RetainPtr<CPDF_Object> value = spec->Clone();
+  manifest->SetFor("Value", value);
+  CaptureWriter writer(layer, StreamBytes::kAsRead);
+  writer.AddReachOf(value.Get());
+  return ToOwnedBuffer(writer.Write(manifest.Get()), out_size);
+}
+
+FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV
+EPDFAttachment_ImportRaw(FPDF_DOCUMENT document,
+                         const void* capture,
+                         unsigned long size) {
+  CPDF_LayerDocument* layer = LayerOf(document);
+  if (!layer || !layer->InTransaction() || !capture || !size) {
+    return false;
+  }
+  CPDF_DocumentViewScope view(layer);
+  // SAFETY: required from caller.
+  std::optional<Capture> read = ReadCapture(
+      layer,
+      UNSAFE_BUFFERS(pdfium::span(static_cast<const uint8_t*>(capture), size)),
+      "Attachment");
+  if (!read) {
+    return false;
+  }
+  const WideString key = read->manifest->GetUnicodeTextFor("Key");
+  if (key.IsEmpty()) {
+    return false;
+  }
+  // A key another file holds now stays with it.
+  if (auto tree = CPDF_NameTree::CreateForReading(layer, "EmbeddedFiles");
+      tree && tree->LookupValue(key)) {
+    return false;
+  }
+
+  // What goes back under the key: a reference to the file specification,
+  // which is what its number holds once the capture is in (the layer's own
+  // version stays, else the capture's, else the file's original); or the
+  // specification written in the tree. Either must be a file specification.
+  RetainPtr<CPDF_Object> entry;
+  if (const int objnum = read->manifest->GetIntegerFor("Obj"); objnum > 0) {
+    const uint32_t number = static_cast<uint32_t>(objnum);
+    if (number > layer->GetLastObjNum()) {
+      return false;
+    }
+    auto captured = read->objects.find(number);
+    RetainPtr<const CPDF_Object> comes_back =
+        layer->FindLayerVersion(number) || captured == read->objects.end()
+            ? layer->GetOrParseIndirectObject(number)
+            : captured->second;
+    if (!IsFileSpec(ToDictionary(comes_back).Get())) {
+      return false;
+    }
+    entry = pdfium::MakeRetain<CPDF_Reference>(layer, number);
+  } else {
+    RetainPtr<const CPDF_Dictionary> value =
+        read->manifest->GetDictFor("Value");
+    if (!IsFileSpec(value.Get())) {
+      return false;
+    }
+    entry = value->Clone();
+  }
+
+  if (!InstallObjects(layer, *read)) {
+    return false;
+  }
+  auto tree = CPDF_NameTree::CreateWithRootNameArray(layer, "EmbeddedFiles");
+  return tree && tree->AddValueAndName(std::move(entry), key);
 }

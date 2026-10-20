@@ -217,6 +217,9 @@ int CheckEmbedPDFCApi(void) {
   CHK(EPDFDoc_GetAttachmentKey);
 
   // epdf_capture.h
+  CHK(EPDFAttachment_ExportCanonicalToOwnedBuffer);
+  CHK(EPDFAttachment_ExportRawToOwnedBuffer);
+  CHK(EPDFAttachment_ImportRaw);
   CHK(EPDFDoc_ExportDictCanonicalToOwnedBuffer);
   CHK(EPDFDoc_ExportDictRawToOwnedBuffer);
   CHK(EPDFDoc_ImportDictRaw);

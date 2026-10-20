@@ -182,6 +182,41 @@ EPDFPage_ImportRaw(FPDF_DOCUMENT document,
                    const void* capture,
                    unsigned long size);
 
+// Experimental EmbedPDF Extension API.
+// The embedded file under |key| in /Root /Names /EmbeddedFiles, as
+// FPDFDoc_DeleteAttachment() removes it: its key, its file specification
+// (an object of its own, or written in the tree) and every object the layer
+// holds a version of that it reaches (its /EF streams). NULL when no entry
+// has |key|.
+FPDF_EXPORT void* FPDF_CALLCONV
+EPDFAttachment_ExportRawToOwnedBuffer(FPDF_DOCUMENT document,
+                                      FPDF_WIDESTRING key,
+                                      unsigned long* out_size);
+
+// Experimental EmbedPDF Extension API.
+// What EPDFAttachment_ExportRawToOwnedBuffer() holds of the file under |key|,
+// as bytes a guard compares to tell whether it is still the same file, as it
+// was: its key, the number of its file specification (none when it is
+// written in the tree), the specification, and every object the layer holds
+// a version of that it reaches, each stream as it reads (as
+// EPDFDoc_ExportDictCanonicalToOwnedBuffer() writes them). Never imported.
+// NULL when no entry has |key|.
+FPDF_EXPORT void* FPDF_CALLCONV
+EPDFAttachment_ExportCanonicalToOwnedBuffer(FPDF_DOCUMENT document,
+                                            FPDF_WIDESTRING key,
+                                            unsigned long* out_size);
+
+// Experimental EmbedPDF Extension API.
+// Puts the file of |capture| back under its key: its objects where the layer
+// holds no version, then the entry, in key order (the tree is made when the
+// document has none). False outside a transaction, for a malformed capture,
+// when another file holds the key now, or when what its number holds isn't a
+// file specification.
+FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV
+EPDFAttachment_ImportRaw(FPDF_DOCUMENT document,
+                         const void* capture,
+                         unsigned long size);
+
 #ifdef __cplusplus
 }  // extern "C"
 #endif

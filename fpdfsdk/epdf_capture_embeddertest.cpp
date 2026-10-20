@@ -30,6 +30,7 @@
 #include "fpdfsdk/epdf_edit_test_util.h"
 #include "public/cpp/fpdf_scopers.h"
 #include "public/epdf_annot.h"
+#include "public/epdf_attachment.h"
 #include "public/epdf_capture.h"
 #include "public/epdf_edit.h"
 #include "public/epdf_form.h"
@@ -39,6 +40,7 @@
 #include "public/epdf_save.h"
 #include "public/epdf_view.h"
 #include "public/fpdf_annot.h"
+#include "public/fpdf_attachment.h"
 #include "public/fpdf_edit.h"
 #include "public/fpdf_save.h"
 #include "public/fpdf_transformpage.h"
@@ -1366,4 +1368,336 @@ TEST_F(EPDFPageCaptureEmbedderTest, CapturesNeedAPageAndALayer) {
       FPDF_LoadMemDocument(input_.data(), input_.size(), nullptr));
   ASSERT_TRUE(plain);
   EXPECT_TRUE(ExportPage(plain.get(), kIntro).empty());
+}
+
+namespace {
+
+// One page and two embedded files: a.txt, whose file specification is an
+// object of its own (4, its stream 5), and b.txt, whose specification is
+// written in the tree (its stream 6).
+std::string MakeAttachmentsDocument() {
+  return MakePdf({
+      "<< /Type /Catalog /Pages 2 0 R /Names << /EmbeddedFiles 7 0 R >> >>",
+      "<< /Type /Pages /Kids [3 0 R] /Count 1 >>",
+      "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 300 300] >>",
+      "<< /Type /Filespec /F (a.txt) /UF (a.txt) /EF << /F 5 0 R >> >>",
+      "<< /Type /EmbeddedFile /Length 5 >>\nstream\nhello\nendstream",
+      "<< /Type /EmbeddedFile /Length 3 >>\nstream\nbye\nendstream",
+      "<< /Names [(a.txt) 4 0 R (b.txt) << /Type /Filespec /F (b.txt) "
+      "/UF (b.txt) /EF << /F 6 0 R >> >>] >>",
+  });
+}
+
+// The same files in a tree with two leaves: a.txt in the first, b.txt in
+// the second.
+std::string MakeAttachmentsTreeDocument() {
+  return MakePdf({
+      "<< /Type /Catalog /Pages 2 0 R /Names << /EmbeddedFiles 7 0 R >> >>",
+      "<< /Type /Pages /Kids [3 0 R] /Count 1 >>",
+      "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 300 300] >>",
+      "<< /Type /Filespec /F (a.txt) /UF (a.txt) /EF << /F 5 0 R >> >>",
+      "<< /Type /EmbeddedFile /Length 5 >>\nstream\nhello\nendstream",
+      "<< /Type /EmbeddedFile /Length 3 >>\nstream\nbye\nendstream",
+      "<< /Kids [8 0 R 9 0 R] >>",
+      "<< /Limits [(a.txt) (a.txt)] /Names [(a.txt) 4 0 R] >>",
+      "<< /Limits [(b.txt) (b.txt)] /Names [(b.txt) 10 0 R] >>",
+      "<< /Type /Filespec /F (b.txt) /UF (b.txt) /EF << /F 6 0 R >> >>",
+  });
+}
+
+// The keys of |doc|'s embedded files, in tree order.
+std::vector<std::wstring> AttachmentKeys(FPDF_DOCUMENT doc) {
+  std::vector<std::wstring> keys;
+  for (int i = 0; i < FPDFDoc_GetAttachmentCount(doc); ++i) {
+    const unsigned long length = EPDFDoc_GetAttachmentKey(doc, i, nullptr, 0);
+    std::vector<FPDF_WCHAR> buffer = GetFPDFWideStringBuffer(length);
+    EPDFDoc_GetAttachmentKey(doc, i, buffer.data(), length);
+    keys.push_back(GetPlatformWString(buffer.data()));
+  }
+  return keys;
+}
+
+// The decoded bytes of the file under |key|, or "(none)".
+std::string AttachmentContent(FPDF_DOCUMENT doc, const wchar_t* key) {
+  ScopedFPDFWideString name = GetFPDFWideString(key);
+  const int index = EPDFDoc_GetAttachmentIndexByKey(doc, name.get());
+  FPDF_ATTACHMENT attachment =
+      index >= 0 ? FPDFDoc_GetAttachment(doc, index) : nullptr;
+  unsigned long length = 0;
+  if (!attachment || !FPDFAttachment_GetFile(attachment, nullptr, 0, &length)) {
+    return "(none)";
+  }
+  std::string bytes(length, '\0');
+  FPDFAttachment_GetFile(attachment, bytes.data(), length, &length);
+  return bytes;
+}
+
+bool DeleteAttachment(FPDF_DOCUMENT doc, const wchar_t* key) {
+  ScopedFPDFWideString name = GetFPDFWideString(key);
+  const int index = EPDFDoc_GetAttachmentIndexByKey(doc, name.get());
+  return index >= 0 && FPDFDoc_DeleteAttachment(doc, index);
+}
+
+// Adds |key| with |content| and returns its file specification's number.
+uint32_t AddAttachment(FPDF_DOCUMENT doc,
+                       const wchar_t* key,
+                       const std::string& content) {
+  ScopedFPDFWideString name = GetFPDFWideString(key);
+  FPDF_ATTACHMENT attachment = FPDFDoc_AddAttachment(doc, name.get());
+  if (!attachment || !FPDFAttachment_SetFile(attachment, doc, content.data(),
+                                             content.size())) {
+    return 0;
+  }
+  return CPDFObjectFromFPDFAttachment(attachment)->GetObjNum();
+}
+
+std::vector<uint8_t> ExportAttachment(FPDF_DOCUMENT doc, const wchar_t* key) {
+  ScopedFPDFWideString name = GetFPDFWideString(key);
+  unsigned long size = 0;
+  void* buffer = EPDFAttachment_ExportRawToOwnedBuffer(doc, name.get(), &size);
+  return Take(buffer, size);
+}
+
+std::vector<uint8_t> CanonicalAttachment(FPDF_DOCUMENT doc,
+                                         const wchar_t* key) {
+  ScopedFPDFWideString name = GetFPDFWideString(key);
+  unsigned long size = 0;
+  void* buffer =
+      EPDFAttachment_ExportCanonicalToOwnedBuffer(doc, name.get(), &size);
+  return Take(buffer, size);
+}
+
+bool ImportAttachment(FPDF_DOCUMENT doc, const std::vector<uint8_t>& capture) {
+  return EPDFAttachment_ImportRaw(doc, capture.data(),
+                                  static_cast<unsigned long>(capture.size()));
+}
+
+}  // namespace
+
+class EPDFAttachmentCaptureEmbedderTest : public EmbedderTest {
+ protected:
+  void TearDown() override {
+    if (base_) {
+      EPDF_ReleaseBaseDocument(base_);
+    }
+    EmbedderTest::TearDown();
+  }
+
+  ScopedFPDFDocument OpenLayer(std::string bytes = MakeAttachmentsDocument()) {
+    input_ = std::move(bytes);
+    base_ = EPDF_LoadMemBaseDocument(input_.data(), input_.size(), nullptr);
+    if (!base_) {
+      return nullptr;
+    }
+    ScopedFPDFDocument layer(
+        EPDFLayer_OpenLayer(base_, nullptr, nullptr, nullptr));
+    if (layer && !EPDFLayer_RaiseLastObjectNumber(layer.get(), kRaised)) {
+      return nullptr;
+    }
+    return layer;
+  }
+
+  // The layer saved and opened again: what nothing reaches is gone.
+  ScopedFPDFDocument Reopen(FPDF_DOCUMENT layer) {
+    ClearString();
+    EXPECT_TRUE(EPDFLayer_SaveLayerArtifact(layer, this, nullptr));
+    artifact_ = GetString();
+    FPDF_FILEACCESS access = {};
+    access.m_FileLen = artifact_.size();
+    access.m_GetBlock = GetBlockFromString;
+    access.m_Param = &artifact_;
+    EPDFLayerOpenStatus status = EPDFLayerOpenStatus_kOpenFailed;
+    ScopedFPDFDocument reopened(
+        EPDFLayer_OpenLayerArtifact(base_, &access, nullptr, &status));
+    EXPECT_EQ(EPDFLayerOpenStatus_kSuccess, status);
+    return reopened;
+  }
+
+  std::string input_;
+  std::string artifact_;
+  EPDF_BASE_DOCUMENT base_ = nullptr;
+};
+
+// A file of the uploaded file comes back under its key, with its bytes:
+// one whose specification is an object of its own, and one written in the
+// tree. Neither was edited, so the capture holds no copy of them.
+TEST_F(EPDFAttachmentCaptureEmbedderTest, FileAttachmentsComeBack) {
+  for (const wchar_t* key : {L"a.txt", L"b.txt"}) {
+    SCOPED_TRACE(GetPlatformString(GetFPDFWideString(key).get()));
+    ScopedFPDFDocument layer = OpenLayer();
+    ASSERT_TRUE(layer);
+    ASSERT_TRUE(EPDFLayer_BeginTransaction(layer.get()));
+    const std::vector<uint8_t> capture = ExportAttachment(layer.get(), key);
+    ASSERT_FALSE(capture.empty());
+    ASSERT_TRUE(DeleteAttachment(layer.get(), key));
+    ASSERT_TRUE(EPDFLayer_CommitTransaction(layer.get()));
+    EXPECT_EQ(1u, AttachmentKeys(layer.get()).size());
+
+    ASSERT_TRUE(EPDFLayer_BeginTransaction(layer.get()));
+    ASSERT_TRUE(ImportAttachment(layer.get(), capture));
+    ASSERT_TRUE(EPDFLayer_CommitTransaction(layer.get()));
+    EXPECT_THAT(AttachmentKeys(layer.get()), ElementsAre(L"a.txt", L"b.txt"));
+    EXPECT_EQ("hello", AttachmentContent(layer.get(), L"a.txt"));
+    EXPECT_EQ("bye", AttachmentContent(layer.get(), L"b.txt"));
+  }
+}
+
+// A file the layer added comes back with its bytes, also when a save and
+// reopen dropped it, which nothing reached once it was deleted.
+TEST_F(EPDFAttachmentCaptureEmbedderTest, LayerAttachmentComesBack) {
+  for (bool reopen : {false, true}) {
+    SCOPED_TRACE(reopen ? "reopened between delete and import"
+                        : "same session");
+    ScopedFPDFDocument layer = OpenLayer();
+    ASSERT_TRUE(layer);
+    ASSERT_TRUE(EPDFLayer_BeginTransaction(layer.get()));
+    ASSERT_TRUE(AddAttachment(layer.get(), L"c.txt", "made here"));
+    ASSERT_TRUE(EPDFLayer_CommitTransaction(layer.get()));
+
+    ASSERT_TRUE(EPDFLayer_BeginTransaction(layer.get()));
+    const std::vector<uint8_t> capture =
+        ExportAttachment(layer.get(), L"c.txt");
+    ASSERT_FALSE(capture.empty());
+    ASSERT_TRUE(DeleteAttachment(layer.get(), L"c.txt"));
+    ASSERT_TRUE(EPDFLayer_CommitTransaction(layer.get()));
+
+    ScopedFPDFDocument target = reopen ? Reopen(layer.get()) : std::move(layer);
+    ASSERT_TRUE(target);
+    EXPECT_EQ("(none)", AttachmentContent(target.get(), L"c.txt"));
+    ASSERT_TRUE(EPDFLayer_BeginTransaction(target.get()));
+    ASSERT_TRUE(ImportAttachment(target.get(), capture));
+    ASSERT_TRUE(EPDFLayer_CommitTransaction(target.get()));
+    EXPECT_THAT(AttachmentKeys(target.get()),
+                ElementsAre(L"a.txt", L"b.txt", L"c.txt"));
+    EXPECT_EQ("made here", AttachmentContent(target.get(), L"c.txt"));
+  }
+}
+
+// A file comes back into the leaf of a tree with kids where its key goes.
+TEST_F(EPDFAttachmentCaptureEmbedderTest, ComesBackIntoATreeWithKids) {
+  ScopedFPDFDocument layer = OpenLayer(MakeAttachmentsTreeDocument());
+  ASSERT_TRUE(layer);
+  ASSERT_TRUE(EPDFLayer_BeginTransaction(layer.get()));
+  const std::vector<uint8_t> capture = ExportAttachment(layer.get(), L"b.txt");
+  ASSERT_FALSE(capture.empty());
+  ASSERT_TRUE(DeleteAttachment(layer.get(), L"b.txt"));
+  ASSERT_TRUE(ImportAttachment(layer.get(), capture));
+  ASSERT_TRUE(EPDFLayer_CommitTransaction(layer.get()));
+  EXPECT_THAT(AttachmentKeys(layer.get()), ElementsAre(L"a.txt", L"b.txt"));
+  EXPECT_EQ("bye", AttachmentContent(layer.get(), L"b.txt"));
+}
+
+// A key another file took since stays with it.
+TEST_F(EPDFAttachmentCaptureEmbedderTest, ImportLeavesAKeyAnotherFileTook) {
+  ScopedFPDFDocument layer = OpenLayer();
+  ASSERT_TRUE(layer);
+  ASSERT_TRUE(EPDFLayer_BeginTransaction(layer.get()));
+  const std::vector<uint8_t> capture = ExportAttachment(layer.get(), L"a.txt");
+  ASSERT_TRUE(DeleteAttachment(layer.get(), L"a.txt"));
+  ASSERT_TRUE(AddAttachment(layer.get(), L"a.txt", "someone else's"));
+  EXPECT_FALSE(ImportAttachment(layer.get(), capture));
+  ASSERT_TRUE(EPDFLayer_CommitTransaction(layer.get()));
+  EXPECT_EQ("someone else's", AttachmentContent(layer.get(), L"a.txt"));
+}
+
+// What goes back under the key is what the file specification's number
+// holds once the capture is in. A save drops a deleted layer file, so its
+// number is free again; an outline item that took it never becomes a file.
+TEST_F(EPDFAttachmentCaptureEmbedderTest,
+       ImportRefusesWhenItsNumberHoldsSomethingElse) {
+  ScopedFPDFDocument layer = OpenLayer();
+  ASSERT_TRUE(layer);
+  ASSERT_TRUE(EPDFLayer_BeginTransaction(layer.get()));
+  const uint32_t spec = AddAttachment(layer.get(), L"c.txt", "made here");
+  ASSERT_TRUE(spec);
+  ASSERT_TRUE(EPDFLayer_CommitTransaction(layer.get()));
+  ASSERT_TRUE(EPDFLayer_BeginTransaction(layer.get()));
+  const std::vector<uint8_t> capture = ExportAttachment(layer.get(), L"c.txt");
+  ASSERT_TRUE(DeleteAttachment(layer.get(), L"c.txt"));
+  ASSERT_TRUE(EPDFLayer_CommitTransaction(layer.get()));
+
+  ScopedFPDFDocument reopened = Reopen(layer.get());
+  ASSERT_TRUE(reopened);
+  ASSERT_TRUE(EPDFLayer_RaiseLastObjectNumber(reopened.get(), kRaised));
+  ASSERT_TRUE(EPDFLayer_BeginTransaction(reopened.get()));
+  ScopedFPDFWideString title = GetFPDFWideString(L"Taken");
+  ASSERT_EQ(spec,
+            EPDFOutline_CreateItem(reopened.get(), spec, 0, 0, title.get()));
+  EXPECT_FALSE(ImportAttachment(reopened.get(), capture));
+  ASSERT_TRUE(EPDFLayer_CommitTransaction(reopened.get()));
+  EXPECT_THAT(AttachmentKeys(reopened.get()), ElementsAre(L"a.txt", L"b.txt"));
+}
+
+// A file reads the same while it is the same file: across a save and reopen,
+// and when its capture brought it back. Another file under its key, with the
+// same bytes, reads differently.
+TEST_F(EPDFAttachmentCaptureEmbedderTest, CanonicalBytesTellTheSameFile) {
+  ScopedFPDFDocument layer = OpenLayer();
+  ASSERT_TRUE(layer);
+  ASSERT_TRUE(EPDFLayer_BeginTransaction(layer.get()));
+  ASSERT_TRUE(AddAttachment(layer.get(), L"c.txt", "made here"));
+  ASSERT_TRUE(EPDFLayer_CommitTransaction(layer.get()));
+  const std::vector<uint8_t> made = CanonicalAttachment(layer.get(), L"c.txt");
+  const std::vector<uint8_t> inline_file =
+      CanonicalAttachment(layer.get(), L"b.txt");
+  ASSERT_FALSE(made.empty());
+  ASSERT_FALSE(inline_file.empty());
+  EXPECT_NE(made, CanonicalAttachment(layer.get(), L"a.txt"));
+
+  ScopedFPDFDocument reopened = Reopen(layer.get());
+  ASSERT_TRUE(reopened);
+  EXPECT_EQ(made, CanonicalAttachment(reopened.get(), L"c.txt"));
+  EXPECT_EQ(inline_file, CanonicalAttachment(reopened.get(), L"b.txt"));
+
+  ASSERT_TRUE(EPDFLayer_RaiseLastObjectNumber(reopened.get(), kRaised));
+  for (const wchar_t* key : {L"c.txt", L"b.txt"}) {
+    SCOPED_TRACE(GetPlatformString(GetFPDFWideString(key).get()));
+    const std::vector<uint8_t> before =
+        CanonicalAttachment(reopened.get(), key);
+    ASSERT_TRUE(EPDFLayer_BeginTransaction(reopened.get()));
+    const std::vector<uint8_t> capture = ExportAttachment(reopened.get(), key);
+    ASSERT_TRUE(DeleteAttachment(reopened.get(), key));
+    EXPECT_TRUE(CanonicalAttachment(reopened.get(), key).empty());
+    ASSERT_TRUE(ImportAttachment(reopened.get(), capture));
+    ASSERT_TRUE(EPDFLayer_CommitTransaction(reopened.get()));
+    EXPECT_EQ(before, CanonicalAttachment(reopened.get(), key));
+  }
+
+  ASSERT_TRUE(EPDFLayer_BeginTransaction(reopened.get()));
+  ASSERT_TRUE(DeleteAttachment(reopened.get(), L"c.txt"));
+  ASSERT_TRUE(AddAttachment(reopened.get(), L"c.txt", "made here"));
+  ASSERT_TRUE(EPDFLayer_CommitTransaction(reopened.get()));
+  EXPECT_NE(made, CanonicalAttachment(reopened.get(), L"c.txt"));
+
+  EXPECT_TRUE(CanonicalAttachment(reopened.get(), L"none.txt").empty());
+  ScopedFPDFDocument plain(
+      FPDF_LoadMemDocument(input_.data(), input_.size(), nullptr));
+  ASSERT_TRUE(plain);
+  EXPECT_TRUE(CanonicalAttachment(plain.get(), L"a.txt").empty());
+}
+
+TEST_F(EPDFAttachmentCaptureEmbedderTest, CapturesNeedAFileAndALayer) {
+  ScopedFPDFDocument layer = OpenLayer();
+  ASSERT_TRUE(layer);
+  EXPECT_TRUE(ExportAttachment(layer.get(), L"none.txt").empty());
+  EXPECT_TRUE(ExportAttachment(layer.get(), L"").empty());
+  const std::vector<uint8_t> capture = ExportAttachment(layer.get(), L"a.txt");
+  ASSERT_FALSE(capture.empty());
+  ASSERT_TRUE(DeleteAttachment(layer.get(), L"a.txt"));
+  EXPECT_FALSE(
+      ImportAttachment(layer.get(), capture));  // outside a transaction
+  ASSERT_TRUE(EPDFLayer_BeginTransaction(layer.get()));
+  EXPECT_FALSE(ImportAttachment(layer.get(), {}));
+  const std::vector<uint8_t> cut(capture.begin(), capture.end() - 4);
+  EXPECT_FALSE(ImportAttachment(layer.get(), cut));
+  // A capture of another kind, and a file capture as another kind.
+  EXPECT_FALSE(EPDFPage_ImportRaw(layer.get(), capture.data(),
+                                  static_cast<unsigned long>(capture.size())));
+  ASSERT_TRUE(EPDFLayer_CommitTransaction(layer.get()));
+  EXPECT_THAT(AttachmentKeys(layer.get()), ElementsAre(L"b.txt"));
+
+  ScopedFPDFDocument plain(
+      FPDF_LoadMemDocument(input_.data(), input_.size(), nullptr));
+  ASSERT_TRUE(plain);
+  EXPECT_TRUE(ExportAttachment(plain.get(), L"a.txt").empty());
 }
