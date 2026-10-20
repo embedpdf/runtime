@@ -449,6 +449,78 @@ bool FollowsLiteralRightToLeftText(
   return false;
 }
 
+// EmbedPDF(bug-fix): the text a line's bidi segments are cut from. An
+// /ActualText span is logical text, so inside one, a mark takes the direction
+// of the character before it, and characters with no strong direction between
+// two with the same one take theirs (UAX #9 W1 and N1); the span's leading and
+// trailing ones keep their own. Cut at its marks and inner spaces, a span came
+// out as its segments in visual order, each kept forward: a pointed Hebrew
+// word read back scrambled, and a right-to-left span of two words with the
+// words swapped.
+WideString BidiTextOf(const WideString& str,
+                      pdfium::span<const CPDF_TextPage::CharInfo> chars) {
+  enum class Strong { kNone, kLeft, kRight };
+  auto strong_of = [](wchar_t c) {
+    switch (pdfium::unicode::GetBidiClass(c)) {
+      case BidiClass::kL:
+        return Strong::kLeft;
+      case BidiClass::kR:
+      case BidiClass::kAL:
+        return Strong::kRight;
+      default:
+        return Strong::kNone;
+    }
+  };
+
+  WideString text = str;
+  const size_t count = std::min(str.GetLength(), chars.size());
+  size_t begin = 0;
+  while (begin < count) {
+    const CPDF_TextPage::CharInfo& first = chars[begin];
+    size_t end = begin + 1;
+    if (first.char_type() != CPDF_TextPage::CharType::kActualText) {
+      begin = end;
+      continue;
+    }
+    while (end < count &&
+           chars[end].char_type() == CPDF_TextPage::CharType::kActualText &&
+           chars[end].text_object() == first.text_object()) {
+      ++end;
+    }
+
+    std::vector<Strong> resolved;
+    for (size_t i = begin; i < end; ++i) {
+      Strong direction = strong_of(str[i]);
+      if (direction == Strong::kNone && i > begin &&
+          pdfium::unicode::GetBidiClass(str[i]) == BidiClass::kNSM) {
+        direction = resolved.back();
+      }
+      resolved.push_back(direction);
+    }
+    std::optional<size_t> last_strong;
+    for (size_t i = 0; i < resolved.size(); ++i) {
+      if (resolved[i] == Strong::kNone) {
+        continue;
+      }
+      if (last_strong && resolved[*last_strong] == resolved[i]) {
+        std::fill(resolved.begin() + *last_strong + 1, resolved.begin() + i,
+                  resolved[i]);
+      }
+      last_strong = i;
+    }
+
+    // Stand-ins of the resolved direction: Hebrew alef, Latin a.
+    for (size_t i = begin; i < end; ++i) {
+      const Strong direction = resolved[i - begin];
+      if (direction != Strong::kNone && strong_of(str[i]) == Strong::kNone) {
+        text.SetAt(i, direction == Strong::kRight ? 0x05D0 : L'a');
+      }
+    }
+    begin = end;
+  }
+  return text;
+}
+
 }  // namespace
 
 CPDF_TextPage::TransformedTextObject::TransformedTextObject() = default;
@@ -1007,7 +1079,10 @@ void CPDF_TextPage::CloseTempLine() {
     }
     prev_char_is_space = true;
   }
-  CFX_BidiString bidi(str, /*auto_order=*/true);
+  // EmbedPDF(bug-fix): /ActualText spans aren't cut at their marks and inner
+  // spaces (BidiTextOf); the characters are still those of `str`.
+  const WideString bidi_text = BidiTextOf(str, temp_char_list_);
+  CFX_BidiString bidi(bidi_text, /*auto_order=*/true);
   if (rtl_) {
     bidi.SetOverallDirectionRight();
   }

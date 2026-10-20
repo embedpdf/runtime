@@ -17,6 +17,7 @@
 #include "public/cpp/fpdf_scopers.h"
 #include "public/fpdf_text.h"
 #include "testing/embedder_test.h"
+#include "testing/fx_string_testhelpers.h"
 #include "testing/gmock/include/gmock/gmock.h"
 
 using ::testing::ElementsAreArray;
@@ -240,6 +241,50 @@ TEST_F(EPDFTextEmbedderTest, ActualTextInAFormIsInPageSpace) {
     EXPECT_NEAR(page_x, form_x, 0.01);
     EXPECT_NEAR(page_y - 200, form_y, 0.01);
   }
+}
+
+// /ActualText is logical text: a span reads back as written, whatever marks
+// and spaces it holds, on a line of its own or after left-to-right text.
+TEST_F(EPDFTextEmbedderTest, ActualTextReadsAsWritten) {
+  // Pointed Hebrew, two Hebrew words with digits, Arabic with harakat, an
+  // Arabic word ending in one, and pointed Hebrew after Latin text, each span
+  // over Latin glyphs.
+  static constexpr char kPointed[] = "<FEFF05E905B805C105DC05D505B905DD>";
+  const std::string content =
+      std::string("BT /F1 12 Tf 20 350 Td /Span << /ActualText ") + kPointed +
+      " >> BDC (abcd) Tj EMC 0 -40 Td /Span << /ActualText "
+      "<FEFF05E905DC05D505DD0020003100320033002005E205D505DC05DD> >> BDC "
+      "(abcd efg hij) Tj EMC 0 -40 Td /Span << /ActualText "
+      "<FEFF0645064E06310652062D064E0628064B0627> >> BDC (abcd) Tj EMC "
+      "0 -40 Td /Span << /ActualText <FEFF0643064E062A064E0628064E> >> BDC "
+      "(abcd) Tj EMC 0 -40 Td (Hello ) Tj /Span << /ActualText " +
+      kPointed + " >> BDC (abcd) Tj EMC ET";
+  const std::string pdf = MakePdf({
+      "<< /Type /Catalog /Pages 2 0 R >>",
+      "<< /Type /Pages /Kids [3 0 R] /Count 1 >>",
+      "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 400 400] /Contents 4 0 R "
+      "/Resources << /Font << /F1 5 0 R >> >> >>",
+      Stream(content),
+      "<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>",
+  });
+  ScopedFPDFDocument doc(FPDF_LoadMemDocument(pdf.data(), pdf.size(), nullptr));
+  ASSERT_TRUE(doc);
+  ScopedFPDFPage page(FPDF_LoadPage(doc.get(), 0));
+  ASSERT_TRUE(page);
+  ScopedFPDFTextPage text_page(FPDFText_LoadPage(page.get()));
+  ASSERT_TRUE(text_page);
+
+  unsigned short buffer[128] = {};
+  ASSERT_GT(FPDFText_GetText(text_page.get(), 0,
+                             FPDFText_CountChars(text_page.get()), buffer),
+            0);
+  EXPECT_EQ(
+      L"\x05e9\x05b8\x05c1\x05dc\x05d5\x05b9\x05dd\r\n"
+      L"\x05e9\x05dc\x05d5\x05dd 123 \x05e2\x05d5\x05dc\x05dd\r\n"
+      L"\x0645\x064e\x0631\x0652\x062d\x064e\x0628\x064b\x0627\r\n"
+      L"\x0643\x064e\x062a\x064e\x0628\x064e\r\n"
+      L"Hello \x05e9\x05b8\x05c1\x05dc\x05d5\x05b9\x05dd",
+      GetPlatformWString(reinterpret_cast<FPDF_WIDESTRING>(buffer)));
 }
 
 TEST_F(EPDFTextEmbedderTest, GetRotatedCharGeometry) {
