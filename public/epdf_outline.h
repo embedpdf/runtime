@@ -22,11 +22,16 @@ extern "C" {
 // number to anything else. A |parent| is an item's number, or 0 for the
 // outline itself, whose children are the top-level items. An item is in the
 // outline when each step up its /Parent chain is among the parent's children,
-// up to /Root /Outlines: a deleted item is not, even where its dictionary can
-// still be read.
+// up to /Root /Outlines, in at most 128 steps (the depth reads of the outline
+// go to): a deleted item is not, even where its dictionary can still be read.
 //
 // A parent's children are its /First and the /Next that follow, a loop ending
-// the list. Every write keeps the outline well formed:
+// the list. A dictionary that isn't an item also ends it, for the readers of
+// fpdf_doc.h as for these functions: one with a /Type other than /Outlines,
+// or a key of a page, the page tree, an annotation, a field or an action
+// (/Kids, /Contents, /MediaBox, /Resources, /Subtype, /FT, /S). An /Outlines
+// that isn't an outline dictionary is no outline: a create makes a new one in
+// its place. Every write keeps the outline well formed:
 //  * It rewrites /Parent, /Prev, /Next, /First and /Last of every list it
 //    changes, from that walk, so a wrong /Last or /Prev never misleads it. It
 //    writes only the keys whose value changes.

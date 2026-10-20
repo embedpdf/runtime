@@ -29,16 +29,18 @@ struct OutlineChild {
 };
 
 // The outline's own dictionary, /Root /Outlines: its object number, 0 when
-// the document has none, or nullopt when it is a direct dictionary, which no
-// item's /Parent can refer to.
+// the document has none (or links something that isn't an outline there, see
+// CPDF_BookmarkTree::IsOutlineNode()), or nullopt when it is a direct
+// dictionary, which no item's /Parent can refer to.
 std::optional<uint32_t> OutlineRootOf(CPDF_Document* doc);
 
 // Makes a new /Root /Outlines and returns its object number, or 0.
 uint32_t CreateOutlineRoot(CPDF_Document* doc);
 
 // The children of |node| (the outline's dictionary or an item): its /First
-// and the /Next that follow. A repeat, or a reference to nothing, ends the
-// list.
+// and the /Next that follow. A repeat, a reference to nothing, the outline's
+// own dictionary, or a dictionary that isn't an item (a page, an action:
+// CPDF_BookmarkTree::IsOutlineNode()) ends the list.
 std::vector<OutlineChild> OutlineChildrenOf(CPDF_Document* doc, uint32_t node);
 
 // The object numbers of |node|'s children, or nullopt when one of them isn't
@@ -48,7 +50,7 @@ std::optional<std::vector<uint32_t>> OutlineChildNumbers(CPDF_Document* doc,
 
 // Whether |objnum| is an item of the outline whose dictionary is |root|:
 // each step up its /Parent chain is among the parent's children, up to
-// |root|.
+// |root|, in at most 128 steps (the depth reads of the outline go to).
 bool IsOutlineItem(CPDF_Document* doc, uint32_t root, uint32_t objnum);
 
 // The object number the item's /Parent refers to, or 0.
@@ -56,7 +58,8 @@ uint32_t OutlineParentOf(CPDF_Document* doc, uint32_t objnum);
 
 // The item |objnum| and the items under it, the item first. A child goes
 // with its parent only when its /Parent says so, so a list that wandered
-// into another part of the tree never takes that part along.
+// into another part of the tree never takes that part along, and each item
+// is looked at once.
 std::vector<uint32_t> OutlineSubtreeOf(CPDF_Document* doc, uint32_t objnum);
 
 // Makes |children| the children of |node|, in order: their /Parent, /Prev
