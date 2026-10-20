@@ -79,6 +79,22 @@ EPDFDoc_ExportDictRawToOwnedBuffer(FPDF_DOCUMENT document,
                                    unsigned long* out_size);
 
 // Experimental EmbedPDF Extension API.
+// What EPDFDoc_ExportDictRawToOwnedBuffer() holds of the dictionary |objnum|,
+// as bytes a guard compares to tell whether it reads the same: the
+// dictionary without the keys named in |skip_keys| (separated by spaces;
+// NULL for none), and under |deep_keys| every object the layer holds a
+// version of that they reach, each stream as it reads (its decoded bytes,
+// without /Filter, /DecodeParms and /DL). So a save that only encodes a
+// stream again changes nothing. Never imported. NULL when |objnum| is not a
+// dictionary.
+FPDF_EXPORT void* FPDF_CALLCONV
+EPDFDoc_ExportDictCanonicalToOwnedBuffer(FPDF_DOCUMENT document,
+                                         uint32_t objnum,
+                                         FPDF_BYTESTRING deep_keys,
+                                         FPDF_BYTESTRING skip_keys,
+                                         unsigned long* out_size);
+
+// Experimental EmbedPDF Extension API.
 // Puts the dictionary of |capture| back as it was: the objects under its deep
 // keys where the layer holds no version, then exactly the keys it held, with
 // their values. A dictionary that is gone (a save dropped it once nothing

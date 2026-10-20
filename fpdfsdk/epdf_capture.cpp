@@ -22,6 +22,7 @@
 #include "core/fpdfapi/parser/cpdf_number.h"
 #include "core/fpdfapi/parser/cpdf_reference.h"
 #include "core/fpdfapi/parser/cpdf_stream.h"
+#include "core/fpdfapi/parser/cpdf_stream_acc.h"
 #include "core/fpdfapi/parser/cpdf_string.h"
 #include "core/fpdfapi/parser/cpdf_syntax_parser.h"
 #include "core/fpdfdoc/cpdf_bookmarktree.h"
@@ -184,11 +185,18 @@ void InsertReference(CPDF_Document* doc,
                                      objnum);
 }
 
+// How a capture writes a stream: its bytes as stored, so it comes back byte
+// for byte; or as it reads, so a save that only encodes it again changes
+// nothing (the canonical bytes a guard compares).
+enum class StreamBytes { kAsStored, kAsRead };
+
 // Collects the layer's versions of what a capture's roots reach, and writes
 // the capture.
 class CaptureWriter {
  public:
-  explicit CaptureWriter(CPDF_LayerDocument* layer) : layer_(layer) {}
+  explicit CaptureWriter(CPDF_LayerDocument* layer,
+                         StreamBytes stream_bytes = StreamBytes::kAsStored)
+      : layer_(layer), stream_bytes_(stream_bytes) {}
 
   // Captures the layer's version of |objnum|, if it holds one, and what the
   // object reaches.
@@ -226,7 +234,8 @@ class CaptureWriter {
     for (const auto& [objnum, object] : objects_) {
       ok = ok && archive.WriteDWord(objnum) && archive.WriteString(" ") &&
            archive.WriteDWord(object->GetGenNum()) &&
-           archive.WriteString(" obj\n") && WriteBody(&archive, object.Get()) &&
+           archive.WriteString(" obj\n") &&
+           WriteBody(&archive, object.Get(), stream_bytes_) &&
            archive.WriteString("\nendobj\n");
     }
     if (!ok) {
@@ -313,20 +322,31 @@ class CaptureWriter {
   }
 
   // An object's body. A stream is written with its bytes as stored, never
-  // encoded again, so it comes back byte for byte.
-  static bool WriteBody(IFX_ArchiveStream* archive, const CPDF_Object* object) {
+  // encoded again, so it comes back byte for byte; or, as it reads, its
+  // decoded bytes without the keys that say how they were stored.
+  static bool WriteBody(IFX_ArchiveStream* archive,
+                        const CPDF_Object* object,
+                        StreamBytes stream_bytes) {
     const CPDF_Stream* stream = object->AsStream();
     if (!stream) {
       return object->WriteTo(archive, nullptr);
     }
+    RetainPtr<CPDF_Dictionary> dict = ToDictionary(stream->GetDict()->Clone());
     DataVector<uint8_t> raw;
-    if (stream->IsMemoryBased()) {
+    if (stream_bytes == StreamBytes::kAsRead) {
+      auto read =
+          pdfium::MakeRetain<CPDF_StreamAcc>(pdfium::WrapRetain(stream));
+      read->LoadAllDataFiltered();
+      raw = read->DetachData();
+      for (const char* key : {"Filter", "DecodeParms", "DL"}) {
+        dict->RemoveFor(key);
+      }
+    } else if (stream->IsMemoryBased()) {
       pdfium::span<const uint8_t> data = stream->GetInMemoryRawData();
       raw.assign(data.begin(), data.end());
     } else {
       raw = stream->ReadAllRawData();
     }
-    RetainPtr<CPDF_Dictionary> dict = ToDictionary(stream->GetDict()->Clone());
     dict->SetNewFor<CPDF_Number>("Length",
                                  pdfium::checked_cast<int>(raw.size()));
     return dict->WriteTo(archive, nullptr) &&
@@ -335,6 +355,7 @@ class CaptureWriter {
   }
 
   UnownedPtr<CPDF_LayerDocument> const layer_;
+  const StreamBytes stream_bytes_;
   std::set<uint32_t> outline_items_;
   std::set<uint32_t> pages_;
   std::set<uint32_t> visited_;
@@ -599,6 +620,48 @@ EPDFDoc_ExportDictRawToOwnedBuffer(FPDF_DOCUMENT document,
     }
     deep->AppendNew<CPDF_Name>(key);
     writer.AddReachOf(dict->GetObjectFor(key.AsStringView()).Get());
+  }
+  return ToOwnedBuffer(writer.Write(manifest.Get()), out_size);
+}
+
+FPDF_EXPORT void* FPDF_CALLCONV
+EPDFDoc_ExportDictCanonicalToOwnedBuffer(FPDF_DOCUMENT document,
+                                         uint32_t objnum,
+                                         FPDF_BYTESTRING deep_keys,
+                                         FPDF_BYTESTRING skip_keys,
+                                         unsigned long* out_size) {
+  if (out_size) {
+    *out_size = 0;
+  }
+  CPDF_LayerDocument* layer = LayerOf(document);
+  if (!layer || !objnum) {
+    return nullptr;
+  }
+  CPDF_DocumentViewScope view(layer);
+  RetainPtr<const CPDF_Dictionary> dict =
+      ToDictionary(layer->GetOrParseIndirectObject(objnum));
+  if (!dict) {
+    return nullptr;
+  }
+  // No /Base: whether the layer knows its file's hash may change between two
+  // reads, and the bytes must not.
+  auto manifest = pdfium::MakeRetain<CPDF_Dictionary>();
+  manifest->SetNewFor<CPDF_Name>("Kind", "Dict");
+  manifest->SetNewFor<CPDF_Number>("Obj", pdfium::checked_cast<int>(objnum));
+  RetainPtr<CPDF_Dictionary> value = ToDictionary(dict->Clone());
+  for (const ByteString& key :
+       fxcrt::Split(ByteString(skip_keys ? skip_keys : ""), ' ')) {
+    if (!key.IsEmpty()) {
+      value->RemoveFor(key.AsStringView());
+    }
+  }
+  manifest->SetFor("Value", value);
+  CaptureWriter writer(layer, StreamBytes::kAsRead);
+  for (const ByteString& key :
+       fxcrt::Split(ByteString(deep_keys ? deep_keys : ""), ' ')) {
+    if (!key.IsEmpty()) {
+      writer.AddReachOf(value->GetObjectFor(key.AsStringView()).Get());
+    }
   }
   return ToOwnedBuffer(writer.Write(manifest.Get()), out_size);
 }

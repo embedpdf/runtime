@@ -210,6 +210,16 @@ std::vector<uint8_t> ExportDict(FPDF_DOCUMENT doc,
   return Take(buffer, size);
 }
 
+std::vector<uint8_t> CanonicalDict(FPDF_DOCUMENT doc,
+                                   uint32_t objnum,
+                                   const char* deep_keys,
+                                   const char* skip_keys) {
+  unsigned long size = 0;
+  void* buffer = EPDFDoc_ExportDictCanonicalToOwnedBuffer(
+      doc, objnum, deep_keys, skip_keys, &size);
+  return Take(buffer, size);
+}
+
 bool ImportDict(FPDF_DOCUMENT doc, const std::vector<uint8_t>& capture) {
   return EPDFDoc_ImportDictRaw(doc, capture.data(),
                                static_cast<unsigned long>(capture.size()));
@@ -634,6 +644,41 @@ TEST_F(EPDFCaptureEmbedderTest, ImportRefusesACaptureHoldingTheCatalog) {
   ASSERT_TRUE(EPDFLayer_CommitTransaction(layer.get()));
   EXPECT_EQ(catalog, ObjectGraph(pdf).at(1));
   EXPECT_TRUE(Annots(layer.get(), 1).empty());
+}
+
+// A dictionary's canonical bytes change only with what it reads as: not
+// when a key the caller leaves out changes (the page turned and turned back
+// writes /Rotate 0), nor when a save encodes its streams again (a reopen),
+// but when what it holds changes (its square recoloured).
+TEST_F(EPDFCaptureEmbedderTest, CanonicalBytesChangeOnlyWithWhatReads) {
+  ScopedFPDFDocument layer = OpenLayer();
+  ASSERT_TRUE(layer);
+  ASSERT_TRUE(EPDFLayer_BeginTransaction(layer.get()));
+  ASSERT_TRUE(CreateSquare(layer.get(), 1, 20));
+  ASSERT_TRUE(EPDFLayer_CommitTransaction(layer.get()));
+  const std::vector<uint8_t> before =
+      CanonicalDict(layer.get(), 4, "Annots", "Parent Rotate");
+  ASSERT_FALSE(before.empty());
+
+  ASSERT_TRUE(EPDFLayer_BeginTransaction(layer.get()));
+  ASSERT_TRUE(EPDFDoc_SetPageRotationByObjectNumber(layer.get(), 4, 1));
+  ASSERT_TRUE(EPDFDoc_SetPageRotationByObjectNumber(layer.get(), 4, 0));
+  ASSERT_TRUE(EPDFLayer_CommitTransaction(layer.get()));
+  EXPECT_EQ(before, CanonicalDict(layer.get(), 4, "Annots", "Parent Rotate"));
+  const std::vector<uint8_t> stored = ExportDict(layer.get(), 4, "Annots");
+
+  ScopedFPDFDocument reopened = Reopen(layer.get());
+  ASSERT_TRUE(reopened);
+  // The save encoded the square's appearance: its stored bytes differ.
+  EXPECT_NE(stored, ExportDict(reopened.get(), 4, "Annots"));
+  EXPECT_EQ(before,
+            CanonicalDict(reopened.get(), 4, "Annots", "Parent Rotate"));
+
+  ASSERT_TRUE(EPDFLayer_BeginTransaction(reopened.get()));
+  ASSERT_TRUE(Recolor(reopened.get(), 20, 1, 0, 0));
+  ASSERT_TRUE(EPDFLayer_CommitTransaction(reopened.get()));
+  EXPECT_NE(before,
+            CanonicalDict(reopened.get(), 4, "Annots", "Parent Rotate"));
 }
 
 // A dictionary captured before an update comes back exactly: every key as it
