@@ -383,12 +383,13 @@ CPDF_AnnotFontMap::CPDF_AnnotFontMap(
       ProgramLineMetrics(entry.font->GetFont(), &entry.ascent, &entry.descent);
     }
   }
-  // A composite /DA font over a program that can author text (what the
-  // writer installs for a document program) lays new text out with that
-  // program's own cmap: its ToUnicode only names the characters drawn so far.
+  // A /DA font over a program that can author text lays new text out with
+  // that program's own cmap, as Acrobat does: a composite font's ToUnicode
+  // only names the characters drawn so far (what the writer installs for a
+  // document program), and a simple font's encoding reaches 256 codes at
+  // most (no Hebrew in a Mac Roman font whose program has it).
   std::optional<DocumentProgramCandidate> candidate;
-  if (entry.source == Source::kDocumentFontDict && entry.font &&
-      entry.font->GetFontDict()->GetNameFor("Subtype") == "Type0") {
+  if (entry.source == Source::kDocumentFontDict && entry.font) {
     candidate = CandidateFromFontDict(entry.font->GetFontDict().Get());
   }
   fonts_.push_back(std::move(entry));
@@ -488,13 +489,6 @@ ByteString CPDF_AnnotFontMap::AllocateAppearanceAlias(
     candidate = ByteString::Format("%s_%u", preferred.c_str(), suffix);
   }
   return candidate;
-}
-
-// static
-bool CPDF_AnnotFontMap::IsDocumentProgramFont(
-    const CPDF_Dictionary* font_dict) {
-  return font_dict && font_dict->GetNameFor("Subtype") == "Type0" &&
-         CandidateFromFontDict(font_dict).has_value();
 }
 
 bool CPDF_AnnotFontMap::HasDefaultFont() const {

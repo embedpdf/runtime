@@ -73,11 +73,6 @@ class CPDF_AnnotFontMap final {
       const CPDF_Document* doc,
       const ByteString& alias);
 
-  // Whether a /DA font is a composite font over a program the layout can
-  // write any character of: what the writer installs for a document
-  // program, which the map then lays out with that program's own cmap.
-  static bool IsDocumentProgramFont(const CPDF_Dictionary* font_dict);
-
   bool HasDefaultFont() const;
   // The /DA font is one of the standard 14 (a non-embedded base-14 Type1):
   // its metrics are PDFium's, not Acrobat's, so the rich layout resolves a

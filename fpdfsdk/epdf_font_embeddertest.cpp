@@ -903,13 +903,15 @@ std::vector<uint8_t> LoadTestFont(const char* path) {
   return GetFileContents(font_path.c_str());
 }
 
-// A form whose field writes with a simple font over |program| (embedded
-// under |font_file|, with |file_subtype| as the stream's /Subtype when it has
-// one), WinAnsi-encoded, every character 600 wide but "D" 700.
+// A form whose field writes with a simple font (a |font_subtype| font) over
+// |program| (embedded under |font_file|, with |file_subtype| as the stream's
+// /Subtype when it has one), WinAnsi-encoded, every character 600 wide but
+// "D" 700.
 std::string FormWithFieldFont(const std::vector<uint8_t>& program,
                               const char* font_file,
                               const char* file_subtype,
-                              const char* base_font) {
+                              const char* base_font,
+                              const char* font_subtype = "Type1") {
   std::string widths;
   for (int code = 32; code <= 126; ++code) {
     widths += code == 'D' ? "700 " : "600 ";
@@ -930,8 +932,8 @@ std::string FormWithFieldFont(const std::vector<uint8_t>& program,
       file,
       "<< /Type /Annot /Subtype /Widget /FT /Tx /T (kept) /P 3 0 R /Rect [20 "
       "200 280 230] /DA (/FKept 12 Tf 0 g) /V (AB) >>",
-      std::string("<< /Type /Font /Subtype /Type1 /BaseFont /") + base_font +
-          " /FirstChar 32 /LastChar 126 /Widths [" + widths +
+      std::string("<< /Type /Font /Subtype /") + font_subtype + " /BaseFont /" +
+          base_font + " /FirstChar 32 /LastChar 126 /Widths [" + widths +
           "] /Encoding /WinAnsiEncoding /FontDescriptor 7 0 R >>",
       std::string("<< /Type /FontDescriptor /FontName /") + base_font +
           " /Flags 32 /FontBBox [0 -250 1000 900] /ItalicAngle 0 /Ascent 900 "
@@ -1102,6 +1104,32 @@ void ExpectDisplayProgramDrawsTheKeptFont(const std::string& pdf,
 }
 
 }  // namespace
+
+// A field whose /DA font is a simple font over a program that can author
+// text writes new text with that program, through its own cmap: the font's
+// WinAnsi encoding can't reach "Ω", the program has it.
+TEST_F(EPDFFontEmbedderTest, SimpleFieldFontWritesThroughItsProgram) {
+  std::vector<uint8_t> roboto = LoadRoboto();
+  ASSERT_FALSE(roboto.empty());
+  const std::string pdf = FormWithFieldFont(roboto, "FontFile2", nullptr,
+                                            "Roboto-Regular", "TrueType");
+  ScopedFPDFDocument doc(FPDF_LoadMemDocument(pdf.data(), pdf.size(), nullptr));
+  ASSERT_TRUE(doc);
+  ScopedFPDFPage page(FPDF_LoadPage(doc.get(), 0));
+  ASSERT_TRUE(page);
+  ScopedFPDFAnnotation annot(FPDFPage_GetAnnot(page.get(), 0));
+  ASSERT_TRUE(annot);
+  const uint32_t field = EPDFAnnot_GetObjectNumber(annot.get());
+  ASSERT_EQ(5u, field);
+
+  EPDFDoc_ClearMissingCharacters(doc.get());
+  ASSERT_TRUE(embedpdf_test::FillTextField(doc.get(), field, L"A\u03A9B"));
+  ASSERT_TRUE(EPDFAnnot_GenerateFormFieldAP(annot.get()));
+  EXPECT_EQ(0, EPDFDoc_CountMissingCharacters(doc.get()));
+  // The appearance draws with the field's own program, the one /DR embeds.
+  EXPECT_EQ(4u, AppearanceFontProgram(annot.get(),
+                                      DefaultAppearanceFontName(annot.get())));
+}
 
 // A form's field font that is bare CFF, which a browser can't load, gets a
 // display program it can.
