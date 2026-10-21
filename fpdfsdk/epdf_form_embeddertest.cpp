@@ -2167,6 +2167,37 @@ TEST_F(EPDFFormEmbedderTest, CalculationOrderSetReplaceAndRemove) {
 
 // A push button: created, given a widget and a caption, and drawn with it.
 // Its value can't be written.
+// A field's appearance written where there was none is a form XObject that
+// says so: readers look for /Subtype /Form.
+TEST_F(EPDFFormEmbedderTest, NewFieldAppearanceIsAFormXObject) {
+  ASSERT_TRUE(OpenDocument("hello_world.pdf"));
+  FPDF_PAGE page = LoadPage(0);
+  ASSERT_TRUE(page);
+  const uint32_t field =
+      EPDFForm_CreateField(document(), EPDF_FORMFIELD_FAMILY_TEXT,
+                           GetFPDFWideString(L"name").get(), 0);
+  ASSERT_GT(field, 0u);
+  const uint32_t widget = CreateWidgetAnnot(page, 20, 200, 180, 230);
+  ASSERT_GT(widget, 0u);
+  ASSERT_TRUE(EPDFForm_AttachWidget(document(), field, widget, nullptr, 0));
+  ASSERT_TRUE(SetOneValue(document(), field, L"Hello"));
+  unsigned long changed_count = 0;
+  ASSERT_TRUE(EPDFForm_RedrawFieldWidgets(document(), field, nullptr, 0,
+                                          &changed_count));
+
+  CPDF_Document* doc = CPDFDocumentFromFPDFDocument(document());
+  RetainPtr<const CPDF_Dictionary> annot =
+      ToDictionary(doc->GetIndirectObject(widget));
+  ASSERT_TRUE(annot);
+  RetainPtr<const CPDF_Dictionary> ap = annot->GetDictFor("AP");
+  ASSERT_TRUE(ap);
+  RetainPtr<const CPDF_Stream> normal = ap->GetStreamFor("N");
+  ASSERT_TRUE(normal);
+  EXPECT_EQ("XObject", normal->GetDict()->GetNameFor("Type"));
+  EXPECT_EQ("Form", normal->GetDict()->GetNameFor("Subtype"));
+  UnloadPage(page);
+}
+
 TEST_F(EPDFFormEmbedderTest, PushButtonIsAuthorableAndShowsItsCaption) {
   ASSERT_TRUE(OpenDocument("hello_world.pdf"));
   FPDF_PAGE page = LoadPage(0);

@@ -822,6 +822,10 @@ bool GenerateFormAPToTarget(APGenerationTarget* target,
   }
   normal_stream->SetDataFromStringstreamAndRemoveFilter(&app_stream);
   RetainPtr<CPDF_Dictionary> stream_dict = normal_stream->GetMutableDict();
+  // A form XObject, said so: a stream made here has no type yet, and
+  // readers look for /Subtype /Form.
+  stream_dict->SetNewFor<CPDF_Name>("Type", "XObject");
+  stream_dict->SetNewFor<CPDF_Name>("Subtype", "Form");
   stream_dict->SetMatrixFor("Matrix", dims.matrix);
   stream_dict->SetRectFor("BBox", dims.bbox);
   stream_dict->GetOrCreateDictFor("Resources")
