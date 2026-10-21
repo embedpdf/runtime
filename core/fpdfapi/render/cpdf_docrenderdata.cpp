@@ -55,12 +55,6 @@ RetainPtr<CPDF_Type3Cache> CPDF_DocRenderData::GetCachedType3(
     return pdfium::WrapRetain(it->second.Get());
   }
 
-  // EmbedPDF(layer-seam): an unpromoted base font uses the base's cache.
-  if (fallback_ && font->GetFontDictObjNum() != 0 &&
-      !GetDocument()->IsObjectPromoted(font->GetFontDictObjNum())) {
-    return fallback_->GetCachedType3(font);
-  }
-
   auto cache = pdfium::MakeRetain<CPDF_Type3Cache>(font);
   type3_face_map_[font].Reset(cache.Get());
   return cache;

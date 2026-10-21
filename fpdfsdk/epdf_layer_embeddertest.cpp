@@ -2013,3 +2013,40 @@ TEST_F(EPDFLayerEmbedderTest, LayerDeltaReplaysRemoveAllAnnots) {
 
   EPDF_ReleaseBaseDocument(base);
 }
+
+// A layer draws the images inside content: a tiling pattern's one large cell,
+// a pattern of small cells, a Type3 glyph. Each page renders as the file does
+// on its own. The layer took that content from its base, parsed for the base,
+// so its images were the base's, which the layer page's image cache refuses:
+// the render crashed.
+TEST_F(EPDFLayerEmbedderTest, LayerDrawsImagesInPatternsAndType3Glyphs) {
+  static constexpr char kFile[] = "layer_content_images.pdf";
+  static constexpr int kPageCount = 3;
+  std::vector<std::string> expected;
+  ASSERT_TRUE(OpenDocument(kFile));
+  for (int page_index = 0; page_index < kPageCount; ++page_index) {
+    ScopedPage page = LoadScopedPage(page_index);
+    ASSERT_TRUE(page);
+    ScopedFPDFBitmap bitmap = RenderPage(page.get());
+    expected.push_back(HashBitmap(bitmap.get()));
+  }
+
+  FileAccessForTesting base_access(kFile);
+  EPDF_BASE_DOCUMENT base = EPDF_LoadBaseDocument(&base_access, nullptr);
+  ASSERT_TRUE(base);
+  {
+    EPDFLayerOpenStatus status = EPDFLayerOpenStatus_kOpenFailed;
+    ScopedFPDFDocument layer(
+        EPDFLayer_OpenLayer(base, nullptr, nullptr, &status));
+    ASSERT_TRUE(layer);
+    for (int page_index = 0; page_index < kPageCount; ++page_index) {
+      ScopedFPDFPage page(FPDF_LoadPage(layer.get(), page_index));
+      ASSERT_TRUE(page);
+      ScopedFPDFBitmap bitmap = RenderPage(page.get());
+      EXPECT_EQ(expected[page_index], HashBitmap(bitmap.get()))
+          << "page " << page_index;
+    }
+  }
+
+  EPDF_ReleaseBaseDocument(base);
+}
