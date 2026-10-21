@@ -404,6 +404,16 @@ FPDF_EXPORT void FPDF_CALLCONV EPDFFontFaces_Close(EPDF_FONT_FACES faces) {
   delete faces;
 }
 
+FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV
+EPDFDoc_GetFontsFingerprint(FPDF_DOCUMENT document, unsigned char* sha256) {
+  ScopedFPDFDocumentView document_view(document);
+  CPDF_Document* doc = document_view.Get();
+  if (!doc) {
+    return false;
+  }
+  return CopySha256(CPDF_DocumentFonts::For(doc)->FacesFingerprint(), sha256);
+}
+
 FPDF_EXPORT int FPDF_CALLCONV EPDFFontFaces_Count(EPDF_FONT_FACES faces) {
   return faces ? fxcrt::CollectionSize<int>(faces->faces) : -1;
 }

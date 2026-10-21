@@ -4,6 +4,7 @@
 #include "core/fpdfdoc/cpdf_documentfonts.h"
 
 #include <algorithm>
+#include <bit>
 #include <memory>
 #include <set>
 #include <utility>
@@ -12,6 +13,7 @@
 #include "core/fpdfapi/page/cpdf_docpagedata.h"
 #include "core/fpdfapi/parser/cpdf_array.h"
 #include "core/fpdfapi/parser/cpdf_dictionary.h"
+#include "core/fpdfapi/parser/cpdf_layer_document.h"
 #include "core/fpdfapi/parser/cpdf_stream.h"
 #include "core/fpdfapi/parser/cpdf_stream_acc.h"
 #include "core/fpdfdoc/cpdf_displayprogram.h"
@@ -28,126 +30,151 @@ namespace {
 // walked set misses (a direct object repeated) stops here.
 constexpr int kMaxDepth = 64;
 
-// Every font dictionary the document's drawings can use, each once.
+// The font dictionaries the drawings of one place can use, each once: the
+// AcroForm's, a page's, or the whole document's. Notes the object number of
+// every indirect object it reads, so a change to any of them can be told.
 class FontWalk {
  public:
   explicit FontWalk(CPDF_Document* doc) : doc_(doc) {}
 
-  std::vector<RetainPtr<const CPDF_Dictionary>> Run() {
-    const CPDF_Dictionary* root = doc_->GetRoot();
+  void Form() {
+    RetainPtr<const CPDF_Dictionary> root =
+        Noted(pdfium::WrapRetain(doc_->GetRoot()));
     RetainPtr<const CPDF_Dictionary> acroform =
-        root ? root->GetDictFor("AcroForm") : nullptr;
+        root ? Noted(root->GetDictFor("AcroForm")) : nullptr;
     if (acroform) {
-      Resources(acroform->GetDictFor("DR").Get(), 0);
-      Fields(acroform->GetArrayFor("Fields").Get(), 0);
+      Resources(acroform->GetDictFor("DR"), 0);
+      Fields(acroform->GetArrayFor("Fields"), 0);
     }
+  }
+
+  void Page(RetainPtr<const CPDF_Dictionary> page) {
+    if (!Noted(page)) {
+      return;
+    }
+    Resources(InheritedResources(page), 0);
+    RetainPtr<const CPDF_Array> annots = Noted(page->GetArrayFor("Annots"));
+    for (size_t j = 0; annots && j < annots->size(); ++j) {
+      Appearance(annots->GetDictAt(j), 0);
+    }
+  }
+
+  void Document() {
+    Form();
     const int page_count = doc_->GetPageCount();
     for (int i = 0; i < page_count; ++i) {
-      RetainPtr<const CPDF_Dictionary> page = doc_->GetPageDictionary(i);
-      if (!page) {
-        continue;
-      }
-      Resources(InheritedResources(page.Get()).Get(), 0);
-      RetainPtr<const CPDF_Array> annots = page->GetArrayFor("Annots");
-      for (size_t j = 0; annots && j < annots->size(); ++j) {
-        Appearance(annots->GetDictAt(j).Get(), 0);
-      }
+      Page(doc_->GetPageDictionary(i));
     }
+  }
+
+  std::vector<RetainPtr<const CPDF_Dictionary>> TakeFonts() {
     return std::move(fonts_);
+  }
+  // Sorted.
+  std::vector<uint32_t> TakeReads() {
+    return std::vector<uint32_t>(reads_.begin(), reads_.end());
   }
 
  private:
+  template <typename T>
+  RetainPtr<T> Noted(RetainPtr<T> object) {
+    if (object && object->GetObjNum() != 0) {
+      reads_.insert(object->GetObjNum());
+    }
+    return object;
+  }
+
   // A page's /Resources, or the nearest one up its /Parent chain.
-  static RetainPtr<const CPDF_Dictionary> InheritedResources(
-      const CPDF_Dictionary* page) {
+  RetainPtr<const CPDF_Dictionary> InheritedResources(
+      RetainPtr<const CPDF_Dictionary> page) {
     std::set<const CPDF_Dictionary*> seen;
-    RetainPtr<const CPDF_Dictionary> node(page);
+    RetainPtr<const CPDF_Dictionary> node = std::move(page);
     for (int i = 0; node && i < kMaxDepth && seen.insert(node.Get()).second;
          ++i) {
       if (RetainPtr<const CPDF_Dictionary> resources =
               node->GetDictFor("Resources")) {
         return resources;
       }
-      node = node->GetDictFor("Parent");
+      node = Noted(node->GetDictFor("Parent"));
     }
     return nullptr;
   }
 
-  void Resources(const CPDF_Dictionary* resources, int depth) {
-    if (!resources || depth > kMaxDepth || !walked_.insert(resources).second) {
+  void Resources(RetainPtr<const CPDF_Dictionary> resources, int depth) {
+    if (!Noted(resources) || depth > kMaxDepth ||
+        !walked_.insert(resources.Get()).second) {
       return;
     }
     if (RetainPtr<const CPDF_Dictionary> fonts =
-            resources->GetDictFor("Font")) {
+            Noted(resources->GetDictFor("Font"))) {
       CPDF_DictionaryLocker locker(fonts);
       for (const auto& [key, value] : locker) {
         Font(value ? ToDictionary(value->GetDirect()) : nullptr, depth);
       }
     }
     if (RetainPtr<const CPDF_Dictionary> xobjects =
-            resources->GetDictFor("XObject")) {
+            Noted(resources->GetDictFor("XObject"))) {
       CPDF_DictionaryLocker locker(xobjects);
       for (const auto& [key, value] : locker) {
         RetainPtr<const CPDF_Stream> stream =
             value ? ToStream(value->GetDirect()) : nullptr;
         if (stream && stream->GetDict()->GetNameFor("Subtype") == "Form") {
-          FormStream(stream.Get(), depth);
+          FormStream(std::move(stream), depth);
         }
       }
     }
     // Tiling patterns are streams with their own resources; shading
     // patterns are dictionaries and draw no text.
     if (RetainPtr<const CPDF_Dictionary> patterns =
-            resources->GetDictFor("Pattern")) {
+            Noted(resources->GetDictFor("Pattern"))) {
       CPDF_DictionaryLocker locker(patterns);
       for (const auto& [key, value] : locker) {
-        RetainPtr<const CPDF_Stream> stream =
-            value ? ToStream(value->GetDirect()) : nullptr;
-        FormStream(stream.Get(), depth);
+        FormStream(value ? ToStream(value->GetDirect()) : nullptr, depth);
       }
     }
     if (RetainPtr<const CPDF_Dictionary> states =
-            resources->GetDictFor("ExtGState")) {
+            Noted(resources->GetDictFor("ExtGState"))) {
       CPDF_DictionaryLocker locker(states);
       for (const auto& [key, value] : locker) {
         RetainPtr<const CPDF_Dictionary> state =
-            value ? ToDictionary(value->GetDirect()) : nullptr;
+            Noted(value ? ToDictionary(value->GetDirect()) : nullptr);
         RetainPtr<const CPDF_Dictionary> mask =
-            state ? state->GetDictFor("SMask") : nullptr;
-        FormStream(mask ? mask->GetStreamFor("G").Get() : nullptr, depth);
+            state ? Noted(state->GetDictFor("SMask")) : nullptr;
+        FormStream(mask ? mask->GetStreamFor("G") : nullptr, depth);
       }
     }
   }
 
-  void FormStream(const CPDF_Stream* stream, int depth) {
-    if (!stream || depth > kMaxDepth || !walked_.insert(stream).second) {
+  void FormStream(RetainPtr<const CPDF_Stream> stream, int depth) {
+    if (!Noted(stream) || depth > kMaxDepth ||
+        !walked_.insert(stream.Get()).second) {
       return;
     }
-    Resources(stream->GetDict()->GetDictFor("Resources").Get(), depth + 1);
+    Resources(stream->GetDict()->GetDictFor("Resources"), depth + 1);
   }
 
   void Font(RetainPtr<const CPDF_Dictionary> font, int depth) {
-    if (!font || !font_set_.insert(font.Get()).second) {
+    if (!Noted(font) || !font_set_.insert(font.Get()).second) {
       return;
     }
     if (font->GetNameFor("Subtype") == "Type3") {
       // A Type 3 glyph is a drawing, and may draw text in other fonts.
-      Resources(font->GetDictFor("Resources").Get(), depth + 1);
+      Resources(font->GetDictFor("Resources"), depth + 1);
     }
     fonts_.push_back(std::move(font));
   }
 
   // Every state of the normal, rollover and down appearances.
-  void Appearance(const CPDF_Dictionary* annot, int depth) {
+  void Appearance(RetainPtr<const CPDF_Dictionary> annot, int depth) {
     RetainPtr<const CPDF_Dictionary> ap =
-        annot ? annot->GetDictFor("AP") : nullptr;
+        Noted(annot) ? Noted(annot->GetDictFor("AP")) : nullptr;
     if (!ap) {
       return;
     }
     for (const char* key : {"N", "R", "D"}) {
-      RetainPtr<const CPDF_Object> entry = ap->GetDirectObjectFor(key);
+      RetainPtr<const CPDF_Object> entry = Noted(ap->GetDirectObjectFor(key));
       if (const CPDF_Stream* stream = entry ? entry->AsStream() : nullptr) {
-        FormStream(stream, depth);
+        FormStream(pdfium::WrapRetain(stream), depth);
         continue;
       }
       const CPDF_Dictionary* states = entry ? entry->AsDictionary() : nullptr;
@@ -156,23 +183,23 @@ class FontWalk {
       }
       CPDF_DictionaryLocker locker(states);
       for (const auto& [state, value] : locker) {
-        RetainPtr<const CPDF_Stream> stream =
-            value ? ToStream(value->GetDirect()) : nullptr;
-        FormStream(stream.Get(), depth);
+        FormStream(value ? ToStream(value->GetDirect()) : nullptr, depth);
       }
     }
   }
 
   // Fields' own /DR, down their /Kids.
-  void Fields(const CPDF_Array* fields, int depth) {
-    for (size_t i = 0; fields && depth <= kMaxDepth && i < fields->size();
-         ++i) {
-      RetainPtr<const CPDF_Dictionary> field = fields->GetDictAt(i);
+  void Fields(RetainPtr<const CPDF_Array> fields, int depth) {
+    if (!Noted(fields)) {
+      return;
+    }
+    for (size_t i = 0; depth <= kMaxDepth && i < fields->size(); ++i) {
+      RetainPtr<const CPDF_Dictionary> field = Noted(fields->GetDictAt(i));
       if (!field || !walked_.insert(field.Get()).second) {
         continue;
       }
-      Resources(field->GetDictFor("DR").Get(), depth + 1);
-      Fields(field->GetArrayFor("Kids").Get(), depth + 1);
+      Resources(field->GetDictFor("DR"), depth + 1);
+      Fields(field->GetArrayFor("Kids"), depth + 1);
     }
   }
 
@@ -180,6 +207,7 @@ class FontWalk {
   std::set<const CPDF_Object*> walked_;
   std::set<const CPDF_Dictionary*> font_set_;
   std::vector<RetainPtr<const CPDF_Dictionary>> fonts_;
+  std::set<uint32_t> reads_;
 };
 
 // The program stream a font dictionary carries, and what kind it says it is.
@@ -269,7 +297,7 @@ CPDF_DocumentFonts* CPDF_DocumentFonts::Find(const CPDF_Document* doc) {
 std::vector<CPDF_DocumentFonts::Face> CPDF_DocumentFonts::CollectFaces() {
   std::vector<Face> faces;
   std::map<ByteString, size_t> face_index;  // family key|weight|italic
-  for (const RetainPtr<const CPDF_Dictionary>& font : FontWalk(doc_).Run()) {
+  for (const RetainPtr<const CPDF_Dictionary>& font : FontDicts()) {
     const CPDF_FontFace face = FaceOfFontDict(font.Get());
     const ByteString key =
         ByteString::Format("%s|%d|%d", FontFamilyKey(face.family).c_str(),
@@ -307,6 +335,151 @@ std::vector<CPDF_DocumentFonts::Face> CPDF_DocumentFonts::CollectFaces() {
     }
   }
   return faces;
+}
+
+DataVector<uint8_t> CPDF_DocumentFonts::FacesFingerprint() {
+  // Every field fixed-width or length-prefixed: two different lists never
+  // serialize alike.
+  DataVector<uint8_t> bytes;
+  auto put = [&](uint32_t value) {
+    for (int shift = 24; shift >= 0; shift -= 8) {
+      bytes.push_back(static_cast<uint8_t>(value >> shift));
+    }
+  };
+  auto put_bytes = [&](pdfium::span<const uint8_t> data) {
+    put(static_cast<uint32_t>(data.size()));
+    bytes.insert(bytes.end(), data.begin(), data.end());
+  };
+  const std::vector<Face> faces = CollectFaces();
+  put(static_cast<uint32_t>(faces.size()));
+  for (const Face& face : faces) {
+    put_bytes(face.family.ToUTF8().unsigned_span());
+    put(static_cast<uint32_t>(face.weight));
+    put(face.italic);
+    put(static_cast<uint32_t>(face.programs.size()));
+    for (const Program& program : face.programs) {
+      put(program.objnum);
+      put(static_cast<uint32_t>(program.format));
+      put(static_cast<uint32_t>(program.embedded));
+      put_bytes(program.postscript_name.unsigned_span());
+      put(program.permission.has_value()
+              ? 1 + static_cast<uint32_t>(*program.permission)
+              : 0);
+      put(program.maps_unicode);
+      put(program.tables_aligned);
+      put_bytes(program.sha256);
+      put_bytes(program.display_sha256);
+      put(std::bit_cast<uint32_t>(program.ascent));
+      put(std::bit_cast<uint32_t>(program.descent));
+    }
+  }
+  return CryptSha256Generate(bytes);
+}
+
+std::vector<RetainPtr<const CPDF_Dictionary>> CPDF_DocumentFonts::FontDicts() {
+  CPDF_LayerDocument* layer = CPDF_LayerDocument::FromDocument(doc_.get());
+  if (!layer) {
+    FontWalk walk(doc_);
+    walk.Document();
+    ++places_walked_;
+    return walk.TakeFonts();
+  }
+  if (const CPDF_LayerTransaction* write = layer->open_transaction()) {
+    // Mid-write: what the write touched so far is read as it is now. The
+    // places walked here are forgotten again when the write ends.
+    if (write->epoch_at_begin != known_epoch_) {
+      ForgetPlaces();
+      known_epoch_ = write->epoch_at_begin;
+    }
+    Forget(write->touched);
+  } else if (layer->GetOverlayEpoch() != known_epoch_) {
+    // Something changed outside any transaction this index was told of.
+    ForgetPlaces();
+    known_epoch_ = layer->GetOverlayEpoch();
+  }
+  auto walk_place = [&](auto&& walk_it) {
+    FontWalk walk(doc_);
+    walk_it(walk);
+    ++places_walked_;
+    return Place{walk.TakeFonts(), walk.TakeReads()};
+  };
+  std::vector<RetainPtr<const CPDF_Dictionary>> fonts;
+  std::set<const CPDF_Dictionary*> seen;
+  auto take = [&](const Place& place) {
+    for (const RetainPtr<const CPDF_Dictionary>& font : place.fonts) {
+      if (seen.insert(font.Get()).second) {
+        fonts.push_back(font);
+      }
+    }
+  };
+  if (!form_place_.has_value()) {
+    form_place_ = walk_place([](FontWalk& walk) { walk.Form(); });
+  }
+  take(*form_place_);
+  // Pages a write removed drop out; pages it added are walked.
+  std::map<uint32_t, Place> pages;
+  const int page_count = doc_->GetPageCount();
+  for (int i = 0; i < page_count; ++i) {
+    RetainPtr<const CPDF_Dictionary> page = doc_->GetPageDictionary(i);
+    if (!page) {
+      continue;
+    }
+    const uint32_t objnum = page->GetObjNum();
+    auto kept = page_places_.find(objnum);
+    if (objnum != 0 && kept != page_places_.end()) {
+      take(kept->second);
+      pages.emplace(objnum, std::move(kept->second));
+      page_places_.erase(kept);
+      continue;
+    }
+    if (objnum != 0 && pages.contains(objnum)) {
+      take(pages[objnum]);
+      continue;
+    }
+    Place place = walk_place([&](FontWalk& walk) { walk.Page(page); });
+    take(place);
+    if (objnum != 0) {
+      pages.emplace(objnum, std::move(place));
+    }
+  }
+  page_places_ = std::move(pages);
+  return fonts;
+}
+
+void CPDF_DocumentFonts::TransactionEnded(const std::set<uint32_t>& objnums,
+                                          uint64_t epoch_at_begin,
+                                          uint64_t epoch) {
+  if (epoch_at_begin != known_epoch_) {
+    // Something changed before the transaction began that this index wasn't
+    // told of.
+    ForgetPlaces();
+  }
+  Forget(objnums);
+  known_epoch_ = epoch;
+}
+
+void CPDF_DocumentFonts::Forget(const std::set<uint32_t>& objnums) {
+  if (objnums.empty()) {
+    return;
+  }
+  auto reads_any = [&](const Place& place) {
+    return std::ranges::any_of(objnums, [&](uint32_t objnum) {
+      return std::ranges::binary_search(place.reads, objnum);
+    });
+  };
+  if (form_place_.has_value() && reads_any(*form_place_)) {
+    form_place_.reset();
+  }
+  std::erase_if(page_places_,
+                [&](const auto& entry) { return reads_any(entry.second); });
+  for (uint32_t objnum : objnums) {
+    inspected_.erase(objnum);
+  }
+}
+
+void CPDF_DocumentFonts::ForgetPlaces() {
+  form_place_.reset();
+  page_places_.clear();
 }
 
 CPDF_DocumentFonts::Program CPDF_DocumentFonts::Inspect(

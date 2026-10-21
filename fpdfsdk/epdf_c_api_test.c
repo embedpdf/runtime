@@ -279,6 +279,7 @@ int CheckEmbedPDFCApi(void) {
   CHK(EPDFDoc_GetFontEmbeddingPolicy);
   CHK(EPDFDoc_GetFontProgramCoverage);
   CHK(EPDFDoc_GetFontProgramData);
+  CHK(EPDFDoc_GetFontsFingerprint);
   CHK(EPDFDoc_GetMissingCharacter);
   CHK(EPDFDoc_ResolveFonts);
   CHK(EPDFDoc_SetFontEmbeddingPolicy);

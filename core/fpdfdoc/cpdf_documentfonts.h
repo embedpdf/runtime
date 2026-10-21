@@ -13,6 +13,7 @@
 
 #include <map>
 #include <optional>
+#include <set>
 #include <utility>
 #include <vector>
 
@@ -94,7 +95,27 @@ class CPDF_DocumentFonts final : public CPDF_Document::FontIndex {
   // glyph resources and every state of every annotation appearance. Each
   // dictionary is walked once; cycles stop. Programs are inspected once per
   // stream version.
+  //
+  // On a layer, what each place (the AcroForm, each page) reaches is kept
+  // and walked again only after a transaction touches something it read
+  // (TransactionEnded), so a list after an edit walks the pages the edit
+  // changed. A plain document is walked whole every time: nothing says what
+  // changed.
   std::vector<Face> CollectFaces();
+
+  // SHA-256 of the faces CollectFaces() returns, every fact of each in
+  // order: equal fingerprints, the same faces. Read before and after a write,
+  // it says whether the write changed the document's fonts.
+  DataVector<uint8_t> FacesFingerprint();
+
+  // How many places (the AcroForm, a page, or the whole of a plain
+  // document) have been walked: what an edit costs, for tests.
+  size_t places_walked() const { return places_walked_; }
+
+  // CPDF_Document::FontIndex:
+  void TransactionEnded(const std::set<uint32_t>& objnums,
+                        uint64_t epoch_at_begin,
+                        uint64_t epoch) override;
 
   // A program found by the walk, by its stream's object number: its decoded
   // bytes, the program as the layout reads it. Empty for any other number.
@@ -135,6 +156,14 @@ class CPDF_DocumentFonts final : public CPDF_Document::FontIndex {
   void ClearMissingCharacters() { missing_characters_.clear(); }
 
  private:
+  // What the walk of one place found.
+  struct Place {
+    std::vector<RetainPtr<const CPDF_Dictionary>> fonts;
+    // Every indirect object the walk read, sorted: a transaction that
+    // touches one of them makes the place's walk stale.
+    std::vector<uint32_t> reads;
+  };
+
   // What a browser loads in place of a program it can't load as it is.
   struct Display {
     DataVector<uint8_t> bytes;
@@ -152,6 +181,14 @@ class CPDF_DocumentFonts final : public CPDF_Document::FontIndex {
     std::optional<Display> display;
   };
 
+  // Every font dictionary the document's drawings can use, each once, in
+  // the order the walk meets them.
+  std::vector<RetainPtr<const CPDF_Dictionary>> FontDicts();
+  // Forgets the places that read any of |objnums|, and the inspections of
+  // programs among them.
+  void Forget(const std::set<uint32_t>& objnums);
+  void ForgetPlaces();
+
   // The facts about |stream|, inspected once per version.
   Program Inspect(RetainPtr<const CPDF_Stream> stream, Format format);
   Inspected* FindInspected(uint32_t objnum);
@@ -166,6 +203,13 @@ class CPDF_DocumentFonts final : public CPDF_Document::FontIndex {
                                     bool italic);
 
   UnownedPtr<CPDF_Document> const doc_;
+  // A layer's places, kept between lists: the AcroForm's, and each page's by
+  // its dictionary's object number.
+  std::optional<Place> form_place_;
+  std::map<uint32_t, Place> page_places_;
+  // The layer's overlay epoch the places are known to be current at.
+  uint64_t known_epoch_ = 0;
+  size_t places_walked_ = 0;
   std::map<uint32_t, Inspected> inspected_;  // by program stream objnum
   std::map<ByteString, ReservedProgram> program_aliases_;
   std::vector<WideString> missing_characters_;

@@ -52,6 +52,11 @@ class CPDF_LayerDocument final : public CPDF_Document {
   bool CommitTransaction();
   bool AbortTransaction();
   bool InTransaction() const { return !!transaction_; }
+  // EmbedPDF(fonts): the open transaction, for a derived cache that reads
+  // mid-write (what it has touched so far); null outside one.
+  const CPDF_LayerTransaction* open_transaction() const {
+    return transaction_.get();
+  }
   // What the last ended (or the open) transaction cost.
   const CPDF_LayerTransactionStats& GetTransactionStats() const {
     return transaction_ ? transaction_->stats : last_transaction_stats_;

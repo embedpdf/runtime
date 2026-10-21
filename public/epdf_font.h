@@ -262,6 +262,16 @@ FPDF_EXPORT EPDF_FONT_FACES FPDF_CALLCONV
 EPDFFontFaces_Load(FPDF_DOCUMENT document);
 FPDF_EXPORT void FPDF_CALLCONV EPDFFontFaces_Close(EPDF_FONT_FACES faces);
 
+// Experimental EmbedPDF Extension API.
+// The SHA-256 of every fact EPDFFontFaces_Load() lists for |document|, in
+// order, into |sha256| (32 bytes): equal fingerprints, the same faces. Read
+// it before and after a write to learn whether the write changed the
+// document's fonts. It lists them to tell; on a layer, a list after a
+// transaction walks only the places it touched. Returns false for a NULL
+// document.
+FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV
+EPDFDoc_GetFontsFingerprint(FPDF_DOCUMENT document, unsigned char* sha256);
+
 // The number of faces; -1 for a NULL snapshot.
 FPDF_EXPORT int FPDF_CALLCONV EPDFFontFaces_Count(EPDF_FONT_FACES faces);
 

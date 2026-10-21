@@ -18,8 +18,11 @@
 #include "core/fpdfapi/parser/cpdf_array.h"
 #include "core/fpdfapi/parser/cpdf_dictionary.h"
 #include "core/fpdfapi/parser/cpdf_document.h"
+#include "core/fpdfapi/parser/cpdf_name.h"
+#include "core/fpdfapi/parser/cpdf_reference.h"
 #include "core/fpdfapi/parser/cpdf_stream.h"
 #include "core/fpdfapi/parser/cpdf_stream_acc.h"
+#include "core/fpdfdoc/cpdf_documentfonts.h"
 #include "core/fxcrt/bytestring.h"
 #include "core/fxcrt/widestring.h"
 #include "core/fxge/cfx_face.h"
@@ -32,6 +35,7 @@
 #include "public/cpp/fpdf_scopers.h"
 #include "public/epdf_annot.h"
 #include "public/epdf_form.h"
+#include "public/epdf_layer.h"
 #include "public/fpdf_annot.h"
 #include "public/fpdf_edit.h"
 #include "testing/embedder_test.h"
@@ -820,6 +824,161 @@ TEST_F(EPDFFontEmbedderTest, FindsFontsWhereverADrawingUsesThem) {
   }
   EXPECT_TRUE(type3);
   EPDFFontFaces_Close(faces);
+}
+
+namespace {
+
+// Three pages: the first two share a resource dictionary with Helvetica, the
+// third has its own with Times.
+std::string ThreePagesOfFonts() {
+  return MakePdf({
+      "<< /Type /Catalog /Pages 2 0 R >>",
+      "<< /Type /Pages /Kids [3 0 R 4 0 R 5 0 R] /Count 3 >>",
+      "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 200 200] /Resources 6 0 R "
+      ">>",
+      "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 200 200] /Resources 6 0 R "
+      ">>",
+      "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 200 200] /Resources << "
+      "/Font << /F1 8 0 R >> >> >>",
+      "<< /Font << /F1 7 0 R >> >>",
+      "<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>",
+      "<< /Type /Font /Subtype /Type1 /BaseFont /Times-Roman >>",
+  });
+}
+
+// A fresh layer over |pdf|, which must outlive it.
+ScopedFPDFDocument OpenLayerOver(const std::string& pdf) {
+  EPDF_BASE_DOCUMENT base =
+      EPDF_LoadMemBaseDocument(pdf.data(), pdf.size(), nullptr);
+  EXPECT_TRUE(base);
+  ScopedFPDFDocument layer(
+      EPDFLayer_OpenLayer(base, nullptr, nullptr, nullptr));
+  EPDF_ReleaseBaseDocument(base);
+  return layer;
+}
+
+std::vector<uint8_t> FontsFingerprint(FPDF_DOCUMENT document) {
+  std::vector<uint8_t> fingerprint(32);
+  EXPECT_TRUE(EPDFDoc_GetFontsFingerprint(document, fingerprint.data()));
+  return fingerprint;
+}
+
+bool ListsFace(FPDF_DOCUMENT document, const std::wstring& family) {
+  EPDF_FONT_FACES faces = EPDFFontFaces_Load(document);
+  const bool listed = HasFace(faces, family);
+  EPDFFontFaces_Close(faces);
+  return listed;
+}
+
+// Gives page |page_objnum|'s resources a Courier font, as a write that adds
+// text in it would.
+void AddCourierTo(FPDF_DOCUMENT document, uint32_t page_objnum) {
+  CPDF_Document* doc = CPDFDocumentFromFPDFDocument(document);
+  auto font = doc->NewIndirect<CPDF_Dictionary>();
+  font->SetNewFor<CPDF_Name>("Type", "Font");
+  font->SetNewFor<CPDF_Name>("Subtype", "Type1");
+  font->SetNewFor<CPDF_Name>("BaseFont", "Courier");
+  RetainPtr<CPDF_Dictionary> page =
+      ToDictionary(doc->GetMutableIndirectObject(page_objnum));
+  ASSERT_TRUE(page);
+  page->GetMutableDictFor("Resources")
+      ->GetOrCreateDictFor("Font")
+      ->SetNewFor<CPDF_Reference>("F9", doc, font->GetObjNum());
+}
+
+}  // namespace
+
+// On a layer, a list after a write walks only the places the write touched:
+// a page, or every page that reads a dictionary it changed.
+TEST_F(EPDFFontEmbedderTest, AListAfterAWriteWalksOnlyWhatItTouched) {
+  const std::string pdf = ThreePagesOfFonts();
+  ScopedFPDFDocument layer = OpenLayerOver(pdf);
+  ASSERT_TRUE(layer);
+  const CPDF_DocumentFonts* index =
+      CPDF_DocumentFonts::For(CPDFDocumentFromFPDFDocument(layer.get()));
+
+  const std::vector<uint8_t> before = FontsFingerprint(layer.get());
+  EXPECT_EQ(4u, index->places_walked());  // the AcroForm and three pages
+  EXPECT_EQ(before, FontsFingerprint(layer.get()));
+  EXPECT_EQ(4u, index->places_walked());
+
+  // Courier on the third page: that page is walked again, nothing else.
+  ASSERT_TRUE(EPDFLayer_BeginTransaction(layer.get()));
+  AddCourierTo(layer.get(), 5);
+  ASSERT_TRUE(EPDFLayer_CommitTransaction(layer.get()));
+  const std::vector<uint8_t> with_courier = FontsFingerprint(layer.get());
+  EXPECT_NE(before, with_courier);
+  EXPECT_EQ(5u, index->places_walked());
+  EXPECT_TRUE(ListsFace(layer.get(), L"Courier"));
+
+  // A write that changes no font keeps the fingerprint.
+  ASSERT_TRUE(EPDFLayer_BeginTransaction(layer.get()));
+  {
+    ScopedFPDFPage page(FPDF_LoadPage(layer.get(), 0));
+    FPDFPage_SetRotation(page.get(), 1);
+  }
+  ASSERT_TRUE(EPDFLayer_CommitTransaction(layer.get()));
+  EXPECT_EQ(with_courier, FontsFingerprint(layer.get()));
+  EXPECT_EQ(6u, index->places_walked());
+
+  // The shared resource dictionary changed: both pages that read it.
+  ASSERT_TRUE(EPDFLayer_BeginTransaction(layer.get()));
+  {
+    CPDF_Document* doc = CPDFDocumentFromFPDFDocument(layer.get());
+    RetainPtr<CPDF_Dictionary> shared =
+        ToDictionary(doc->GetMutableIndirectObject(6));
+    ASSERT_TRUE(shared);
+    shared->GetMutableDictFor("Font")->RemoveFor("F1");
+  }
+  ASSERT_TRUE(EPDFLayer_CommitTransaction(layer.get()));
+  EXPECT_NE(with_courier, FontsFingerprint(layer.get()));
+  EXPECT_EQ(8u, index->places_walked());
+  EXPECT_FALSE(ListsFace(layer.get(), L"Helvetica"));
+}
+
+// A write rolled back leaves the fonts as they were, though a list during it
+// saw its font.
+TEST_F(EPDFFontEmbedderTest, AWriteRolledBackChangesNoFonts) {
+  const std::string pdf = ThreePagesOfFonts();
+  ScopedFPDFDocument layer = OpenLayerOver(pdf);
+  ASSERT_TRUE(layer);
+  const std::vector<uint8_t> before = FontsFingerprint(layer.get());
+
+  ASSERT_TRUE(EPDFLayer_BeginTransaction(layer.get()));
+  AddCourierTo(layer.get(), 3);
+  EXPECT_NE(before, FontsFingerprint(layer.get()));
+  EXPECT_TRUE(ListsFace(layer.get(), L"Courier"));
+  ASSERT_TRUE(EPDFLayer_AbortTransaction(layer.get()));
+
+  EXPECT_EQ(before, FontsFingerprint(layer.get()));
+  EXPECT_FALSE(ListsFace(layer.get(), L"Courier"));
+}
+
+// A change made outside any transaction is seen: everything is walked again.
+TEST_F(EPDFFontEmbedderTest, AChangeOutsideATransactionIsSeen) {
+  const std::string pdf = ThreePagesOfFonts();
+  ScopedFPDFDocument layer = OpenLayerOver(pdf);
+  ASSERT_TRUE(layer);
+  const std::vector<uint8_t> before = FontsFingerprint(layer.get());
+
+  AddCourierTo(layer.get(), 4);
+  EXPECT_NE(before, FontsFingerprint(layer.get()));
+  EXPECT_TRUE(ListsFace(layer.get(), L"Courier"));
+}
+
+// A plain document says nothing of what changed: it is walked whole each
+// time.
+TEST_F(EPDFFontEmbedderTest, APlainDocumentIsWalkedWholeEachTime) {
+  const std::string pdf = ThreePagesOfFonts();
+  ScopedFPDFDocument doc(FPDF_LoadMemDocument(pdf.data(), pdf.size(), nullptr));
+  ASSERT_TRUE(doc);
+  const CPDF_DocumentFonts* index =
+      CPDF_DocumentFonts::For(CPDFDocumentFromFPDFDocument(doc.get()));
+  const std::vector<uint8_t> before = FontsFingerprint(doc.get());
+  EXPECT_EQ(before, FontsFingerprint(doc.get()));
+  EXPECT_EQ(2u, index->places_walked());
+  AddCourierTo(doc.get(), 5);
+  EXPECT_NE(before, FontsFingerprint(doc.get()));
 }
 
 // A free text drawn with no font for a character reports it once; marks,

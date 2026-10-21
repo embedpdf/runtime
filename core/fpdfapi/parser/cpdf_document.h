@@ -145,6 +145,12 @@ class CPDF_Document : public Observable,
   class FontIndex {
    public:
     virtual ~FontIndex() = default;
+    // A layer's transaction ended, committed or aborted: |objnums| are every
+    // object number it wrote, created or hid, and the overlay epoch was
+    // |epoch_at_begin| when it began and is |epoch| now.
+    virtual void TransactionEnded(const std::set<uint32_t>& objnums,
+                                  uint64_t epoch_at_begin,
+                                  uint64_t epoch) {}
   };
   FontIndex* font_index() const { return font_index_.get(); }
   void SetFontIndex(std::unique_ptr<FontIndex> index) {
