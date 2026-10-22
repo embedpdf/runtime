@@ -961,3 +961,29 @@ TEST_F(EPDFViewEmbedderTest, StandardFontsDrawWithBuiltInFaces) {
   EXPECT_EQ((std::vector<std::string>{"Tinos", "Arimo"}),
             HelloWorldFontFamilies(page.get()));
 }
+
+// An image object of another document draws as one of the page's own (rule
+// bug-fix). The page image cache refuses it, and the image loader then read
+// the cache's current entry: with none yet, a crash.
+TEST_F(EPDFViewEmbedderTest, ImageOfAnotherDocumentDraws) {
+  ScopedFPDFBitmap red(FPDFBitmap_Create(2, 2, 0));
+  ASSERT_TRUE(red);
+  ASSERT_TRUE(FPDFBitmap_FillRect(red.get(), 0, 0, 2, 2, 0xFFFF0000));
+  // Draws an image of |image_document| on a new page of |document|.
+  auto render = [&red](FPDF_DOCUMENT document, FPDF_DOCUMENT image_document) {
+    ScopedFPDFPage page(FPDFPage_New(document, 0, 200, 200));
+    FPDF_PAGEOBJECT image = FPDFPageObj_NewImageObj(image_document);
+    EXPECT_TRUE(FPDFImageObj_SetBitmap(nullptr, 0, image, red.get()));
+    EXPECT_TRUE(FPDFImageObj_SetMatrix(image, 100, 0, 0, 100, 50, 50));
+    FPDFPage_InsertObject(page.get(), image);
+    ScopedFPDFBitmap bitmap = RenderPage(page.get());
+    return HashBitmap(bitmap.get());
+  };
+
+  ScopedFPDFDocument document(FPDF_CreateNewDocument());
+  ScopedFPDFDocument other(FPDF_CreateNewDocument());
+  ASSERT_TRUE(document);
+  ASSERT_TRUE(other);
+  EXPECT_EQ(render(document.get(), document.get()),
+            render(document.get(), other.get()));
+}

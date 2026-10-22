@@ -226,8 +226,10 @@ RetainPtr<CPDF_Font> CPDF_DocPageData::GetFont(
     return pdfium::WrapRetain(it->second.Get());
   }
 
-  // EmbedPDF(layer-seam): an unpromoted base object uses the base's entry.
-  if (fallback_ && CanUseFallbackForObject(font_dict.Get())) {
+  // EmbedPDF(layer-seam): an unpromoted base object uses the base's entry,
+  // except a Type3 font: its glyphs are content, see GetImage().
+  if (fallback_ && CanUseFallbackForObject(font_dict.Get()) &&
+      font_dict->GetByteStringFor("Subtype") != "Type3") {
     return fallback_->GetFont(font_dict);
   }
 
@@ -432,13 +434,16 @@ RetainPtr<CPDF_Pattern> CPDF_DocPageData::GetPattern(
     return pdfium::WrapRetain(it->second.Get());
   }
 
-  // EmbedPDF(layer-seam): an unpromoted base object uses the base's entry.
-  if (fallback_ && CanUseFallbackForObject(pPatternObj.Get())) {
+  // EmbedPDF(layer-seam): an unpromoted base object uses the base's entry,
+  // except a tiling pattern: its cell is content, see GetImage().
+  const int pattern_type = pPatternObj->GetDict()->GetIntegerFor("PatternType");
+  if (fallback_ && CanUseFallbackForObject(pPatternObj.Get()) &&
+      pattern_type != CPDF_Pattern::kTiling) {
     return fallback_->GetPattern(pPatternObj, matrix);
   }
 
   RetainPtr<CPDF_Pattern> pattern;
-  switch (pPatternObj->GetDict()->GetIntegerFor("PatternType")) {
+  switch (pattern_type) {
     case CPDF_Pattern::kTiling:
       pattern = pdfium::MakeRetain<CPDF_TilingPattern>(GetDocument(),
                                                        pPatternObj, matrix);
@@ -491,6 +496,9 @@ RetainPtr<CPDF_Image> CPDF_DocPageData::GetImage(uint32_t dwStreamObjNum) {
   // CPDF_Image carries a document back-pointer and CPDF_PageImageCache rejects
   // cross-document images. Build a document-local CPDF_Image even when the
   // underlying stream falls through to a shared base document.
+  // Content makes images of the document that parses it, so what holds content
+  // of its own (a tiling pattern's cell, a Type3 font's glyphs) never uses the
+  // base's entry either: GetPattern(), GetFont().
   auto pImage = pdfium::MakeRetain<CPDF_Image>(GetDocument(), dwStreamObjNum);
   image_map_[dwStreamObjNum] = pImage;
   return pImage;

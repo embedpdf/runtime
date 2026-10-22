@@ -166,6 +166,11 @@ void CPDF_PageImageCache::ClearImageCacheEntry(const CPDF_Stream* pStream) {
   image_cache_.erase(it);
 }
 
+// EmbedPDF(bug-fix): see the header.
+bool CPDF_PageImageCache::Accepts(const CPDF_Image& image) const {
+  return page_->GetDocument() == image.GetDocument();
+}
+
 bool CPDF_PageImageCache::StartGetCachedBitmap(
     RetainPtr<CPDF_Image> pImage,
     const CPDF_Dictionary* pFormResources,
@@ -175,7 +180,8 @@ bool CPDF_PageImageCache::StartGetCachedBitmap(
     bool bLoadMask,
     const CFX_Size& max_size_required) {
   // A cross-document image may have come from the embedder.
-  if (page_->GetDocument() != pImage->GetDocument()) {
+  // EmbedPDF(bug-fix): the rule lives in Accepts(); the loader asks it first.
+  if (!Accepts(*pImage)) {
     return false;
   }
 
