@@ -134,11 +134,11 @@ source_set("fxcodec") {
   ]
   public_deps = [
     "../../third_party:fx_lcms2",
+    "../../third_party:libopenjpeg2",
     "../fxcrt",
   ]
   deps = [
     "../../third_party:lcms2",
-    "../../third_party:libopenjpeg2",
     "../../third_party:png",
     "../../third_party:zlib",
     "../fxge",
@@ -149,10 +149,7 @@ source_set("fxcodec") {
       "brotli/brotli_decoder.cpp",
       "brotli/brotli_decoder.h",
     ]
-    deps += [
-      "//third_party/brotli:dec",
-      "//third_party/brotli:headers",
-    ]
+    deps += [ "//third_party/brotli:dec" ]
   }
   if (pdf_enable_xfa) {
     sources += [

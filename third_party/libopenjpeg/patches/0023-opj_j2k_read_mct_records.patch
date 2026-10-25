@@ -1,0 +1,31 @@
+diff --git a/src/j2k.c b/src/j2k.c
+index cab3fa7..f80c6ed 100644
+--- a/src/j2k.c
++++ b/src/j2k.c
+@@ -5872,6 +5872,7 @@ static OPJ_BOOL opj_j2k_read_mct(opj_j2k_t *p_j2k,
+     OPJ_UINT32 l_tmp;
+     OPJ_UINT32 l_indix;
+     opj_mct_data_t * l_mct_data;
++    OPJ_BOOL new_mct = OPJ_FALSE;
+ 
+     /* preconditions */
+     assert(p_header_data != 00);
+@@ -5959,7 +5960,7 @@ static OPJ_BOOL opj_j2k_read_mct(opj_j2k_t *p_j2k,
+         }
+ 
+         l_mct_data = l_tcp->m_mct_records + l_tcp->m_nb_mct_records;
+-        ++l_tcp->m_nb_mct_records;
++        new_mct = OPJ_TRUE;
+     }
+ 
+     if (l_mct_data->m_data) {
+@@ -5991,6 +5992,9 @@ static OPJ_BOOL opj_j2k_read_mct(opj_j2k_t *p_j2k,
+ 
+     l_mct_data->m_data_size = p_header_size;
+ 
++    if (new_mct) {
++            ++l_tcp->m_nb_mct_records;
++    }
+     return OPJ_TRUE;
+ }
+ 

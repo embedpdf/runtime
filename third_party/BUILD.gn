@@ -77,6 +77,8 @@ if (pdf_enable_freetype && pdf_bundle_freetype) {
 
     defines = [ "FT2_BUILD_LIBRARY" ]
     sources = [
+      "//third_party/freetype/include/freetype-custom-config/ftmodule.h",
+      "//third_party/freetype/include/freetype-custom-config/ftoption.h",
       "//third_party/freetype/include/pstables.h",
       "//third_party/freetype/src/include/freetype/config/ftconfig.h",
       "//third_party/freetype/src/include/freetype/config/ftheader.h",
@@ -285,34 +287,35 @@ source_set("fx_lcms2") {
     ":fx_lcms2_warnings",
   ]
   sources = [
-    "lcms/include/lcms2.h",
-    "lcms/include/lcms2_plugin.h",
-    "lcms/src/cmsalpha.c",
-    "lcms/src/cmscam02.c",
-    "lcms/src/cmscgats.c",
-    "lcms/src/cmscnvrt.c",
-    "lcms/src/cmserr.c",
-    "lcms/src/cmsgamma.c",
-    "lcms/src/cmsgmt.c",
-    "lcms/src/cmshalf.c",
-    "lcms/src/cmsintrp.c",
-    "lcms/src/cmsio0.c",
-    "lcms/src/cmsio1.c",
-    "lcms/src/cmslut.c",
-    "lcms/src/cmsmd5.c",
-    "lcms/src/cmsmtrx.c",
-    "lcms/src/cmsnamed.c",
-    "lcms/src/cmsopt.c",
-    "lcms/src/cmspack.c",
-    "lcms/src/cmspcs.c",
-    "lcms/src/cmsplugin.c",
-    "lcms/src/cmsps2.c",
-    "lcms/src/cmssamp.c",
-    "lcms/src/cmssm.c",
-    "lcms/src/cmstypes.c",
-    "lcms/src/cmsvirt.c",
-    "lcms/src/cmswtpnt.c",
-    "lcms/src/cmsxform.c",
+    "lcms/src/include/lcms2.h",
+    "lcms/src/include/lcms2_plugin.h",
+    "lcms/src/src/cmsalpha.c",
+    "lcms/src/src/cmscam02.c",
+    "lcms/src/src/cmscgats.c",
+    "lcms/src/src/cmscnvrt.c",
+    "lcms/src/src/cmserr.c",
+    "lcms/src/src/cmsgamma.c",
+    "lcms/src/src/cmsgmt.c",
+    "lcms/src/src/cmshalf.c",
+    "lcms/src/src/cmsintrp.c",
+    "lcms/src/src/cmsio0.c",
+    "lcms/src/src/cmsio1.c",
+    "lcms/src/src/cmslut.c",
+    "lcms/src/src/cmsmd5.c",
+    "lcms/src/src/cmsmtrx.c",
+    "lcms/src/src/cmsnamed.c",
+    "lcms/src/src/cmsopt.c",
+    "lcms/src/src/cmspack.c",
+    "lcms/src/src/cmspcs.c",
+    "lcms/src/src/cmsplugin.c",
+    "lcms/src/src/cmsps2.c",
+    "lcms/src/src/cmssamp.c",
+    "lcms/src/src/cmssm.c",
+    "lcms/src/src/cmstypes.c",
+    "lcms/src/src/cmsvirt.c",
+    "lcms/src/src/cmswtpnt.c",
+    "lcms/src/src/cmsxform.c",
+    "lcms/src/src/lcms2_internal.h",
   ]
   if (is_linux || is_chromeos || is_android || is_mac || is_ios) {
     defines = [ "HAVE_GMTIME_R" ]
@@ -415,6 +418,12 @@ config("fx_libopenjpeg_warnings") {
   }
 }
 
+# opj_config.h and opj_config_private.h are PDFium's, outside the upstream
+# copy in libopenjpeg/src.
+config("fx_libopenjpeg_config") {
+  include_dirs = [ "libopenjpeg" ]
+}
+
 source_set("fx_libopenjpeg") {
   configs -= [ "//build/config/compiler:chromium_code" ]
   configs += [
@@ -426,33 +435,59 @@ source_set("fx_libopenjpeg") {
     ":fx_libopenjpeg_warnings",
   ]
   sources = [
-    "libopenjpeg/bio.c",
-    "libopenjpeg/cio.c",
-    "libopenjpeg/dwt.c",
-    "libopenjpeg/event.c",
-    "libopenjpeg/function_list.c",
-    "libopenjpeg/ht_dec.c",
-    "libopenjpeg/image.c",
-    "libopenjpeg/invert.c",
-    "libopenjpeg/j2k.c",
-    "libopenjpeg/jp2.c",
-    "libopenjpeg/mct.c",
-    "libopenjpeg/mqc.c",
-    "libopenjpeg/openjpeg.c",
-
-    # NOTE: libopenjpeg/opj_clock.c is not used.
+    "libopenjpeg/opj_config.h",
+    "libopenjpeg/opj_config_private.h",
     "libopenjpeg/opj_malloc.cc",
-    "libopenjpeg/opj_malloc.h",
-    "libopenjpeg/pi.c",
-    "libopenjpeg/sparse_array.c",
-    "libopenjpeg/sparse_array.h",
-    "libopenjpeg/t1.c",
-    "libopenjpeg/t1_ht_luts.h",
-    "libopenjpeg/t2.c",
-    "libopenjpeg/tcd.c",
-    "libopenjpeg/tgt.c",
-    "libopenjpeg/thread.c",
+    "libopenjpeg/src/bio.c",
+    "libopenjpeg/src/bio.h",
+    "libopenjpeg/src/cio.c",
+    "libopenjpeg/src/cio.h",
+    "libopenjpeg/src/dwt.c",
+    "libopenjpeg/src/dwt.h",
+    "libopenjpeg/src/event.c",
+    "libopenjpeg/src/event.h",
+    "libopenjpeg/src/function_list.c",
+    "libopenjpeg/src/function_list.h",
+    "libopenjpeg/src/ht_dec.c",
+    "libopenjpeg/src/image.c",
+    "libopenjpeg/src/image.h",
+    "libopenjpeg/src/invert.c",
+    "libopenjpeg/src/invert.h",
+    "libopenjpeg/src/j2k.c",
+    "libopenjpeg/src/j2k.h",
+    "libopenjpeg/src/jp2.c",
+    "libopenjpeg/src/jp2.h",
+    "libopenjpeg/src/mct.c",
+    "libopenjpeg/src/mct.h",
+    "libopenjpeg/src/mqc.c",
+    "libopenjpeg/src/mqc.h",
+    "libopenjpeg/src/mqc_inl.h",
+    "libopenjpeg/src/openjpeg.c",
+    "libopenjpeg/src/openjpeg.h",
+    "libopenjpeg/src/opj_codec.h",
+    "libopenjpeg/src/opj_common.h",
+    "libopenjpeg/src/opj_includes.h",
+    "libopenjpeg/src/opj_intmath.h",
+    "libopenjpeg/src/opj_malloc.h",
+    "libopenjpeg/src/pi.c",
+    "libopenjpeg/src/pi.h",
+    "libopenjpeg/src/sparse_array.c",
+    "libopenjpeg/src/sparse_array.h",
+    "libopenjpeg/src/t1.c",
+    "libopenjpeg/src/t1.h",
+    "libopenjpeg/src/t1_ht_luts.h",
+    "libopenjpeg/src/t1_luts.h",
+    "libopenjpeg/src/t2.c",
+    "libopenjpeg/src/t2.h",
+    "libopenjpeg/src/tcd.c",
+    "libopenjpeg/src/tcd.h",
+    "libopenjpeg/src/tgt.c",
+    "libopenjpeg/src/tgt.h",
+    "libopenjpeg/src/thread.c",
+    "libopenjpeg/src/thread.h",
+    "libopenjpeg/src/tls_keys.h",
   ]
+  public_configs = [ ":fx_libopenjpeg_config" ]
   deps = [ "../core/fxcrt" ]
 }
 
@@ -482,6 +517,12 @@ if (pdf_enable_xfa) {
       defines = [ "USE_SYSTEM_LIBTIFF" ]
     }
   } else {
+    # tiffconf.h and tiffvers.h are PDFium's, outside the upstream copy in
+    # libtiff/src.
+    config("fx_tiff_config") {
+      include_dirs = [ "libtiff" ]
+    }
+
     source_set("fx_tiff") {
       configs -= [ "//build/config/compiler:chromium_code" ]
       configs += [
@@ -492,48 +533,57 @@ if (pdf_enable_xfa) {
         # Need to undefine the macro since it is redefined in tif_jpeg.c.
         configs -= [ "//build/config/win:lean_and_mean" ]
       }
+      public_configs = [ ":fx_tiff_config" ]
       deps = [
         ":zlib",
         "../core/fxcrt",
         "//third_party:jpeg",
       ]
       sources = [
-        "libtiff/tif_aux.c",
-        "libtiff/tif_close.c",
-        "libtiff/tif_codec.c",
-        "libtiff/tif_color.c",
-        "libtiff/tif_compress.c",
-        "libtiff/tif_dir.c",
-        "libtiff/tif_dirinfo.c",
-        "libtiff/tif_dirread.c",
-        "libtiff/tif_dirwrite.c",
-        "libtiff/tif_dumpmode.c",
-        "libtiff/tif_error.c",
-        "libtiff/tif_extension.c",
-        "libtiff/tif_fax3.c",
-        "libtiff/tif_fax3sm.c",
-        "libtiff/tif_flush.c",
-        "libtiff/tif_getimage.c",
-        "libtiff/tif_hash_set.c",
-        "libtiff/tif_hash_set.h",
-        "libtiff/tif_jpeg.c",
-        "libtiff/tif_luv.c",
-        "libtiff/tif_lzw.c",
-        "libtiff/tif_next.c",
-        "libtiff/tif_open.c",
-        "libtiff/tif_packbits.c",
-        "libtiff/tif_pixarlog.c",
-        "libtiff/tif_predict.c",
-        "libtiff/tif_print.c",
-        "libtiff/tif_read.c",
-        "libtiff/tif_strip.c",
-        "libtiff/tif_swab.c",
-        "libtiff/tif_thunder.c",
-        "libtiff/tif_tile.c",
-        "libtiff/tif_version.c",
-        "libtiff/tif_warning.c",
-        "libtiff/tif_write.c",
-        "libtiff/tiffiop.h",
+        "libtiff/src/t4.h",
+        "libtiff/src/tif_aux.c",
+        "libtiff/src/tif_close.c",
+        "libtiff/src/tif_codec.c",
+        "libtiff/src/tif_color.c",
+        "libtiff/src/tif_compress.c",
+        "libtiff/src/tif_dir.c",
+        "libtiff/src/tif_dir.h",
+        "libtiff/src/tif_dirinfo.c",
+        "libtiff/src/tif_dirread.c",
+        "libtiff/src/tif_dirwrite.c",
+        "libtiff/src/tif_dumpmode.c",
+        "libtiff/src/tif_error.c",
+        "libtiff/src/tif_extension.c",
+        "libtiff/src/tif_fax3.c",
+        "libtiff/src/tif_fax3.h",
+        "libtiff/src/tif_fax3sm.c",
+        "libtiff/src/tif_flush.c",
+        "libtiff/src/tif_getimage.c",
+        "libtiff/src/tif_hash_set.c",
+        "libtiff/src/tif_hash_set.h",
+        "libtiff/src/tif_jpeg.c",
+        "libtiff/src/tif_luv.c",
+        "libtiff/src/tif_lzw.c",
+        "libtiff/src/tif_next.c",
+        "libtiff/src/tif_open.c",
+        "libtiff/src/tif_packbits.c",
+        "libtiff/src/tif_pixarlog.c",
+        "libtiff/src/tif_predict.c",
+        "libtiff/src/tif_predict.h",
+        "libtiff/src/tif_print.c",
+        "libtiff/src/tif_read.c",
+        "libtiff/src/tif_strip.c",
+        "libtiff/src/tif_swab.c",
+        "libtiff/src/tif_thunder.c",
+        "libtiff/src/tif_tile.c",
+        "libtiff/src/tif_version.c",
+        "libtiff/src/tif_warning.c",
+        "libtiff/src/tif_write.c",
+        "libtiff/src/tiff.h",
+        "libtiff/src/tiffio.h",
+        "libtiff/src/tiffiop.h",
+        "libtiff/src/uvcode.h",
+        "libtiff/tiffconf.h",
         "libtiff/tiffvers.h",
       ]
     }
