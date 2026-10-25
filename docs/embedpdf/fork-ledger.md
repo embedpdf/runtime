@@ -191,6 +191,21 @@ and encryption objects leaked into saves.
 `cpdf_object_stream_cache_unittest.cpp`.
 **When upstream touches this.** The creator's traversal and the parser's object stream access.
 
+### complete-xref
+**Rule.** A full save's cross-reference table is one subsection, from object 0 through the last
+number it writes. A number no written object holds is a free entry with generation 0; entry 0
+heads the list of free entries, each links to the next higher one, and the last links back to 0.
+Object numbers are never changed to close the holes.
+**Why.** ISO 32000-1 7.5.4: a file that was never updated has one subsection, numbered from 0.
+Editing sessions reserve numbers they may not use, and upstream gave the numbers between runs of
+written objects no entry at all. Acrobat can't judge a later revision's changes against such a
+table, so a signature over a rewritten file read as indeterminate after any edit
+(`HasSparseXref`). Object numbers are the engine's identities.
+**Where.** `CPDF_Creator::WriteDoc_Stage3`, the `kWriteXrefsNotIncremental81` stage.
+**Guarded by.** `EPDFObjectNumberEmbedderTest.FullSaveListsUnusedNumbersAsFree`.
+**When upstream touches this.** The full save's cross-reference writer: keep the one subsection
+and the free list. Update sections (incremental saves) stay sparse.
+
 ### save-security
 **Rule.** Pending encryption settings belong to the document, not to a global. AES-256 encryption
 and password probing are ours.

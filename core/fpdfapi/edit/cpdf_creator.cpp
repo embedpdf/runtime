@@ -610,15 +610,12 @@ CPDF_Creator::Stage CPDF_Creator::WriteDoc_Stage3() {
     if (!is_incremental_ || is_incremental_append_only_ ||
         !parser_->IsXRefStream()) {
       if (!is_incremental_ || parser_->GetLastXRefOffset() == 0) {
-        ByteString str;
-        str = pdfium::Contains(object_offsets_, 1)
-                  ? "xref\r\n"
-                  : "xref\r\n0 1\r\n0000000000 65535 f\r\n";
-        if (!archive_->WriteString(str.AsStringView())) {
+        // EmbedPDF(complete-xref): the subsection header is written with the
+        // entries (kWriteXrefsNotIncremental81).
+        if (!archive_->WriteString("xref\r\n")) {
           return Stage::kInvalid;
         }
 
-        cur_obj_num_ = 1;
         stage_ = Stage::kWriteXrefsNotIncremental81;
       } else {
         if (!archive_->WriteString("xref\r\n")) {
@@ -633,49 +630,52 @@ CPDF_Creator::Stage CPDF_Creator::WriteDoc_Stage3() {
     }
   }
   if (stage_ == Stage::kWriteXrefsNotIncremental81) {
-    ByteString str;
-    uint32_t i = cur_obj_num_;
-    uint32_t j;
-    while (i <= dwLastObjNum) {
-      while (i <= dwLastObjNum && !pdfium::Contains(object_offsets_, i)) {
-        i++;
+    // EmbedPDF(complete-xref): the file's only table is one subsection, from
+    // object 0 through the last object number (ISO 32000-1 7.5.4). A number
+    // no written object holds - reserved by an editing session and never
+    // used, deleted, or no longer reached - is a free entry. Entry 0 heads
+    // the list of free entries, each links to the next higher one, and the
+    // last links back to 0. A free entry's generation is 0, the generation a
+    // new object at that number starts with. Upstream wrote a subsection per
+    // run of written objects and gave the numbers between runs no entry;
+    // Acrobat then can't judge the changes a later revision makes.
+    std::vector<uint32_t> free_numbers;
+    for (uint32_t number = 1; number <= dwLastObjNum; ++number) {
+      if (!pdfium::Contains(object_offsets_, number)) {
+        free_numbers.push_back(number);
       }
-
-      if (i > dwLastObjNum) {
-        break;
-      }
-
-      j = i;
-      while (j <= dwLastObjNum && pdfium::Contains(object_offsets_, j)) {
-        j++;
-      }
-
-      if (i == 1) {
-        str = ByteString::Format("0 %d\r\n0000000000 65535 f\r\n", j);
+    }
+    FX_SAFE_UINT32 entry_count = dwLastObjNum;
+    entry_count += 1;
+    if (!entry_count.IsValid()) {
+      return Stage::kInvalid;
+    }
+    const uint32_t first_free = free_numbers.empty() ? 0 : free_numbers[0];
+    ByteString str = ByteString::Format("0 %u\r\n", entry_count.ValueOrDie()) +
+                     FormatXrefOffset10(first_free) + " 65535 f\r\n";
+    if (!archive_->WriteString(str.AsStringView())) {
+      return Stage::kInvalid;
+    }
+    size_t next_free = 0;
+    for (uint32_t objnum = 1; objnum <= dwLastObjNum; ++objnum) {
+      if (next_free < free_numbers.size() &&
+          free_numbers[next_free] == objnum) {
+        ++next_free;
+        const uint32_t link =
+            next_free < free_numbers.size() ? free_numbers[next_free] : 0;
+        str = FormatXrefOffset10(link) + " 00000 f\r\n";
       } else {
-        str = ByteString::Format("%d %d\r\n", i, j - i);
-      }
-
-      if (!archive_->WriteString(str.AsStringView())) {
-        return Stage::kInvalid;
-      }
-
-      while (i < j) {
         // EmbedPDF(save-generations, layer-save): each entry carries its
         // object's generation, and only an offset an entry can hold.
-        const uint32_t objnum = i++;
         const FX_FILESIZE offset = object_offsets_[objnum];
         if (!CheckEmittedOffset(offset)) {
           return Stage::kInvalid;
         }
         str = FormatXrefOffset10(offset) +
               ByteString::Format(" %05u n\r\n", GetObjectGeneration(objnum));
-        if (!archive_->WriteString(str.AsStringView())) {
-          return Stage::kInvalid;
-        }
       }
-      if (i > dwLastObjNum) {
-        break;
+      if (!archive_->WriteString(str.AsStringView())) {
+        return Stage::kInvalid;
       }
     }
     stage_ = Stage::kWriteTrailerAndFinish90;

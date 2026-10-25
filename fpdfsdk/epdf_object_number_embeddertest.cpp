@@ -9,6 +9,10 @@
 // caller may use is the caller's decision; the layer only refuses a number
 // that isn't free.
 
+#include <stdio.h>
+
+#include <algorithm>
+#include <iterator>
 #include <string>
 #include <vector>
 
@@ -27,6 +31,7 @@
 #include "public/epdf_form.h"
 #include "public/epdf_layer.h"
 #include "public/epdf_save.h"
+#include "public/epdf_signature.h"
 #include "public/epdf_view.h"
 #include "public/fpdf_annot.h"
 #include "public/fpdf_edit.h"
@@ -386,6 +391,83 @@ TEST_F(EPDFObjectNumberEmbedderTest, ArtifactKeepsTheRaise) {
   EXPECT_EQ(kRaised + 1, CreateAnnot(reopened.get(), 1, 0));
   ASSERT_TRUE(EPDFLayer_CommitTransaction(reopened.get()));
   EXPECT_THAT(Annots(reopened.get(), 1), ElementsAre(20u, 12u, kRaised + 1u));
+}
+
+// A full save lists every number up to the last one it writes, in one
+// subsection from 0 (ISO 32000-1 7.5.4): a handed-out number no object took
+// is a free entry, linked from entry 0 in ascending order and back to 0. A
+// revision appended to the saved file then follows a table without holes,
+// which a signature's later changes can be judged against.
+TEST_F(EPDFObjectNumberEmbedderTest, FullSaveListsUnusedNumbersAsFree) {
+  ScopedFPDFDocument doc = OpenLayer();
+  ASSERT_TRUE(doc);
+  ASSERT_TRUE(EPDFLayer_BeginTransaction(doc.get()));
+  EXPECT_EQ(15u, CreateAnnot(doc.get(), 1, 15));
+  EXPECT_EQ(20u, CreateAnnot(doc.get(), 1, 20));
+  ASSERT_TRUE(EPDFLayer_CommitTransaction(doc.get()));
+  ClearString();
+  ASSERT_TRUE(FPDF_SaveAsCopy(doc.get(), this, FPDF_NO_INCREMENTAL));
+  const std::string saved = GetString();
+
+  // One table, 0 to 20: 20 is the last number written, so 21 to 26 aren't
+  // listed. Each entry is 20 bytes.
+  const size_t table = saved.find("\r\nxref\r\n");
+  ASSERT_NE(std::string::npos, table);
+  EXPECT_EQ(std::string::npos, saved.find("\r\nxref\r\n", table + 1));
+  const size_t trailer = saved.find("trailer\r\n", table);
+  ASSERT_NE(std::string::npos, trailer);
+  const std::string rows = saved.substr(table + 8, trailer - table - 8);
+  ASSERT_EQ(6u + 21u * 20u, rows.size());
+  EXPECT_EQ("0 21\r\n", rows.substr(0, 6));
+  EXPECT_NE(std::string::npos, saved.find("/Size 21/", trailer));
+  auto entry = [&rows](uint32_t number) {
+    return rows.substr(6 + 20 * number, 20);
+  };
+  const std::vector<uint32_t> free = {7,  8,  9,  10, 11, 12,
+                                      13, 14, 16, 17, 18, 19};
+  EXPECT_EQ("0000000007 65535 f\r\n", entry(0));
+  for (uint32_t number = 1; number <= 20; ++number) {
+    SCOPED_TRACE(number);
+    auto it = std::ranges::find(free, number);
+    if (it == free.end()) {
+      EXPECT_EQ(" 00000 n\r\n", entry(number).substr(10));
+      continue;
+    }
+    const uint32_t link = std::next(it) == free.end() ? 0 : *std::next(it);
+    char row[21];
+    snprintf(row, sizeof(row), "%010u 00000 f\r\n", link);
+    EXPECT_EQ(row, entry(number));
+  }
+
+  ScopedFPDFDocument reopened(
+      FPDF_LoadMemDocument64(saved.data(), saved.size(), nullptr));
+  ASSERT_TRUE(reopened);
+  EXPECT_FALSE(CPDFDocumentFromFPDFDocument(reopened.get())
+                   ->GetParser()
+                   ->xref_table_rebuilt());
+  EXPECT_THAT(Annots(reopened.get(), 1), ElementsAre(15u, 20u));
+  {
+    ScopedFPDFPage page(FPDF_LoadPage(reopened.get(), 0));
+    ASSERT_TRUE(page);
+    ScopedFPDFAnnotation annot(
+        FPDFPage_CreateAnnot(page.get(), FPDF_ANNOT_SQUARE));
+    ASSERT_TRUE(annot);
+  }
+  ClearString();
+  ASSERT_TRUE(FPDF_SaveAsCopy(reopened.get(), this, FPDF_INCREMENTAL));
+  const std::string updated = GetString();
+  ScopedFPDFDocument newer(
+      FPDF_LoadMemDocument64(updated.data(), updated.size(), nullptr));
+  ASSERT_TRUE(newer);
+  ScopedFPDFDocument older(EPDFDoc_OpenRevision(newer.get(), saved.size()));
+  ASSERT_TRUE(older);
+  EPDF_OBJECT_DIFF diff = EPDFDoc_CompareRevisions(older.get(), newer.get());
+  ASSERT_TRUE(diff);
+  FPDF_BOOL sparse = true;
+  EXPECT_TRUE(EPDFObjectDiff_GetRevisionHealth(diff, EPDF_DIFF_OLD, &sparse,
+                                               nullptr, nullptr));
+  EXPECT_FALSE(sparse);
+  EPDFObjectDiff_Close(diff);
 }
 
 // A blank page at a chosen number is in the page list and the page tree at
