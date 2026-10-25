@@ -233,6 +233,7 @@ source_set("fxge") {
     sources += [
       "skia/cfx_dibbase_skia.cpp",
       "skia/fx_skia_device.cpp",
+      "skia/fx_skia_device.h",
     ]
     public_deps += [ "//skia" ]
 
@@ -312,6 +313,7 @@ pdfium_unittest_source_set("unittests") {
     "dib/fx_dib_unittest.cpp",
     "fx_font_unittest.cpp",
   ]
+  data = [ "../../third_party/NotoSansCJK/NotoSansSC-Regular.subset.otf" ]
   deps = [
     ":fxge",
     ":test_support",

@@ -1,0 +1,14 @@
+diff --git a/src/tif_error.c b/src/tif_error.c
+index ac0b9c3..3d320ee 100644
+--- a/src/tif_error.c
++++ b/src/tif_error.c
+@@ -29,6 +29,9 @@
+ 
+ TIFFErrorHandlerExt _TIFFerrorHandlerExt = NULL;
+ 
++TIFFErrorHandler _TIFFwarningHandler = NULL;
++TIFFErrorHandler _TIFFerrorHandler = NULL;
++
+ TIFFErrorHandler TIFFSetErrorHandler(TIFFErrorHandler handler)
+ {
+     TIFFErrorHandler prev = _TIFFerrorHandler;
