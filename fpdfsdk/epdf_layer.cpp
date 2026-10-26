@@ -145,7 +145,7 @@ struct MemoryFileWriter : public FPDF_FILEWRITE {
 
 struct HashingTempFileWriter : public FPDF_FILEWRITE {
   FILE* file = nullptr;
-  CRYPT_sha2_context sha_context = {};
+  CryptSha2Context sha_context = {};
   uint64_t size = 0;
   bool failed = false;
   bool finalized = false;
@@ -153,7 +153,7 @@ struct HashingTempFileWriter : public FPDF_FILEWRITE {
   HashingTempFileWriter() {
     version = 1;
     file = std::tmpfile();
-    CRYPT_SHA256Start(&sha_context);
+    CryptSha256Start(&sha_context);
     WriteBlock = [](FPDF_FILEWRITE* self, const void* buf,
                     unsigned long block_size) -> int {
       auto* writer = static_cast<HashingTempFileWriter*>(self);
@@ -172,7 +172,7 @@ struct HashingTempFileWriter : public FPDF_FILEWRITE {
         writer->failed = true;
         return 0;
       }
-      CRYPT_SHA256Update(&writer->sha_context,
+      CryptSha256Update(&writer->sha_context,
                          UNSAFE_BUFFERS(pdfium::span(
                              static_cast<const uint8_t*>(buf), block_size)));
       writer->size += block_size;
@@ -198,7 +198,7 @@ struct HashingTempFileWriter : public FPDF_FILEWRITE {
     }
     finalized = true;
     std::array<uint8_t, kSha256DigestSize> digest = {};
-    CRYPT_SHA256Finish(&sha_context, digest);
+    CryptSha256Finish(&sha_context, digest);
     return digest;
   }
 
@@ -305,8 +305,8 @@ std::optional<std::array<uint8_t, kSha256DigestSize>> ComputeDeltaSha256(
     return std::nullopt;
   }
 
-  CRYPT_sha2_context context;
-  CRYPT_SHA256Start(&context);
+  CryptSha2Context context;
+  CryptSha256Start(&context);
   std::array<uint8_t, 8192> buffer = {};
   FX_FILESIZE offset = 0;
   while (offset < size) {
@@ -316,12 +316,12 @@ std::optional<std::array<uint8_t, kSha256DigestSize>> ComputeDeltaSha256(
                                    offset)) {
       return std::nullopt;
     }
-    CRYPT_SHA256Update(&context, pdfium::span(buffer).first(read_size));
+    CryptSha256Update(&context, pdfium::span(buffer).first(read_size));
     offset += read_size;
   }
 
   std::array<uint8_t, kSha256DigestSize> digest = {};
-  CRYPT_SHA256Finish(&context, digest);
+  CryptSha256Finish(&context, digest);
   return digest;
 }
 

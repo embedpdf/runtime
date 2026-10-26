@@ -215,7 +215,7 @@ TEST_F(CPDFGenerateAPTest,
   annot_dict->SetNewFor<CPDF_String>(pdfium::annotation::kContents, "Hello!");
 
   ASSERT_TRUE(CPDF_AppearanceGenerator::GenerateDefaultAppearanceWithColor(
-      &doc, annot_dict.Get(), CFX_Color(60, 120, 180)));
+      &doc, annot_dict.Get(), CFX_Color::MakeRGBBytes(60, 120, 180)));
   ASSERT_TRUE(CPDF_AppearanceGenerator::GenerateAnnotAP(
       &doc, annot_dict.Get(), CPDF_Annot::Subtype::FREETEXT));
 
@@ -238,7 +238,7 @@ TEST_F(CPDFGenerateAPTest,
   auto annot_dict = MakeAnnotDict("FreeText", CFX_FloatRect(100, 50, 150, 75));
 
   ASSERT_TRUE(CPDF_AppearanceGenerator::GenerateDefaultAppearanceWithColor(
-      &doc, annot_dict.Get(), CFX_Color(60, 120, 180)));
+      &doc, annot_dict.Get(), CFX_Color::MakeRGBBytes(60, 120, 180)));
 
   RetainPtr<const CPDF_Dictionary> font_dict =
       acroform->GetDictFor("DR")->GetDictFor("Font");

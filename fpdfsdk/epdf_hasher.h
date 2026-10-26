@@ -27,8 +27,8 @@ class EpdfHasher {
 
  private:
   const int algorithm_;
-  CRYPT_sha1_context sha1_;
-  CRYPT_sha2_context sha2_;
+  CryptSha1Context sha1_;
+  CryptSha2Context sha2_;
 };
 
 #endif  // FPDFSDK_EPDF_HASHER_H_

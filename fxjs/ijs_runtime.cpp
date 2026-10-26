@@ -4,6 +4,7 @@
 
 #include "fxjs/ijs_runtime.h"
 
+#include "core/fxcrt/epdf_tls.h"
 #include "fxjs/cjs_runtimestub.h"
 
 #ifdef PDF_ENABLE_V8
@@ -16,6 +17,14 @@
 #endif  // PDF_ENABLE_XFA
 #endif  // PDF_ENABLE_V8
 
+namespace {
+
+// EmbedPDF(thread-confined-globals): library start-up and shutdown run on every
+// worker thread (rule per-thread-init), and each writes this flag.
+EPDF_TLS bool g_isolate_per_document = false;
+
+}  // namespace
+
 IJS_Runtime::ScopedEventContext::ScopedEventContext(IJS_Runtime* pRuntime)
     : runtime_(pRuntime), context_(pRuntime->NewEventContext()) {}
 
@@ -24,7 +33,11 @@ IJS_Runtime::ScopedEventContext::~ScopedEventContext() {
 }
 
 // static
-void IJS_Runtime::Initialize(unsigned int slot, void* isolate, void* platform) {
+void IJS_Runtime::Initialize(unsigned int slot,
+                             void* isolate,
+                             void* platform,
+                             bool isolate_per_document) {
+  g_isolate_per_document = isolate_per_document;
 #ifdef PDF_ENABLE_V8
   GlobalTimer::InitializeGlobals();
   FXJS_Initialize(slot, static_cast<v8::Isolate*>(isolate));
@@ -44,6 +57,12 @@ void IJS_Runtime::Destroy() {
   FXJS_Release();
   GlobalTimer::DestroyGlobals();
 #endif  // PDF_ENABLE_V8
+  g_isolate_per_document = false;
+}
+
+// static
+bool IJS_Runtime::IsIsolatePerDocument() {
+  return g_isolate_per_document;
 }
 
 // static

@@ -33,13 +33,16 @@ size_t SizeOf(const CPDF_DecodedImageStore::Decoded& decoded) {
 struct CPDF_DecodedImageStore::Entry {
   Entry(const Key& key,
         const Decoded& decoded,
-        std::optional<uint8_t> jpx_levels,
+        std::optional<uint8_t> levels_skipped,
         size_t bytes)
-      : key(key), decoded(decoded), jpx_levels(jpx_levels), bytes(bytes) {}
+      : key(key),
+        decoded(decoded),
+        levels_skipped(levels_skipped),
+        bytes(bytes) {}
 
   const Key key;
   const Decoded decoded;
-  const std::optional<uint8_t> jpx_levels;
+  const std::optional<uint8_t> levels_skipped;
   const size_t bytes;
 };
 
@@ -125,10 +128,10 @@ void CPDF_DecodedImageStore::SetBudget(size_t bytes) {
 
 std::optional<CPDF_DecodedImageStore::Decoded> CPDF_DecodedImageStore::Find(
     const Key& key,
-    uint8_t jpx_levels_to_skip) {
+    uint8_t levels_to_skip) {
   auto it = index_.find(Slot(key, std::nullopt));
   if (it == index_.end()) {
-    it = index_.find(Slot(key, jpx_levels_to_skip));
+    it = index_.find(Slot(key, levels_to_skip));
   }
   if (it == index_.end()) {
     return std::nullopt;
@@ -139,19 +142,19 @@ std::optional<CPDF_DecodedImageStore::Decoded> CPDF_DecodedImageStore::Find(
 
 void CPDF_DecodedImageStore::Insert(const Key& key,
                                     const Decoded& decoded,
-                                    std::optional<uint8_t> jpx_levels) {
+                                    std::optional<uint8_t> levels_skipped) {
   CHECK(decoded.bitmap);
   const size_t bytes = SizeOf(decoded);
   if (!budget_ || bytes > budget_) {
     return;
   }
-  const auto it = index_.find(Slot(key, jpx_levels));
+  const auto it = index_.find(Slot(key, levels_skipped));
   if (it != index_.end()) {
     Erase(it->second);
   }
   EvictTo(budget_ - bytes);
-  entries_.emplace_front(key, decoded, jpx_levels, bytes);
-  index_.emplace(Slot(key, jpx_levels), entries_.begin());
+  entries_.emplace_front(key, decoded, levels_skipped, bytes);
+  index_.emplace(Slot(key, levels_skipped), entries_.begin());
   bytes_ += bytes;
 }
 
@@ -184,6 +187,6 @@ void CPDF_DecodedImageStore::EvictTo(size_t bytes) {
 
 void CPDF_DecodedImageStore::Erase(EntryList::iterator it) {
   bytes_ -= it->bytes;
-  index_.erase(Slot(it->key, it->jpx_levels));
+  index_.erase(Slot(it->key, it->levels_skipped));
   entries_.erase(it);
 }

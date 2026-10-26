@@ -31,8 +31,8 @@ class CPDF_Stream;
 // their colour spaces and the resources that name them.
 class CPDF_DecodedImageStore {
  public:
-  // What a decode depends on besides its stream's contents and, for JPX, the
-  // resolution levels it skips.
+  // What a decode depends on besides its stream's contents and, for JPX and
+  // DCT, the resolution levels it skips.
   class Key {
    public:
     Key(RetainPtr<const CPDF_Stream> stream,
@@ -92,16 +92,17 @@ class CPDF_DecodedImageStore {
   // Whether a decode of `bytes` bytes may be kept.
   bool Fits(size_t bytes) const { return bytes <= budget_; }
 
-  // The decode kept for `key`. JPX decodes are kept per resolution levels
-  // skipped, and only one that skipped `jpx_levels_to_skip` is found.
-  std::optional<Decoded> Find(const Key& key, uint8_t jpx_levels_to_skip);
+  // The decode kept for `key`. JPX and DCT decodes are kept per resolution
+  // levels skipped, and only one that skipped `levels_to_skip` is found.
+  std::optional<Decoded> Find(const Key& key, uint8_t levels_to_skip);
 
-  // Keeps `decoded` for `key`, replacing what was kept for it. `jpx_levels`
-  // holds the resolution levels a JPX decode skipped, and is empty for every
-  // other decoder, whose output does not depend on them.
+  // Keeps `decoded` for `key`, replacing what was kept for it.
+  // `levels_skipped` holds the resolution levels a JPX or DCT decode skipped,
+  // and is empty for every other decoder, whose output does not depend on
+  // them.
   void Insert(const Key& key,
               const Decoded& decoded,
-              std::optional<uint8_t> jpx_levels);
+              std::optional<uint8_t> levels_skipped);
 
   void DropDocument(const CPDF_Document* document);
   void DropStream(const CPDF_Stream* stream);
@@ -109,7 +110,7 @@ class CPDF_DecodedImageStore {
  private:
   struct Entry;
   using EntryList = std::list<Entry>;
-  // A key and, for a JPX decode, the resolution levels it skipped.
+  // A key and, for a JPX or DCT decode, the resolution levels it skipped.
   using Slot = std::pair<Key, std::optional<uint8_t>>;
 
   CPDF_DecodedImageStore();

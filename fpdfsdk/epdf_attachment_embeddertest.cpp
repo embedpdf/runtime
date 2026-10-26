@@ -399,12 +399,12 @@ TEST_F(EPDFAttachmentEmbedderTest, SetNameKeepsTheRestOfTheFileSpec) {
 
   // The name survives a save and reload.
   ASSERT_TRUE(FPDF_SaveAsCopy(document(), this, 0));
-  ASSERT_TRUE(OpenSavedDocument());
+  ScopedSavedDoc saved_doc = OpenScopedSavedDocument();
+  ASSERT_TRUE(saved_doc);
   FPDF_ATTACHMENT saved = FPDFDoc_GetAttachment(saved_document(), 0);
   ASSERT_TRUE(saved);
   length_bytes = FPDFAttachment_GetName(saved, nullptr, 0);
   buf = GetFPDFWideStringBuffer(length_bytes);
   ASSERT_EQ(length_bytes, FPDFAttachment_GetName(saved, buf.data(), length_bytes));
   EXPECT_EQ(L"r\u00e9sum\u00e9.txt", GetPlatformWString(buf.data()));
-  CloseSavedDocument();
 }

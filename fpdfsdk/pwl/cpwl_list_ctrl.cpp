@@ -10,8 +10,10 @@
 #include <utility>
 
 #include "core/fpdfdoc/cpvt_word.h"
+#include "core/fxcrt/check_op.h"
 #include "core/fxcrt/fx_extension.h"
 #include "core/fxcrt/numerics/safe_conversions.h"
+#include "core/fxcrt/span.h"
 #include "core/fxcrt/stl_util.h"
 #include "fpdfsdk/pwl/cpwl_edit_impl.h"
 #include "fpdfsdk/pwl/cpwl_list_box.h"
@@ -39,6 +41,11 @@ void CPWL_ListCtrl::Item::SetFontSize(float fFontSize) {
   edit_->Paint();
 }
 
+void CPWL_ListCtrl::Item::SetTextDirection(
+    CFX_BidiResolver::ParagraphDirection direction) {
+  edit_->SetTextDirection(direction);
+}
+
 float CPWL_ListCtrl::Item::GetItemHeight() const {
   return edit_->GetContentRect().Height();
 }
@@ -48,7 +55,7 @@ uint16_t CPWL_ListCtrl::Item::GetFirstChar() const {
   CPWL_EditImpl::Iterator* pIterator = edit_->GetIterator();
   pIterator->SetAt(1);
   pIterator->GetWord(word);
-  return word.Word;
+  return word.word();
 }
 
 WideString CPWL_ListCtrl::Item::GetText() const {
@@ -516,12 +523,24 @@ CFX_FloatRect CPWL_ListCtrl::GetContentRect() const {
 }
 
 void CPWL_ListCtrl::ReArrange(int32_t nItemIndex) {
+  CHECK_GE(nItemIndex, 0);
+
+  if (list_items_.empty()) {
+    content_rect_ = CFX_FloatRect();
+    SetScrollInfo();
+    return;
+  }
+
+  const int32_t count = GetCount();
+  nItemIndex = std::min(nItemIndex, count - 1);
+
   float fPosY = 0.0f;
   if (IsValid(nItemIndex - 1)) {
     fPosY = list_items_[nItemIndex - 1]->GetRect().bottom;
   }
 
-  for (const auto& pListItem : list_items_) {
+  for (const auto& pListItem :
+       pdfium::span(list_items_).subspan(static_cast<size_t>(nItemIndex))) {
     float fListItemHeight = pListItem->GetItemHeight();
     pListItem->SetRect(
         CFX_FloatRect(0.0f, fPosY + fListItemHeight, 0.0f, fPosY));
@@ -583,6 +602,7 @@ void CPWL_ListCtrl::AddItem(const WideString& str) {
   auto pListItem = std::make_unique<Item>();
   pListItem->SetFontMap(font_map_);
   pListItem->SetFontSize(font_size_);
+  pListItem->SetTextDirection(text_direction_);
   pListItem->SetText(str);
   list_items_.push_back(std::move(pListItem));
 }

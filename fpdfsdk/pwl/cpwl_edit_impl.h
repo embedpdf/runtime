@@ -36,6 +36,7 @@ class CPWL_EditImpl {
     void SetAt(int32_t nWordIndex);
     void SetAt(const CPVT_WordPlace& place);
     const CPVT_WordPlace& GetAt() const;
+    float GetLineCaretX(const CPVT_Line& line);
 
    private:
     UnownedPtr<CPWL_EditImpl> edit_;
@@ -71,6 +72,9 @@ class CPWL_EditImpl {
 
   // Set the vertical text alignment. (nFormat [0:left, 1:middle, 2:right])
   void SetAlignmentV(int32_t nFormat);
+
+  void SetTextDirection(CFX_BidiResolver::ParagraphDirection direction);
+  CFX_BidiResolver::ParagraphDirection GetTextDirection() const;
 
   // Set the substitution character for hidden text.
   void SetPasswordChar(uint16_t wSubWord);

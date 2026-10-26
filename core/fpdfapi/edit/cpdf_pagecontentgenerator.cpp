@@ -17,7 +17,6 @@
 #include <vector>
 
 #include "constants/page_object.h"
-#include "core/fpdfapi/edit/cpdf_contentstream_write_utils.h"
 #include "core/fpdfapi/edit/cpdf_pagecontentmanager.h"
 #include "core/fpdfapi/edit/cpdf_resourceuse.h"
 #include "core/fpdfapi/edit/cpdf_stringarchivestream.h"
@@ -57,6 +56,8 @@
 #include "core/fxcrt/notreached.h"
 #include "core/fxcrt/numerics/safe_conversions.h"
 #include "core/fxcrt/span.h"
+#include "core/fxcrt/stream_write_utils.h"
+#include "core/fxcrt/zip.h"
 #include "core/fxge/cfx_graphstate.h"
 
 namespace {
@@ -89,15 +90,8 @@ bool ShowsText(const CPDF_PageObjectHolder* holder) {
 // EmbedPDF(faithful-content-rewrite): text shown with TJ adjustments is
 // written back as a TJ array.
 bool TextObjectNeedsTJ(const CPDF_TextObject* obj) {
-  // We don’t have a public accessor for char_codes_, but we can reuse CountItems()
-  // and GetItemInfo(i). GetItemInfo() gives us char_code_ and (for vert writing)
-  // origin_. We only need to see if any item has the sentinel.
-  for (size_t i = 0, n = obj->CountItems(); i < n; ++i) {
-    auto it = obj->GetItemInfo(i);
-    if (it.char_code_ == CPDF_Font::kInvalidCharCode)
-      return true;
-  }
-  return false;
+  return std::ranges::any_of(obj->GetCharKernings(),
+                             [](float kerning) { return kerning != 0; });
 }
 
 void WriteTextAsTJ(fxcrt::ostringstream& buf,
@@ -105,29 +99,17 @@ void WriteTextAsTJ(fxcrt::ostringstream& buf,
                    CPDF_Font* font) {
   buf << "[ ";
   ByteString hexChunk;
-
-  for (size_t i = 0, n = obj->CountItems(); i < n; ++i) {
-    CPDF_TextObject::Item it = obj->GetItemInfo(i);
-
-    if (it.char_code_ == CPDF_Font::kInvalidCharCode) {
-      if (!hexChunk.IsEmpty()) {
-        buf << PDF_HexEncodeString(hexChunk.AsStringView()) << " ";
-        hexChunk.clear();
-      }
-      float thousandths = 0.0f;
-      if (obj->GetSeparatorAdjustment(i, &thousandths)) {
-        // TJ numbers are interpreted as “subtract this from the text position”,
-        // which matches how CalcPositionDataInternal() used the stored value:
-        // curpos -= (thousandths * fontSize)/1000. So we emit the value as-is.
-        WriteFloat(buf, thousandths);
-        buf << " ";
-      }
-      continue;
+  for (auto [char_code, kerning] :
+       fxcrt::Zip(obj->GetCharCodes(), obj->GetCharKernings())) {
+    font->AppendChar(&hexChunk, char_code);
+    if (kerning != 0) {
+      // A TJ number is subtracted from the text position, as
+      // CalcPositionDataInternal() applies the kerning; written as stored.
+      buf << PDF_HexEncodeString(hexChunk.AsStringView()) << " ";
+      hexChunk.clear();
+      WriteFloat(buf, kerning) << " ";
     }
-
-    font->AppendChar(&hexChunk, it.char_code_);
   }
-
   if (!hexChunk.IsEmpty()) {
     buf << PDF_HexEncodeString(hexChunk.AsStringView()) << " ";
   }
@@ -1222,7 +1204,7 @@ const CPDF_ContentMarks* CPDF_PageContentGenerator::ProcessContentMarks(
         break;
       }
       case CPDF_ContentMarkItem::kPropertiesDict: {
-        *buf << "/" << item->GetPropertyName() << " ";
+        *buf << "/" << PDF_NameEncode(item->GetPropertyName()) << " ";
         break;
       }
       case CPDF_ContentMarkItem::kNone:
@@ -1387,8 +1369,9 @@ void CPDF_PageContentGenerator::ProcessShading(fxcrt::ostringstream* buf,
 void CPDF_PageContentGenerator::ProcessPathPoints(fxcrt::ostringstream* buf,
                                                   CPDF_Path* pPath) {
   pdfium::span<const CFX_Path::Point> points = pPath->GetPoints();
-  if (pPath->IsRect()) {
-    CFX_PointF diff = points[2].point_ - points[0].point_;
+  std::optional<CFX_PointF> corner = pPath->GetRectOppositeCorner();
+  if (corner.has_value()) {
+    CFX_PointF diff = corner.value() - points[0].point_;
     WritePoint(*buf, points[0].point_) << " ";
     WritePoint(*buf, diff) << " re";
     return;
@@ -1604,7 +1587,7 @@ void CPDF_PageContentGenerator::ProcessGraphicsState(
   if (maybe_name.has_value()) {
     name = std::move(maybe_name.value());
   } else {
-    auto gsDict = pdfium::MakeRetain<CPDF_Dictionary>();
+    auto gsDict = document_->New<CPDF_Dictionary>();
     if (graphD.fillAlpha != 1.0f) {
       gsDict->SetNewFor<CPDF_Number>("ca", graphD.fillAlpha);
     }
@@ -1649,7 +1632,7 @@ ByteString CPDF_PageContentGenerator::GetOrCreateDefaultGraphics() const {
     return maybe_name.value();
   }
 
-  auto gsDict = pdfium::MakeRetain<CPDF_Dictionary>();
+  auto gsDict = document_->New<CPDF_Dictionary>();
   gsDict->SetNewFor<CPDF_Number>("ca", defaultGraphics.fillAlpha);
   gsDict->SetNewFor<CPDF_Number>("CA", defaultGraphics.strokeAlpha);
   gsDict->SetNewFor<CPDF_Name>("BM", "Normal");
@@ -1663,7 +1646,7 @@ ByteString CPDF_PageContentGenerator::GetOrCreateDefaultGraphics() const {
 // Tm sets the text matrix (allows positioning and transforming text).
 // Tf sets the font name (from Font in Resources) and font size.
 // Tr sets the text rendering mode.
-// Tj sets the actual text, <####...> is used when specifying charcodes.
+// TJ sets the actual text, <####...> is used when specifying charcodes.
 void CPDF_PageContentGenerator::ProcessText(fxcrt::ostringstream* buf,
                                             CPDF_TextObject* pTextObj) {
   ProcessGraphics(buf, pTextObj);
@@ -1759,7 +1742,7 @@ ByteString CPDF_PageContentGenerator::RealizeFont(RetainPtr<CPDF_Font>* font) {
       dict_name = *hit;
     } else {
       // Build a minimal indirect font dict (same as your old code).
-      auto font_dict = pdfium::MakeRetain<CPDF_Dictionary>();
+      auto font_dict = document_->New<CPDF_Dictionary>();
       font_dict->SetNewFor<CPDF_Name>("Type", "Font");
       font_dict->SetNewFor<CPDF_Name>("Subtype", data.type);
       font_dict->SetNewFor<CPDF_Name>("BaseFont", data.baseFont);
@@ -1820,8 +1803,7 @@ void CPDF_PageContentGenerator::WriteTextShowing(
   } else {
     ByteString showing;
     for (uint32_t charcode : text->GetCharCodes()) {
-      if (charcode != CPDF_Font::kInvalidCharCode)
-        font->AppendChar(&showing, charcode);
+      font->AppendChar(&showing, charcode);
     }
     buf << PDF_HexEncodeString(showing.AsStringView()) << " Tj";
   }

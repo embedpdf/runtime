@@ -14,7 +14,7 @@
 #include <sstream>
 
 #include "constants/font_encodings.h"
-#include "core/fpdfapi/edit/cpdf_contentstream_write_utils.h"
+#include "core/fxcrt/stream_write_utils.h"
 #include "core/fpdfapi/font/cpdf_font.h"
 #include "core/fpdfapi/parser/cpdf_dictionary.h"
 #include "core/fpdfapi/parser/cpdf_document.h"
@@ -190,10 +190,14 @@ bool ValidateOrCreateFontResources(CPDF_Document* doc,
   return true;
 }
 
+// `use_continuous_formatting`: When true, attempts to group consecutive words
+// on the same line into a single text rendering string to reduce the generated
+// AP stream size. This optimization is internally bypassed for individual RTL
+// words where precise positioning is required.
 ByteString GenerateEditAP(IPVT_FontMap* font_map,
                           CPVT_VariableText::Iterator* vt_iterator,
                           const CFX_PointF& offset,
-                          bool continuous,
+                          bool use_continuous_formatting,
                           uint16_t sub_word) {
   fxcrt::ostringstream edit_stream;
   fxcrt::ostringstream line_stream;
@@ -205,7 +209,11 @@ ByteString GenerateEditAP(IPVT_FontMap* font_map,
   vt_iterator->SetAt(0);
   while (vt_iterator->NextWord()) {
     CPVT_WordPlace place = vt_iterator->GetWordPlace();
-    if (continuous) {
+    CPVT_Word word;
+    bool has_word = vt_iterator->GetWord(word);
+    const bool is_rtl = has_word && word.is_rtl();
+
+    if (use_continuous_formatting && !is_rtl) {
       if (place.LineCmp(oldplace) != 0) {
         if (!words.IsEmpty()) {
           line_stream << GetWordRenderString(words.AsStringView());
@@ -213,55 +221,68 @@ ByteString GenerateEditAP(IPVT_FontMap* font_map,
           line_stream.str("");
           words.clear();
         }
-        CPVT_Word word;
-        if (vt_iterator->GetWord(word)) {
-          new_point =
-              CFX_PointF(word.ptWord.x + offset.x, word.ptWord.y + offset.y);
+
+        if (has_word) {
+          new_point = word.location() + offset;
         } else {
           CPVT_Line line;
-          vt_iterator->GetLine(line);
-          new_point =
-              CFX_PointF(line.ptLine.x + offset.x, line.ptLine.y + offset.y);
+          if (vt_iterator->GetLine(line)) {
+            new_point = line.ptLine + offset;
+          }
         }
         if (new_point != old_point) {
           WritePoint(line_stream, new_point - old_point) << " Td\n";
           old_point = new_point;
         }
+      } else if (words.IsEmpty() && has_word) {
+        new_point = word.location() + offset;
+        if (new_point != old_point) {
+          WritePoint(line_stream, new_point - old_point) << " Td\n";
+          old_point = new_point;
+        }
       }
-      CPVT_Word word;
-      if (vt_iterator->GetWord(word)) {
-        if (word.nFontIndex != current_font_index) {
+
+      if (has_word) {
+        int32_t font_index = word.font_index();
+        if (font_index != current_font_index) {
           if (!words.IsEmpty()) {
             line_stream << GetWordRenderString(words.AsStringView());
             words.clear();
           }
-          line_stream << GetFontSetString(font_map, word.nFontIndex,
-                                          word.fFontSize);
-          current_font_index = word.nFontIndex;
+          line_stream << GetFontSetString(font_map, font_index,
+                                          word.font_size());
+          current_font_index = font_index;
         }
-        words +=
-            GetPDFWordString(font_map, current_font_index, word.Word, sub_word);
+        words += GetPDFWordString(font_map, current_font_index, word.word(),
+                                  sub_word);
       }
-      oldplace = place;
     } else {
-      CPVT_Word word;
-      if (vt_iterator->GetWord(word)) {
-        new_point =
-            CFX_PointF(word.ptWord.x + offset.x, word.ptWord.y + offset.y);
+      if (!words.IsEmpty()) {
+        line_stream << GetWordRenderString(words.AsStringView());
+        edit_stream << line_stream.str();
+        line_stream.str("");
+        words.clear();
+      }
+
+      if (has_word) {
+        new_point = word.location() + offset;
         if (new_point != old_point) {
           WritePoint(edit_stream, new_point - old_point) << " Td\n";
           old_point = new_point;
         }
-        if (word.nFontIndex != current_font_index) {
-          edit_stream << GetFontSetString(font_map, word.nFontIndex,
-                                          word.fFontSize);
-          current_font_index = word.nFontIndex;
+        int32_t font_index = word.font_index();
+        if (font_index != current_font_index) {
+          edit_stream << GetFontSetString(font_map, font_index,
+                                          word.font_size());
+          current_font_index = font_index;
         }
         edit_stream << GetWordRenderString(
-            GetPDFWordString(font_map, current_font_index, word.Word, sub_word)
+            GetPDFWordString(font_map, current_font_index, word.word(),
+                             sub_word)
                 .AsStringView());
       }
     }
+    oldplace = place;
   }
   if (!words.IsEmpty()) {
     line_stream << GetWordRenderString(words.AsStringView());

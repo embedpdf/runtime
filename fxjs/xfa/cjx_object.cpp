@@ -1037,7 +1037,7 @@ void CJX_Object::OnChanged(XFA_Attribute eAttr, bool bScriptModify) {
   GetXFANode()->SendAttributeChangeMessage(eAttr, bScriptModify);
 }
 
-CJX_Object::CalcData* CJX_Object::GetOrCreateCalcData(cppgc::Heap* heap) {
+CJX_Object::CalcData* CJX_Object::GetOrCreateCalcData(FXGC_Heap* heap) {
   if (!calc_data_) {
     calc_data_ =
         cppgc::MakeGarbageCollected<CalcData>(heap->GetAllocationHandle());
@@ -1078,7 +1078,7 @@ void CJX_Object::ScriptAttributeString(v8::Isolate* pIsolate,
   WideString wsID;
   WideString wsSOM;
   if (!wsValue.IsEmpty()) {
-    if (wsValue[0] == '#') {
+    if (wsValue.Front() == '#') {
       wsID = wsValue.Substr(1);
     } else {
       wsSOM = std::move(wsValue);

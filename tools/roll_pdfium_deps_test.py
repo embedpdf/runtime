@@ -38,6 +38,10 @@ gclient_gn_args = [
 
 
 vars = {
+  # The version of the NDK. Set here, to allow the autoroller to update this
+  # value when updating the CIPD hash.
+  'android_ndk_version': Str('2@30.0.14608247'),
+
   # Variable that can be used to support multiple build scenarios, like having
   # Chromium specific targets in a client project's GN file or sync dependencies
   # conditionally etc.
@@ -144,10 +148,6 @@ vars = {
 
   'checkout_instrumented_libraries': 'checkout_linux and checkout_configuration != "small"',
 
-  # By default bot checkouts the WPR archive files only when this
-  # flag is set True.
-  'checkout_wpr_archives': False,
-
   # By default, do not check out WebKit for iOS, as it is not needed unless
   # running against ToT WebKit rather than system WebKit. This can be overridden
   # e.g. with custom_vars.
@@ -200,6 +200,9 @@ vars = {
   'reapi_backend_config_path': Str(''),
   # siso CIPD package version.
   'siso_version': 'git_revision:49dcca5d2be985d8ac6d512e59ee59e315264fb8',
+
+  # CPython 3 CIPD package version for Siso hermetic toolchain.
+  'cpython3_version': 'version:3@3.11.9.chromium.38',
 
   # reclient options.
   # download reclient binaries, required for 'use_reclient` gn arg.
@@ -781,6 +784,40 @@ deps = {
       },
     ],
   },
+  'src/third_party/llvm-libclang': {
+    'dep_type': 'gcs',
+    'bucket': 'chromium-browser-clang',
+    'objects': [
+      {
+        'object_name': 'Linux_x64/rust-libclang-1edd55dcfcd573872c727fa3e086369a71661ee0-1110-llvmorg-24-init-7747-g62397f8b.tar.xz',
+        'sha256sum': 'b251621641190cdab7d23c4a47257e4e1f1f335c34c9676118940fa562bb66ff',
+        'size_bytes': 22776236,
+        'generation': 1790798150313742,
+        'condition': 'host_os == "linux" and non_git_source',
+      },
+      {
+        'object_name': 'Mac/rust-libclang-1edd55dcfcd573872c727fa3e086369a71661ee0-1110-llvmorg-24-init-7747-g62397f8b.tar.xz',
+        'sha256sum': '4f7e9d166ad2ced03b9d5c66f2a919fefce5127d03dbe93661a0d012c1dda9ef',
+        'size_bytes': 22924716,
+        'generation': 1790798154061688,
+        'condition': 'host_os == "mac" and host_cpu == "x64"',
+      },
+      {
+        'object_name': 'Mac_arm64/rust-libclang-1edd55dcfcd573872c727fa3e086369a71661ee0-1110-llvmorg-24-init-7747-g62397f8b.tar.xz',
+        'sha256sum': '444cfa9bd9d3cda991943c9743f1992004b1f50d6641372b5ff9103d9a4db478',
+        'size_bytes': 20588924,
+        'generation': 1790798157457698,
+        'condition': 'host_os == "mac" and host_cpu == "arm64"',
+      },
+      {
+        'object_name': 'Win/rust-libclang-1edd55dcfcd573872c727fa3e086369a71661ee0-1110-llvmorg-24-init-7747-g62397f8b.tar.xz',
+        'sha256sum': 'e8bb31ac1bded5c1fce08567a8a1a8f304213cceeee7384c2cba844dcaddfd20',
+        'size_bytes': 21527244,
+        'generation': 1790798161045212,
+        'condition': 'host_os == "win"',
+      },
+    ],
+  },
   'src/third_party/clang-format/script':
     Var('chromium_git') +
     '/external/github.com/llvm/llvm-project/clang/tools/clang-format.git@' +
@@ -974,7 +1011,7 @@ deps = {
       'packages': [
             {
                 'package': 'chromium/third_party/android_toolchain/android_toolchain',
-                'version': 'KXOia11cm9lVdUdPlbGLu8sCz6Y4ey_HV2s8_8qeqhgC',
+                'version': 'version:' + Var('android_ndk_version'),
             },
       ],
       'condition': 'checkout_android and non_git_source',
@@ -1088,7 +1125,7 @@ deps = {
   'src/third_party/fxdiv/src':
     Var('chromium_git') + '/external/github.com/Maratyszcza/FXdiv.git' + '@' + '63058eff77e11aa15bf531df5dd34395ec3017c8',
 
-  'src/third_party/harfbuzz-ng/src':
+  'src/third_party/harfbuzz/src':
     Var('chromium_git') + '/external/github.com/harfbuzz/harfbuzz.git' + '@' + Var('harfbuzz_revision'),
 
   'src/third_party/ink/src':
@@ -1149,6 +1186,30 @@ deps = {
     ],
     'condition': 'non_git_source',
     'dep_type': 'cipd',
+  },
+
+  # Always download Linux x64 package regardless of host OS for RBE workers.
+  'src/third_party/cpython3/linux-amd64': {
+      'packages': [
+        {
+          'package': 'infra/3pp/tools/cpython3/linux-amd64',
+          'version': Var('cpython3_version'),
+        },
+      ],
+      'condition': 'non_git_source',
+      'dep_type': 'cipd',
+  },
+
+  # Host platform package.
+  'src/third_party/cpython3/host': {
+      'packages': [
+        {
+          'package': 'infra/3pp/tools/cpython3/${{platform}}',
+          'version': Var('cpython3_version'),
+        },
+      ],
+      'condition': 'non_git_source',
+      'dep_type': 'cipd',
   },
 
   'src/third_party/pdfium':
@@ -1491,13 +1552,15 @@ recursedeps = [
 ]
 '''
 
-PDFIUM_DEPS = '''
+PDFIUM_DEPS = r'''
 use_relative_paths = True
 
 gclient_gn_args_file = 'build/config/gclient_args.gni'
 gclient_gn_args = [
+  'android_ndk_version',
   'build_with_chromium',
   'checkout_android',
+  'checkout_libpng',
   'checkout_skia',
 ]
 
@@ -1528,6 +1591,8 @@ vars = {
   'checkout_android_native_support': 'checkout_android',
 
   'checkout_instrumented_libraries': 'checkout_linux and checkout_configuration != "small" and checkout_configuration != "minimal"',
+
+  'checkout_libpng': True,
 
   # Fetch the rust toolchain.
   #
@@ -1567,9 +1632,9 @@ vars = {
   # and whatever else without interference from each other.
   'abseil_revision': '14a5b78f39684f85a19690e63c722d6bb680f2cd',
   # Three lines of non-changing comments so that
-  # the commit queue can handle CLs rolling android_toolchain
+  # the commit queue can handle CLs rolling android_ndk
   # and whatever else without interference from each other.
-  'android_toolchain_version': 'KXOia11cm9lVdUdPlbGLu8sCz6Y4ey_HV2s8_8qeqhgC',
+  'android_ndk_version': Str('2@30.0.14608247'),
   # Three lines of non-changing comments so that
   # the commit queue can handle CLs rolling brotli
   # and whatever else without interference from each other.
@@ -1602,6 +1667,10 @@ vars = {
   # the commit queue can handle CLs rolling cpu_features
   # and whatever else without interference from each other.
   'cpu_features_revision': '936b9ab5515dead115606559502e3864958f7f6e',
+  # Three lines of non-changing comments so that
+  # the commit queue can handle CLs rolling cpython3_version
+  # and whatever else without interference from each other.
+  'cpython3_version': 'version:3@3.11.9.chromium.38',
   # Three lines of non-changing comments so that
   # the commit queue can handle CLs rolling depot_tools
   # and whatever else without interference from each other.
@@ -1837,7 +1906,7 @@ deps = {
     'packages': [
       {
         'package': 'chromium/third_party/android_toolchain/android_toolchain',
-        'version': Var('android_toolchain_version'),
+        'version': 'version:' + Var('android_ndk_version'),
       },
     ],
     'condition': 'checkout_android_native_support',
@@ -1863,6 +1932,30 @@ deps = {
         '/external/github.com/google/cpu_features.git@' +
         Var('cpu_features_revision'),
     'condition': 'checkout_android',
+  },
+
+  # Always download Linux x64 package regardless of host OS for RBE workers.
+  'third_party/cpython3/linux-amd64': {
+    'packages': [
+      {
+        'package': 'infra/3pp/tools/cpython3/linux-amd64',
+        'version': Var('cpython3_version'),
+      },
+    ],
+    'condition': 'non_git_source',
+    'dep_type': 'cipd',
+  },
+
+  # Host platform package.
+  'third_party/cpython3/host': {
+    'packages': [
+      {
+        'package': 'infra/3pp/tools/cpython3/${{platform}}',
+        'version': Var('cpython3_version'),
+      },
+    ],
+    'condition': 'non_git_source',
+    'dep_type': 'cipd',
   },
 
   'third_party/depot_tools':
@@ -1891,7 +1984,7 @@ deps = {
     Var('chromium_git') + '/external/github.com/google/googletest.git@' +
         Var('gtest_revision'),
 
-  'third_party/harfbuzz-ng/src':
+  'third_party/harfbuzz/src':
     Var('chromium_git') + '/external/github.com/harfbuzz/harfbuzz.git@' +
         Var('harfbuzz_revision'),
 
@@ -1934,9 +2027,11 @@ deps = {
     Var('chromium_git') + '/chromium/deps/libjpeg_turbo.git@' +
         Var('jpeg_turbo_revision'),
 
-  'third_party/libpng':
-    Var('chromium_git') + '/chromium/src/third_party/libpng.git@' +
+  'third_party/libpng': {
+    'url': Var('chromium_git') + '/chromium/src/third_party/libpng.git@' +
         Var('libpng_revision'),
+    'condition': 'checkout_libpng',
+  },
 
   'third_party/llvm-build/Release+Asserts': {
     'dep_type': 'gcs',
@@ -2018,6 +2113,41 @@ deps = {
   'third_party/llvm-libc/src':
     Var('chromium_git') + '/external/github.com/llvm/llvm-project/libc.git@' +
         Var('llvm_libc_revision'),
+
+  'third_party/llvm-libclang': {
+    'dep_type': 'gcs',
+    'bucket': 'chromium-browser-clang',
+    'objects': [
+      {
+        'object_name': 'Linux_x64/rust-libclang-1edd55dcfcd573872c727fa3e086369a71661ee0-1110-llvmorg-24-init-7747-g62397f8b.tar.xz',
+        'sha256sum': 'b251621641190cdab7d23c4a47257e4e1f1f335c34c9676118940fa562bb66ff',
+        'size_bytes': 22776236,
+        'generation': 1790798150313742,
+        'condition': 'host_os == "linux" and non_git_source',
+      },
+      {
+        'object_name': 'Mac/rust-libclang-1edd55dcfcd573872c727fa3e086369a71661ee0-1110-llvmorg-24-init-7747-g62397f8b.tar.xz',
+        'sha256sum': '4f7e9d166ad2ced03b9d5c66f2a919fefce5127d03dbe93661a0d012c1dda9ef',
+        'size_bytes': 22924716,
+        'generation': 1790798154061688,
+        'condition': 'host_os == "mac" and host_cpu == "x64"',
+      },
+      {
+        'object_name': 'Mac_arm64/rust-libclang-1edd55dcfcd573872c727fa3e086369a71661ee0-1110-llvmorg-24-init-7747-g62397f8b.tar.xz',
+        'sha256sum': '444cfa9bd9d3cda991943c9743f1992004b1f50d6641372b5ff9103d9a4db478',
+        'size_bytes': 20588924,
+        'generation': 1790798157457698,
+        'condition': 'host_os == "mac" and host_cpu == "arm64"',
+      },
+      {
+        'object_name': 'Win/rust-libclang-1edd55dcfcd573872c727fa3e086369a71661ee0-1110-llvmorg-24-init-7747-g62397f8b.tar.xz',
+        'sha256sum': 'e8bb31ac1bded5c1fce08567a8a1a8f304213cceeee7384c2cba844dcaddfd20',
+        'size_bytes': 21527244,
+        'generation': 1790798161045212,
+        'condition': 'host_os == "win"',
+      },
+    ],
+  },
 
   'third_party/markupsafe':
     Var('chromium_git') + '/chromium/src/third_party/markupsafe.git@' +
@@ -2237,7 +2367,7 @@ include_rules = [
 
 specific_include_rules = {
   # Allow embedder tests to use public APIs.
-  '(.*embeddertest\.cpp)': [
+  r'(.*embeddertest\.cpp)': [
     '+public',
   ]
 }
@@ -2384,103 +2514,123 @@ hooks = [
 '''
 
 
+def _run_roll_dep(deps_entry):
+  return roll_dep(CHROMIUM_DEPS, PDFIUM_DEPS, deps_entry, 'CHROMIUM_DEPS',
+                  'DEPS')
+
+
 class RollDepTest(unittest.TestCase):
 
   def testCipdDepsRolls(self):
-    success, message = roll_dep(CHROMIUM_DEPS, PDFIUM_DEPS, 'gn_version')
+    success, message = _run_roll_dep('gn_version')
     self.assertTrue(success)
     self.assertEqual(
         'CIPD gn_version: '
         'git_revision:5964f499767097d81dbe034e8b541c3988168073', message)
 
-    success, message = roll_dep(CHROMIUM_DEPS, PDFIUM_DEPS, 'siso_version')
+    success, message = _run_roll_dep('siso_version')
     self.assertTrue(success)
     self.assertEqual(
         'CIPD siso_version: '
         'git_revision:49dcca5d2be985d8ac6d512e59ee59e315264fb8', message)
 
   def testCipdDepsRollsNothingToRoll(self):
-    success, message = roll_dep(CHROMIUM_DEPS, PDFIUM_DEPS,
-                                'android_toolchain_version')
+    success, message = _run_roll_dep('android_ndk_version')
     self.assertTrue(success)
     self.assertEqual('Revisions are the same.', message)
 
-    success, message = roll_dep(CHROMIUM_DEPS, PDFIUM_DEPS, 'ninja_version')
+    success, message = _run_roll_dep('cpython3_version')
     self.assertTrue(success)
     self.assertEqual('Revisions are the same.', message)
 
-    success, message = roll_dep(CHROMIUM_DEPS, PDFIUM_DEPS, 'reclient_version')
+    success, message = _run_roll_dep('ninja_version')
     self.assertTrue(success)
     self.assertEqual('Revisions are the same.', message)
 
-    success, message = roll_dep(CHROMIUM_DEPS, PDFIUM_DEPS,
-                                'result_adapter_revision')
+    success, message = _run_roll_dep('reclient_version')
+    self.assertTrue(success)
+    self.assertEqual('Revisions are the same.', message)
+
+    success, message = _run_roll_dep('result_adapter_revision')
+    self.assertTrue(success)
+    self.assertEqual('Revisions are the same.', message)
+
+  def testGcsDepsRolls(self):
+    success, message = _run_roll_dep('third_party/llvm-build/Release+Asserts')
+    self.assertTrue(success)
+    self.assertEqual(
+        'roll_downstream_gcs_deps.py '
+        '--source-deps CHROMIUM_DEPS --destination-deps DEPS '
+        '--source-package src/third_party/llvm-build/Release+Asserts '
+        '--destination-package third_party/llvm-build/Release+Asserts', message)
+
+  def testGcsDepsRollsNothingToRoll(self):
+    success, message = _run_roll_dep('third_party/llvm-libclang')
+    self.assertTrue(success)
+    self.assertEqual('Revisions are the same.', message)
+
+    success, message = _run_roll_dep('third_party/rust-toolchain')
     self.assertTrue(success)
     self.assertEqual('Revisions are the same.', message)
 
   def testGitDepsRollsToChromiumRevision(self):
-    success, message = roll_dep(CHROMIUM_DEPS, PDFIUM_DEPS, 'gtest_revision')
+    success, message = _run_roll_dep('gtest_revision')
     self.assertTrue(success)
     self.assertEqual(
         'roll-dep third_party/googletest/src '
         '--roll-to 4fe3307fb2d9f86d19777c7eb0e4809e9694dde7 '
         '--ignore-dirty-tree --no-log', message)
 
-    success, message = roll_dep(CHROMIUM_DEPS, PDFIUM_DEPS, 'icu_revision')
+    success, message = _run_roll_dep('icu_revision')
     self.assertTrue(success)
     self.assertEqual(
         'roll-dep third_party/icu '
         '--roll-to a86a32e67b8d1384b33f8fa48c83a6079b86f8cd '
         '--ignore-dirty-tree --no-log', message)
 
-    success, message = roll_dep(CHROMIUM_DEPS, PDFIUM_DEPS,
-                                'jpeg_turbo_revision')
+    success, message = _run_roll_dep('jpeg_turbo_revision')
     self.assertTrue(success)
     self.assertEqual(
         'roll-dep third_party/libjpeg_turbo '
         '--roll-to 6383cf609c1f63c18af0f59b2738caa0c6c7e379 '
         '--ignore-dirty-tree --no-log', message)
 
-    success, message = roll_dep(CHROMIUM_DEPS, PDFIUM_DEPS, 'libcxx_revision')
+    success, message = _run_roll_dep('libcxx_revision')
     self.assertTrue(success)
     self.assertEqual(
         'roll-dep third_party/libc++/src '
         '--roll-to c5dd8ade977af3a7441bbf99a2dcac2d5820e702 '
         '--ignore-dirty-tree --no-log', message)
 
-    success, message = roll_dep(CHROMIUM_DEPS, PDFIUM_DEPS,
-                                'libcxxabi_revision')
+    success, message = _run_roll_dep('libcxxabi_revision')
     self.assertTrue(success)
     self.assertEqual(
         'roll-dep third_party/libc++abi/src '
         '--roll-to 83a852080747b9a362e8f9e361366b7a601f302c '
         '--ignore-dirty-tree --no-log', message)
 
-    success, message = roll_dep(CHROMIUM_DEPS, PDFIUM_DEPS,
-                                'libunwind_revision')
+    success, message = _run_roll_dep('libunwind_revision')
     self.assertTrue(success)
     self.assertEqual(
         'roll-dep third_party/libunwind/src '
         '--roll-to 88fc07ed143a5b3bbf45d430b72a4617ee9e235f '
         '--ignore-dirty-tree --no-log', message)
 
-    success, message = roll_dep(CHROMIUM_DEPS, PDFIUM_DEPS,
-                                'llvm_libc_revision')
+    success, message = _run_roll_dep('llvm_libc_revision')
     self.assertTrue(success)
     self.assertEqual(
         'roll-dep third_party/llvm-libc/src '
         '--roll-to 03f822d2a88c8f68f6a92c5cb3e79ccc3002e8a9 '
         '--ignore-dirty-tree --no-log', message)
 
-    success, message = roll_dep(CHROMIUM_DEPS, PDFIUM_DEPS,
-                                'nasm_source_revision')
+    success, message = _run_roll_dep('nasm_source_revision')
     self.assertTrue(success)
     self.assertEqual(
         'roll-dep third_party/nasm '
         '--roll-to af5eeeb054bebadfbb79c7bcd100a95e2ad4525f '
         '--ignore-dirty-tree --no-log', message)
 
-    success, message = roll_dep(CHROMIUM_DEPS, PDFIUM_DEPS, 'v8_revision')
+    success, message = _run_roll_dep('v8_revision')
     self.assertTrue(success)
     self.assertEqual(
         'roll-dep v8 '
@@ -2488,7 +2638,7 @@ class RollDepTest(unittest.TestCase):
         '--ignore-dirty-tree --no-log', message)
 
   def testGitDepsRollsToChromiumRevisionForFreeType(self):
-    success, message = roll_dep(CHROMIUM_DEPS, PDFIUM_DEPS, 'freetype_revision')
+    success, message = _run_roll_dep('freetype_revision')
     self.assertTrue(success)
     self.assertEqual(
         'third_party/freetype/roll-freetype.sh '
@@ -2496,104 +2646,93 @@ class RollDepTest(unittest.TestCase):
         '--ignore-dirty-tree --no-log', message)
 
   def testGitDepsRollsToChromiumRevisionNothingToRoll(self):
-    success, message = roll_dep(CHROMIUM_DEPS, PDFIUM_DEPS,
-                                'clang_format_revision')
+    success, message = _run_roll_dep('clang_format_revision')
     self.assertTrue(success)
     self.assertEqual('Revisions are the same.', message)
 
-    success, message = roll_dep(CHROMIUM_DEPS, PDFIUM_DEPS,
-                                'cpu_features_revision')
+    success, message = _run_roll_dep('cpu_features_revision')
     self.assertTrue(success)
     self.assertEqual('Revisions are the same.', message)
 
-    success, message = roll_dep(CHROMIUM_DEPS, PDFIUM_DEPS,
-                                'dragonbox_revision')
+    success, message = _run_roll_dep('dragonbox_revision')
     self.assertTrue(success)
     self.assertEqual('Revisions are the same.', message)
 
-    success, message = roll_dep(CHROMIUM_DEPS, PDFIUM_DEPS,
-                                'fast_float_revision')
+    success, message = _run_roll_dep('fast_float_revision')
     self.assertTrue(success)
     self.assertEqual('Revisions are the same.', message)
 
-    success, message = roll_dep(CHROMIUM_DEPS, PDFIUM_DEPS, 'fp16_revision')
+    success, message = _run_roll_dep('fp16_revision')
     self.assertTrue(success)
     self.assertEqual('Revisions are the same.', message)
 
-    success, message = roll_dep(CHROMIUM_DEPS, PDFIUM_DEPS, 'highway_revision')
+    success, message = _run_roll_dep('highway_revision')
     self.assertTrue(success)
     self.assertEqual('Revisions are the same.', message)
 
   def testGitDepsRollsToTipOfTree(self):
-    success, message = roll_dep(CHROMIUM_DEPS, PDFIUM_DEPS, 'abseil_revision')
+    success, message = _run_roll_dep('abseil_revision')
     self.assertTrue(success)
     self.assertEqual(
         'roll-dep third_party/abseil-cpp '
         '--ignore-dirty-tree --no-log', message)
 
-    success, message = roll_dep(CHROMIUM_DEPS, PDFIUM_DEPS, 'brotli_revision')
+    success, message = _run_roll_dep('brotli_revision')
     self.assertTrue(success)
     self.assertEqual('roll-dep third_party/brotli --ignore-dirty-tree --no-log',
                      message)
 
-    success, message = roll_dep(CHROMIUM_DEPS, PDFIUM_DEPS, 'build_revision')
+    success, message = _run_roll_dep('build_revision')
     self.assertTrue(success)
     self.assertEqual('roll-dep build --ignore-dirty-tree --no-log', message)
 
-    success, message = roll_dep(CHROMIUM_DEPS, PDFIUM_DEPS,
-                                'buildtools_revision')
+    success, message = _run_roll_dep('buildtools_revision')
     self.assertTrue(success)
     self.assertEqual('roll-dep buildtools --ignore-dirty-tree --no-log',
                      message)
 
-    success, message = roll_dep(CHROMIUM_DEPS, PDFIUM_DEPS, 'clang_revision')
+    success, message = _run_roll_dep('clang_revision')
     self.assertTrue(success)
     self.assertEqual('roll-dep tools/clang --ignore-dirty-tree --no-log',
                      message)
 
-    success, message = roll_dep(CHROMIUM_DEPS, PDFIUM_DEPS,
-                                'partition_allocator_revision')
+    success, message = _run_roll_dep('partition_allocator_revision')
     self.assertTrue(success)
     self.assertEqual(
         'roll-dep base/allocator/partition_allocator '
         '--ignore-dirty-tree --no-log', message)
 
-    success, message = roll_dep(CHROMIUM_DEPS, PDFIUM_DEPS, 'rust_revision')
+    success, message = _run_roll_dep('rust_revision')
     self.assertTrue(success)
     self.assertEqual('roll-dep third_party/rust --ignore-dirty-tree --no-log',
                      message)
 
-    success, message = roll_dep(CHROMIUM_DEPS, PDFIUM_DEPS,
-                                'testing_rust_revision')
+    success, message = _run_roll_dep('testing_rust_revision')
     self.assertTrue(success)
     self.assertEqual(
         'roll-dep testing/scripts/rust '
         '--ignore-dirty-tree --no-log', message)
 
-    success, message = roll_dep(CHROMIUM_DEPS, PDFIUM_DEPS,
-                                'tools_rust_revision')
+    success, message = _run_roll_dep('tools_rust_revision')
     self.assertTrue(success)
     self.assertEqual('roll-dep tools/rust --ignore-dirty-tree --no-log',
                      message)
 
-    success, message = roll_dep(CHROMIUM_DEPS, PDFIUM_DEPS,
-                                'tools_win_revision')
+    success, message = _run_roll_dep('tools_win_revision')
     self.assertTrue(success)
     self.assertEqual('roll-dep tools/win --ignore-dirty-tree --no-log', message)
 
   def testInvalidEntry(self):
-    success, message = roll_dep(CHROMIUM_DEPS, PDFIUM_DEPS, 'invalid')
+    success, message = _run_roll_dep('invalid')
     self.assertFalse(success)
     self.assertEqual('Entry "invalid" not found in PDFium DEPS.', message)
 
   def testUnsupportedEntry(self):
-    success, message = roll_dep(CHROMIUM_DEPS, PDFIUM_DEPS,
-                                'pdfium_tests_revision')
+    success, message = _run_roll_dep('pdfium_tests_revision')
     self.assertFalse(success)
     self.assertEqual('Rolling pdfium_tests_revision is not supported.', message)
 
-    success, message = roll_dep(CHROMIUM_DEPS, PDFIUM_DEPS,
-                                'test_fonts_revision')
+    success, message = _run_roll_dep('test_fonts_revision')
     self.assertFalse(success)
     self.assertEqual('Rolling test_fonts_revision is not supported.', message)
 
@@ -2615,7 +2754,7 @@ class RollAllDepsTest(unittest.TestCase):
         'roll-dep third_party/googletest/src '
         '--roll-to 4fe3307fb2d9f86d19777c7eb0e4809e9694dde7 '
         '--ignore-dirty-tree --no-log',
-        'roll-dep third_party/harfbuzz-ng/src '
+        'roll-dep third_party/harfbuzz/src '
         '--roll-to 31695252eb6ed25096893aec7f848889dad874bc '
         '--ignore-dirty-tree --no-log',
         'roll-dep third_party/icu '
@@ -2648,13 +2787,18 @@ class RollAllDepsTest(unittest.TestCase):
         '--roll-to 83b0b9e6065a60617504aa1d6e6997c511c3afac '
         '--ignore-dirty-tree --no-log',
         'roll-dep testing/scripts/rust --ignore-dirty-tree --no-log',
+        'roll_downstream_gcs_deps.py '
+        '--source-deps CHROMIUM_DEPS --destination-deps DEPS '
+        '--source-package src/third_party/llvm-build/Release+Asserts '
+        '--destination-package third_party/llvm-build/Release+Asserts',
         'roll-dep tools/rust --ignore-dirty-tree --no-log',
         'roll-dep tools/win --ignore-dirty-tree --no-log',
         'roll-dep v8 --roll-to 5bd40de12569247beb113659504906aa41e48959 '
         '--ignore-dirty-tree --no-log',
     ]
 
-    success, message = roll_all_deps(CHROMIUM_DEPS, PDFIUM_DEPS)
+    success, message = roll_all_deps(CHROMIUM_DEPS, PDFIUM_DEPS,
+                                     'CHROMIUM_DEPS', 'DEPS')
     self.assertTrue(success)
     self.assertEqual(EXPECTED_ALL, message)
 

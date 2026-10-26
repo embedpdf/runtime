@@ -6,11 +6,35 @@
 
 #include "core/fxcodec/fx_codec.h"
 
-#include <utility>
-
 #include "core/fxcrt/numerics/safe_conversions.h"
 #include "core/fxcrt/span_util.h"
 #include "core/fxge/dib/fx_dib.h"
+
+#if defined(PDF_USE_LIBYUV)
+#include "third_party/libyuv/include/libyuv/planar_functions.h"
+#else
+#include <utility>
+
+#include "core/fxcrt/zip.h"
+#endif
+
+#if BUILDFLAG(IS_WIN)
+#include "core/fxcodec/basic/basicmodule.h"
+#include "core/fxcodec/fax/faxmodule.h"
+#include "core/fxcodec/flate/flatemodule.h"
+#include "core/fxcodec/jpeg/jpegmodule.h"
+#include "core/fxge/cfx_gemodule.h"
+#endif
+
+#if BUILDFLAG(IS_WIN)
+namespace {
+
+constexpr EncoderIface kEncoderIface = {
+    BasicModule::A85Encode, FaxModule::FaxEncode, FlateModule::Encode,
+    JpegModule::JpegEncode, BasicModule::RunLengthEncode};
+
+}  // namespace
+#endif
 
 namespace fxcodec {
 
@@ -31,20 +55,34 @@ void ReverseRGB(pdfium::span<uint8_t> pDestBuf,
       fxcrt::reinterpret_span<const FX_RGB_STRUCT<uint8_t>>(pSrcBuf).first(
           count);
 
+#if defined(PDF_USE_LIBYUV)
+  libyuv::RGB24ToRAW(pdfium::as_bytes(src_span).data(), pixels * 3,
+                     pdfium::as_writable_bytes(dst_span).data(), pixels * 3,
+                     pixels, 1);
+#else
   if (dst_span.data() == src_span.data()) {
     for (auto& pix : dst_span) {
       std::swap(pix.red, pix.blue);
     }
     return;
   }
-
-  for (const auto& src_pix : src_span) {
-    auto& dst_pix = dst_span.front();
-    dst_pix.red = src_pix.blue;
-    dst_pix.green = src_pix.green;
-    dst_pix.blue = src_pix.red;
-    dst_span = dst_span.subspan<1u>();
+  for (auto [src_pix, dst_pix] : fxcrt::Zip(src_span, dst_span)) {
+    // Compiler can't prove `src_span` and `dst_span` aren't aliased, so use
+    // locals to avoid interleaved loads/stores.
+    const uint8_t blue = src_pix.blue;
+    const uint8_t green = src_pix.green;
+    const uint8_t red = src_pix.red;
+    dst_pix.red = blue;
+    dst_pix.green = green;
+    dst_pix.blue = red;
   }
+#endif
+}
+
+void RegisterEncoders() {
+#if BUILDFLAG(IS_WIN)
+  CFX_GEModule::Get()->SetEncoderIface(&kEncoderIface);
+#endif
 }
 
 }  // namespace fxcodec

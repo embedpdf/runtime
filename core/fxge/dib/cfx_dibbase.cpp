@@ -23,17 +23,24 @@
 #include "core/fxcrt/span_util.h"
 #include "core/fxcrt/stl_util.h"
 #include "core/fxcrt/zip.h"
-#include "core/fxge/agg/cfx_agg_cliprgn.h"
 #include "core/fxge/calculate_pitch.h"
 #include "core/fxge/dib/cfx_bitmapstorer.h"
 #include "core/fxge/dib/cfx_dibitmap.h"
 #include "core/fxge/dib/cfx_imagestretcher.h"
 #include "core/fxge/dib/cfx_imagetransformer.h"
 
+#if defined(PDF_USE_LIBYUV)
+#include "third_party/libyuv/include/libyuv/convert_argb.h"
+#include "third_party/libyuv/include/libyuv/convert_from_argb.h"
+#include "third_party/libyuv/include/libyuv/planar_functions.h"
+#include "third_party/libyuv/include/libyuv/rotate.h"
+#include "third_party/libyuv/include/libyuv/rotate_argb.h"
+#endif
+
 namespace {
 
 #if defined(PDF_USE_SKIA)
-void ConvertBuffer_Rgb2ArgbPremul(
+void ConvertBuffer_RgbToArgbPremul(
     pdfium::span<uint8_t> dest_buf,
     int dest_pitch,
     int width,
@@ -41,6 +48,23 @@ void ConvertBuffer_Rgb2ArgbPremul(
     const RetainPtr<const CFX_DIBBase>& src_bitmap,
     int src_left,
     int src_top) {
+#if defined(PDF_USE_LIBYUV)
+  if (!src_bitmap->GetBuffer().empty()) {
+    const uint8_t* src_buf = src_bitmap->GetScanline(src_top)
+                                 .subspan(Fx2DSizeOrDie(src_left, 3))
+                                 .data();
+    libyuv::RGB24ToARGB(src_buf, src_bitmap->GetPitch(), dest_buf.data(),
+                        dest_pitch, width, height);
+    return;
+  }
+
+  for (int row = 0; row < height; ++row) {
+    auto dest_span = dest_buf.subspan(Fx2DSizeOrDie(row, dest_pitch));
+    auto src_span = src_bitmap->GetScanline(src_top + row)
+                        .subspan(Fx2DSizeOrDie(src_left, 3));
+    libyuv::RGB24ToARGB(src_span.data(), 0, dest_span.data(), 0, width, 1);
+  }
+#else
   for (int row = 0; row < height; ++row) {
     auto dest_span = fxcrt::reinterpret_span<FX_BGRA_STRUCT<uint8_t>>(
         dest_buf.subspan(Fx2DSizeOrDie(row, dest_pitch)));
@@ -48,12 +72,17 @@ void ConvertBuffer_Rgb2ArgbPremul(
         src_bitmap->GetScanlineAs<FX_BGR_STRUCT<uint8_t>>(src_top + row)
             .subspan(static_cast<size_t>(src_left));
     for (auto [input, output] : fxcrt::Zip(src_span, dest_span)) {
-      output.blue = input.blue;
-      output.green = input.green;
-      output.red = input.red;
+      // Avoid interleaved load/stores.
+      const uint8_t blue = input.blue;
+      const uint8_t green = input.green;
+      const uint8_t red = input.red;
+      output.blue = blue;
+      output.green = green;
+      output.red = red;
       output.alpha = 255;
     }
   }
+#endif
 }
 
 void ConvertBuffer_ArgbPremulToRgb(
@@ -91,8 +120,8 @@ void ConvertBuffer_ArgbPremul(pdfium::span<uint8_t> dest_buf,
       // TODO(crbug.com/42271020): Determine if this ever happens.
       NOTREACHED();
     case 24:
-      ConvertBuffer_Rgb2ArgbPremul(dest_buf, dest_pitch, width, height,
-                                   src_bitmap, src_left, src_top);
+      ConvertBuffer_RgbToArgbPremul(dest_buf, dest_pitch, width, height,
+                                    src_bitmap, src_left, src_top);
       break;
     case 32:
       // TODO(crbug.com/42271020): Determine if this ever happens.
@@ -103,13 +132,14 @@ void ConvertBuffer_ArgbPremul(pdfium::span<uint8_t> dest_buf,
 }
 #endif  // default(PDF_USE_SKIA)
 
-void ConvertBuffer_1bppMask2Gray(pdfium::span<uint8_t> dest_buf,
-                                 int dest_pitch,
-                                 int width,
-                                 int height,
-                                 const RetainPtr<const CFX_DIBBase>& pSrcBitmap,
-                                 int src_left,
-                                 int src_top) {
+void ConvertBuffer_1bppMaskToGray(
+    pdfium::span<uint8_t> dest_buf,
+    int dest_pitch,
+    int width,
+    int height,
+    const RetainPtr<const CFX_DIBBase>& pSrcBitmap,
+    int src_left,
+    int src_top) {
   static constexpr uint8_t kSetGray = 0xff;
   static constexpr uint8_t kResetGray = 0x00;
   for (int row = 0; row < height; ++row) {
@@ -131,13 +161,14 @@ void ConvertBuffer_1bppMask2Gray(pdfium::span<uint8_t> dest_buf,
   }
 }
 
-void ConvertBuffer_8bppMask2Gray(pdfium::span<uint8_t> dest_buf,
-                                 int dest_pitch,
-                                 int width,
-                                 int height,
-                                 const RetainPtr<const CFX_DIBBase>& pSrcBitmap,
-                                 int src_left,
-                                 int src_top) {
+void ConvertBuffer_8bppMaskToGray(
+    pdfium::span<uint8_t> dest_buf,
+    int dest_pitch,
+    int width,
+    int height,
+    const RetainPtr<const CFX_DIBBase>& pSrcBitmap,
+    int src_left,
+    int src_top) {
   for (int row = 0; row < height; ++row) {
     fxcrt::Copy(
         pSrcBitmap->GetScanline(src_top + row)
@@ -146,13 +177,13 @@ void ConvertBuffer_8bppMask2Gray(pdfium::span<uint8_t> dest_buf,
   }
 }
 
-void ConvertBuffer_8bppPlt2Gray(pdfium::span<uint8_t> dest_buf,
-                                int dest_pitch,
-                                int width,
-                                int height,
-                                const RetainPtr<const CFX_DIBBase>& src,
-                                int src_left,
-                                int src_top) {
+void ConvertBuffer_8bppPltToGray(pdfium::span<uint8_t> dest_buf,
+                                 int dest_pitch,
+                                 int width,
+                                 int height,
+                                 const RetainPtr<const CFX_DIBBase>& src,
+                                 int src_left,
+                                 int src_top) {
   pdfium::span<const uint32_t> src_palette = src->GetPaletteSpan();
   CHECK_EQ(256u, src_palette.size());
   std::array<uint8_t, 256> gray;
@@ -170,26 +201,23 @@ void ConvertBuffer_8bppPlt2Gray(pdfium::span<uint8_t> dest_buf,
   }
 }
 
-void ConvertBuffer_Rgb2Gray(pdfium::span<uint8_t> dest_buf,
-                            int dest_pitch,
-                            int width,
-                            int height,
-                            const RetainPtr<const CFX_DIBBase>& pSrcBitmap,
-                            int src_left,
-                            int src_top) {
-  const int bytes_per_pixel = pSrcBitmap->GetBPP() / 8;
-  const size_t x_offset = Fx2DSizeOrDie(src_left, bytes_per_pixel);
+template <typename SrcType>
+void ConvertBuffer_RgbToGray(pdfium::span<uint8_t> dest_buf,
+                             int dest_pitch,
+                             int width,
+                             int height,
+                             const RetainPtr<const CFX_DIBBase>& pSrcBitmap,
+                             int src_left,
+                             int src_top) {
+  CHECK_EQ(pSrcBitmap->GetBPP(), 8 * sizeof(SrcType));
   for (int row = 0; row < height; ++row) {
-    uint8_t* dest_scan =
-        dest_buf.subspan(Fx2DSizeOrDie(row, dest_pitch)).data();
-    const uint8_t* src_scan =
-        pSrcBitmap->GetScanline(src_top + row).subspan(x_offset).data();
-    UNSAFE_TODO({
-      for (int col = 0; col < width; ++col) {
-        *dest_scan++ = FXRGB2GRAY(src_scan[2], src_scan[1], src_scan[0]);
-        src_scan += bytes_per_pixel;
-      }
-    });
+    auto dest_scan = dest_buf.subspan(Fx2DSizeOrDie(row, dest_pitch));
+    auto src_scan =
+        pSrcBitmap->GetScanlineAs<SrcType>(src_top + row)
+            .subspan(static_cast<size_t>(src_left), static_cast<size_t>(width));
+    for (auto [src_pix, dest_pix] : fxcrt::Zip(src_scan, dest_scan)) {
+      dest_pix = FXRGB2GRAY(src_pix.red, src_pix.green, src_pix.blue);
+    }
   }
 }
 
@@ -231,7 +259,7 @@ void ConvertBuffer_IndexCopy(pdfium::span<uint8_t> dest_buf,
 }
 
 // Returns a palette of a fixed size.
-DataVector<uint32_t> ConvertBuffer_Plt2PltRgb8(
+DataVector<uint32_t> ConvertBuffer_PltToPltRgb8(
     pdfium::span<uint8_t> dest_buf,
     int dest_pitch,
     int width,
@@ -242,20 +270,16 @@ DataVector<uint32_t> ConvertBuffer_Plt2PltRgb8(
   ConvertBuffer_IndexCopy(dest_buf, dest_pitch, width, height, pSrcBitmap,
                           src_left, src_top);
   const size_t plt_size = pSrcBitmap->GetRequiredPaletteSize();
-  pdfium::span<const uint32_t> src_span = pSrcBitmap->GetPaletteSpan();
-  CHECK_LE(plt_size, src_span.size());
-
-  pdfium::span<const uint32_t> src_palette_span = src_span.first(plt_size);
-  return DataVector<uint32_t>(src_palette_span.begin(), src_palette_span.end());
+  return ToDataVector(pSrcBitmap->GetPaletteSpan().first(plt_size));
 }
 
-void ConvertBuffer_1bppMask2Rgb(pdfium::span<uint8_t> dest_buf,
-                                int dest_pitch,
-                                int width,
-                                int height,
-                                const RetainPtr<const CFX_DIBBase>& pSrcBitmap,
-                                int src_left,
-                                int src_top) {
+void ConvertBuffer_1bppMaskToRgb(pdfium::span<uint8_t> dest_buf,
+                                 int dest_pitch,
+                                 int width,
+                                 int height,
+                                 const RetainPtr<const CFX_DIBBase>& pSrcBitmap,
+                                 int src_left,
+                                 int src_top) {
   static constexpr uint8_t kSetGray = 0xff;
   static constexpr uint8_t kResetGray = 0x00;
   for (int row = 0; row < height; ++row) {
@@ -273,38 +297,56 @@ void ConvertBuffer_1bppMask2Rgb(pdfium::span<uint8_t> dest_buf,
   }
 }
 
-void ConvertBuffer_8bppMask2Rgb(FXDIB_Format dest_format,
-                                pdfium::span<uint8_t> dest_buf,
+void ConvertBuffer_8bppMaskToRgb24(
+    pdfium::span<uint8_t> dest_buf,
+    int dest_pitch,
+    int width,
+    int height,
+    const RetainPtr<const CFX_DIBBase>& pSrcBitmap,
+    int src_left,
+    int src_top) {
+  for (int row = 0; row < height; ++row) {
+    auto dest_scan = fxcrt::reinterpret_span<FX_BGR_STRUCT<uint8_t>>(
+        dest_buf.subspan(Fx2DSizeOrDie(row, dest_pitch)));
+    auto src_scan =
+        pSrcBitmap->GetScanline(src_top + row)
+            .subspan(static_cast<size_t>(src_left), static_cast<size_t>(width));
+    for (auto [src_pix, dest_pix] : fxcrt::Zip(src_scan, dest_scan)) {
+      dest_pix = {src_pix, src_pix, src_pix};
+    }
+  }
+}
+
+void ConvertBuffer_8bppMaskToRgb32(
+    pdfium::span<uint8_t> dest_buf,
+    int dest_pitch,
+    int width,
+    int height,
+    const RetainPtr<const CFX_DIBBase>& pSrcBitmap,
+    int src_left,
+    int src_top) {
+  for (int row = 0; row < height; ++row) {
+    auto dest_scan = fxcrt::reinterpret_span<FX_BGRA_STRUCT<uint8_t>>(
+        dest_buf.subspan(Fx2DSizeOrDie(row, dest_pitch)));
+    auto src_scan =
+        pSrcBitmap->GetScanline(src_top + row)
+            .subspan(static_cast<size_t>(src_left), static_cast<size_t>(width));
+    for (auto [src_pix, dest_pix] : fxcrt::Zip(src_scan, dest_scan)) {
+      // This should allow the compiler to assemble a 32-bit word in
+      // registers followed by a 32-bit store, likely more efficient
+      // despite the read of the unchanging alpha value.
+      dest_pix = {src_pix, src_pix, src_pix, dest_pix.alpha};
+    }
+  }
+}
+
+void ConvertBuffer_1bppPltToRgb(pdfium::span<uint8_t> dest_buf,
                                 int dest_pitch,
                                 int width,
                                 int height,
                                 const RetainPtr<const CFX_DIBBase>& pSrcBitmap,
                                 int src_left,
                                 int src_top) {
-  int comps = GetCompsFromFormat(dest_format);
-  for (int row = 0; row < height; ++row) {
-    uint8_t* dest_scan =
-        dest_buf.subspan(Fx2DSizeOrDie(row, dest_pitch)).data();
-    const uint8_t* src_scan = pSrcBitmap->GetScanline(src_top + row)
-                                  .subspan(static_cast<size_t>(src_left))
-                                  .data();
-    UNSAFE_TODO({
-      for (int col = 0; col < width; ++col) {
-        FXSYS_memset(dest_scan, *src_scan, 3);
-        dest_scan += comps;
-        ++src_scan;
-      }
-    });
-  }
-}
-
-void ConvertBuffer_1bppPlt2Rgb(pdfium::span<uint8_t> dest_buf,
-                               int dest_pitch,
-                               int width,
-                               int height,
-                               const RetainPtr<const CFX_DIBBase>& pSrcBitmap,
-                               int src_left,
-                               int src_top) {
   pdfium::span<const uint32_t> src_palette = pSrcBitmap->GetPaletteSpan();
   const uint8_t dst_palette[6] = {
       FXARGB_B(src_palette[0]), FXARGB_G(src_palette[0]),
@@ -324,42 +366,103 @@ void ConvertBuffer_1bppPlt2Rgb(pdfium::span<uint8_t> dest_buf,
   }
 }
 
-void ConvertBuffer_8bppPlt2Rgb(FXDIB_Format dest_format,
-                               pdfium::span<uint8_t> dest_buf,
-                               int dest_pitch,
-                               int width,
-                               int height,
-                               const RetainPtr<const CFX_DIBBase>& pSrcBitmap,
-                               int src_left,
-                               int src_top) {
-  pdfium::span<const uint32_t> src_palette = pSrcBitmap->GetPaletteSpan();
-  CHECK_EQ(256u, src_palette.size());
-  uint8_t dst_palette[768];
-  UNSAFE_TODO({
-    for (int i = 0; i < 256; ++i) {
-      dst_palette[3 * i] = FXARGB_B(src_palette[i]);
-      dst_palette[3 * i + 1] = FXARGB_G(src_palette[i]);
-      dst_palette[3 * i + 2] = FXARGB_R(src_palette[i]);
-    }
-  });
-  const int comps = GetCompsFromFormat(dest_format);
+void ConvertBuffer_8bppPltToRgb24(
+    pdfium::span<FX_BGR_STRUCT<uint8_t>, 256> dst_palette,
+    pdfium::span<uint8_t> dest_buf,
+    int dest_pitch,
+    int width,
+    int height,
+    const RetainPtr<const CFX_DIBBase>& pSrcBitmap,
+    int src_left,
+    int src_top) {
   for (int row = 0; row < height; ++row) {
-    uint8_t* dest_scan =
-        dest_buf.subspan(Fx2DSizeOrDie(row, dest_pitch)).data();
-    const uint8_t* src_scan = pSrcBitmap->GetScanline(src_top + row)
-                                  .subspan(static_cast<size_t>(src_left))
-                                  .data();
-    for (int col = 0; col < width; ++col) {
-      UNSAFE_TODO({
-        uint8_t* src_pixel = dst_palette + 3 * (*src_scan++);
-        FXSYS_memcpy(dest_scan, src_pixel, 3);
-        dest_scan += comps;
-      });
+    auto dest_scan = fxcrt::reinterpret_span<FX_BGR_STRUCT<uint8_t>>(
+        dest_buf.subspan(Fx2DSizeOrDie(row, dest_pitch)));
+    auto src_scan =
+        pSrcBitmap->GetScanline(src_top + row)
+            .subspan(static_cast<size_t>(src_left), static_cast<size_t>(width));
+    for (auto [src_index, dest_pix] : fxcrt::Zip(src_scan, dest_scan)) {
+      dest_pix = dst_palette[src_index];
     }
   }
 }
 
-void ConvertBuffer_24bppRgb2Rgb24(
+void ConvertBuffer_8bppPltToRgb32(
+    pdfium::span<FX_BGR_STRUCT<uint8_t>, 256> dst_palette,
+    pdfium::span<uint8_t> dest_buf,
+    int dest_pitch,
+    int width,
+    int height,
+    const RetainPtr<const CFX_DIBBase>& pSrcBitmap,
+    int src_left,
+    int src_top) {
+  for (int row = 0; row < height; ++row) {
+    auto dest_scan = fxcrt::reinterpret_span<FX_BGRA_STRUCT<uint8_t>>(
+        dest_buf.subspan(Fx2DSizeOrDie(row, dest_pitch)));
+    auto src_scan =
+        pSrcBitmap->GetScanline(src_top + row)
+            .subspan(static_cast<size_t>(src_left), static_cast<size_t>(width));
+    for (auto [src_index, dest_pix] : fxcrt::Zip(src_scan, dest_scan)) {
+      const auto& pal_pix = dst_palette[src_index];
+      // This should allow the compiler to assemble a 32-bit word in
+      // registers followed by a 32-bit store, likely more efficient
+      // despite the read of the unchanging alpha value.
+      dest_pix = {pal_pix.blue, pal_pix.green, pal_pix.red, dest_pix.alpha};
+    }
+  }
+}
+
+void ConvertBuffer_1bppToRgb(pdfium::span<uint8_t> dest_buf,
+                             int dest_pitch,
+                             int width,
+                             int height,
+                             const RetainPtr<const CFX_DIBBase>& pSrcBitmap,
+                             int src_left,
+                             int src_top) {
+  if (pSrcBitmap->HasPalette()) {
+    ConvertBuffer_1bppPltToRgb(dest_buf, dest_pitch, width, height, pSrcBitmap,
+                               src_left, src_top);
+  } else {
+    ConvertBuffer_1bppMaskToRgb(dest_buf, dest_pitch, width, height, pSrcBitmap,
+                                src_left, src_top);
+  }
+}
+
+void ConvertBuffer_8bppToRgb(FXDIB_Format dest_format,
+                             pdfium::span<uint8_t> dest_buf,
+                             int dest_pitch,
+                             int width,
+                             int height,
+                             const RetainPtr<const CFX_DIBBase>& pSrcBitmap,
+                             int src_left,
+                             int src_top) {
+  if (pSrcBitmap->HasPalette()) {
+    pdfium::span<const uint32_t> src_palette = pSrcBitmap->GetPaletteSpan();
+    CHECK_EQ(256u, src_palette.size());
+    std::array<FX_BGR_STRUCT<uint8_t>, 256> dst_palette;
+    for (auto [src_color, dst_color] : fxcrt::Zip(src_palette, dst_palette)) {
+      dst_color = {FXARGB_B(src_color), FXARGB_G(src_color),
+                   FXARGB_R(src_color)};
+    }
+    if (GetCompsFromFormat(dest_format) == 3) {
+      ConvertBuffer_8bppPltToRgb24(dst_palette, dest_buf, dest_pitch, width,
+                                   height, pSrcBitmap, src_left, src_top);
+    } else {
+      ConvertBuffer_8bppPltToRgb32(dst_palette, dest_buf, dest_pitch, width,
+                                   height, pSrcBitmap, src_left, src_top);
+    }
+  } else {
+    if (GetCompsFromFormat(dest_format) == 3) {
+      ConvertBuffer_8bppMaskToRgb24(dest_buf, dest_pitch, width, height,
+                                    pSrcBitmap, src_left, src_top);
+    } else {
+      ConvertBuffer_8bppMaskToRgb32(dest_buf, dest_pitch, width, height,
+                                    pSrcBitmap, src_left, src_top);
+    }
+  }
+}
+
+void ConvertBuffer_24bppRgbToRgb24(
     pdfium::span<uint8_t> dest_buf,
     int dest_pitch,
     int width,
@@ -376,7 +479,7 @@ void ConvertBuffer_24bppRgb2Rgb24(
   }
 }
 
-void ConvertBuffer_32bppRgb2Rgb24(
+void ConvertBuffer_32bppRgbToRgb24(
     pdfium::span<uint8_t> dest_buf,
     int dest_pitch,
     int width,
@@ -385,11 +488,24 @@ void ConvertBuffer_32bppRgb2Rgb24(
     int src_left,
     int src_top) {
   const size_t x_offset = Fx2DSizeOrDie(src_left, 4);
+#if defined(PDF_USE_LIBYUV)
+  if (!pSrcBitmap->GetBuffer().empty()) {
+    const uint8_t* src_buf =
+        pSrcBitmap->GetScanline(src_top).subspan(x_offset).data();
+    libyuv::ARGBToRGB24(src_buf, pSrcBitmap->GetPitch(), dest_buf.data(),
+                        dest_pitch, width, height);
+    return;
+  }
+#endif
+
   for (int row = 0; row < height; ++row) {
     uint8_t* dest_scan =
         dest_buf.subspan(Fx2DSizeOrDie(row, dest_pitch)).data();
     const uint8_t* src_scan =
         pSrcBitmap->GetScanline(src_top + row).subspan(x_offset).data();
+#if defined(PDF_USE_LIBYUV)
+    libyuv::ARGBToRGB24(src_scan, 0, dest_scan, 0, width, 1);
+#else
     UNSAFE_TODO({
       for (int col = 0; col < width; ++col) {
         FXSYS_memcpy(dest_scan, src_scan, 3);
@@ -397,30 +513,31 @@ void ConvertBuffer_32bppRgb2Rgb24(
         src_scan += 4;
       }
     });
+#endif
   }
 }
 
-void ConvertBuffer_Rgb2Rgb32(pdfium::span<uint8_t> dest_buf,
-                             int dest_pitch,
-                             int width,
-                             int height,
-                             const RetainPtr<const CFX_DIBBase>& pSrcBitmap,
-                             int src_left,
-                             int src_top) {
-  const int comps = pSrcBitmap->GetBPP() / 8;
-  const size_t x_offset = Fx2DSizeOrDie(src_left, comps);
+template <typename SrcType>
+void ConvertBuffer_RgbToRgb32(pdfium::span<uint8_t> dest_buf,
+                              int dest_pitch,
+                              int width,
+                              int height,
+                              const RetainPtr<const CFX_DIBBase>& pSrcBitmap,
+                              int src_left,
+                              int src_top) {
+  CHECK_EQ(pSrcBitmap->GetBPP(), 8 * sizeof(SrcType));
   for (int row = 0; row < height; ++row) {
-    uint8_t* dest_scan =
-        dest_buf.subspan(Fx2DSizeOrDie(row, dest_pitch)).data();
-    const uint8_t* src_scan =
-        pSrcBitmap->GetScanline(src_top + row).subspan(x_offset).data();
-    UNSAFE_TODO({
-      for (int col = 0; col < width; ++col) {
-        FXSYS_memcpy(dest_scan, src_scan, 3);
-        dest_scan += 4;
-        src_scan += comps;
-      }
-    });
+    auto dest_scan = fxcrt::reinterpret_span<FX_BGRA_STRUCT<uint8_t>>(
+        dest_buf.subspan(Fx2DSizeOrDie(row, dest_pitch)));
+    auto src_scan =
+        pSrcBitmap->GetScanlineAs<SrcType>(src_top + row)
+            .subspan(static_cast<size_t>(src_left), static_cast<size_t>(width));
+    for (auto [src_pix, dest_pix] : fxcrt::Zip(src_scan, dest_scan)) {
+      // This should allow the compiler to assemble a 32-bit word in
+      // registers followed by a 32-bit store, likely more efficient
+      // despite the read of the unchanging alpha value.
+      dest_pix = {src_pix.blue, src_pix.green, src_pix.red, dest_pix.alpha};
+    }
   }
 }
 
@@ -434,26 +551,29 @@ void ConvertBuffer_8bppMask(pdfium::span<uint8_t> dest_buf,
   switch (pSrcBitmap->GetBPP()) {
     case 1:
       CHECK(!pSrcBitmap->HasPalette());
-      ConvertBuffer_1bppMask2Gray(dest_buf, dest_pitch, width, height,
-                                  pSrcBitmap, src_left, src_top);
+      ConvertBuffer_1bppMaskToGray(dest_buf, dest_pitch, width, height,
+                                   pSrcBitmap, src_left, src_top);
       break;
     case 8:
       if (pSrcBitmap->HasPalette()) {
-        ConvertBuffer_8bppPlt2Gray(dest_buf, dest_pitch, width, height,
-                                   pSrcBitmap, src_left, src_top);
-      } else {
-        ConvertBuffer_8bppMask2Gray(dest_buf, dest_pitch, width, height,
+        ConvertBuffer_8bppPltToGray(dest_buf, dest_pitch, width, height,
                                     pSrcBitmap, src_left, src_top);
+      } else {
+        ConvertBuffer_8bppMaskToGray(dest_buf, dest_pitch, width, height,
+                                     pSrcBitmap, src_left, src_top);
       }
       break;
     case 24:
+      ConvertBuffer_RgbToGray<FX_BGR_STRUCT<uint8_t>>(
+          dest_buf, dest_pitch, width, height, pSrcBitmap, src_left, src_top);
+      break;
     case 32:
 #if defined(PDF_USE_SKIA)
       // TODO(crbug.com/42271020): Determine if this ever happens.
       CHECK_NE(pSrcBitmap->GetFormat(), FXDIB_Format::kBgraPremul);
 #endif
-      ConvertBuffer_Rgb2Gray(dest_buf, dest_pitch, width, height, pSrcBitmap,
-                             src_left, src_top);
+      ConvertBuffer_RgbToGray<FX_BGRA_STRUCT<uint8_t>>(
+          dest_buf, dest_pitch, width, height, pSrcBitmap, src_left, src_top);
       break;
     default:
       NOTREACHED();
@@ -470,26 +590,16 @@ void ConvertBuffer_Rgb(FXDIB_Format dest_format,
                        int src_top) {
   switch (pSrcBitmap->GetBPP()) {
     case 1:
-      if (pSrcBitmap->HasPalette()) {
-        ConvertBuffer_1bppPlt2Rgb(dest_buf, dest_pitch, width, height,
-                                  pSrcBitmap, src_left, src_top);
-      } else {
-        ConvertBuffer_1bppMask2Rgb(dest_buf, dest_pitch, width, height,
-                                   pSrcBitmap, src_left, src_top);
-      }
+      ConvertBuffer_1bppToRgb(dest_buf, dest_pitch, width, height, pSrcBitmap,
+                              src_left, src_top);
       break;
     case 8:
-      if (pSrcBitmap->HasPalette()) {
-        ConvertBuffer_8bppPlt2Rgb(dest_format, dest_buf, dest_pitch, width,
-                                  height, pSrcBitmap, src_left, src_top);
-      } else {
-        ConvertBuffer_8bppMask2Rgb(dest_format, dest_buf, dest_pitch, width,
-                                   height, pSrcBitmap, src_left, src_top);
-      }
+      ConvertBuffer_8bppToRgb(dest_format, dest_buf, dest_pitch, width, height,
+                              pSrcBitmap, src_left, src_top);
       break;
     case 24:
-      ConvertBuffer_24bppRgb2Rgb24(dest_buf, dest_pitch, width, height,
-                                   pSrcBitmap, src_left, src_top);
+      ConvertBuffer_24bppRgbToRgb24(dest_buf, dest_pitch, width, height,
+                                    pSrcBitmap, src_left, src_top);
       break;
     case 32:
 #if defined(PDF_USE_SKIA)
@@ -499,8 +609,8 @@ void ConvertBuffer_Rgb(FXDIB_Format dest_format,
         break;
       }
 #endif
-      ConvertBuffer_32bppRgb2Rgb24(dest_buf, dest_pitch, width, height,
-                                   pSrcBitmap, src_left, src_top);
+      ConvertBuffer_32bppRgbToRgb24(dest_buf, dest_pitch, width, height,
+                                    pSrcBitmap, src_left, src_top);
       break;
     default:
       NOTREACHED();
@@ -517,22 +627,20 @@ void ConvertBuffer_Argb(FXDIB_Format dest_format,
                         int src_top) {
   switch (pSrcBitmap->GetBPP()) {
     case 8:
-      if (pSrcBitmap->HasPalette()) {
-        ConvertBuffer_8bppPlt2Rgb(dest_format, dest_buf, dest_pitch, width,
-                                  height, pSrcBitmap, src_left, src_top);
-      } else {
-        ConvertBuffer_8bppMask2Rgb(dest_format, dest_buf, dest_pitch, width,
-                                   height, pSrcBitmap, src_left, src_top);
-      }
+      ConvertBuffer_8bppToRgb(dest_format, dest_buf, dest_pitch, width, height,
+                              pSrcBitmap, src_left, src_top);
       break;
     case 24:
+      ConvertBuffer_RgbToRgb32<FX_BGR_STRUCT<uint8_t>>(
+          dest_buf, dest_pitch, width, height, pSrcBitmap, src_left, src_top);
+      break;
     case 32:
 #if defined(PDF_USE_SKIA)
       // TODO(crbug.com/42271020): Determine if this ever happens.
       CHECK_NE(pSrcBitmap->GetFormat(), FXDIB_Format::kBgraPremul);
 #endif
-      ConvertBuffer_Rgb2Rgb32(dest_buf, dest_pitch, width, height, pSrcBitmap,
-                              src_left, src_top);
+      ConvertBuffer_RgbToRgb32<FX_BGRA_STRUCT<uint8_t>>(
+          dest_buf, dest_pitch, width, height, pSrcBitmap, src_left, src_top);
       break;
     default:
       NOTREACHED();
@@ -545,6 +653,10 @@ CFX_DIBBase::CFX_DIBBase() = default;
 
 CFX_DIBBase::~CFX_DIBBase() = default;
 
+pdfium::span<const uint8_t> CFX_DIBBase::GetBuffer() const {
+  return pdfium::span<const uint8_t>();
+}
+
 bool CFX_DIBBase::SkipToScanline(int line, PauseIndicatorIface* pPause) const {
   return false;
 }
@@ -553,7 +665,7 @@ size_t CFX_DIBBase::GetEstimatedImageMemoryBurden() const {
   return GetRequiredPaletteSize() * sizeof(uint32_t);
 }
 
-#if BUILDFLAG(IS_WIN) || defined(PDF_USE_SKIA)
+#if BUILDFLAG(IS_WIN) || defined(PDF_USE_SKIA) || defined(PDF_USE_LIBYUV)
 RetainPtr<const CFX_DIBitmap> CFX_DIBBase::RealizeIfNeeded() const {
   return Realize();
 }
@@ -708,7 +820,7 @@ bool CFX_DIBBase::GetOverlapRect(int& dest_left,
                                  int src_height,
                                  int& src_left,
                                  int& src_top,
-                                 const CFX_AggClipRgn* pClipRgn) const {
+                                 const FX_RECT* clip_rect) const {
   if (width == 0 || height == 0) {
     return false;
   }
@@ -779,8 +891,8 @@ bool CFX_DIBBase::GetOverlapRect(int& dest_left,
   FX_RECT dest_bound(0, 0, GetWidth(), GetHeight());
   dest_rect.Intersect(dest_bound);
 
-  if (pClipRgn) {
-    dest_rect.Intersect(pClipRgn->GetBox());
+  if (clip_rect) {
+    dest_rect.Intersect(*clip_rect);
   }
   dest_left = dest_rect.left;
   dest_top = dest_rect.top;
@@ -809,7 +921,7 @@ bool CFX_DIBBase::GetOverlapRect(int& dest_left,
 }
 
 void CFX_DIBBase::SetPalette(pdfium::span<const uint32_t> src_palette) {
-  TakePalette(DataVector<uint32_t>(src_palette.begin(), src_palette.end()));
+  TakePalette(ToDataVector(src_palette));
 }
 
 void CFX_DIBBase::TakePalette(DataVector<uint32_t> src_palette) {
@@ -833,7 +945,21 @@ RetainPtr<CFX_DIBitmap> CFX_DIBBase::CloneAlphaMask() const {
     return nullptr;
   }
 
+#if defined(PDF_USE_LIBYUV)
+  if (!GetBuffer().empty()) {
+    libyuv::ARGBExtractAlpha(GetBuffer().data(), GetPitch(),
+                             pMask->GetWritableBuffer().data(),
+                             pMask->GetPitch(), GetWidth(), GetHeight());
+    return pMask;
+  }
+#endif
+
   for (int row = 0; row < GetHeight(); ++row) {
+#if defined(PDF_USE_LIBYUV)
+    libyuv::ARGBExtractAlpha(GetScanline(row).data(), 0,
+                             pMask->GetWritableScanline(row).data(), 0,
+                             GetWidth(), 1);
+#else
     const uint8_t* src_scan = GetScanline(row).subspan<3u>().data();
     uint8_t* dest_scan = pMask->GetWritableScanline(row).data();
     UNSAFE_TODO({
@@ -842,10 +968,12 @@ RetainPtr<CFX_DIBitmap> CFX_DIBBase::CloneAlphaMask() const {
         src_scan += 4;
       }
     });
+#endif
   }
   return pMask;
 }
 
+#if BUILDFLAG(IS_WIN) || defined(PDF_ENABLE_XFA)
 RetainPtr<CFX_DIBitmap> CFX_DIBBase::FlipImage(bool bXFlip, bool bYFlip) const {
   auto pFlipped = pdfium::MakeRetain<CFX_DIBitmap>();
   if (!pFlipped->Create(GetWidth(), GetHeight(), GetFormat())) {
@@ -887,12 +1015,25 @@ RetainPtr<CFX_DIBitmap> CFX_DIBBase::FlipImage(bool bXFlip, bool bYFlip) const {
   }
 
   if (bytes_per_pixel == 1) {
+#if defined(PDF_USE_LIBYUV)
+    if (!GetBuffer().empty()) {
+      libyuv::MirrorPlane(GetBuffer().data(), GetPitch(),
+                          pFlipped->GetWritableBuffer().data(),
+                          pFlipped->GetPitch(), GetWidth(),
+                          bYFlip ? -GetHeight() : GetHeight());
+      return pFlipped;
+    }
+#endif
+
     for (int row = 0; row < GetHeight(); ++row) {
+      const uint8_t* src_scan = GetScanline(row).data();
+      uint8_t* dest_scan =
+          pFlipped->GetWritableScanline(bYFlip ? GetHeight() - row - 1 : row)
+              .data();
+#if defined(PDF_USE_LIBYUV)
+      libyuv::MirrorPlane(src_scan, 0, dest_scan, 0, GetWidth(), 1);
+#else
       UNSAFE_TODO({
-        const uint8_t* src_scan = GetScanline(row).data();
-        uint8_t* dest_scan =
-            pFlipped->GetWritableScanline(bYFlip ? GetHeight() - row - 1 : row)
-                .data();
         dest_scan += (GetWidth() - 1) * bytes_per_pixel;
         for (int col = 0; col < GetWidth(); ++col) {
           *dest_scan = *src_scan;
@@ -900,17 +1041,31 @@ RetainPtr<CFX_DIBitmap> CFX_DIBBase::FlipImage(bool bXFlip, bool bYFlip) const {
           ++src_scan;
         }
       });
+#endif
     }
     return pFlipped;
   }
 
   if (bytes_per_pixel == 3) {
+#if defined(PDF_USE_LIBYUV)
+    if (!GetBuffer().empty()) {
+      libyuv::RGB24Mirror(GetBuffer().data(), GetPitch(),
+                          pFlipped->GetWritableBuffer().data(),
+                          pFlipped->GetPitch(), GetWidth(),
+                          bYFlip ? -GetHeight() : GetHeight());
+      return pFlipped;
+    }
+#endif
+
     for (int row = 0; row < GetHeight(); ++row) {
+      const uint8_t* src_scan = GetScanline(row).data();
+      uint8_t* dest_scan =
+          pFlipped->GetWritableScanline(bYFlip ? GetHeight() - row - 1 : row)
+              .data();
+#if defined(PDF_USE_LIBYUV)
+      libyuv::RGB24Mirror(src_scan, 0, dest_scan, 0, GetWidth(), 1);
+#else
       UNSAFE_TODO({
-        const uint8_t* src_scan = GetScanline(row).data();
-        uint8_t* dest_scan =
-            pFlipped->GetWritableScanline(bYFlip ? GetHeight() - row - 1 : row)
-                .data();
         dest_scan += (GetWidth() - 1) * bytes_per_pixel;
         for (int col = 0; col < GetWidth(); ++col) {
           FXSYS_memcpy(dest_scan, src_scan, 3);
@@ -918,17 +1073,30 @@ RetainPtr<CFX_DIBitmap> CFX_DIBBase::FlipImage(bool bXFlip, bool bYFlip) const {
           src_scan += 3;
         }
       });
+#endif
     }
     return pFlipped;
   }
 
   CHECK_EQ(bytes_per_pixel, 4);
+#if defined(PDF_USE_LIBYUV)
+  if (!GetBuffer().empty()) {
+    libyuv::ARGBMirror(
+        GetBuffer().data(), GetPitch(), pFlipped->GetWritableBuffer().data(),
+        pFlipped->GetPitch(), GetWidth(), bYFlip ? -GetHeight() : GetHeight());
+    return pFlipped;
+  }
+#endif
+
   for (int row = 0; row < GetHeight(); ++row) {
+    const uint8_t* src_scan = GetScanline(row).data();
+    uint8_t* dest_scan =
+        pFlipped->GetWritableScanline(bYFlip ? GetHeight() - row - 1 : row)
+            .data();
+#if defined(PDF_USE_LIBYUV)
+    libyuv::ARGBMirror(src_scan, 0, dest_scan, 0, GetWidth(), 1);
+#else
     UNSAFE_TODO({
-      const uint8_t* src_scan = GetScanline(row).data();
-      uint8_t* dest_scan =
-          pFlipped->GetWritableScanline(bYFlip ? GetHeight() - row - 1 : row)
-              .data();
       dest_scan += (GetWidth() - 1) * bytes_per_pixel;
       for (int col = 0; col < GetWidth(); ++col) {
         const auto* src_scan32 = reinterpret_cast<const uint32_t*>(src_scan);
@@ -938,9 +1106,11 @@ RetainPtr<CFX_DIBitmap> CFX_DIBBase::FlipImage(bool bXFlip, bool bYFlip) const {
         src_scan += 4;
       }
     });
+#endif
   }
   return pFlipped;
 }
+#endif  // BUILDFLAG(IS_WIN) || defined(PDF_ENABLE_XFA)
 
 RetainPtr<CFX_DIBitmap> CFX_DIBBase::ConvertTo(FXDIB_Format dest_format) const {
   CHECK(dest_format == FXDIB_Format::kBgr ||
@@ -1010,6 +1180,40 @@ RetainPtr<CFX_DIBitmap> CFX_DIBBase::SwapXY(bool bXFlip, bool bYFlip) const {
   }
 
   const int bytes_per_pixel = GetBPP() / 8;
+#if defined(PDF_USE_LIBYUV)
+  if (bytes_per_pixel == 1 || bytes_per_pixel == 4) {
+    RetainPtr<const CFX_DIBitmap> realized = RealizeIfNeeded();
+    if (realized) {
+      const uint8_t* src_buf = realized->GetBuffer().data();
+      const int src_pitch = realized->GetPitch();
+      uint8_t* dst_buf = dest_span.data();
+      if (bytes_per_pixel == 1) {
+        if (bXFlip && bYFlip) {
+          libyuv::RotatePlane270(realized->GetScanline(GetHeight() - 1).data(),
+                                 -src_pitch, dst_buf, dest_pitch, GetWidth(),
+                                 GetHeight());
+        } else if (bXFlip) {
+          libyuv::RotatePlane90(src_buf, src_pitch, dst_buf, dest_pitch,
+                                GetWidth(), GetHeight());
+        } else if (bYFlip) {
+          libyuv::RotatePlane270(src_buf, src_pitch, dst_buf, dest_pitch,
+                                 GetWidth(), GetHeight());
+        } else {
+          libyuv::TransposePlane(src_buf, src_pitch, dst_buf, dest_pitch,
+                                 GetWidth(), GetHeight());
+        }
+        return pTransBitmap;
+      }
+      if (libyuv::ARGBRotate(
+              src_buf, src_pitch, dst_buf, dest_pitch, GetWidth(),
+              bXFlip == bYFlip ? -GetHeight() : GetHeight(),
+              bYFlip ? libyuv::kRotate270 : libyuv::kRotate90) == 0) {
+        return pTransBitmap;
+      }
+    }
+  }
+#endif
+
   int dest_step = bYFlip ? -dest_pitch : dest_pitch;
   if (bytes_per_pixel == 3) {
     dest_step -= 2;
@@ -1147,8 +1351,8 @@ DataVector<uint32_t> CFX_DIBBase::ConvertBuffer(
       const int src_bpp = pSrcBitmap->GetBPP();
       CHECK(src_bpp == 1 || src_bpp == 8);
       if (pSrcBitmap->HasPalette()) {
-        return ConvertBuffer_Plt2PltRgb8(dest_buf, dest_pitch, width, height,
-                                         pSrcBitmap, src_left, src_top);
+        return ConvertBuffer_PltToPltRgb8(dest_buf, dest_pitch, width, height,
+                                          pSrcBitmap, src_left, src_top);
       }
       ConvertBuffer_8bppMask(dest_buf, dest_pitch, width, height, pSrcBitmap,
                              src_left, src_top);

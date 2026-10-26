@@ -46,25 +46,37 @@
 
 CJS_Runtime::CJS_Runtime(CPDFSDK_FormFillEnvironment* pFormFillEnv)
     : form_fill_env_(pFormFillEnv) {
-  v8::Isolate* pIsolate = nullptr;
-  IPDF_JSPLATFORM* pPlatform = form_fill_env_->GetFormFillInfo()->m_pJsPlatform;
-  if (pPlatform->version <= 2) {
-    // Backwards compatibility - JS now initialized earlier in more modern
-    // JSPLATFORM versions.
-    unsigned int embedderDataSlot = 0;
-    v8::Isolate* pExternalIsolate = nullptr;
-    if (pPlatform->version == 2) {
-      pExternalIsolate = static_cast<v8::Isolate*>(pPlatform->m_isolate);
-      embedderDataSlot = pPlatform->m_v8EmbedderSlot;
+  v8::Isolate* pIsolate = form_fill_env_->GetIsolate();
+  const bool isolate_from_env = pIsolate != nullptr;
+  if (!pIsolate) {
+    IPDF_JSPLATFORM* pPlatform = form_fill_env_->GetJSPlatform();
+    if (pPlatform->version <= 2) {
+      // Backwards compatibility - JS now initialized earlier in more modern
+      // JSPLATFORM versions.
+      unsigned int embedderDataSlot = 0;
+      v8::Isolate* pExternalIsolate = nullptr;
+      if (pPlatform->version == 2) {
+        pExternalIsolate = static_cast<v8::Isolate*>(pPlatform->m_isolate);
+        embedderDataSlot = pPlatform->m_v8EmbedderSlot;
+      }
+      FXJS_Initialize(embedderDataSlot, pExternalIsolate);
     }
-    FXJS_Initialize(embedderDataSlot, pExternalIsolate);
+    isolate_managed_ = FXJS_GetIsolate(&pIsolate);
   }
-  isolate_managed_ = FXJS_GetIsolate(&pIsolate);
   SetIsolate(pIsolate);
 
   v8::Isolate::Scope isolate_scope(pIsolate);
   v8::HandleScope handle_scope(pIsolate);
-  if (isolate_managed_ || FXJS_GlobalIsolateRefCount() == 0) {
+  bool needs_define_js_objects;
+  if (isolate_from_env) {
+    auto* isolate_data = CFXJS_PerIsolateData::Get(pIsolate);
+    needs_define_js_objects =
+        !isolate_data || !isolate_data->HasObjectDefinitions();
+  } else {
+    needs_define_js_objects =
+        isolate_managed_ || FXJS_GlobalIsolateRefCount() == 0;
+  }
+  if (needs_define_js_objects) {
     DefineJSObjects();
   }
 
@@ -74,6 +86,7 @@ CJS_Runtime::CJS_Runtime(CPDFSDK_FormFillEnvironment* pFormFillEnv)
 }
 
 CJS_Runtime::~CJS_Runtime() {
+  CHECK(!IsBlocking());
   NotifyObservers();
   ReleaseEngine();
   if (isolate_managed_) {
@@ -87,43 +100,27 @@ void CJS_Runtime::DefineJSObjects() {
   v8::Local<v8::Context> context = v8::Context::New(GetIsolate());
   v8::Context::Scope context_scope(context);
 
-  // The call order determines the "ObjDefID" assigned to each class.
-  // ObjDefIDs 0 - 2
   CJS_Border::DefineJSObjects(this);
   CJS_Display::DefineJSObjects(this);
   CJS_Font::DefineJSObjects(this);
-
-  // ObjDefIDs 3 - 5
   CJS_Highlight::DefineJSObjects(this);
   CJS_Position::DefineJSObjects(this);
   CJS_ScaleHow::DefineJSObjects(this);
-
-  // ObjDefIDs 6 - 8
   CJS_ScaleWhen::DefineJSObjects(this);
   CJS_Style::DefineJSObjects(this);
   CJS_Zoomtype::DefineJSObjects(this);
-
-  // ObjDefIDs 9 - 11
   CJS_App::DefineJSObjects(this);
   CJS_Color::DefineJSObjects(this);
   CJS_Console::DefineJSObjects(this);
-
-  // ObjDefIDs 12 - 14
   CJS_Document::DefineJSObjects(this);
   CJS_Event::DefineJSObjects(this);
   CJS_Field::DefineJSObjects(this);
-
-  // ObjDefIDs 15 - 17
   CJS_Global::DefineJSObjects(this);
   CJS_Icon::DefineJSObjects(this);
   CJS_Util::DefineJSObjects(this);
-
-  // ObjDefIDs 18 - 20 (these can't fail, return void).
   CJS_PublicMethods::DefineJSObjects(this);
   CJS_GlobalConsts::DefineJSObjects(this);
   CJS_GlobalArrays::DefineJSObjects(this);
-
-  // ObjDefIDs 21 - 22.
   CJS_TimerObj::DefineJSObjects(this);
   CJS_Annot::DefineJSObjects(this);
 }
@@ -158,7 +155,7 @@ void CJS_Runtime::SetFormFillEnvToDocument() {
     return;
   }
 
-  auto pJSDocument = JSGetObject<CJS_Document>(GetIsolate(), pThis);
+  auto pJSDocument = JSGetObject<CJS_Document>(pThis);
   if (!pJSDocument) {
     return;
   }

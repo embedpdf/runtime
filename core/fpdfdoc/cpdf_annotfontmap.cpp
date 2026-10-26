@@ -1262,8 +1262,8 @@ int CPDF_AnnotFontMap::AddDocumentProgram(
     return -1;
   }
   auto program = std::make_unique<CFX_Font>();
-  if (!program->LoadEmbedded(data->GetSpan(), /*force_vertical=*/false,
-                             stream->KeyForCache()) ||
+  if (!program->LoadFaceZeroFromSpan(data->GetSpan(), /*force_vertical=*/false,
+                                     stream->KeyForCache()) ||
       !program->HasAnyGlyphs() ||
       // A program that cannot map a character (a renumbered subset
       // carrying glyf/loca/hmtx and no cmap, as producers emit for

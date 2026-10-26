@@ -16,27 +16,26 @@
 #include "core/fxcrt/span.h"
 #include "core/fxcrt/unowned_ptr.h"
 #include "core/fxge/cfx_path.h"
+#include "core/fxge/dib/cfx_dibitmap.h"
 #include "core/fxge/dib/fx_dib.h"
-#include "core/fxge/render_defines.h"
 #include "core/fxge/renderdevicedriver_iface.h"
 
-class CFX_AggImageRenderer;
 class CFX_DIBBase;
-class CFX_DIBitmap;
 class CFX_Font;
 class CFX_GraphStateData;
 class PauseIndicatorIface;
-class TextCharPos;
 struct CFX_Color;
 struct CFX_FillRenderOptions;
 struct CFX_TextRenderOptions;
+struct TextCharPos;
 
 enum class BorderStyle { kSolid, kDash, kBeveled, kInset, kUnderline };
 
-// Base class for all render devices. Derived classes must call
-// SetDeviceDriver() to fully initialize the class. Until then, class methods
-// are not safe to call, or may return invalid results.
-class CFX_RenderDevice {
+#if defined(PDF_USE_SKIA)
+class SkCanvas;
+#endif
+
+class CFX_RenderDevice final {
  public:
   class StateRestorer {
    public:
@@ -47,12 +46,28 @@ class CFX_RenderDevice {
     UnownedPtr<CFX_RenderDevice> device_;
   };
 
-  virtual ~CFX_RenderDevice();
+  static std::unique_ptr<CFX_RenderDevice> CreateForBitmap(
+      RetainPtr<CFX_DIBitmap> bitmap,
+      RetainPtr<CFX_DIBitmap> backdrop_bitmap = nullptr,
+      bool rgb_byte_order = false);
+
+#if defined(PDF_USE_SKIA)
+  static std::unique_ptr<CFX_RenderDevice> CreateForSkiaCanvas(
+      SkCanvas& canvas);
+#endif
+
+  static std::unique_ptr<CFX_RenderDevice> CreateWithDriver(
+      std::unique_ptr<RenderDeviceDriverIface> driver);
 
   static CFX_Matrix GetFlipMatrix(float width,
                                   float height,
                                   float left,
                                   float top);
+
+  ~CFX_RenderDevice();
+
+  void Clear(uint32_t color);
+  bool CanUseARGBPremul() const;
 
   void SaveState();
   void RestoreState(bool bKeepSaved);
@@ -60,10 +75,22 @@ class CFX_RenderDevice {
   int GetWidth() const { return width_; }
   int GetHeight() const { return height_; }
   DeviceType GetDeviceType() const { return device_type_; }
-  int GetRenderCaps() const { return render_caps_; }
-  int GetDeviceCaps(int id) const;
+  bool RenderCapGetBits() const { return render_cap_get_bits_; }
+  bool RenderCapBlendMode() const { return render_cap_blend_mode_; }
+  bool RenderCapSoftClip() const { return render_cap_soft_clip_; }
+  bool RenderCapAlphaOutput() const { return render_cap_alpha_output_; }
+#if defined(PDF_USE_SKIA)
+  bool RenderCapShading() const { return render_cap_shading_; }
+#endif
+#if BUILDFLAG(IS_WIN)
+  int GetHorzSize() const;
+  int GetVertSize() const;
+#endif
   RetainPtr<CFX_DIBitmap> GetBitmap();
   RetainPtr<const CFX_DIBitmap> GetBitmap() const;
+  RenderDeviceDriverIface* GetDeviceDriver() const {
+    return device_driver_.get();
+  }
   [[nodiscard]] bool CreateCompatibleBitmap(const RetainPtr<CFX_DIBitmap>& pDIB,
                                             int width,
                                             int height) const;
@@ -133,7 +160,7 @@ class CFX_RenderDevice {
       const CFX_Matrix& matrix,
       const FXDIB_ResampleOptions& options,
       BlendMode blend_mode);
-  bool ContinueDIBits(CFX_AggImageRenderer* handle,
+  bool ContinueDIBits(RenderDeviceDriverIface::Continuation* continuation,
                       PauseIndicatorIface* pPause);
 
   bool DrawNormalText(pdfium::span<const TextCharPos> pCharPos,
@@ -189,6 +216,9 @@ class CFX_RenderDevice {
   // See RenderDeviceDriverIface methods of the same name.
   bool MultiplyAlpha(float alpha);
   bool MultiplyAlphaMask(RetainPtr<const CFX_DIBitmap> mask);
+  void SetGroupKnockout(bool group_knockout) {
+    group_knockout_ = group_knockout;
+  }
 
 #if defined(PDF_USE_SKIA)
   bool DrawShading(const CPDF_ShadingPattern& pattern,
@@ -204,17 +234,17 @@ class CFX_RenderDevice {
   void SyncInternalBitmaps();
 #endif  // defined(PDF_USE_SKIA)
 
- protected:
+ private:
   CFX_RenderDevice();
+
+  [[nodiscard]] bool Attach(RetainPtr<CFX_DIBitmap> bitmap,
+                            RetainPtr<CFX_DIBitmap> backdrop_bitmap = nullptr,
+                            bool rgb_byte_order = false);
 
   void SetBitmap(RetainPtr<CFX_DIBitmap> bitmap);
 
   void SetDeviceDriver(std::unique_ptr<RenderDeviceDriverIface> pDriver);
-  RenderDeviceDriverIface* GetDeviceDriver() const {
-    return device_driver_.get();
-  }
 
- private:
   void InitDeviceInfo();
   void UpdateClipBox();
   bool DrawFillStrokePath(const CFX_Path& path,
@@ -234,11 +264,36 @@ class CFX_RenderDevice {
                         uint32_t fill_color,
                         uint8_t fill_alpha);
 
+#if defined(PDF_USE_AGG)
+  // Implemented in agg/cfx_agg_devicedriver.cpp
+  bool AttachAggImpl(RetainPtr<CFX_DIBitmap> pBitmap,
+                     bool bRgbByteOrder,
+                     RetainPtr<CFX_DIBitmap> pBackdropBitmap);
+#endif
+
+#if defined(PDF_USE_SKIA)
+  // Implemented in skia/fx_skia_device.cpp
+  bool AttachSkiaImpl(RetainPtr<CFX_DIBitmap> pBitmap,
+                      bool bRgbByteOrder,
+                      RetainPtr<CFX_DIBitmap> pBackdropBitmap);
+#endif
+
   RetainPtr<CFX_DIBitmap> bitmap_;
   int width_ = 0;
   int height_ = 0;
   int bpp_ = 0;
-  int render_caps_ = 0;
+  bool render_cap_get_bits_ = false;
+  bool render_cap_alpha_image_ = false;
+  bool render_cap_blend_mode_ = false;
+  bool render_cap_soft_clip_ = false;
+  bool render_cap_alpha_output_ = false;
+  bool render_cap_bytemask_output_ = false;
+#if defined(PDF_USE_SKIA)
+  bool render_cap_fillstroke_path_ = false;
+  bool render_cap_shading_ = false;
+  bool render_cap_premultiplied_alpha_ = false;
+#endif
+  bool group_knockout_ = false;
   DeviceType device_type_ = DeviceType::kDisplay;
   FX_RECT clip_box_;
   std::unique_ptr<RenderDeviceDriverIface> device_driver_;

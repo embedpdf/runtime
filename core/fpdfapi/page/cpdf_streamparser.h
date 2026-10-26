@@ -11,11 +11,11 @@
 
 #include <array>
 
+#include "core/fxcrt/bytestring_pool.h"
 #include "core/fxcrt/data_vector.h"
 #include "core/fxcrt/raw_span.h"
 #include "core/fxcrt/retain_ptr.h"
 #include "core/fxcrt/span.h"
-#include "core/fxcrt/string_pool_template.h"
 #include "core/fxcrt/weak_ptr.h"
 
 class CPDF_Dictionary;
@@ -39,9 +39,9 @@ class CPDF_StreamParser {
   uint32_t GetPos() const { return pos_; }
   void SetPos(uint32_t pos) { pos_ = pos; }
   const RetainPtr<CPDF_Object>& GetObject() const { return last_obj_; }
-  RetainPtr<CPDF_Object> ReadNextObject(bool bAllowNestedArray,
-                                        bool bInArray,
-                                        uint32_t dwRecursionLevel);
+  RetainPtr<CPDF_Object> ReadNextObject(bool allow_nested_array,
+                                        bool in_array,
+                                        uint32_t recursion_level);
   RetainPtr<CPDF_Stream> ReadInlineStream(CPDF_Document* doc,
                                           RetainPtr<CPDF_Dictionary> dict,
                                           const CPDF_Object* pCSObj);
@@ -50,7 +50,11 @@ class CPDF_StreamParser {
   friend class CPDFStreamParserTest_ReadHexString_Test;
   static constexpr uint32_t kMaxWordLength = 255;
 
-  void GetNextWord(bool& bIsNumber);
+  // Returns true if the word consists entirely of numeric characters, or if no
+  // word was read (e.g. at EOF). Returns false otherwise.
+  bool GetNextWord();
+
+  RetainPtr<CPDF_Object> ReadLeafObject();
   ByteString ReadString();
   DataVector<uint8_t> ReadHexString();
   bool PositionIsInBounds() const;

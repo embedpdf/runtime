@@ -9,7 +9,7 @@
 #include <vector>
 #include <algorithm>
 
-#include "core/fpdfapi/edit/cpdf_contentstream_write_utils.h"
+#include "core/fxcrt/stream_write_utils.h"
 #include "core/fpdfapi/edit/cpdf_image_redactor.h"
 #include "core/fpdfapi/edit/cpdf_path_redactor.h"
 #include "core/fpdfapi/edit/cpdf_pagecontentgenerator.h"
@@ -266,7 +266,7 @@ float AdvanceThousandths(const CPDF_TextObject* to,
     const uint16_t c = cid->CIDFromCharCode(code);
     w_th = static_cast<float>(cid->GetVertWidth(c));
   } else {
-    w_th = static_cast<float>(font->GetCharWidthF(code));
+    w_th = static_cast<float>(font->GetCharWidth(code));
   }
 
   const float fs = to->GetFontSize();
@@ -315,6 +315,15 @@ struct RedactionState {
   void ResetBetweenRuns() {
     kerning_accumulator = 0.0f;
     has_explicit_kerning = false;
+  }
+
+  // The original TJ number after a glyph, kept or removed, joins the gap that
+  // follows it; sign kept, PDF TJ semantics.
+  void AddKerningAfterGlyph(float kerning) {
+    if (kerning != 0) {
+      kerning_accumulator += kerning;
+      has_explicit_kerning = true;
+    }
   }
 
   void AppendKeptGlyph(const CPDF_TextObject::Item& item, float raw_pos) {
@@ -390,19 +399,13 @@ RedactOutcome RedactTextObjectMulti(CPDF_TextObject* to,
   st.font = font;
   st.strings.push_back(ByteString());  // start first run
 
-  const size_t n = to->CountItems();
+  // The TJ number after glyph i is kernings[i]; positions[i] is glyph i's
+  // raw layout position along the writing axis (0 for the first glyph).
+  const std::vector<float>& kernings = to->GetCharKernings();
+  const std::vector<float>& positions = to->GetCharPositions();
+  const size_t n = to->CharCount();
   for (size_t i = 0; i < n; ++i) {
     const CPDF_TextObject::Item it = to->GetItemInfo(i);
-
-    // Original file kerning separator inside TJ.
-    if (it.char_code_ == CPDF_Font::kInvalidCharCode) {
-      float adj = 0.0f;
-      if (to->GetSeparatorAdjustment(i, &adj)) {
-        st.kerning_accumulator += adj;  // keep sign; PDF TJ semantics
-        st.has_explicit_kerning = true;
-      }
-      continue;
-    }
 
     // Decide keep/remove by intersection.
     bool hit;
@@ -437,13 +440,14 @@ RedactOutcome RedactTextObjectMulti(CPDF_TextObject* to,
       // Merge the removed glyph's advance into the pending kerning pool.
       st.kerning_accumulator -= AdvanceThousandths(to, font, it.char_code_);
       any_removed = true;
+      st.AddKerningAfterGlyph(kernings[i]);
       continue;
     }
 
-    // Raw layout position of this glyph along the writing axis (0 for the
-    // first item). Exact for both writing modes and independent of how
-    // faithfully AdvanceThousandths() reproduces the layout.
-    const float raw_pos = i > 0 ? to->GetCharPositions()[i - 1] : 0.0f;
+    // Raw layout position of this glyph along the writing axis. Exact for
+    // both writing modes and independent of how faithfully
+    // AdvanceThousandths() reproduces the layout.
+    const float raw_pos = positions[i];
 
     // First kept glyph in the object.
     if (!any_kept) {
@@ -488,6 +492,7 @@ RedactOutcome RedactTextObjectMulti(CPDF_TextObject* to,
     st.AppendKeptGlyph(it, raw_pos);
     st.ResetBetweenRuns();
     any_kept = true;
+    st.AddKerningAfterGlyph(kernings[i]);
   }
 
   if (!any_kept)

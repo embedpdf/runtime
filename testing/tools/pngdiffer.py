@@ -18,19 +18,28 @@ _PNG_OPTIMIZER = 'optipng'
 # most specific, and the root being the least specific.
 _COMMON_SUFFIX_ORDER = ('_{os}', '')
 _AGG_SUFFIX_ORDER = ('_agg_{os}', '_agg') + _COMMON_SUFFIX_ORDER
-_GDI_AGG_SUFFIX_ORDER = (
-    '_gdi_agg_{os}',
-    '_gdi_agg',
-    '_gdi_{os}',
-    '_gdi',
-) + _COMMON_SUFFIX_ORDER
-_GDI_SKIA_SUFFIX_ORDER = (
-    '_gdi_skia_{os}',
-    '_gdi_skia',
-    '_gdi_{os}',
-    '_gdi',
-) + _COMMON_SUFFIX_ORDER
+_GDI_AGG_SUFFIX_ORDER = ('_gdi',) + _COMMON_SUFFIX_ORDER
+_GDI_SKIA_SUFFIX_ORDER = ('_skia_gdi', '_gdi') + _COMMON_SUFFIX_ORDER
 _SKIA_SUFFIX_ORDER = ('_skia_{os}', '_skia') + _COMMON_SUFFIX_ORDER
+
+
+@dataclass
+class DiffMetrics:
+  actual_w: int
+  actual_h: int
+  expected_w: int
+  expected_h: int
+  pixels: int
+  total: int
+  max_delta: int
+  mse: float
+  win_mse: float
+  mean_ssim: float = 1.0
+  min_window_ssim: float = 1.0
+
+  @property
+  def dims_match(self):
+    return self.actual_w == self.expected_w and self.actual_h == self.expected_h
 
 
 @dataclass
@@ -42,12 +51,17 @@ class ImageDiff:
     expected_path: Path to the expected image file, or `None` if no matches.
     diff_path: Path to the diff image file, or `None` if no diff.
     reason: Optional reason for the diff.
+    metrics: Optional DiffMetrics from comparison.
+    comparison_failure: Whether the diff came from comparing images rather
+        than a tool execution failure.
   """
 
   actual_path: str
   expected_path: str = None
   diff_path: str = None
   reason: str = None
+  metrics: DiffMetrics = None
+  comparison_failure: bool = True
 
 
 class PNGDiffer:
@@ -97,24 +111,129 @@ class PNGDiffer:
     except subprocess.CalledProcessError as e:
       return e
 
+  def _ParseTolerances(self, algorithm, extra_flags):
+    if algorithm != FUZZY_MATCHING:
+      return None
+    # These duplicate kMaxFuzzy* in testing/utils/pixel_diff_util.h. Change one
+    # without the other and fuzzy tests silently judge by the wrong limits.
+    delta = 3
+    mse = 0.05
+    win_mse = 15.0
+    ssim = 1.0
+    for flag in extra_flags:
+      if flag.startswith('--fuzzy='):
+        params = flag[len('--fuzzy='):].split(',')
+        if len(params) > 0 and params[0]:
+          delta = int(params[0])
+        if len(params) > 1 and params[1]:
+          mse = float(params[1])
+        if len(params) > 2 and params[2]:
+          win_mse = float(params[2])
+        if len(params) > 3 and params[3]:
+          ssim = float(params[3])
+    return delta, mse, win_mse, ssim
+
+  def EvaluateMatch(self, metrics, image_matching_algorithm):
+    if not metrics.dims_match:
+      return False, (
+          f'dimension mismatch: actual {metrics.actual_w}x{metrics.actual_h} '
+          f'!= expected {metrics.expected_w}x{metrics.expected_h}')
+
+    algorithm = image_matching_algorithm
+    extra_flags = []
+    if isinstance(image_matching_algorithm, (tuple, list)):
+      algorithm, extra_flags = image_matching_algorithm
+
+    if algorithm == EXACT_MATCHING:
+      if metrics.pixels == 0:
+        return True, None
+      return False, (
+          f'diff: {metrics.pixels} pixels, max_delta={metrics.max_delta}, '
+          f'mse={metrics.mse:.6f}')
+
+    if algorithm == FUZZY_MATCHING:
+      delta, mse, win_mse, ssim = self._ParseTolerances(algorithm, extra_flags)
+      mse_passed = (
+          metrics.max_delta <= delta and (mse <= 0.0 or metrics.mse <= mse) and
+          (win_mse <= 0.0 or metrics.win_mse <= win_mse))
+      if mse_passed or metrics.mean_ssim > ssim:
+        return True, None
+      return False, (
+          f'exceeds fuzzy: max_delta={metrics.max_delta} (max {delta}), '
+          f'mse={metrics.mse:.6f} (max {mse}), '
+          f'win_mse={metrics.win_mse:.6f} (max {win_mse}), '
+          f'mean_ssim={metrics.mean_ssim:.6f} (min {ssim})')
+
+    return False, f'Unknown algorithm {algorithm}'
+
   def _RunImageCompareCommand(self, image_diff, image_matching_algorithm):
-    cmd = [self.pdfium_diff_path]
+    cmd = [self.pdfium_diff_path, '--metrics']
     if self.reverse_byte_order:
       cmd.append('--reverse-byte-order')
-    if image_matching_algorithm == FUZZY_MATCHING:
-      cmd.append('--fuzzy')
     cmd.extend([image_diff.actual_path, image_diff.expected_path])
-    return self._RunCommand(cmd)
+
+    # Failure to run the binary at all is fatal, and is left to propagate.
+    result = subprocess.run(cmd, capture_output=True, text=True, check=False)
+
+    # `--metrics` reports the comparison result in-band, so a non-zero exit
+    # means the comparison could not be performed at all.
+    if result.returncode != 0:
+      return subprocess.CalledProcessError(
+          result.returncode, cmd, output=result.stdout, stderr=result.stderr)
+
+    # Parse metrics line: <basename>: actual_w=...
+    base_name = os.path.basename(image_diff.actual_path)
+    metrics_line = None
+    for line in result.stdout.splitlines():
+      if line.startswith(f'{base_name}:'):
+        metrics_line = line
+        break
+
+    if not metrics_line:
+      return RuntimeError(
+          f'Failed to find metric line for {base_name} in output: '
+          f'{result.stdout}')
+
+    tokens = metrics_line.split()
+    kv = {}
+    for token in tokens[1:]:
+      if '=' in token:
+        k, v = token.split('=', 1)
+        kv[k] = v
+
+    metrics = DiffMetrics(
+        actual_w=int(kv['actual_w']),
+        actual_h=int(kv['actual_h']),
+        expected_w=int(kv['expected_w']),
+        expected_h=int(kv['expected_h']),
+        pixels=int(kv['pixels']),
+        total=int(kv['total']),
+        max_delta=int(kv['max_delta']),
+        mse=float(kv['mse']),
+        win_mse=float(kv['win_mse']),
+        mean_ssim=float(kv.get('mean_ssim', 1.0)),
+        min_window_ssim=float(kv.get('min_window_ssim', 1.0)))
+    image_diff.metrics = metrics
+
+    matched, failure_reason = self.EvaluateMatch(metrics,
+                                                 image_matching_algorithm)
+    return None if matched else failure_reason
 
   def _RunImageDiffCommand(self, image_diff):
     # TODO(crbug.com/42270934): Diff mode ignores --reverse-byte-order.
-    return self._RunCommand([
+    cmd = [
         self.pdfium_diff_path,
         '--subtract',
         image_diff.actual_path,
         image_diff.expected_path,
         image_diff.diff_path,
-    ])
+    ]
+    # `--subtract` writes nothing when it considers the images the same, so
+    # remove any diff left over from a previous run before checking below.
+    if os.path.exists(image_diff.diff_path):
+      os.unlink(image_diff.diff_path)
+    subprocess.run(cmd, capture_output=True, check=False)
+    return os.path.exists(image_diff.diff_path)
 
   def ComputeDifferences(self, input_filename, source_dir, working_dir,
                          image_matching_algorithm):
@@ -130,6 +249,13 @@ class PNGDiffer:
     for page in itertools.count():
       page_diff = ImageDiff(actual_path=path_templates.GetActualPath(page))
       if not os.path.exists(page_diff.actual_path):
+        expected_path = path_templates.GetExpectedPath(
+            page, default_to_base=False)
+        if expected_path:
+          page_diff.expected_path = expected_path
+          page_diff.reason = f'{page_diff.actual_path} does not exist'
+          image_diffs.append(page_diff)
+          continue
         # No more actual pages.
         break
 
@@ -141,18 +267,19 @@ class PNGDiffer:
                                                      image_matching_algorithm)
         if compare_error:
           page_diff.reason = str(compare_error)
-
-          # TODO(crbug.com/42270934): Compare and diff simultaneously.
-          page_diff.diff_path = path_templates.GetDiffPath(page)
-          if not self._RunImageDiffCommand(page_diff):
-            print(f'WARNING: No diff for {page_diff.actual_path}')
-            page_diff.diff_path = None
+          if isinstance(compare_error, Exception):
+            page_diff.comparison_failure = False
+          else:
+            # TODO(crbug.com/42270934): Compare and diff simultaneously.
+            page_diff.diff_path = path_templates.GetDiffPath(page)
+            if not self._RunImageDiffCommand(page_diff):
+              print(f'WARNING: No diff for {page_diff.actual_path}')
+              page_diff.diff_path = None
         else:
-          # Validate that no other paths match.
+          # Validate that no other paths match exactly.
           for unexpected_path in path_templates.GetExpectedPaths(page)[1:]:
             page_diff.expected_path = unexpected_path
-            if not self._RunImageCompareCommand(page_diff,
-                                                image_matching_algorithm):
+            if not self._RunImageCompareCommand(page_diff, EXACT_MATCHING):
               page_diff.reason = f'Also matches {unexpected_path}'
               break
           page_diff.expected_path = expected_path

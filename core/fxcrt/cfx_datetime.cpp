@@ -7,7 +7,7 @@
 #include "core/fxcrt/cfx_datetime.h"
 
 #include "build/build_config.h"
-#include "core/fxcrt/check.h"
+#include "core/fxcrt/check_op.h"
 #include "core/fxcrt/fx_extension.h"
 #include "core/fxcrt/fx_system.h"
 #include "core/fxcrt/span.h"
@@ -26,7 +26,7 @@ constexpr int32_t kDaysPerYear = 365;
 constexpr int32_t kDaysPerLeapYear = 366;
 
 int32_t DaysBeforeMonthInYear(int32_t iYear, uint8_t iMonth) {
-  DCHECK(iYear != 0);
+  DCHECK_NE(iYear, 0);
   pdfium::span<const int32_t> p = FX_IsLeapYear(iYear)
                                       ? pdfium::span(kDaysBeforeLeapMonth)
                                       : pdfium::span(kDaysBeforeMonth);
@@ -35,7 +35,7 @@ int32_t DaysBeforeMonthInYear(int32_t iYear, uint8_t iMonth) {
 }
 
 int32_t DaysInYear(int32_t iYear) {
-  DCHECK(iYear != 0);
+  DCHECK_NE(iYear, 0);
   return FX_IsLeapYear(iYear) ? kDaysPerLeapYear : kDaysPerYear;
 }
 
@@ -43,11 +43,11 @@ int64_t DateToDays(int32_t iYear,
                    uint8_t iMonth,
                    uint8_t iDay,
                    bool bIncludeThisDay) {
-  DCHECK(iYear != 0);
-  DCHECK(iMonth >= 1);
-  DCHECK(iMonth <= 12);
-  DCHECK(iDay >= 1);
-  DCHECK(iDay <= FX_DaysInMonth(iYear, iMonth));
+  DCHECK_NE(iYear, 0);
+  DCHECK_GE(iMonth, 1);
+  DCHECK_LE(iMonth, 12);
+  DCHECK_GE(iDay, 1);
+  DCHECK_LE(iDay, FX_DaysInMonth(iYear, iMonth));
 
   int64_t iDays = DaysBeforeMonthInYear(iYear, iMonth);
   iDays += iDay;
@@ -68,7 +68,7 @@ int64_t DateToDays(int32_t iYear,
 }  // namespace
 
 uint8_t FX_DaysInMonth(int32_t iYear, uint8_t iMonth) {
-  DCHECK(iYear != 0);
+  DCHECK_NE(iYear, 0);
   pdfium::span<const uint8_t> p = FX_IsLeapYear(iYear)
                                       ? pdfium::span(kDaysPerLeapMonth)
                                       : pdfium::span(kDaysPerMonth);
@@ -77,7 +77,7 @@ uint8_t FX_DaysInMonth(int32_t iYear, uint8_t iMonth) {
 }
 
 bool FX_IsLeapYear(int32_t iYear) {
-  DCHECK(iYear != 0);
+  DCHECK_NE(iYear, 0);
   return ((iYear % 4) == 0 && (iYear % 100) != 0) || (iYear % 400) == 0;
 }
 

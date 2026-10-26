@@ -30,9 +30,11 @@
 #include "core/fxcodec/jpeg/jpegmodule.h"
 #include "core/fxcodec/png/pngmodule.h"
 #include "core/fxcrt/check.h"
+#include "core/fxcrt/check_op.h"
 #include "core/fxcrt/compiler_specific.h"
 #include "core/fxcrt/data_vector.h"
 #include "core/fxcrt/fx_2d_size.h"
+#include "core/fxcrt/fx_ceil_div.h"
 #include "core/fxcrt/fx_stream.h"
 #include "core/fxcrt/numerics/safe_conversions.h"
 #include "core/fxcrt/span_util.h"
@@ -357,11 +359,11 @@ void CPDF_Image::SetImage(const RetainPtr<CFX_DIBitmap>& pBitmap) {
       pCS->AppendNew<CPDF_String>(ct, CPDF_String::DataType::kIsHex);
     }
     dict->SetNewFor<CPDF_Number>("BitsPerComponent", 1);
-    dest_pitch = (BitmapWidth + 7) / 8;
+    dest_pitch = fxcrt::CeilDiv(BitmapWidth, 8);
   } else if (bpp == 8) {
     size_t palette_size = pBitmap->GetRequiredPaletteSize();
     if (palette_size > 0) {
-      DCHECK(palette_size <= 256);
+      DCHECK_LE(palette_size, 256);
       auto pCS = document_->NewIndirect<CPDF_Array>();
       pCS->AppendNew<CPDF_Name>("Indexed");
       pCS->AppendNew<CPDF_Name>("DeviceRGB");

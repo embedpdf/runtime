@@ -13,7 +13,8 @@
 #include "core/fpdfapi/render/cpdf_pagerendercontext.h"
 #include "core/fpdfapi/render/cpdf_progressiverenderer.h"
 #include "core/fxcrt/fx_coordinates.h"
-#include "core/fxge/cfx_defaultrenderdevice.h"
+#include "core/fxge/cfx_gemodule.h"
+#include "core/fxge/cfx_renderdevice.h"
 #include "core/fxge/dib/cfx_dibitmap.h"
 #include "fpdfsdk/cpdfsdk_helpers.h"
 #include "fpdfsdk/cpdfsdk_pauseadapter.h"
@@ -46,7 +47,7 @@ int SliceStatus(CPDF_PageRenderContext* context) {
   const int status = ToFPDFStatus(context->renderer_->GetStatus());
 #if defined(PDF_USE_SKIA)
   if (status != FPDF_RENDER_TOBECONTINUED &&
-      CFX_DefaultRenderDevice::UseSkiaRenderer() &&
+      CFX_GEModule::Get()->UseSkiaRenderer() &&
       !context->return_premultiplied_) {
     context->device_->GetBitmap()->UnPreMultiply();
   }
@@ -90,13 +91,22 @@ FPDF_RenderPageBitmapWithColorScheme_Start(FPDF_BITMAP bitmap,
   context->return_premultiplied_ = pBitmap->IsPremultiplied();
 
 #if defined(PDF_USE_SKIA)
-  if (CFX_DefaultRenderDevice::UseSkiaRenderer()) {
+  if (CFX_GEModule::IsSkiaRenderer()) {
     pBitmap->PreMultiply();
   }
 #endif
 
-  auto device = std::make_unique<CFX_DefaultRenderDevice>();
-  device->AttachWithRgbByteOrder(pBitmap, !!(flags & FPDF_REVERSE_BYTE_ORDER));
+  auto device =
+      CFX_RenderDevice::CreateForBitmap(pBitmap, /*backdrop_bitmap=*/nullptr,
+                                        !!(flags & FPDF_REVERSE_BYTE_ORDER));
+  if (!device) {
+#if defined(PDF_USE_SKIA)
+    if (CFX_GEModule::IsSkiaRenderer() && !context->return_premultiplied_) {
+      pBitmap->UnPreMultiply();
+    }
+#endif  // defined(PDF_USE_SKIA)
+    return FPDF_RENDER_FAILED;
+  }
   context->device_ = std::move(device);
 
   CPDFSDK_PauseAdapter pause_adapter(pause);
@@ -106,8 +116,7 @@ FPDF_RenderPageBitmapWithColorScheme_Start(FPDF_BITMAP bitmap,
 
   if (!context->renderer_) {
 #if defined(PDF_USE_SKIA)
-    if (CFX_DefaultRenderDevice::UseSkiaRenderer() &&
-        !context->return_premultiplied_) {
+    if (CFX_GEModule::IsSkiaRenderer() && !context->return_premultiplied_) {
       pBitmap->UnPreMultiply();
     }
 #endif  // defined(PDF_USE_SKIA)
@@ -126,8 +135,7 @@ FPDF_RenderPageBitmapWithColorScheme_Start(FPDF_BITMAP bitmap,
   }
 
 #if defined(PDF_USE_SKIA)
-  if (CFX_DefaultRenderDevice::UseSkiaRenderer() &&
-      !context->return_premultiplied_) {
+  if (CFX_GEModule::IsSkiaRenderer() && !context->return_premultiplied_) {
     pBitmap->UnPreMultiply();
   }
 #endif  // defined(PDF_USE_SKIA)
@@ -176,8 +184,7 @@ FPDF_EXPORT int FPDF_CALLCONV FPDF_RenderPage_Continue(FPDF_PAGE page,
   }
 
 #if defined(PDF_USE_SKIA)
-  if (CFX_DefaultRenderDevice::UseSkiaRenderer() &&
-      !context->return_premultiplied_) {
+  if (CFX_GEModule::IsSkiaRenderer() && !context->return_premultiplied_) {
     context->device_->GetBitmap()->UnPreMultiply();
   }
 #endif  // defined(PDF_USE_SKIA)
@@ -222,13 +229,25 @@ EPDF_RenderPageBitmapWithMatrix_Start(FPDF_BITMAP bitmap,
   context->return_premultiplied_ = pBitmap->IsPremultiplied();
 
 #if defined(PDF_USE_SKIA)
-  if (CFX_DefaultRenderDevice::UseSkiaRenderer()) {
+  if (CFX_GEModule::Get()->UseSkiaRenderer()) {
     pBitmap->PreMultiply();
   }
 #endif
 
-  auto device = std::make_unique<CFX_DefaultRenderDevice>();
-  device->AttachWithRgbByteOrder(pBitmap, !!(flags & FPDF_REVERSE_BYTE_ORDER));
+  auto device = CFX_RenderDevice::CreateForBitmap(
+      pBitmap, /*backdrop_bitmap=*/nullptr,
+      !!(flags & FPDF_REVERSE_BYTE_ORDER));
+  if (!device) {
+#if defined(PDF_USE_SKIA)
+    if (CFX_GEModule::Get()->UseSkiaRenderer() &&
+        !context->return_premultiplied_) {
+      pBitmap->UnPreMultiply();
+    }
+#endif  // defined(PDF_USE_SKIA)
+    // The page stays free for the next render.
+    pPage->ClearRenderContext();
+    return FPDF_RENDER_FAILED;
+  }
   context->device_ = std::move(device);
 
   // The clip and transform of FPDF_RenderPageBitmapWithMatrix().

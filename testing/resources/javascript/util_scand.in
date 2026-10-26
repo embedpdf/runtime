@@ -44,8 +44,17 @@ try {
   expect("util.scand('yyyy/mm/dd', '2016/12/20').toUTCString()", tuesday);
   expect("util.scand('dd/mmm/yyyy', '20/Dec/2016').toUTCString()", tuesday);
   expect("util.scand('..dd:-:mmm/yyyy', '**20/*/Dec.2016').toUTCString()", tuesday);
+  expect("util.scand('dd/mm/yy', '20/12/16').toUTCString()", tuesday);
+  expect("util.scand('dd/mm/yy', '31/12/85').toUTCString()", "Tue, 31 Dec 1985 21:48:50 GMT");
   expect("util.scand('hh:MM:ss', '11:22:03').toUTCString()", friday);
   expect("util.scand('s:MM:hh', '3:22:11').toUTCString()", friday);
+  expect("util.scand('hh:MM:ss tt', '11:22:03 am').toUTCString()", friday);
+  expect("util.scand('hh:MM:ss tt', '11:22:03 pm').toUTCString()", "Fri, 09 May 2014 23:22:03 GMT");
+  expect("util.scand('hh:MM:ss tt', '11:22:03 PM').toUTCString()", "Fri, 09 May 2014 23:22:03 GMT");
+  expect("util.scand('hh:MM:ss tt', '12:22:03 pm').toUTCString()", "Fri, 09 May 2014 12:22:03 GMT");
+  expect("util.scand('hh:MM:ss tt', '12:22:03 am').toUTCString()", "Fri, 09 May 2014 00:22:03 GMT");
+  expect("util.scand('hh:MM:ss t', '12:22:03 p').toUTCString()", "Fri, 09 May 2014 12:22:03 GMT");
+  expect("util.scand('hh:MM:ss t', '12:22:03 a').toUTCString()", "Fri, 09 May 2014 00:22:03 GMT");
 } catch (e) {
   app.alert("Truly unexpected error: " + e);
 }

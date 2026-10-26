@@ -14,14 +14,15 @@
 #ifndef FXJS_CFXJS_ENGINE_H_
 #define FXJS_CFXJS_ENGINE_H_
 
+#include <array>
 #include <functional>
+#include <limits>
 #include <map>
 #include <memory>
 #include <utility>
-#include <vector>
 
 #include "core/fxcrt/widestring.h"
-#include "fxjs/cfx_v8.h"
+#include "fxjs/cfx_isolate_wrapper.h"
 #include "fxjs/ijs_runtime.h"
 #include "v8/include/v8-forward.h"
 #include "v8/include/v8-function-callback.h"
@@ -37,6 +38,11 @@ enum FXJSOBJTYPE {
   FXJSOBJTYPE_GLOBAL,       // The global object itself (may only appear once).
 };
 
+// Defined here to avoid circular include dependencies with js_define.h. The
+// maximum must be consistent with constants in js_define.h.
+inline constexpr uint32_t kNotAnFxObject = 0;
+inline constexpr size_t kMaxFxObjDefinitions = 21;
+
 class CFXJS_PerIsolateData {
  public:
   // Hook for XFA's data, when present.
@@ -47,25 +53,42 @@ class CFXJS_PerIsolateData {
 
   ~CFXJS_PerIsolateData();
 
-  static void SetUp(v8::Isolate* pIsolate);
-  static CFXJS_PerIsolateData* Get(v8::Isolate* pIsolate);
+  static CFXJS_PerIsolateData* GetOrCreate(v8::Isolate* isolate);
+  static CFXJS_PerIsolateData* Get(v8::Isolate* isolate);
+  static void Release(v8::Isolate* isolate);
 
-  uint32_t CurrentMaxObjDefinitionID() const;
   CFXJS_ObjDefinition* ObjDefinitionForID(uint32_t id) const;
-  uint32_t AssignIDForObjDefinition(std::unique_ptr<CFXJS_ObjDefinition> pDefn);
+  bool HasObjectDefinitions() const;
+  void InstallObjDefinitionForID(uint32_t id,
+                                 std::unique_ptr<CFXJS_ObjDefinition> defn);
   V8TemplateMap* GetDynamicObjsMap() { return dynamic_objs_map_.get(); }
   ExtensionIface* GetExtension() { return extension_.get(); }
   void SetExtension(std::unique_ptr<ExtensionIface> extension) {
     extension_ = std::move(extension);
   }
+  v8::Local<v8::ObjectTemplate> GetOrCreateDefaultGlobalObjectTemplate(
+      v8::Isolate* isolate);
+
+  size_t engine_ref_count() const { return engine_ref_count_; }
+  size_t IncrementEngineRefCount() {
+    CHECK_LT(engine_ref_count_, std::numeric_limits<size_t>::max());
+    return ++engine_ref_count_;
+  }
+  size_t DecrementEngineRefCount() {
+    CHECK_GT(engine_ref_count_, 0u);
+    return --engine_ref_count_;
+  }
 
  private:
-  explicit CFXJS_PerIsolateData(v8::Isolate* pIsolate);
+  explicit CFXJS_PerIsolateData(v8::Isolate* isolate);
 
+  size_t engine_ref_count_ = 0;
   const wchar_t* const tag_;  // Raw, always a literal.
-  std::vector<std::unique_ptr<CFXJS_ObjDefinition>> object_defn_array_;
+  std::array<std::unique_ptr<CFXJS_ObjDefinition>, kMaxFxObjDefinitions>
+      object_defn_array_;
   std::unique_ptr<V8TemplateMap> dynamic_objs_map_;
   std::unique_ptr<ExtensionIface> extension_;
+  v8::Global<v8::ObjectTemplate> default_global_object_template_;
 };
 
 class CFXJS_PerObjectData {
@@ -76,27 +99,29 @@ class CFXJS_PerObjectData {
     virtual ~Binding() = default;
   };
 
-  static void SetNewDataInObject(uint32_t nObjDefnID,
-                                 v8::Local<v8::Object> pObj);
-  static CFXJS_PerObjectData* GetFromObject(v8::Local<v8::Object> pObj);
+  static void SetNewDataInObject(uint32_t obj_definition_id,
+                                 v8::Local<v8::Object> obj);
+  static CFXJS_PerObjectData* GetFromObject(v8::Local<v8::Object> obj);
 
   ~CFXJS_PerObjectData();
 
-  uint32_t GetObjDefnID() const { return obj_defn_id_; }
+  uint32_t GetObjDefnID() const { return obj_definition_id_; }
   Binding* GetBinding() { return binding_.get(); }
-  void SetBinding(std::unique_ptr<Binding> p) { binding_ = std::move(p); }
+  void SetBinding(std::unique_ptr<Binding> binding) {
+    binding_ = std::move(binding);
+  }
 
  private:
-  explicit CFXJS_PerObjectData(uint32_t nObjDefnID);
+  explicit CFXJS_PerObjectData(uint32_t obj_definition_id);
 
-  static bool HasInternalFields(v8::Local<v8::Object> pObj);
-  static CFXJS_PerObjectData* ExtractFromObject(v8::Local<v8::Object> pObj);
+  static bool HasInternalFields(v8::Local<v8::Object> obj);
+  static CFXJS_PerObjectData* ExtractFromObject(v8::Local<v8::Object> obj);
 
-  const uint32_t obj_defn_id_;
+  const uint32_t obj_definition_id_;
   std::unique_ptr<Binding> binding_;
 };
 
-void FXJS_Initialize(unsigned int embedderDataSlot, v8::Isolate* pIsolate);
+void FXJS_Initialize(unsigned int embedder_data_slot, v8::Isolate* isolate);
 void FXJS_Release();
 
 // Gets the global isolate set by FXJS_Initialize(), or makes a new one each
@@ -107,48 +132,48 @@ bool FXJS_GetIsolate(v8::Isolate** pResultIsolate);
 // Get the global isolate's ref count.
 size_t FXJS_GlobalIsolateRefCount();
 
-class CFXJS_Engine : public CFX_V8 {
+class CFXJS_Engine : public CFX_IsolateWrapper {
  public:
-  explicit CFXJS_Engine(v8::Isolate* pIsolate);
+  explicit CFXJS_Engine(v8::Isolate* isolate);
   ~CFXJS_Engine() override;
 
   using Constructor =
       std::function<void(CFXJS_Engine* pEngine, v8::Local<v8::Object> obj)>;
   using Destructor = std::function<void(v8::Local<v8::Object> obj)>;
 
-  static uint32_t GetObjDefnID(v8::Local<v8::Object> pObj);
-  static CFXJS_PerObjectData::Binding* GetBinding(v8::Isolate* pIsolate,
-                                                  v8::Local<v8::Object> pObj);
-  static void SetBinding(v8::Local<v8::Object> pObj,
-                         std::unique_ptr<CFXJS_PerObjectData::Binding> p);
-  static void FreePerObjectData(v8::Local<v8::Object> pObj);
+  static uint32_t GetObjDefnID(v8::Local<v8::Object> obj);
+  static CFXJS_PerObjectData::Binding* GetBinding(v8::Isolate* isolate,
+                                                  v8::Local<v8::Object> obj);
+  static void SetBinding(v8::Local<v8::Object> obj,
+                         std::unique_ptr<CFXJS_PerObjectData::Binding> binding);
+  static void FreePerObjectData(v8::Local<v8::Object> obj);
 
-  // Always returns a valid (i.e. non-zero), newly-created objDefnID.
-  uint32_t DefineObj(const char* sObjName,
-                     FXJSOBJTYPE eObjType,
-                     Constructor pConstructor,
-                     Destructor pDestructor);
+  void DefineObj(uint32_t obj_definition_id,
+                 const char* obj_name,
+                 FXJSOBJTYPE obj_type,
+                 Constructor constructor,
+                 Destructor destructor);
 
-  void DefineObjMethod(uint32_t nObjDefnID,
-                       const char* sMethodName,
-                       v8::FunctionCallback pMethodCall);
-  void DefineObjProperty(uint32_t nObjDefnID,
-                         const char* sPropName,
-                         v8::AccessorNameGetterCallback pPropGet,
-                         v8::AccessorNameSetterCallback pPropPut);
-  void DefineObjAllProperties(uint32_t nObjDefnID,
-                              v8::NamedPropertyQueryCallback pPropQurey,
-                              v8::NamedPropertyGetterCallback pPropGet,
-                              v8::NamedPropertySetterCallback pPropPut,
-                              v8::NamedPropertyDeleterCallback pPropDel,
-                              v8::NamedPropertyEnumeratorCallback pPropEnum);
-  void DefineObjConst(uint32_t nObjDefnID,
-                      const char* sConstName,
-                      v8::Local<v8::Value> pDefault);
-  void DefineGlobalMethod(const char* sMethodName,
-                          v8::FunctionCallback pMethodCall);
-  void DefineGlobalConst(const wchar_t* sConstName,
-                         v8::FunctionCallback pConstGetter);
+  void DefineObjMethod(uint32_t obj_definition_id,
+                       const char* method_name,
+                       v8::FunctionCallback method_callback);
+  void DefineObjProperty(uint32_t obj_definition_id,
+                         const char* prop_name,
+                         v8::AccessorNameGetterCallback prop_getter,
+                         v8::AccessorNameSetterCallbackV2 prop_setter);
+  void DefineObjAllProperties(uint32_t obj_definition_id,
+                              v8::NamedPropertyQueryCallback prop_query,
+                              v8::NamedPropertyGetterCallback prop_getter,
+                              v8::NamedPropertySetterCallbackV2 prop_setter,
+                              v8::NamedPropertyDeleterCallback prop_deleter,
+                              v8::NamedPropertyEnumeratorCallback prop_enumer);
+  void DefineObjConst(uint32_t obj_definition_id,
+                      const char* const_name,
+                      v8::Local<v8::Value> default_value);
+  void DefineGlobalMethod(const char* method_name,
+                          v8::FunctionCallback method_callback);
+  void DefineGlobalConst(const wchar_t* const_name,
+                         v8::FunctionCallback getter_callback);
 
   // Called after FXJS_Define* calls made.
   void InitializeEngine();
@@ -158,8 +183,8 @@ class CFXJS_Engine : public CFX_V8 {
   std::optional<IJS_Runtime::JS_Error> Execute(const WideString& script);
 
   v8::Local<v8::Object> GetThisObj();
-  v8::Local<v8::Object> NewFXJSBoundObject(uint32_t nObjDefnID,
-                                           FXJSOBJTYPE type);
+  v8::Local<v8::Object> NewFXJSBoundObject(uint32_t obj_definition_id,
+                                           FXJSOBJTYPE obj_type);
   void Error(const WideString& message);
 
   v8::Local<v8::Context> GetV8Context();
@@ -172,7 +197,7 @@ class CFXJS_Engine : public CFX_V8 {
 
  private:
   v8::Global<v8::Context> v8_context_;
-  std::vector<v8::Global<v8::Object>> static_objects_;
+  std::array<v8::Global<v8::Object>, kMaxFxObjDefinitions> static_objects_;
   std::map<WideString, v8::Global<v8::Array>> const_arrays_;
 };
 

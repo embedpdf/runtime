@@ -26,12 +26,10 @@ constexpr float kDefaultFontSize = 9.0f;
 }  // namespace
 
 // static
-const CFX_Color CPWL_Wnd::kDefaultBlackColor =
-    CFX_Color(CFX_Color::Type::kGray, 0);
+const CFX_Color CPWL_Wnd::kDefaultBlackColor = CFX_Color::MakeGray(0.0f);
 
 // static
-const CFX_Color CPWL_Wnd::kDefaultWhiteColor =
-    CFX_Color(CFX_Color::Type::kGray, 1);
+const CFX_Color CPWL_Wnd::kDefaultWhiteColor = CFX_Color::MakeGray(1.0f);
 
 CPWL_Wnd::CreateParams::CreateParams(CFX_Timer::HandlerIface* timer_handler,
                                      IPWL_FillerNotify* filler_notify,
@@ -170,10 +168,18 @@ void CPWL_Wnd::Realize() {
   CreateSharedCaptureFocusState();
 
   CreateParams ccp = creation_params_;
-  ccp.dwFlags &= 0xFFFF0000L;  // remove sub styles
+  ccp.dwFlags &=
+      Mask<Styles>{Styles::kWindowBorder,
+                   Styles::kWindowBackground,
+                   Styles::kWindowVScroll,
+                   Styles::kWindowVisible,
+                   Styles::kWindowReadOnly,
+                   Styles::kWindowAutoFontSize,
+                   Styles::kWindowAutoTransparent,
+                   Styles::kWindowNoRefreshClip};  // remove sub styles
   CreateVScrollBar(ccp);
   CreateChildWnd(ccp);
-  visible_ = HasFlag(PWS_VISIBLE);
+  visible_ = HasFlag(Styles::kWindowVisible);
   OnCreated();
   if (!RepositionChildWnd()) {
     return;
@@ -258,13 +264,13 @@ void CPWL_Wnd::DrawThisAppearance(CFX_RenderDevice* pDevice,
     return;
   }
 
-  if (HasFlag(PWS_BACKGROUND)) {
+  if (HasFlag(Styles::kWindowBackground)) {
     float width = static_cast<float>(GetBorderWidth() + GetInnerBorderWidth());
     pDevice->DrawFillRect(&mtUser2Device, rectWnd.GetDeflated(width, width),
                           GetBackgroundColor(), GetTransparency());
   }
 
-  if (HasFlag(PWS_BORDER)) {
+  if (HasFlag(Styles::kWindowBorder)) {
     pDevice->DrawBorder(&mtUser2Device, rectWnd,
                         static_cast<float>(GetBorderWidth()), GetBorderColor(),
                         GetBorderLeftTopColor(GetBorderStyle()),
@@ -286,7 +292,7 @@ bool CPWL_Wnd::InvalidateRect(const CFX_FloatRect* pRect) {
     return true;
   }
   CFX_FloatRect rcRefresh = pRect ? *pRect : this_observed->GetWindowRect();
-  if (!this_observed->HasFlag(PWS_NOREFRESHCLIP)) {
+  if (!this_observed->HasFlag(Styles::kWindowNoRefreshClip)) {
     CFX_FloatRect rcClip = this_observed->GetClipRect();
     if (!rcClip.IsEmpty()) {
       rcRefresh.Intersect(rcClip);
@@ -476,12 +482,12 @@ CFX_PointF CPWL_Wnd::GetCenterPoint() const {
                     (rcClient.top + rcClient.bottom) * 0.5f);
 }
 
-bool CPWL_Wnd::HasFlag(uint32_t dwFlags) const {
-  return (creation_params_.dwFlags & dwFlags) != 0;
+bool CPWL_Wnd::HasFlag(Styles flag) const {
+  return (creation_params_.dwFlags & flag) != Mask<Styles>();
 }
 
-void CPWL_Wnd::RemoveFlag(uint32_t dwFlags) {
-  creation_params_.dwFlags &= ~dwFlags;
+void CPWL_Wnd::RemoveFlag(Styles flag) {
+  creation_params_.dwFlags &= ~Mask<Styles>(flag);
 }
 
 CFX_Color CPWL_Wnd::GetBackgroundColor() const {
@@ -497,7 +503,7 @@ BorderStyle CPWL_Wnd::GetBorderStyle() const {
 }
 
 int32_t CPWL_Wnd::GetBorderWidth() const {
-  return HasFlag(PWS_BORDER) ? creation_params_.dwBorderWidth : 0;
+  return HasFlag(Styles::kWindowBorder) ? creation_params_.dwBorderWidth : 0;
 }
 
 int32_t CPWL_Wnd::GetInnerBorderWidth() const {
@@ -505,7 +511,8 @@ int32_t CPWL_Wnd::GetInnerBorderWidth() const {
 }
 
 CFX_Color CPWL_Wnd::GetBorderColor() const {
-  return HasFlag(PWS_BORDER) ? creation_params_.sBorderColor : CFX_Color();
+  return HasFlag(Styles::kWindowBorder) ? creation_params_.sBorderColor
+                                        : CFX_Color();
 }
 
 const CPWL_Dash& CPWL_Wnd::GetBorderDash() const {
@@ -513,16 +520,17 @@ const CPWL_Dash& CPWL_Wnd::GetBorderDash() const {
 }
 
 CPWL_ScrollBar* CPWL_Wnd::GetVScrollBar() const {
-  return HasFlag(PWS_VSCROLL) ? vscroll_bar_ : nullptr;
+  return HasFlag(Styles::kWindowVScroll) ? vscroll_bar_ : nullptr;
 }
 
 void CPWL_Wnd::CreateVScrollBar(const CreateParams& cp) {
-  if (vscroll_bar_ || !HasFlag(PWS_VSCROLL)) {
+  if (vscroll_bar_ || !HasFlag(Styles::kWindowVScroll)) {
     return;
   }
 
   CreateParams scp = cp;
-  scp.dwFlags = PWS_BACKGROUND | PWS_AUTOTRANSPARENT | PWS_NOREFRESHCLIP;
+  scp.dwFlags = {Styles::kWindowBackground, Styles::kWindowAutoTransparent,
+                 Styles::kWindowNoRefreshClip};
   scp.sBackgroundColor = kDefaultWhiteColor;
   scp.eCursorType = IPWL_FillerNotify::CursorStyle::kArrow;
   scp.nTransparency = CPWL_ScrollBar::kTransparency;
@@ -626,7 +634,7 @@ const CFX_FloatRect& CPWL_Wnd::GetClipRect() const {
 }
 
 bool CPWL_Wnd::IsReadOnly() const {
-  return HasFlag(PWS_READONLY);
+  return HasFlag(Styles::kWindowReadOnly);
 }
 
 bool CPWL_Wnd::RepositionChildWnd() {
@@ -722,9 +730,9 @@ void CPWL_Wnd::SetFontSize(float fFontSize) {
 CFX_Color CPWL_Wnd::GetBorderLeftTopColor(BorderStyle nBorderStyle) const {
   switch (nBorderStyle) {
     case BorderStyle::kBeveled:
-      return CFX_Color(CFX_Color::Type::kGray, 1);
+      return CFX_Color::MakeGray(1.0f);
     case BorderStyle::kInset:
-      return CFX_Color(CFX_Color::Type::kGray, 0.5f);
+      return CFX_Color::MakeGray(0.5f);
     default:
       return CFX_Color();
   }
@@ -735,7 +743,7 @@ CFX_Color CPWL_Wnd::GetBorderRightBottomColor(BorderStyle nBorderStyle) const {
     case BorderStyle::kBeveled:
       return GetBackgroundColor() / 2.0f;
     case BorderStyle::kInset:
-      return CFX_Color(CFX_Color::Type::kGray, 0.75f);
+      return CFX_Color::MakeGray(0.75f);
     default:
       return CFX_Color();
   }

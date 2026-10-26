@@ -112,6 +112,7 @@ source_set("fpdfdoc") {
     "cpvt_section.h",
     "cpvt_variabletext.cpp",
     "cpvt_variabletext.h",
+    "cpvt_word.cpp",
     "cpvt_word.h",
     "cpvt_wordinfo.cpp",
     "cpvt_wordinfo.h",
@@ -123,18 +124,20 @@ source_set("fpdfdoc") {
     "../../:pdfium_strict_config",
     "../../:pdfium_noshorten_config",
   ]
-  deps = [
+  public_deps = [
     "../../constants",
-    "../fpdfapi/edit:contentstream_write_utils",
-    "../fpdfapi/font",
-    "../fpdfapi/page",
     "../fpdfapi/parser",
     "../fpdfapi/render",
     "../fxcrt",
     "../fxge",
     # EmbedPDF: CPDF_AnnotFontSubset uses HarfBuzz subsetting to embed only the
     # glyphs used by each saved annotation/layer.
-    "../../third_party/harfbuzz-ng",
+    "../../third_party/harfbuzz",
+  ]
+  deps = [
+    "../fpdfapi/font",
+    "../fpdfapi/page",
+    "//third_party/abseil-cpp:absl",
   ]
   visibility = [ "../../*" ]
 }
@@ -157,10 +160,15 @@ pdfium_unittest_source_set("unittests") {
     "cpdf_richtextparser_unittest.cpp",
     "cpdf_nametree_unittest.cpp",
     "cpdf_pagelabel_unittest.cpp",
+    "cpvt_section_unittest.cpp",
+    "cpvt_stub_provider.cpp",
+    "cpvt_stub_provider.h",
+    "cpvt_variabletext_unittest.cpp",
   ]
   deps = [
     ":fpdfdoc",
     "../../constants",
+    "../../testing:test_support",
     "../fpdfapi/font",
     "../fpdfapi/page",
     "../fpdfapi/page:unit_test_support",

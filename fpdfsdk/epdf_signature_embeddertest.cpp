@@ -2297,7 +2297,7 @@ TEST_F(EPDFSignatureEmbedderTest, BaseSha256IsLazyAndCanBeSupplied) {
   ASSERT_TRUE(layer);
   unsigned char reported[32];
   ASSERT_TRUE(EPDFLayer_GetBaseSha256(layer.get(), reported));
-  const DataVector<uint8_t> expected = CRYPT_SHA256Generate(
+  const DataVector<uint8_t> expected = CryptSha256Generate(
       pdfium::span(reinterpret_cast<const uint8_t*>(p.bytes.data()), p.bytes.size()));
   ASSERT_EQ(32u, expected.size());
   EXPECT_EQ(0, memcmp(reported, expected.data(), 32));

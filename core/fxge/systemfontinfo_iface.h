@@ -15,22 +15,26 @@
 #include "core/fxcrt/span.h"
 #include "core/fxge/cfx_fontmapper.h"
 
-constexpr uint32_t kTableNAME = CFX_FontMapper::MakeTag('n', 'a', 'm', 'e');
-constexpr uint32_t kTableTTCF = CFX_FontMapper::MakeTag('t', 't', 'c', 'f');
-
 class SystemFontInfoIface {
  public:
+  static constexpr uint32_t kTableNAME =
+      CFX_FontMapper::MakeTag('n', 'a', 'm', 'e');
+  static constexpr uint32_t kTableTTCF =
+      CFX_FontMapper::MakeTag('t', 't', 'c', 'f');
+  static constexpr uint32_t kTableNone = 0;
+
   virtual ~SystemFontInfoIface() = default;
 
   virtual void EnumFontList(CFX_FontMapper* pMapper) = 0;
-  virtual void* MapFont(int weight,
+  virtual void* MapFont(CFX_FontMapper* mapper,
+                        int weight,
                         bool bItalic,
                         FX_Charset charset,
                         int pitch_family,
                         const ByteString& face) = 0;
   virtual void* GetFont(const ByteString& face) = 0;
   virtual size_t GetFontData(void* hFont,
-                             uint32_t table,
+                             uint32_t table,  // One of the k-constants above.
                              pdfium::span<uint8_t> buffer) = 0;
   virtual bool GetFaceName(void* hFont, ByteString* name) = 0;
   virtual bool GetFontCharset(void* hFont, FX_Charset* charset) = 0;

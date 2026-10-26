@@ -21,6 +21,7 @@
 #include "core/fpdfapi/parser/cpdf_dictionary.h"
 #include "core/fpdfapi/parser/cpdf_document.h"
 #include "core/fpdfapi/parser/cpdf_document_view_scope.h"
+#include "core/fpdfapi/parser/cpdf_name.h"
 #include "core/fpdfapi/parser/cpdf_object.h"
 #include "core/fpdfapi/parser/cpdf_stream.h"
 #include "core/fxcrt/check.h"
@@ -43,6 +44,11 @@ CPDF_Page::CPDF_Page(CPDF_Document* document,
   // EmbedPDF(view-scope, reads-dont-write): read the page's resources
   // through the document's view and without the mutable getter.
   CPDF_DocumentViewScope document_view(document);
+  // Callers check first. Upstream requires a /Type of /Page or none, and adds
+  // a missing one; loading a page is a read, and on a layer it would write the
+  // frozen base. Any leaf of the page tree is a page, as upstream's tree walk
+  // makes it one (CPDF_Document::IsPageTreeLeaf()).
+  CHECK(CPDF_Document::IsPageTreeLeaf(GetDict().Get()));
 
   // Cannot initialize |resources_| and |page_resources_| via the
   // CPDF_PageObjectHolder ctor because GetPageAttr() requires
@@ -61,6 +67,26 @@ CPDF_Page::CPDF_Page(CPDF_Document* document,
 }
 
 CPDF_Page::~CPDF_Page() = default;
+
+// static
+bool CPDF_Page::IsValidPageDict(const CPDF_Dictionary* page_dict) {
+  return IsValidPageDictLoose(page_dict) &&
+         page_dict->KeyExist(pdfium::page_object::kType);
+}
+
+// static
+bool CPDF_Page::IsValidPageDictLoose(const CPDF_Dictionary* page_dict) {
+  if (!page_dict) {
+    return false;
+  }
+  RetainPtr<const CPDF_Object> type =
+      page_dict->GetObjectFor(pdfium::page_object::kType);
+  if (!type) {
+    return true;
+  }
+  RetainPtr<const CPDF_Name> name_type = ToName(type->GetDirect());
+  return name_type && name_type->GetString() == "Page";
+}
 
 CPDF_Page* CPDF_Page::AsPDFPage() {
   return this;

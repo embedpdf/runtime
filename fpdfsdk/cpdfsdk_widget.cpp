@@ -23,7 +23,9 @@
 #include "core/fpdfdoc/cpdf_iconfit.h"
 #include "core/fpdfdoc/cpdf_interactiveform.h"
 #include "core/fxcrt/check.h"
+#include "core/fxcrt/check_op.h"
 #include "core/fxcrt/notreached.h"
+#include "core/fxcrt/retain_ptr.h"
 #include "core/fxge/cfx_fillrenderoptions.h"
 #include "core/fxge/cfx_graphstatedata.h"
 #include "core/fxge/cfx_path.h"
@@ -238,15 +240,15 @@ bool CPDFSDK_Widget::OnXFAAAction(PDFSDK_XFAAActionType eXFAAAT,
   }
 
   CXFA_EventParam param(eEventType);
-  param.change_ = data->sChange;
+  param.change_ = data->change;
   param.commit_key_ = 0;
-  param.shift_ = data->bShift;
-  param.sel_start_ = data->nSelStart;
-  param.sel_end_ = data->nSelEnd;
-  param.full_text_ = data->sValue;
-  param.key_down_ = data->bKeyDown;
-  param.modifier_ = data->bModifier;
-  param.prev_text_ = data->sValue;
+  param.shift_ = data->shift;
+  param.sel_start_ = data->sel_start;
+  param.sel_end_ = data->sel_end;
+  param.full_text_ = data->value;
+  param.key_down_ = data->key_down;
+  param.modifier_ = data->modifier;
+  param.prev_text_ = data->value;
   if ((eEventType == XFA_EVENT_Click || eEventType == XFA_EVENT_Change) &&
       GetFieldType() == FormFieldType::kRadioButton) {
     CXFA_FFWidget* hGroupWidget = GetGroupMixXFAWidget();
@@ -330,7 +332,7 @@ bool CPDFSDK_Widget::HandleXFAAAction(
     return false;
   }
 
-  XFA_EVENTTYPE eEventType = GetXFAEventType(type, data->bWillCommit);
+  XFA_EVENTTYPE eEventType = GetXFAEventType(type, data->will_commit);
   if (eEventType == XFA_EVENT_Unknown) {
     return false;
   }
@@ -341,15 +343,15 @@ bool CPDFSDK_Widget::HandleXFAAAction(
   }
 
   CXFA_EventParam param(eEventType);
-  param.change_ = data->sChange;
+  param.change_ = data->change;
   param.commit_key_ = 0;
-  param.shift_ = data->bShift;
-  param.sel_start_ = data->nSelStart;
-  param.sel_end_ = data->nSelEnd;
-  param.full_text_ = data->sValue;
-  param.key_down_ = data->bKeyDown;
-  param.modifier_ = data->bModifier;
-  param.prev_text_ = data->sValue;
+  param.shift_ = data->shift;
+  param.sel_start_ = data->sel_start;
+  param.sel_end_ = data->sel_end;
+  param.full_text_ = data->value;
+  param.key_down_ = data->key_down;
+  param.modifier_ = data->modifier;
+  param.prev_text_ = data->value;
   bool ret = hWidget->ProcessEventUnderHandler(&param, pXFAWidgetHandler);
   CXFA_FFDocView* pDocView = context->GetXFADocView();
   if (pDocView) {
@@ -414,8 +416,8 @@ FormFieldType CPDFSDK_Widget::GetFieldType() const {
 }
 
 void CPDFSDK_Widget::SetRect(const CFX_FloatRect& rect) {
-  DCHECK(rect.right - rect.left >= 1.0f);
-  DCHECK(rect.top - rect.bottom >= 1.0f);
+  DCHECK_GE(rect.right - rect.left, 1.0f);
+  DCHECK_GE(rect.top - rect.bottom, 1.0f);
   GetMutableAnnotDict()->SetRectFor(pdfium::annotation::kRect, rect);
 }
 
@@ -1068,7 +1070,7 @@ CFX_Color CPDFSDK_Widget::GetTextPWLColor() const {
   CPDF_FormControl* pFormCtrl = GetFormControl();
   std::optional<CFX_Color> crText =
       pFormCtrl->GetDefaultAppearance().GetColor();
-  return crText.value_or(CFX_Color(CFX_Color::Type::kGray, 0));
+  return crText.value_or(CFX_Color::MakeGray(0.0f));
 }
 
 CFX_Color CPDFSDK_Widget::GetBorderPWLColor() const {

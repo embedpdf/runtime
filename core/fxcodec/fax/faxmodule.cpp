@@ -10,19 +10,23 @@
 
 #include <algorithm>
 #include <array>
+#include <bit>
 #include <iterator>
 #include <memory>
+#include <optional>
 #include <utility>
 
 #include "build/build_config.h"
 #include "core/fxcodec/scanlinedecoder.h"
 #include "core/fxcrt/binary_buffer.h"
-#include "core/fxcrt/check.h"
+#include "core/fxcrt/byteorder.h"
 #include "core/fxcrt/check_op.h"
 #include "core/fxcrt/compiler_specific.h"
 #include "core/fxcrt/data_vector.h"
 #include "core/fxcrt/fx_2d_size.h"
+#include "core/fxcrt/fx_ceil_div.h"
 #include "core/fxcrt/fx_memory.h"
+#include "core/fxcrt/fx_safe_types.h"
 #include "core/fxcrt/numerics/safe_conversions.h"
 #include "core/fxcrt/raw_span.h"
 #include "core/fxcrt/span.h"
@@ -37,20 +41,6 @@ namespace fxcodec {
 
 namespace {
 
-constexpr std::array<const uint8_t, 256> kOneLeadPos = {{
-    8, 7, 6, 6, 5, 5, 5, 5, 4, 4, 4, 4, 4, 4, 4, 4, 3, 3, 3, 3, 3, 3, 3, 3,
-    3, 3, 3, 3, 3, 3, 3, 3, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2,
-    2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 1, 1, 1, 1, 1, 1, 1, 1,
-    1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1,
-    1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1,
-    1, 1, 1, 1, 1, 1, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-}};
-
 // Limit of image dimension. Use the same limit as the JBIG2 codecs.
 constexpr int kFaxMaxImageDimension = 65535;
 
@@ -61,7 +51,7 @@ int FindBit(pdfium::span<const uint8_t> data_buf,
             int max_pos,
             int start_pos,
             bool bit) {
-  DCHECK(start_pos >= 0);
+  CHECK_GE(start_pos, 0);
   if (start_pos >= max_pos) {
     return max_pos;
   }
@@ -72,34 +62,30 @@ int FindBit(pdfium::span<const uint8_t> data_buf,
     const int byte_pos = start_pos / 8;
     uint8_t data = (data_buf[byte_pos] ^ bit_xor) & (0xff >> bit_offset);
     if (data) {
-      return byte_pos * 8 + kOneLeadPos[data];
+      return byte_pos * 8 + std::countl_zero(data);
     }
     start_pos += 7;
   }
 
-  const int max_byte = (max_pos + 7) / 8;
+  const int max_byte = fxcrt::CeilDiv(max_pos, 8);
   int byte_pos = start_pos / 8;
 
-  // Try reading in bigger chunks in case there are long runs to be skipped.
-  static constexpr int kBulkReadSize = 8;
-  if (max_byte >= kBulkReadSize && byte_pos < max_byte - kBulkReadSize) {
-    static constexpr uint8_t skip_block_0[kBulkReadSize] = {
-        0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00};
-    static constexpr uint8_t skip_block_1[kBulkReadSize] = {
-        0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff};
-    const auto skip_block =
-        bit ? pdfium::span(skip_block_0) : pdfium::span(skip_block_1);
-    while (byte_pos < max_byte - kBulkReadSize &&
-           data_buf.subspan(static_cast<size_t>(byte_pos),
-                            static_cast<size_t>(kBulkReadSize)) == skip_block) {
-      byte_pos += kBulkReadSize;
+  const uint32_t word_xor = bit ? 0x00000000 : 0xffffffff;
+  while (byte_pos + 4 <= max_byte) {
+    const uint32_t word =
+        fxcrt::GetUInt32MSBFirst(
+            data_buf.subspan(static_cast<size_t>(byte_pos)).first<4u>()) ^
+        word_xor;
+    if (word) {
+      return std::min(byte_pos * 8 + std::countl_zero(word), max_pos);
     }
+    byte_pos += 4;
   }
 
   while (byte_pos < max_byte) {
     uint8_t data = data_buf[byte_pos] ^ bit_xor;
     if (data) {
-      return std::min(byte_pos * 8 + kOneLeadPos[data], max_pos);
+      return std::min(byte_pos * 8 + std::countl_zero(data), max_pos);
     }
     ++byte_pos;
   }
@@ -285,20 +271,20 @@ uint32_t GetSrcBitSize(pdfium::span<const uint8_t> src_buf) {
   return pdfium::checked_cast<uint32_t>(src_buf.size() * 8);
 }
 
-int FaxGetRun(pdfium::span<const uint8_t> ins_array,
-              pdfium::span<const uint8_t> src_buf,
-              uint32_t* bitpos) {
+std::optional<uint16_t> FaxGetRun(pdfium::span<const uint8_t> ins_array,
+                                  pdfium::span<const uint8_t> src_buf,
+                                  uint32_t* bitpos) {
   const uint32_t bitsize = GetSrcBitSize(src_buf);
   uint32_t code = 0;
   int ins_off = 0;
   while (true) {
     uint8_t ins = ins_array[ins_off++];
     if (ins == 0xff) {
-      return -1;
+      return std::nullopt;
     }
 
     if (*bitpos >= bitsize) {
-      return -1;
+      return std::nullopt;
     }
 
     code <<= 1;
@@ -332,9 +318,6 @@ void FaxG4GetRow(pdfium::span<const uint8_t> src_buf,
 
     int a1;
     int a2;
-    int b1;
-    int b2;
-    FaxG4FindB1B2(ref_buf, columns, a0, a0color, &b1, &b2);
 
     int v_delta = 0;
     if (!NextBit(src_buf, bitpos)) {
@@ -355,46 +338,75 @@ void FaxG4GetRow(pdfium::span<const uint8_t> src_buf,
         // Mode "Horizontal".
         int run_len1 = 0;
         while (true) {
-          int run = FaxGetRun(
+          std::optional<uint16_t> run = FaxGetRun(
               a0color ? pdfium::span<const uint8_t, pdfium::dynamic_extent>(
                             kFaxWhiteRunIns)
                       : pdfium::span<const uint8_t, pdfium::dynamic_extent>(
                             kFaxBlackRunIns),
               src_buf, bitpos);
-          run_len1 += run;
-          if (run < 64) {
+          if (!run.has_value()) {
+            return;
+          }
+          // Since `run` is 16-bit, it cannot cause `run_len1` to overflow
+          // with the `columns` check below.
+          run_len1 += run.value();
+          if (run_len1 > columns) {
+            // No legal 1-D run exceeds the row width, which is bound by
+            // `kFaxMaxImageDimension`.
+            return;
+          }
+
+          if (run.value() < 64) {
             break;
           }
         }
         if (a0 < 0) {
           ++run_len1;
         }
-        if (run_len1 < 0) {
+
+        FX_SAFE_INT32 safe_a1 = a0;
+        safe_a1 += run_len1;
+        if (!safe_a1.IsValid()) {
           return;
         }
 
-        a1 = a0 + run_len1;
+        a1 = safe_a1.ValueOrDie();
         if (!a0color) {
           FaxFillBits(dest_buf, columns, a0, a1);
         }
 
         int run_len2 = 0;
         while (true) {
-          int run = FaxGetRun(
+          std::optional<uint16_t> run = FaxGetRun(
               a0color ? pdfium::span<const uint8_t, pdfium::dynamic_extent>(
                             kFaxBlackRunIns)
                       : pdfium::span<const uint8_t, pdfium::dynamic_extent>(
                             kFaxWhiteRunIns),
               src_buf, bitpos);
-          run_len2 += run;
-          if (run < 64) {
+          if (!run.has_value()) {
+            return;
+          }
+          // Since `run` is 16-bit, it cannot cause `run_len2` to overflow
+          // with the `columns` check below.
+          run_len2 += run.value();
+          if (run_len2 > columns) {
+            // No legal 1-D run exceeds the row width, which is bound by
+            // `kFaxMaxImageDimension`.
+            return;
+          }
+
+          if (run.value() < 64) {
             break;
           }
         }
-        if (run_len2 < 0) {
+
+        FX_SAFE_INT32 safe_a2 = a1;
+        safe_a2 += run_len2;
+        if (!safe_a2.IsValid()) {
           return;
         }
-        a2 = a1 + run_len2;
+
+        a2 = safe_a2.ValueOrDie();
         if (a0color) {
           FaxFillBits(dest_buf, columns, a1, a2);
         }
@@ -411,6 +423,10 @@ void FaxG4GetRow(pdfium::span<const uint8_t> src_buf,
         }
 
         if (NextBit(src_buf, bitpos)) {
+          int b1;
+          int b2;
+          FaxG4FindB1B2(ref_buf, columns, a0, a0color, &b1, &b2);
+
           // Mode "Pass".
           if (!a0color) {
             FaxFillBits(dest_buf, columns, a0, b2);
@@ -461,7 +477,18 @@ void FaxG4GetRow(pdfium::span<const uint8_t> src_buf,
     } else {
       // Mode "Vertical", V(0).
     }
-    a1 = b1 + v_delta;
+
+    int b1;
+    int b2;
+    FaxG4FindB1B2(ref_buf, columns, a0, a0color, &b1, &b2);
+
+    FX_SAFE_INT32 safe_a1 = b1;
+    safe_a1 += v_delta;
+    if (!safe_a1.IsValid()) {
+      return;
+    }
+
+    a1 = safe_a1.ValueOrDie();
     if (!a0color) {
       FaxFillBits(dest_buf, columns, a0, a1);
     }
@@ -508,13 +535,13 @@ void FaxGet1DLine(pdfium::span<const uint8_t> src_buf,
 
     int run_len = 0;
     while (true) {
-      int run =
+      std::optional<uint16_t> run =
           FaxGetRun(color ? pdfium::span<const uint8_t, pdfium::dynamic_extent>(
                                 kFaxWhiteRunIns)
                           : pdfium::span<const uint8_t, pdfium::dynamic_extent>(
                                 kFaxBlackRunIns),
                     src_buf, bitpos);
-      if (run < 0) {
+      if (!run.has_value()) {
         while (*bitpos < bitsize) {
           if (NextBit(src_buf, bitpos)) {
             return;
@@ -522,8 +549,16 @@ void FaxGet1DLine(pdfium::span<const uint8_t> src_buf,
         }
         return;
       }
-      run_len += run;
-      if (run < 64) {
+      // Since `run` is 16-bit, it cannot cause `run_len` to overflow with the
+      // `columns` check below.
+      run_len += run.value();
+      if (run_len > columns) {
+        // No legal 1-D run exceeds the row width, which is bound by
+        // `kFaxMaxImageDimension`.
+        return;
+      }
+
+      if (run.value() < 64) {
         break;
       }
     }
@@ -650,7 +685,7 @@ pdfium::span<uint8_t> FaxDecoder::GetNextLine() {
 
 uint32_t FaxDecoder::GetSrcOffset() {
   return pdfium::checked_cast<uint32_t>(
-      std::min<size_t>((bitpos_ + 7) / 8, src_span_.size()));
+      std::min<size_t>(fxcrt::CeilDiv(bitpos_, 8), src_span_.size()));
 }
 
 void FaxDecoder::InvertBuffer() {

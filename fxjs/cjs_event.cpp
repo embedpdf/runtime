@@ -33,19 +33,13 @@ const JSPropertySpec CJS_Event::PropertySpecs[] = {
     {"value", get_value_static, set_value_static},
     {"willCommit", get_will_commit_static, set_will_commit_static}};
 
-uint32_t CJS_Event::ObjDefnID = 0;
 const char CJS_Event::kName[] = "event";
 
 // static
-uint32_t CJS_Event::GetObjDefnID() {
-  return ObjDefnID;
-}
-
-// static
 void CJS_Event::DefineJSObjects(CFXJS_Engine* pEngine) {
-  ObjDefnID = pEngine->DefineObj(CJS_Event::kName, FXJSOBJTYPE_STATIC,
-                                 JSConstructor<CJS_Event>, JSDestructor);
-  DefineProps(pEngine, ObjDefnID, PropertySpecs);
+  pEngine->DefineObj(kObjDefnId, CJS_Event::kName, FXJSOBJTYPE_STATIC,
+                     JSConstructor<CJS_Event>, JSDestructor);
+  DefineProps(pEngine, kObjDefnId, PropertySpecs);
 }
 
 CJS_Event::CJS_Event(v8::Local<v8::Object> pObject, CJS_Runtime* pRuntime)
@@ -63,7 +57,7 @@ CJS_Result CJS_Event::set_change(CJS_Runtime* pRuntime,
                                  v8::Local<v8::Value> vp) {
   if (vp->IsString()) {
     CJS_EventContext* pEvent = pRuntime->GetCurrentEventContext();
-    pEvent->Change() = pRuntime->ToWideString(vp);
+    pEvent->Change() = pRuntime->ToWideStringReentrant(vp);
   }
   return CJS_Result::Success();
 }
@@ -138,7 +132,7 @@ CJS_Result CJS_Event::get_rc(CJS_Runtime* pRuntime) {
 
 CJS_Result CJS_Event::set_rc(CJS_Runtime* pRuntime, v8::Local<v8::Value> vp) {
   CJS_EventContext* pEvent = pRuntime->GetCurrentEventContext();
-  pEvent->Rc() = pRuntime->ToBoolean(vp);
+  pEvent->Rc() = pRuntime->ToBooleanReentrant(vp);
   return CJS_Result::Success();
 }
 
@@ -182,7 +176,7 @@ CJS_Result CJS_Event::set_sel_end(CJS_Runtime* pRuntime,
                                   v8::Local<v8::Value> vp) {
   CJS_EventContext* pEvent = pRuntime->GetCurrentEventContext();
   if (pEvent->Name() == "Keystroke") {
-    pEvent->SetSelEnd(pRuntime->ToInt32(vp));
+    pEvent->SetSelEnd(pRuntime->ToInt32Reentrant(vp));
   }
 
   return CJS_Result::Success();
@@ -201,7 +195,7 @@ CJS_Result CJS_Event::set_sel_start(CJS_Runtime* pRuntime,
                                     v8::Local<v8::Value> vp) {
   CJS_EventContext* pEvent = pRuntime->GetCurrentEventContext();
   if (pEvent->Name() == "Keystroke") {
-    pEvent->SetSelStart(pRuntime->ToInt32(vp));
+    pEvent->SetSelStart(pRuntime->ToInt32Reentrant(vp));
   }
 
   return CJS_Result::Success();
@@ -290,7 +284,7 @@ CJS_Result CJS_Event::set_value(CJS_Runtime* pRuntime,
   if (vp->IsNullOrUndefined() || vp->IsBoolean()) {
     return CJS_Result::Failure(JSMessage::kInvalidSetError);
   }
-  pEvent->Value() = pRuntime->ToWideString(vp);
+  pEvent->Value() = pRuntime->ToWideStringReentrant(vp);
   return CJS_Result::Success();
 }
 

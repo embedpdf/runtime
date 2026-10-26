@@ -14,7 +14,7 @@
 
 #include "core/fxcrt/mask.h"
 #include "core/fxcrt/unowned_ptr.h"
-#include "fxjs/cfx_v8.h"
+#include "fxjs/cfx_isolate_wrapper.h"
 #include "fxjs/xfa/cfxjse_context.h"
 #include "v8/include/cppgc/persistent.h"
 #include "v8/include/v8-forward.h"
@@ -29,7 +29,6 @@ class CFXJSE_FormCalcContext;
 class CFXJSE_HostObject;
 class CFXJSE_NodeHelper;
 class CFXJSE_ResolveProcessor;
-class CFXJSE_Value;
 class CJS_Runtime;
 
 enum class XFA_ResolveFlag : uint16_t {
@@ -46,7 +45,7 @@ enum class XFA_ResolveFlag : uint16_t {
   kBindNew = 1 << 12,
 };
 
-class CFXJSE_Engine final : public CFX_V8 {
+class CFXJSE_Engine final : public CFX_IsolateWrapper {
  public:
   class ResolveResult {
     CPPGC_STACK_ALLOCATED();  // Allow raw/unowned pointers.
@@ -82,7 +81,6 @@ class CFXJSE_Engine final : public CFX_V8 {
   static CXFA_Object* ToObject(const v8::FunctionCallbackInfo<v8::Value>& info);
   static CXFA_Object* ToObject(v8::Isolate* pIsolate,
                                v8::Local<v8::Value> value);
-  static CXFA_Object* ToObject(v8::Isolate* pIsolate, CFXJSE_Value* pValue);
   static CXFA_Object* ToObject(CFXJSE_HostObject* pHostObj);
   static v8::Local<v8::Value> GlobalPropertyGetter(
       v8::Isolate* pIsolate,
@@ -112,7 +110,7 @@ class CFXJSE_Engine final : public CFX_V8 {
                                                   ByteStringView szPropName,
                                                   bool bQueryIn);
 
-  CFXJSE_Engine(CXFA_Document* document, CJS_Runtime* fxjs_runtime);
+  CFXJSE_Engine(CXFA_Document* document, v8::Isolate* isolate);
   ~CFXJSE_Engine() override;
 
   class EventParamScope {
@@ -173,6 +171,7 @@ class CFXJSE_Engine final : public CFX_V8 {
   CFXJSE_Context* GetJseContextForTest() const { return GetJseContext(); }
 
  private:
+  CJS_Runtime* GetCJSRuntime() const;
   CFXJSE_Context* GetJseContext() const { return js_context_.get(); }
   CFXJSE_Context* CreateVariablesContext(CXFA_Script* pScriptNode,
                                          CXFA_Node* pSubform);
@@ -197,7 +196,6 @@ class CFXJSE_Engine final : public CFX_V8 {
                            v8::Local<v8::Value> pValue);
   void RunVariablesScript(CXFA_Script* pScriptNode);
 
-  UnownedPtr<CJS_Runtime> const subordinate_runtime_;
   cppgc::WeakPersistent<CXFA_Document> const document_;
   std::unique_ptr<CFXJSE_Context> js_context_;
   UnownedPtr<CFXJSE_Class> js_class_;

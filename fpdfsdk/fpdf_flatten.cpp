@@ -9,15 +9,18 @@
 #include <limits.h>
 
 #include <algorithm>
+#include <functional>
+#include <set>
 #include <sstream>
 #include <utility>
 #include <vector>
 
 #include "constants/annotation_common.h"
 #include "constants/annotation_flags.h"
+#include "constants/catalog.h"
 #include "constants/font_encodings.h"
+#include "constants/form_fields.h"
 #include "constants/page_object.h"
-#include "core/fpdfapi/edit/cpdf_contentstream_write_utils.h"
 #include "core/fpdfapi/page/cpdf_page.h"
 #include "core/fpdfapi/page/cpdf_pageobject.h"
 #include "core/fpdfapi/parser/cpdf_array.h"
@@ -30,13 +33,20 @@
 #include "core/fpdfapi/parser/cpdf_stream_acc.h"
 #include "core/fpdfapi/parser/fpdf_parser_utility.h"
 #include "core/fpdfdoc/cpdf_annot.h"
+#include "core/fxcrt/containers/contains.h"
 #include "core/fxcrt/fx_string_wrappers.h"
+#include "core/fxcrt/stream_write_utils.h"
 #include "fpdfsdk/cpdfsdk_helpers.h"
 
 enum FPDF_TYPE { MAX, MIN };
 enum FPDF_VALUE { TOP, LEFT, RIGHT, BOTTOM };
 
 namespace {
+
+constexpr char kAnnots[] = "Annots";
+constexpr char kFields[] = "Fields";
+constexpr char kXFA[] = "XFA";
+constexpr int kMaxRecursion = 32;
 
 bool IsValidRect(const CFX_FloatRect& rect, const CFX_FloatRect& rcPage) {
   static constexpr float kMinSize = 0.000001f;
@@ -198,7 +208,7 @@ CFX_FloatRect CalculateRect(std::vector<CFX_FloatRect>* pRectArray) {
 }
 
 ByteString GenerateFlattenedContent(const ByteString& key) {
-  return "q 1 0 0 1 0 0 cm /" + key + " Do Q";
+  return ByteString({"q 1 0 0 1 0 0 cm /", key.AsStringView(), " Do Q"});
 }
 
 RetainPtr<CPDF_Reference> NewIndirectContentsStreamReference(
@@ -232,12 +242,11 @@ void SetPageContents(const ByteString& key,
                              NewIndirectContentsStreamReference(document, "q"));
     pContentsArray->Append(NewIndirectContentsStreamReference(document, "Q"));
   } else {
-    ByteString sStream = "q\n";
+    ByteString sStream;
     {
       auto pAcc = pdfium::MakeRetain<CPDF_StreamAcc>(pContentsStream);
       pAcc->LoadAllDataFiltered();
-      sStream += ByteStringView(pAcc->GetSpan());
-      sStream += "\nQ";
+      sStream = ByteString({"q\n", ByteStringView(pAcc->GetSpan()), "\nQ"});
     }
     pContentsStream->SetDataAndRemoveFilter(sStream.unsigned_span());
     pContentsArray = document->NewIndirect<CPDF_Array>();
@@ -314,11 +323,169 @@ void SanitizeResources(RetainPtr<CPDF_Dictionary> resources_dict) {
   SanitizeFontResources(resources_dict->GetMutableDictFor("Font"));
 }
 
+bool IsWidgetAnnot(const CPDF_Dictionary* annot) {
+  return annot && annot->GetNameFor(pdfium::annotation::kSubtype) == "Widget";
+}
+
+std::set<RetainPtr<const CPDF_Dictionary>> CollectPageWidgetAnnots(
+    const CPDF_Dictionary* page_dict) {
+  std::set<RetainPtr<const CPDF_Dictionary>> widget_annots;
+  RetainPtr<const CPDF_Array> annots = page_dict->GetArrayFor(kAnnots);
+  if (!annots) {
+    return widget_annots;
+  }
+
+  for (size_t i = 0; i < annots->size(); ++i) {
+    RetainPtr<const CPDF_Dictionary> annot = annots->GetDictAt(i);
+    if (IsWidgetAnnot(annot.Get())) {
+      widget_annots.insert(std::move(annot));
+    }
+  }
+  return widget_annots;
+}
+
+void RemoveSharedWidgetsFromSet(
+    CPDF_Document* document,
+    const CPDF_Dictionary* current_page_dict,
+    std::set<RetainPtr<const CPDF_Dictionary>>& widget_annots) {
+  for (int i = 0, page_count = document->GetPageCount();
+       i < page_count && !widget_annots.empty(); ++i) {
+    RetainPtr<const CPDF_Dictionary> page_dict = document->GetPageDictionary(i);
+    if (!page_dict || page_dict.Get() == current_page_dict) {
+      continue;
+    }
+
+    RetainPtr<const CPDF_Array> annots = page_dict->GetArrayFor(kAnnots);
+    if (!annots) {
+      continue;
+    }
+
+    for (size_t j = 0; j < annots->size(); ++j) {
+      RetainPtr<const CPDF_Dictionary> annot = annots->GetDictAt(j);
+      if (annot) {
+        widget_annots.erase(annot);
+        if (widget_annots.empty()) {
+          return;
+        }
+      }
+    }
+  }
+}
+
+// EmbedPDF(reads-dont-write): the walk reads fields through const accessors
+// and takes an array mutable only when an entry goes. On a layer, a mutable
+// getter copies the object up: the copy would match no widget read from the
+// page, and every field of the form would land in the layer.
+bool PruneFieldArray(
+    const CPDF_Array* fields,
+    const std::function<RetainPtr<CPDF_Array>()>& get_mutable_fields,
+    const std::set<RetainPtr<const CPDF_Dictionary>>& widget_annots,
+    std::set<RetainPtr<const CPDF_Dictionary>>& visited_fields,
+    int level) {
+  if (level > kMaxRecursion) {
+    return fields->IsEmpty();
+  }
+
+  RetainPtr<CPDF_Array> mutable_fields;
+  for (size_t i = fields->size(); i > 0; --i) {
+    const size_t field_index = i - 1;
+    RetainPtr<const CPDF_Dictionary> field = fields->GetDictAt(field_index);
+    if (!field) {
+      continue;
+    }
+
+    bool prune_field = pdfium::Contains(widget_annots, field);
+    if (!prune_field) {
+      // EmbedPDF(reads-dont-write): kids are read const too; their array is
+      // taken mutable only when one of them goes.
+      RetainPtr<const CPDF_Array> kids =
+          field->GetArrayFor(pdfium::form_fields::kKids);
+      if (kids && visited_fields.insert(field).second) {
+        auto get_mutable_kids = [&]() -> RetainPtr<CPDF_Array> {
+          if (!mutable_fields) {
+            mutable_fields = get_mutable_fields();
+          }
+          RetainPtr<CPDF_Dictionary> mutable_field =
+              mutable_fields ? mutable_fields->GetMutableDictAt(field_index)
+                             : nullptr;
+          return mutable_field ? mutable_field->GetMutableArrayFor(
+                                     pdfium::form_fields::kKids)
+                               : nullptr;
+        };
+        prune_field = PruneFieldArray(kids.Get(), get_mutable_kids,
+                                      widget_annots, visited_fields, level + 1);
+      }
+    }
+    if (prune_field) {
+      if (!mutable_fields) {
+        mutable_fields = get_mutable_fields();
+      }
+      if (mutable_fields) {
+        mutable_fields->RemoveAt(field_index);
+      }
+    }
+  }
+  return mutable_fields ? mutable_fields->IsEmpty() : fields->IsEmpty();
+}
+
+void RemoveFlattenedFields(CPDF_Document* document,
+                           const CPDF_Dictionary* page_dict) {
+  std::set<RetainPtr<const CPDF_Dictionary>> widget_annots =
+      CollectPageWidgetAnnots(page_dict);
+  if (widget_annots.empty()) {
+    return;
+  }
+
+  RemoveSharedWidgetsFromSet(document, page_dict, widget_annots);
+  if (widget_annots.empty()) {
+    return;
+  }
+
+  // EmbedPDF(reads-dont-write): the form is read const; see PruneFieldArray().
+  const CPDF_Dictionary* root = document->GetRoot();
+  if (!root) {
+    return;
+  }
+
+  RetainPtr<const CPDF_Dictionary> acro_form =
+      root->GetDictFor(pdfium::catalog::kAcroForm);
+  if (!acro_form) {
+    return;
+  }
+
+  RetainPtr<const CPDF_Array> fields = acro_form->GetArrayFor(kFields);
+  if (!fields) {
+    return;
+  }
+
+  // EmbedPDF(reads-dont-write): the root, the form and its fields are taken
+  // mutable here, the first time a field goes.
+  auto get_mutable_fields = [document]() -> RetainPtr<CPDF_Array> {
+    RetainPtr<CPDF_Dictionary> mutable_root = document->GetMutableRoot();
+    RetainPtr<CPDF_Dictionary> mutable_acro_form =
+        mutable_root
+            ? mutable_root->GetMutableDictFor(pdfium::catalog::kAcroForm)
+            : nullptr;
+    return mutable_acro_form ? mutable_acro_form->GetMutableArrayFor(kFields)
+                             : nullptr;
+  };
+  std::set<RetainPtr<const CPDF_Dictionary>> visited_fields;
+  if (PruneFieldArray(fields.Get(), get_mutable_fields, widget_annots,
+                      visited_fields,
+                      /*level=*/0) &&
+      !acro_form->KeyExist(kXFA)) {
+    document->GetMutableRoot()->RemoveFor(pdfium::catalog::kAcroForm);
+  }
+}
+
 }  // namespace
 
 FPDF_EXPORT int FPDF_CALLCONV FPDFPage_Flatten(FPDF_PAGE page, int nFlag) {
-  CPDF_Page* pPage = CPDFPageFromFPDFPage(page);
-  if (!page) {
+  // EmbedPDF(view-scope): RemoveFlattenedFields() reads every page's /Annots
+  // and the form's fields; on a layer, they resolve to the layer's versions.
+  ScopedFPDFPageView page_view(page);
+  CPDF_Page* pPage = page_view.Get();
+  if (!pPage) {
     return FLATTEN_FAIL;
   }
 
@@ -427,7 +594,7 @@ FPDF_EXPORT int FPDF_CALLCONV FPDFPage_Flatten(FPDF_PAGE page, int nFlag) {
         original_ap_stream =
             original_ap_dict->GetMutableStreamFor(sAnnotState.AsStringView());
       } else {
-        if (original_ap_dict->size() > 0) {
+        if (!original_ap_dict->IsEmpty()) {
           CPDF_DictionaryLocker locker(original_ap_dict);
           RetainPtr<CPDF_Object> pFirstObj = locker.begin()->second;
           if (pFirstObj) {
@@ -492,10 +659,11 @@ FPDF_EXPORT int FPDF_CALLCONV FPDFPage_Flatten(FPDF_PAGE page, int nFlag) {
     fxcrt::ostringstream buf;
     WriteMatrix(buf, m);
     ByteString str(buf);
-    sStream += ByteString::Format("q %s cm /%s Do Q\n", str.c_str(),
-                                  sFormName.c_str());
+    sStream += ByteString({"q ", str.AsStringView(), " cm /",
+                           sFormName.AsStringView(), " Do Q\n"});
     pNewXObject->SetDataAndRemoveFilter(sStream.unsigned_span());
   }
-  pPageDict->RemoveFor("Annots");
+  RemoveFlattenedFields(document, pPageDict.Get());
+  pPageDict->RemoveFor(kAnnots);
   return FLATTEN_SUCCESS;
 }

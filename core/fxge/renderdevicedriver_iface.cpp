@@ -9,11 +9,58 @@
 #include <utility>
 
 #include "core/fxcrt/fx_coordinates.h"
-#include "core/fxge/agg/cfx_agg_imagerenderer.h"
 #include "core/fxge/cfx_path.h"
 #include "core/fxge/dib/cfx_dibitmap.h"
 
 RenderDeviceDriverIface::~RenderDeviceDriverIface() = default;
+
+bool RenderDeviceDriverIface::RenderCapGetBits() const {
+  return false;
+}
+
+bool RenderDeviceDriverIface::RenderCapAlphaImage() const {
+  return false;
+}
+
+bool RenderDeviceDriverIface::RenderCapBlendMode() const {
+  return false;
+}
+
+bool RenderDeviceDriverIface::RenderCapSoftClip() const {
+  return false;
+}
+
+bool RenderDeviceDriverIface::RenderCapAlphaOutput() const {
+  return false;
+}
+
+bool RenderDeviceDriverIface::RenderCapByteMaskOutput() const {
+  return false;
+}
+
+#if defined(PDF_USE_SKIA)
+bool RenderDeviceDriverIface::RenderCapFillStrokePath() const {
+  return false;
+}
+
+bool RenderDeviceDriverIface::RenderCapShading() const {
+  return false;
+}
+
+bool RenderDeviceDriverIface::RenderCapPremultipliedAlpha() const {
+  return false;
+}
+#endif
+
+#if BUILDFLAG(IS_WIN)
+int RenderDeviceDriverIface::GetHorzSize() const {
+  return 0;
+}
+
+int RenderDeviceDriverIface::GetVertSize() const {
+  return 0;
+}
+#endif
 
 bool RenderDeviceDriverIface::SetClip_PathStroke(
     const CFX_Path& path,
@@ -42,10 +89,10 @@ bool RenderDeviceDriverIface::GetDIBits(RetainPtr<CFX_DIBitmap> bitmap,
 }
 
 RetainPtr<const CFX_DIBitmap> RenderDeviceDriverIface::GetBackDrop() const {
-  return RetainPtr<const CFX_DIBitmap>();
+  return nullptr;
 }
 
-bool RenderDeviceDriverIface::ContinueDIBits(CFX_AggImageRenderer* handle,
+bool RenderDeviceDriverIface::ContinueDIBits(Continuation* continuation,
                                              PauseIndicatorIface* pPause) {
   return false;
 }
@@ -82,14 +129,12 @@ bool RenderDeviceDriverIface::SetBitsWithMask(
   return false;
 }
 
-void RenderDeviceDriverIface::SetGroupKnockout(bool group_knockout) {}
-
 void RenderDeviceDriverIface::SyncInternalBitmaps() {}
 #endif  // defined(PDF_USE_SKIA)
 
 RenderDeviceDriverIface::StartResult::StartResult(
     Result result,
-    std::unique_ptr<CFX_AggImageRenderer> agg_image_renderer)
-    : result(result), agg_image_renderer(std::move(agg_image_renderer)) {}
+    std::unique_ptr<Continuation> continuation)
+    : result(result), continuation(std::move(continuation)) {}
 
 RenderDeviceDriverIface::StartResult::~StartResult() = default;

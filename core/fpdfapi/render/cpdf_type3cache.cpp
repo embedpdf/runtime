@@ -80,8 +80,9 @@ CPDF_Type3Cache::CPDF_Type3Cache(CPDF_Type3Font* font) : font_(font) {}
 
 CPDF_Type3Cache::~CPDF_Type3Cache() = default;
 
-const CFX_GlyphBitmap* CPDF_Type3Cache::LoadGlyph(uint32_t charcode,
-                                                  const CFX_Matrix& mtMatrix) {
+const CFX_GlyphBitmap* CPDF_Type3Cache::LoadGlyphBitmap(
+    uint32_t charcode,
+    const CFX_Matrix& mtMatrix) {
   SizeKey keygen = {
       FXSYS_roundf(mtMatrix.a * 10000),
       FXSYS_roundf(mtMatrix.b * 10000),
@@ -164,8 +165,6 @@ std::unique_ptr<CFX_GlyphBitmap> CPDF_Type3Cache::RenderGlyph(
   if (!pResBitmap) {
     return nullptr;
   }
-
-  auto pGlyph = std::make_unique<CFX_GlyphBitmap>(left, -top);
-  pGlyph->GetBitmap()->TakeOver(std::move(pResBitmap));
-  return pGlyph;
+  return std::make_unique<CFX_GlyphBitmap>(CFX_Point(left, -top),
+                                           std::move(pResBitmap));
 }

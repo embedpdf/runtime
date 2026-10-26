@@ -8,13 +8,21 @@ import("//build_overrides/pdfium.gni")
 # This file contains PDFium-related build flags.
 
 declare_args() {
+  # Build PDFium with FreeType support.
+  pdf_enable_freetype = pdf_enable_freetype_override
+}
+
+declare_args() {
   # Build PDFium either:
   # 1) When set to true, with a bundled FreeType, built from FreeType source
   #    code in //third_party/freetype and PDFium's FreeType configs in
   #    third_party/freetype/include.
   # 2) When set to false, use whatever FreeType target is defined in
   #    //build/config/freetype.
-  pdf_bundle_freetype = pdf_bundle_freetype_override
+  pdf_bundle_freetype = pdf_bundle_freetype_override && pdf_enable_freetype
+
+  # Build PDFium with experimental Brotli compression support.
+  pdf_enable_brotli = pdf_enable_brotli_override
 
   # Generate logging messages for click events that reach PDFium
   pdf_enable_click_logging = false
@@ -25,18 +33,6 @@ declare_args() {
   # Build PDFium either with or without XFA Forms support.
   pdf_enable_xfa = pdf_enable_xfa_override
 
-  # If XFA, also support bmp codec. Ignored if not XFA.
-  pdf_enable_xfa_bmp = true
-
-  # If XFA, also support gif codec. Ignored if not XFA.
-  pdf_enable_xfa_gif = true
-
-  # If XFA, also support png codec. Ignored if not XFA.
-  pdf_enable_xfa_png = true
-
-  # If XFA, also support tiff codec. Ignored if not XFA.
-  pdf_enable_xfa_tiff = true
-
   # Build PDFium against PartitionAlloc. When false, PDFium must build without
   # requiring any PartitionAlloc headers or code to be present. When true,
   # PDFium will use PartitionAlloc partitions to separate strings, scalars,
@@ -44,9 +40,15 @@ declare_args() {
   # malloc is controlled by args in build_overrides/partition_alloc.gni.
   pdf_use_partition_alloc = pdf_use_partition_alloc_override
 
+  # Build PDFium to use AGG (fully supported).
+  pdf_use_agg = true
+
+  # Build PDFium to use libyuv for SIMD pixel format conversions.
+  pdf_use_libyuv = true
+
   # Build PDFium to use Skia (experimental) for all PDFium graphics.
-  # If enabled, coexists in build with AGG graphics and the default
-  # renderer is selectable at runtime.
+  # If `pdf_use_agg` is enabled as well, coexists in build with AGG graphics
+  # and the default renderer is selectable at runtime.
   pdf_use_skia = pdf_use_skia_override
 
   # When building PDFium with Skia enabled, use a custom font manager if there
@@ -62,9 +64,17 @@ declare_args() {
   # Note that Fontations requires Skia and Rust support.
   pdf_enable_fontations = pdf_enable_fontations_override
 
+  # Build PDFium with Rust-based BMP decoder. If enabled, it ensures that PDFium
+  # doesn't depend on its native C++ BMP decoder. Note that
+  # `pdf_enable_rust_bmp` requires Skia and Rust support.
+  pdf_enable_rust_bmp = pdf_enable_rust_bmp_override
+
+  # Build PDFium with Rust-based JPEG decoder. If enabled, it ensures that
+  # PDFium doesn't depend on `libjpeg`.
+  pdf_enable_rust_jpeg = pdf_enable_rust_jpeg_override
+
   # Build PDFium with Rust-based PNG decoder and encoder.
   # If enabled, it ensures that PDFium doesn't depend on `libpng`.
-  # Note that `pdf_enable_rust_png` requires Skia and Rust support.
   pdf_enable_rust_png = pdf_enable_rust_png_override
 
   # Build PDFium standalone. Now only controls whether the test binaries
@@ -104,10 +114,31 @@ declare_args() {
 assert(!pdf_is_complete_lib || !is_component_build,
        "pdf_is_complete_lib=true requires is_component_build=false")
 
-assert(
-    !pdf_enable_fontations || (enable_rust && enable_rust_cxx && pdf_use_skia),
-    "pdf_enable_fontations=true requires enable_rust=true, enable_rust_cxx=true, and pdf_use_skia=true")
+assert(pdf_use_agg || pdf_use_skia,
+       "At least one of pdf_use_agg or pdf_use_skia must be true")
 
 assert(
-    !pdf_enable_rust_png || (enable_rust && enable_rust_cxx && pdf_use_skia),
-    "pdf_enable_rust_png=true requires enable_rust=true, enable_rust_cxx=true, and pdf_use_skia=true")
+    pdf_enable_freetype || pdf_enable_fontations,
+    "At least one of pdf_enable_freetype or pdf_enable_fontations must be true")
+
+assert(!pdf_bundle_freetype || pdf_enable_freetype,
+       "pdf_bundle_freetype=true requires pdf_enable_freetype=true")
+
+assert(pdf_use_skia || pdf_enable_freetype,
+       "pdf_enable_freetype=true is required when building without Skia")
+
+assert(
+    !pdf_enable_fontations || (enable_rust && enable_rust_cxx),
+    "pdf_enable_fontations=true requires enable_rust=true and enable_rust_cxx=true")
+
+assert(
+    !pdf_enable_rust_bmp || (enable_rust && enable_rust_cxx),
+    "pdf_enable_rust_bmp=true requires enable_rust=true and enable_rust_cxx=true")
+
+assert(
+    !pdf_enable_rust_jpeg || (enable_rust && enable_rust_cxx),
+    "pdf_enable_rust_jpeg=true requires enable_rust=true and enable_rust_cxx=true")
+
+assert(
+    !pdf_enable_rust_png || (enable_rust && enable_rust_cxx),
+    "pdf_enable_rust_png=true requires enable_rust=true and enable_rust_cxx=true")

@@ -8,12 +8,12 @@
 #include <string>
 
 #include "core/fxcrt/check_op.h"
+#include "core/fxcrt/compiler_specific.h"
 #include "fpdfsdk/cpdfsdk_helpers.h"
 #include "fpdfsdk/fpdfxfa/cpdfxfa_context.h"
 #include "fxjs/fxv8.h"
 #include "fxjs/xfa/cfxjse_engine.h"
 #include "fxjs/xfa/cfxjse_isolatetracker.h"
-#include "fxjs/xfa/cfxjse_value.h"
 #include "testing/gtest/include/gtest/gtest.h"
 #include "v8/include/v8-container.h"
 #include "v8/include/v8-local-handle.h"
@@ -22,6 +22,17 @@
 XFAJSEmbedderTest::XFAJSEmbedderTest() = default;
 
 XFAJSEmbedderTest::~XFAJSEmbedderTest() = default;
+
+v8::Isolate* XFAJSEmbedderTest::isolate() const {
+  auto* doc = CPDFDocumentFromFPDFDocument(document());
+  if (doc) {
+    auto* context = static_cast<CPDFXFA_Context*>(doc->GetExtension());
+    if (context && context->GetIsolate()) {
+      return context->GetIsolate();
+    }
+  }
+  return JSEmbedderTest::isolate();
+}
 
 void XFAJSEmbedderTest::SetUp() {
   JSEmbedderTest::SetUp();
@@ -59,7 +70,7 @@ v8::Local<v8::Value> XFAJSEmbedderTest::GetValue() const {
 
 bool XFAJSEmbedderTest::OpenDocumentWithOptions(
     const std::string& filename,
-    const char* password,
+    const ByteString& password,
     LinearizeOption linearize_option,
     JavaScriptOption javascript_option) {
   // JS required for XFA.
@@ -84,8 +95,9 @@ bool XFAJSEmbedderTest::Execute(ByteStringView input) {
     return true;
   }
 
-  fprintf(stderr, "FormCalc: %.*s\n", static_cast<int>(input.GetLength()),
-          input.unterminated_c_str());
+  UNSAFE_TODO(fprintf(stderr, "FormCalc: %.*s\n",
+                      static_cast<int>(input.GetLength()),
+                      input.unterminated_c_str()));
 
   v8::Local<v8::Value> result = GetValue();
   if (!fxv8::IsArray(result)) {
@@ -100,7 +112,7 @@ bool XFAJSEmbedderTest::Execute(ByteStringView input) {
 
   WideString str = fxv8::ReentrantToWideStringHelper(isolate(), msg);
   if (!str.IsEmpty()) {
-    fprintf(stderr, "JS ERROR: %ls\n", str.c_str());
+    UNSAFE_TODO(fprintf(stderr, "JS ERROR: %ls\n", str.c_str()));
   }
   return false;
 }
@@ -115,6 +127,13 @@ bool XFAJSEmbedderTest::ExecuteHelper(ByteStringView input) {
   CFXJSE_Context::ExecutionResult exec_result = script_context_->RunScript(
       CXFA_Script::Type::Formcalc, WideString::FromUTF8(input).AsStringView(),
       GetXFADocument()->GetRoot());
-  value_.Reset(isolate(), exec_result.value->GetValue(isolate()));
+  value_.Reset(isolate(),
+               v8::Local<v8::Value>::New(isolate(), exec_result.value));
   return exec_result.status;
+}
+
+void XFAJSEmbedderTest::ForceCppGarbageCollection() {
+  auto* doc = CPDFDocumentFromFPDFDocument(document());
+  auto* context = static_cast<CPDFXFA_Context*>(doc->GetExtension());
+  FXGC_ForceGarbageCollection(context->GetGCHeap());
 }

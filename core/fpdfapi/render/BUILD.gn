@@ -7,8 +7,6 @@ import("../../../testing/test.gni")
 
 source_set("render") {
   sources = [
-    "charposlist.cpp",
-    "charposlist.h",
     "cpdf_devicebuffer.cpp",
     "cpdf_devicebuffer.h",
     "cpdf_docrenderdata.cpp",
@@ -40,22 +38,22 @@ source_set("render") {
     "../../../:pdfium_strict_config",
     "../../../:pdfium_noshorten_config",
   ]
+  public_deps = [
+    "../../fxcrt",
+    "../../fxge",
+    "../page",
+    "../parser",
+  ]
   deps = [
     "../../../constants",
     "../../fxcodec",
-    "../../fxcrt",
-    "../../fxge",
     "../font",
-    "../page",
-    "../parser",
   ]
   visibility = [ "../../../*" ]
   if (is_win) {
     sources += [
       "cpdf_scaledrenderbuffer.cpp",
       "cpdf_scaledrenderbuffer.h",
-      "cpdf_windowsrenderdevice.cpp",
-      "cpdf_windowsrenderdevice.h",
     ]
   }
 }

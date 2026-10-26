@@ -80,3 +80,7 @@ TEST_F(CPDFParserEmbedderTest, Bug828049) {
 TEST_F(CPDFParserEmbedderTest, InvalidDictionaryKeys) {
   ASSERT_TRUE(OpenDocument("bad_dict_keys.pdf"));
 }
+
+TEST_F(CPDFParserEmbedderTest, Bug457855936) {
+  EXPECT_FALSE(OpenDocument("bug_457855936.pdf"));
+}

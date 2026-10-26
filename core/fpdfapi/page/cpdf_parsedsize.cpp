@@ -52,6 +52,9 @@ void CPDF_ParsedSize::Counter::Add(const CPDF_PageObject& object) {
       if (codes) {
         bytes += Allocation(codes * sizeof(uint32_t));
       }
+      if (!text->GetCharKernings().empty()) {
+        bytes += Allocation(text->GetCharKernings().size() * sizeof(float));
+      }
       if (!text->GetCharPositions().empty()) {
         bytes += Allocation(text->GetCharPositions().size() * sizeof(float));
       }

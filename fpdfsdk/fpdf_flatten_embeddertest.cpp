@@ -3,11 +3,10 @@
 // found in the LICENSE file.
 
 #include "build/build_config.h"
-#include "core/fxge/cfx_defaultrenderdevice.h"
+#include "core/fxge/cfx_renderdevice.h"
 #include "public/fpdf_flatten.h"
 #include "public/fpdfview.h"
 #include "testing/embedder_test.h"
-#include "testing/embedder_test_constants.h"
 #include "testing/gmock/include/gmock/gmock.h"
 #include "testing/gtest/include/gtest/gtest.h"
 
@@ -27,6 +26,19 @@ TEST_F(FPDFFlattenEmbedderTest, FlatNothing) {
   EXPECT_EQ(FLATTEN_NOTHINGTODO,
             FPDFPage_Flatten(page.get(), FLAT_NORMALDISPLAY));
 }
+
+#if defined(PDF_ENABLE_XFA)
+TEST_F(FPDFFlattenEmbedderTest, RejectsFullXfaPageWithoutPdfBacking) {
+  ASSERT_TRUE(OpenDocument("simple_xfa.pdf"));
+  ASSERT_EQ(FORMTYPE_XFA_FULL, FPDF_GetFormType(document()));
+  ScopedPage page = LoadScopedPage(0);
+  ASSERT_TRUE(page);
+
+  FS_RECTF bounds;
+  ASSERT_FALSE(FPDF_GetPageBoundingBox(page.get(), &bounds));
+  EXPECT_EQ(FLATTEN_FAIL, FPDFPage_Flatten(page.get(), FLAT_NORMALDISPLAY));
+}
+#endif  // defined(PDF_ENABLE_XFA)
 
 TEST_F(FPDFFlattenEmbedderTest, FlatNormal) {
   ASSERT_TRUE(OpenDocument("annotiter.pdf"));
@@ -72,14 +84,15 @@ TEST_F(FPDFFlattenEmbedderTest, Bug861842) {
   ScopedPage page = LoadScopedPage(0);
   ASSERT_TRUE(page);
 
-  ScopedFPDFBitmap bitmap = RenderLoadedPageWithFlags(page.get(), FPDF_ANNOT);
-  CompareBitmapWithExpectationSuffix(bitmap.get(), "bug_861842");
+  CompareDisplayList(
+      RenderLoadedPageWithFlagsToDisplayList(page.get(), FPDF_ANNOT),
+      "bug_861842");
 
   EXPECT_EQ(FLATTEN_SUCCESS, FPDFPage_Flatten(page.get(), FLAT_PRINT));
   EXPECT_TRUE(FPDF_SaveAsCopy(document(), this, 0));
 
   // TODO(crbug.com/861842): This should not render blank.
-  VerifySavedDocumentWithExpectationSuffix("blank_100x120");
+  VerifySavedDocumentWithDisplayList("blank_100x120", FPDF_ANNOT);
 }
 
 TEST_F(FPDFFlattenEmbedderTest, Bug889099) {
@@ -88,13 +101,14 @@ TEST_F(FPDFFlattenEmbedderTest, Bug889099) {
   ASSERT_TRUE(page);
 
   // The original document has a malformed media box; the height is -400.
-  ScopedFPDFBitmap bitmap = RenderLoadedPageWithFlags(page.get(), FPDF_ANNOT);
-  CompareBitmapWithExpectationSuffix(bitmap.get(), "bug_889099");
+  CompareDisplayList(
+      RenderLoadedPageWithFlagsToDisplayList(page.get(), FPDF_ANNOT),
+      "bug_889099");
 
   EXPECT_EQ(FLATTEN_SUCCESS, FPDFPage_Flatten(page.get(), FLAT_PRINT));
   EXPECT_TRUE(FPDF_SaveAsCopy(document(), this, 0));
 
-  VerifySavedDocumentWithExpectationSuffix("bug_889099_flattened");
+  VerifySavedDocumentWithDisplayList("bug_889099_flattened", FPDF_ANNOT);
 }
 
 TEST_F(FPDFFlattenEmbedderTest, Bug890322) {
@@ -102,13 +116,14 @@ TEST_F(FPDFFlattenEmbedderTest, Bug890322) {
   ScopedPage page = LoadScopedPage(0);
   ASSERT_TRUE(page);
 
-  ScopedFPDFBitmap bitmap = RenderLoadedPageWithFlags(page.get(), FPDF_ANNOT);
-  CompareBitmapWithExpectationSuffix(bitmap.get(), pdfium::kBug890322Png);
+  CompareDisplayList(
+      RenderLoadedPageWithFlagsToDisplayList(page.get(), FPDF_ANNOT),
+      "bug_890322");
 
   EXPECT_EQ(FLATTEN_SUCCESS, FPDFPage_Flatten(page.get(), FLAT_PRINT));
   EXPECT_TRUE(FPDF_SaveAsCopy(document(), this, 0));
 
-  VerifySavedDocumentWithExpectationSuffix(pdfium::kBug890322Png);
+  VerifySavedDocumentWithDisplayList("bug_890322_saved", FPDF_ANNOT);
 }
 
 TEST_F(FPDFFlattenEmbedderTest, Bug896366) {
@@ -116,11 +131,72 @@ TEST_F(FPDFFlattenEmbedderTest, Bug896366) {
   ScopedPage page = LoadScopedPage(0);
   ASSERT_TRUE(page);
 
-  ScopedFPDFBitmap bitmap = RenderLoadedPageWithFlags(page.get(), FPDF_ANNOT);
-  CompareBitmapWithExpectationSuffix(bitmap.get(), "bug_896366");
+  CompareDisplayList(
+      RenderLoadedPageWithFlagsToDisplayList(page.get(), FPDF_ANNOT),
+      "bug_896366");
 
   EXPECT_EQ(FLATTEN_SUCCESS, FPDFPage_Flatten(page.get(), FLAT_PRINT));
   EXPECT_TRUE(FPDF_SaveAsCopy(document(), this, 0));
 
-  VerifySavedDocumentWithExpectationSuffix("bug_896366");
+  VerifySavedDocumentWithDisplayList("bug_896366_saved", FPDF_ANNOT);
+}
+
+TEST_F(FPDFFlattenEmbedderTest, FlattenShouldRemoveAcroForm) {
+  ASSERT_TRUE(OpenDocument("text_form.pdf"));
+  ScopedPage page = LoadScopedPage(0);
+  ASSERT_TRUE(page);
+  EXPECT_EQ(FPDFPage_Flatten(page.get(), FLAT_NORMALDISPLAY), FLATTEN_SUCCESS);
+
+  EXPECT_TRUE(FPDF_SaveAsCopy(document(), this, 0));
+  ScopedSavedDoc saved_doc = OpenScopedSavedDocument();
+  ASSERT_TRUE(saved_doc);
+  EXPECT_EQ(FORMTYPE_NONE, FPDF_GetFormType(saved_doc.get()));
+}
+
+TEST_F(FPDFFlattenEmbedderTest, FlattenSharedAnnotArrayKeepsAcroForm) {
+  ASSERT_TRUE(OpenDocument("bug_498010830_shared_annots.pdf"));
+  ScopedPage page = LoadScopedPage(0);
+  ASSERT_TRUE(page);
+  EXPECT_EQ(FPDFPage_Flatten(page.get(), FLAT_NORMALDISPLAY), FLATTEN_SUCCESS);
+
+  EXPECT_TRUE(FPDF_SaveAsCopy(document(), this, 0));
+  {
+    ScopedSavedDoc saved_doc = OpenScopedSavedDocument();
+    ASSERT_TRUE(saved_doc);
+    EXPECT_EQ(FORMTYPE_ACRO_FORM, FPDF_GetFormType(saved_doc.get()));
+  }
+  ClearString();
+
+  ScopedPage page1 = LoadScopedPage(1);
+  ASSERT_TRUE(page1);
+  EXPECT_EQ(FPDFPage_Flatten(page1.get(), FLAT_NORMALDISPLAY), FLATTEN_SUCCESS);
+
+  EXPECT_TRUE(FPDF_SaveAsCopy(document(), this, 0));
+  ScopedSavedDoc saved_doc = OpenScopedSavedDocument();
+  ASSERT_TRUE(saved_doc);
+  EXPECT_EQ(FORMTYPE_NONE, FPDF_GetFormType(saved_doc.get()));
+}
+
+TEST_F(FPDFFlattenEmbedderTest, FlattenSharedWidgetAnnotKeepsAcroForm) {
+  ASSERT_TRUE(OpenDocument("bug_498010830_shared_widget.pdf"));
+  ScopedPage page = LoadScopedPage(0);
+  ASSERT_TRUE(page);
+  EXPECT_EQ(FPDFPage_Flatten(page.get(), FLAT_NORMALDISPLAY), FLATTEN_SUCCESS);
+
+  EXPECT_TRUE(FPDF_SaveAsCopy(document(), this, 0));
+  {
+    ScopedSavedDoc saved_doc = OpenScopedSavedDocument();
+    ASSERT_TRUE(saved_doc);
+    EXPECT_EQ(FORMTYPE_ACRO_FORM, FPDF_GetFormType(saved_doc.get()));
+  }
+  ClearString();
+
+  ScopedPage page1 = LoadScopedPage(1);
+  ASSERT_TRUE(page1);
+  EXPECT_EQ(FPDFPage_Flatten(page1.get(), FLAT_NORMALDISPLAY), FLATTEN_SUCCESS);
+
+  EXPECT_TRUE(FPDF_SaveAsCopy(document(), this, 0));
+  ScopedSavedDoc saved_doc = OpenScopedSavedDocument();
+  ASSERT_TRUE(saved_doc);
+  EXPECT_EQ(FORMTYPE_NONE, FPDF_GetFormType(saved_doc.get()));
 }

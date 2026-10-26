@@ -527,14 +527,16 @@ TEST_F(EPDFViewEmbedderTest, DecodedImageStoreRendersAsNewDecodes) {
     std::vector<int> widths;
   };
   // The huge image, which a store keeps decoded in full; a masked and an
-  // inverted image; a JPX image, whose widths make it decode at several
-  // resolution levels and come back to them; and images of PDFium's own
-  // tests. The render baselines cover the huge image at more sizes, and drawn
-  // three times on one page.
+  // inverted image; a JPX image and a JPEG one, whose widths make them decode
+  // at several resolution levels and come back to them; and images of
+  // PDFium's own tests. The render baselines cover the huge image at more
+  // sizes, and drawn three times on one page.
   const Case kCases[] = {
       {"embedpdf_decoded_images.pdf", 0, {300, 150}},
       {"embedpdf_decoded_images.pdf", 2, {1400, 150, 600}},
       {"embedpdf_jpx_resolution_levels.pdf", 0, {1400, 150, 600, 1400, 150}},
+      {"jpeg_reduced_size.pdf", 0, {1400, 150, 600, 1400, 150}},
+      {"jpeg_reduced_size.pdf", 0, {150, 1400, 600, 150, 1400}},
       {"embedded_images.pdf", 0, {1400, 150, 600}},
       {"form_object_with_image.pdf", 0, {1400, 150, 600}},
       {"jpx_lzw.pdf", 0, {1400, 150, 600}},
@@ -958,4 +960,30 @@ TEST_F(EPDFViewEmbedderTest, StandardFontsDrawWithBuiltInFaces) {
   ASSERT_TRUE(page);
   EXPECT_EQ((std::vector<std::string>{"Tinos", "Arimo"}),
             HelloWorldFontFamilies(page.get()));
+}
+
+// An image object of another document draws as one of the page's own (rule
+// bug-fix). The page image cache refuses it, and the image loader then read
+// the cache's current entry: with none yet, a crash.
+TEST_F(EPDFViewEmbedderTest, ImageOfAnotherDocumentDraws) {
+  ScopedFPDFBitmap red(FPDFBitmap_Create(2, 2, 0));
+  ASSERT_TRUE(red);
+  ASSERT_TRUE(FPDFBitmap_FillRect(red.get(), 0, 0, 2, 2, 0xFFFF0000));
+  // Draws an image of |image_document| on a new page of |document|.
+  auto render = [&red](FPDF_DOCUMENT document, FPDF_DOCUMENT image_document) {
+    ScopedFPDFPage page(FPDFPage_New(document, 0, 200, 200));
+    FPDF_PAGEOBJECT image = FPDFPageObj_NewImageObj(image_document);
+    EXPECT_TRUE(FPDFImageObj_SetBitmap(nullptr, 0, image, red.get()));
+    EXPECT_TRUE(FPDFImageObj_SetMatrix(image, 100, 0, 0, 100, 50, 50));
+    FPDFPage_InsertObject(page.get(), image);
+    ScopedFPDFBitmap bitmap = RenderPage(page.get());
+    return HashBitmap(bitmap.get());
+  };
+
+  ScopedFPDFDocument document(FPDF_CreateNewDocument());
+  ScopedFPDFDocument other(FPDF_CreateNewDocument());
+  ASSERT_TRUE(document);
+  ASSERT_TRUE(other);
+  EXPECT_EQ(render(document.get(), document.get()),
+            render(document.get(), other.get()));
 }

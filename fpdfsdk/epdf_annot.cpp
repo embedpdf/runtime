@@ -23,7 +23,7 @@
 #include "constants/appearance.h"
 #include "constants/form_fields.h"
 #include "core/fdrm/fx_crypt.h"
-#include "core/fpdfapi/edit/cpdf_contentstream_write_utils.h"
+#include "core/fxcrt/stream_write_utils.h"
 #include "core/fpdfapi/edit/cpdf_stringarchivestream.h"
 #include "core/fpdfapi/page/cpdf_annotcontext.h"
 #include "core/fpdfapi/page/cpdf_form.h"
@@ -2100,7 +2100,8 @@ EPDFAnnot_SetDefaultAppearance(FPDF_ANNOTATION annot,
 
   auto internal_font = static_cast<CPDF_Annot::StandardFont>(font);
   return CPDF_AppearanceGenerator::UpdateDefaultAppearance(
-      doc, annot_dict.Get(), internal_font, font_size, CFX_Color(R, G, B));
+      doc, annot_dict.Get(), internal_font, font_size,
+      CFX_Color::MakeRGBBytes(R, G, B));
 }
 
 FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV
@@ -2142,7 +2143,8 @@ EPDFAnnot_SetDefaultAppearanceRegisteredFont(FPDF_ANNOTATION annot,
   }
 
   return CPDF_AppearanceGenerator::UpdateDefaultAppearanceRegisteredFont(
-      doc, annot_dict.Get(), font_id, font_size, CFX_Color(R, G, B));
+      doc, annot_dict.Get(), font_id, font_size,
+      CFX_Color::MakeRGBBytes(R, G, B));
 }
 
 FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV
@@ -2641,7 +2643,7 @@ EPDFPage_GetAnnotRaw(FPDF_DOCUMENT doc, int page_index, int index) {
       pdf->GetPageDictionary(page_index);
   RetainPtr<CPDF_Dictionary> page_dict =
       pdfium::WrapRetain(const_cast<CPDF_Dictionary*>(const_page_dict.Get()));
-  if (!page_dict) {
+  if (!CPDF_Document::IsPageTreeLeaf(page_dict.Get())) {
     return nullptr;
   }
 
@@ -2689,7 +2691,7 @@ EPDFPage_CreateAnnotRaw(FPDF_DOCUMENT doc,
   CPDF_DocumentViewScope document_view(pdf);
   RetainPtr<CPDF_Dictionary> page_dict =
       pdf->GetMutablePageDictionary(page_index);
-  if (!page_dict) {
+  if (!CPDF_Document::IsPageTreeLeaf(page_dict.Get())) {
     return nullptr;
   }
   // Built from the dictionary alone: its content is never parsed.
@@ -3353,7 +3355,7 @@ static bool SetContentFileIdentifier(CPDF_Document* doc) {
   }
   const auto bytes = text.str();
   std::array<uint8_t, 16> digest;
-  CRYPT_MD5Generate(pdfium::as_byte_span(bytes), digest);
+  CryptMd5Generate(pdfium::as_byte_span(bytes), digest);
   auto identifier = pdfium::MakeRetain<CPDF_Array>();
   identifier->AppendNew<CPDF_String>(digest, CPDF_String::DataType::kIsHex);
   identifier->AppendNew<CPDF_String>(digest, CPDF_String::DataType::kIsHex);

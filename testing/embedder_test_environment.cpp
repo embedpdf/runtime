@@ -7,6 +7,7 @@
 #include <ostream>
 
 #include "core/fxcrt/check.h"
+#include "core/fxcrt/compiler_specific.h"
 #include "core/fxcrt/fx_system.h"
 #include "core/fxge/cfx_fontmapper.h"
 #include "public/fpdfview.h"
@@ -23,7 +24,8 @@ EmbedderTestEnvironment* g_environment = nullptr;
 }  // namespace
 
 EmbedderTestEnvironment::EmbedderTestEnvironment()
-    : renderer_type_(GetDefaultRendererType()) {
+    : renderer_type_(GetDefaultRendererType()),
+      font_library_type_(GetDefaultFontLibraryType()) {
   DCHECK(!g_environment);
   g_environment = this;
 }
@@ -40,24 +42,20 @@ EmbedderTestEnvironment* EmbedderTestEnvironment::GetInstance() {
 
 void EmbedderTestEnvironment::SetUp() {
   FPDF_LIBRARY_CONFIG config = {
-      .version = 4,
+      .version = version_,
       .m_pUserFontPaths = test_fonts_.font_paths(),
 
 #ifdef PDF_ENABLE_V8
       .m_pIsolate = V8TestEnvironment::GetInstance()->isolate(),
-      .m_v8EmbedderSlot = 0,
       .m_pPlatform = V8TestEnvironment::GetInstance()->platform(),
-#else   // PDF_ENABLE_V8
-      .m_pIsolate = nullptr,
-      .m_v8EmbedderSlot = 0,
-      .m_pPlatform = nullptr,
 #endif  // PDF_ENABLE_V8
 
       .m_RendererType = renderer_type_,
+      .m_FontLibraryType = font_library_type_,
+      .m_BrotliEnabled = brotli_enabled_,
   };
 
   FPDF_InitLibraryWithConfig(&config);
-
   test_fonts_.InstallFontMapper();
   // EmbedPDF(fonts): standard fonts come from the test fonts, as upstream's
   // tests expect. The product draws them with the built-in faces; our tests of
@@ -71,7 +69,7 @@ void EmbedderTestEnvironment::TearDown() {
 
 void EmbedderTestEnvironment::AddFlags(int argc, char** argv) {
   for (int i = 1; i < argc; ++i) {
-    AddFlag(argv[i]);
+    AddFlag(UNSAFE_TODO(argv[i]));
   }
 }
 
@@ -80,6 +78,7 @@ void EmbedderTestEnvironment::AddFlag(const std::string& flag) {
     write_pngs_ = true;
     return;
   }
+
 #if defined(PDF_USE_SKIA)
   std::string value;
   if (ParseSwitchKeyValue(flag, "--use-renderer=", &value)) {
@@ -94,6 +93,18 @@ void EmbedderTestEnvironment::AddFlag(const std::string& flag) {
     return;
   }
 #endif  // defined(PDF_USE_SKIA)
+#if defined(PDF_ENABLE_FREETYPE)
+  if (flag == "--freetype") {
+    font_library_type_ = FPDF_FONTBACKENDTYPE_FREETYPE;
+    return;
+  }
+#endif  // defined(PDF_ENABLE_FREETYPE)
+#if defined(PDF_ENABLE_FONTATIONS)
+  if (flag == "--fontations") {
+    font_library_type_ = FPDF_FONTBACKENDTYPE_FONTATIONS;
+    return;
+  }
+#endif  // defined(PDF_ENABLE_FONTATIONS)
 
   std::cerr << "Unknown flag: " << flag << "\n";
 }

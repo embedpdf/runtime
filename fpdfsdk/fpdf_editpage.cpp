@@ -7,6 +7,7 @@
 #include "public/fpdf_edit.h"
 
 #include <algorithm>
+#include <cstdlib>
 #include <limits>
 #include <memory>
 #include <utility>
@@ -25,24 +26,28 @@
 #include "core/fpdfapi/page/cpdf_pathobject.h"
 #include "core/fpdfapi/page/cpdf_shadingobject.h"
 #include "core/fpdfapi/page/cpdf_textobject.h"
+#include "core/fpdfapi/page/cpdf_tilingpattern.h"
 #include "core/fpdfapi/parser/cpdf_array.h"
 #include "core/fpdfapi/parser/cpdf_dictionary.h"
 #include "core/fpdfapi/parser/cpdf_document.h"
 #include "core/fpdfapi/parser/cpdf_document_view_scope.h"
-#include "core/fpdfapi/parser/cpdf_name.h"
 #include "core/fpdfapi/parser/cpdf_number.h"
 #include "core/fpdfapi/parser/cpdf_string.h"
 #include "core/fpdfapi/render/cpdf_docrenderdata.h"
+#include "core/fpdfapi/render/cpdf_renderoptions.h"
+#include "core/fpdfapi/render/cpdf_rendertiling.h"
 #include "core/fpdfdoc/cpdf_annot.h"
 #include "core/fpdfdoc/cpdf_annotlist.h"
 #include "core/fxcrt/compiler_specific.h"
 #include "core/fxcrt/fx_extension.h"
 #include "core/fxcrt/notreached.h"
 #include "core/fxcrt/numerics/safe_conversions.h"
+#include "core/fxcrt/retain_ptr.h"
 #include "core/fxcrt/span.h"
 #include "core/fxcrt/span_util.h"
 #include "core/fxcrt/stl_util.h"
 #include "core/fxcrt/unowned_ptr.h"
+#include "core/fxge/dib/cfx_dibitmap.h"
 #include "fpdfsdk/cpdfsdk_helpers.h"
 #include "public/epdf_edit.h"
 #include "public/fpdf_formfill.h"
@@ -70,19 +75,10 @@ static_assert(FPDF_PAGEOBJ_FORM ==
                   static_cast<int>(CPDF_PageObject::Type::kForm),
               "FPDF_PAGEOBJ_FORM/CPDF_PageObject::FORM mismatch");
 
-bool IsPageObject(CPDF_Page* pPage) {
-  if (!pPage) {
-    return false;
-  }
-
-  RetainPtr<const CPDF_Dictionary> pFormDict = pPage->GetDict();
-  if (!pFormDict->KeyExist(pdfium::page_object::kType)) {
-    return false;
-  }
-
-  RetainPtr<const CPDF_Name> pName =
-      ToName(pFormDict->GetObjectFor(pdfium::page_object::kType)->GetDirect());
-  return pName && pName->GetString() == "Page";
+// EmbedPDF(reads-dont-write): any leaf of the page tree is a page here;
+// upstream rewrites a missing or wrong /Type to /Page while reading.
+bool IsPageObject(CPDF_Page* page) {
+  return page && CPDF_Document::IsPageTreeLeaf(page->GetDict());
 }
 
 void CalcBoundingBox(CPDF_PageObject* pPageObj) {
@@ -189,6 +185,122 @@ ParamsAndObject SetParamValueHelper(FPDF_DOCUMENT document,
   return {params, page_obj};
 }
 
+ByteString FormatPDFDate(time_t current_time, const tm& local_time) {
+  ByteString date = ByteString::Format(
+      "D:%04d%02d%02d%02d%02d%02d", local_time.tm_year + 1900,
+      local_time.tm_mon + 1, local_time.tm_mday, local_time.tm_hour,
+      local_time.tm_min, local_time.tm_sec);
+
+  tm* utc_time = gmtime(&current_time);
+  if (!utc_time) {
+    return date;
+  }
+
+  constexpr int kMinutesPerHour = 60;
+  const int offset_minutes =
+      FXSYS_TimeZoneOffsetInMinutes(local_time, *utc_time);
+  const int abs_offset_minutes = std::abs(offset_minutes);
+  date += ByteString::Format("%c%02d'%02d'", offset_minutes < 0 ? '-' : '+',
+                             abs_offset_minutes / kMinutesPerHour,
+                             abs_offset_minutes % kMinutesPerHour);
+  return date;
+}
+
+FPDF_BITMAP RenderTilingPatternToBitmap(CPDF_Pattern* pattern,
+                                        CPDF_Document* doc,
+                                        CPDF_PageObject* page_obj,
+                                        bool use_stroke_color) {
+  CPDF_TilingPattern* tiling_pattern = pattern->AsTilingPattern();
+  if (!tiling_pattern) {
+    return nullptr;
+  }
+  const std::unique_ptr<CPDF_Form> pattern_form =
+      tiling_pattern->Load(page_obj);
+  if (!pattern_form) {
+    return nullptr;
+  }
+  const FX_RECT rect = tiling_pattern->bbox().GetOuterRect();
+  if (rect.IsEmpty() || !rect.Valid()) {
+    return nullptr;
+  }
+
+  RetainPtr<CFX_DIBitmap> cell_bitmap = CPDF_RenderTiling::DrawPatternBitmap(
+      doc, /*pCache=*/nullptr, tiling_pattern, pattern_form.get(), CFX_Matrix(),
+      rect.Width(), rect.Height(), CPDF_RenderOptions::Options());
+  if (!cell_bitmap) {
+    return nullptr;
+  }
+
+  if (tiling_pattern->colored()) {
+    ValidateBitmapPremultiplyState(cell_bitmap);
+
+    // Caller takes ownership.
+    return FPDFBitmapFromCFXDIBitmap(cell_bitmap.Leak());
+  }
+
+  // An uncolored pattern gets its color from the stroke/fill color operands.
+  const CPDF_ColorState& color_state = page_obj->color_state();
+  const FX_COLORREF colorref =
+      use_stroke_color ? color_state.GetStrokeColorRef()
+                       : color_state.GetFillColorRef();
+  // 0xFFFFFFFF is the unusable color, see FX_COLORREF.
+  if (colorref == 0xFFFFFFFF) {
+    return nullptr;
+  }
+
+  auto result_bitmap = pdfium::MakeRetain<CFX_DIBitmap>();
+  if (!result_bitmap->Create(rect.Width(), rect.Height(),
+                             FXDIB_Format::kBgra)) {
+    return nullptr;
+  }
+  const CPDF_GeneralState& general_state = page_obj->general_state();
+  const float float_alpha = use_stroke_color
+                                ? general_state.GetStrokeAlpha()
+                                : general_state.GetFillAlpha();
+  const int alpha = static_cast<int>(float_alpha * 255);
+  if (!result_bitmap->CompositeMask(
+          /*dest_left=*/0, /*dest_top=*/0, rect.Width(), rect.Height(),
+          cell_bitmap, AlphaAndColorRefToArgb(alpha, colorref),
+          /*src_left=*/0, /*src_top=*/0, BlendMode::kNormal)) {
+    return nullptr;
+  }
+
+  ValidateBitmapPremultiplyState(result_bitmap);
+
+  // Caller takes ownership.
+  return FPDFBitmapFromCFXDIBitmap(result_bitmap.Leak());
+}
+
+FPDF_BITMAP GetRenderedPattern(FPDF_DOCUMENT document,
+                               FPDF_PAGEOBJECT page_object,
+                               bool use_stroke_color) {
+  CPDF_Document* doc = CPDFDocumentFromFPDFDocument(document);
+  if (!doc) {
+    return nullptr;
+  }
+
+  CPDF_PageObject* object = CPDFPageObjectFromFPDFPageObject(page_object);
+  if (!object) {
+    return nullptr;
+  }
+
+  const CPDF_ColorState& color_state = object->color_state();
+  const CPDF_Color* color = use_stroke_color
+                                ? color_state.GetStrokeColor()
+                                : color_state.GetFillColor();
+  if (!color || !color->IsPattern()) {
+    return nullptr;
+  }
+
+  RetainPtr<CPDF_Pattern> pattern = color->GetPattern();
+  if (!pattern) {
+    return nullptr;
+  }
+
+  return RenderTilingPatternToBitmap(pattern.Get(), doc, object,
+                                     use_stroke_color);
+}
+
 }  // namespace
 
 FPDF_EXPORT FPDF_DOCUMENT FPDF_CALLCONV FPDF_CreateNewDocument() {
@@ -203,9 +315,7 @@ FPDF_EXPORT FPDF_DOCUMENT FPDF_CALLCONV FPDF_CreateNewDocument() {
     if (FXSYS_time(&currentTime) != -1) {
       tm* pTM = FXSYS_localtime(&currentTime);
       if (pTM) {
-        DateStr = ByteString::Format(
-            "D:%04d%02d%02d%02d%02d%02d", pTM->tm_year + 1900, pTM->tm_mon + 1,
-            pTM->tm_mday, pTM->tm_hour, pTM->tm_min, pTM->tm_sec);
+        DateStr = FormatPDFDate(currentTime, *pTM);
       }
     }
   }
@@ -268,25 +378,25 @@ FPDF_EXPORT FPDF_PAGE FPDF_CALLCONV FPDFPage_New(FPDF_DOCUMENT document,
   }
 
   page_index = std::clamp(page_index, 0, doc->GetPageCount());
-  RetainPtr<CPDF_Dictionary> pPageDict(doc->CreateNewPage(page_index));
-  if (!pPageDict) {
+  RetainPtr<CPDF_Dictionary> page_dict(doc->CreateNewPage(page_index));
+  if (!page_dict) {
     return nullptr;
   }
 
-  pPageDict->SetRectFor(pdfium::page_object::kMediaBox,
+  page_dict->SetRectFor(pdfium::page_object::kMediaBox,
                         CFX_FloatRect(0, 0, width, height));
-  pPageDict->SetNewFor<CPDF_Number>(pdfium::page_object::kRotate, 0);
-  pPageDict->SetNewFor<CPDF_Dictionary>(pdfium::page_object::kResources);
+  page_dict->SetNewFor<CPDF_Number>(pdfium::page_object::kRotate, 0);
+  page_dict->SetNewFor<CPDF_Dictionary>(pdfium::page_object::kResources);
 
 #ifdef PDF_ENABLE_XFA
   if (doc->GetExtension()) {
-    auto pXFAPage = pdfium::MakeRetain<CPDFXFA_Page>(doc, page_index);
-    pXFAPage->LoadPDFPageFromDict(pPageDict);
-    return FPDFPageFromIPDFPage(pXFAPage.Leak());  // Caller takes ownership.
+    auto xfa_page = pdfium::MakeRetain<CPDFXFA_Page>(doc, page_index);
+    CHECK(xfa_page->LoadPDFPageFromDict(std::move(page_dict)));
+    return FPDFPageFromIPDFPage(xfa_page.Leak());  // Caller takes ownership.
   }
 #endif  // PDF_ENABLE_XFA
 
-  auto pPage = pdfium::MakeRetain<CPDF_Page>(doc, pPageDict);
+  auto pPage = pdfium::MakeRetain<CPDF_Page>(doc, std::move(page_dict));
   pPage->AddPageImageCache();
   pPage->ParseContent();
 
@@ -325,22 +435,23 @@ FPDF_EXPORT int FPDF_CALLCONV FPDFPage_GetRotation(FPDF_PAGE page) {
   return IsPageObject(pPage) ? pPage->GetPageRotation() : -1;
 }
 
-FPDF_EXPORT void FPDF_CALLCONV
+FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV
 FPDFPage_InsertObject(FPDF_PAGE page, FPDF_PAGEOBJECT page_object) {
   CPDF_PageObject* pPageObj = CPDFPageObjectFromFPDFPageObject(page_object);
   if (!pPageObj) {
-    return;
+    return false;
   }
 
   std::unique_ptr<CPDF_PageObject> pPageObjHolder(pPageObj);
   CPDF_Page* pPage = CPDFPageFromFPDFPage(page);
   if (!IsPageObject(pPage)) {
-    return;
+    return false;
   }
 
   pPageObj->SetDirty(true);
   pPage->AppendPageObject(std::move(pPageObjHolder));
   CalcBoundingBox(pPageObj);
+  return true;
 }
 
 FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV
@@ -444,6 +555,22 @@ FPDFPageObj_GetMark(FPDF_PAGEOBJECT page_object, unsigned long index) {
   }
 
   return FPDFPageObjectMarkFromCPDFContentMarkItem(pMarks->GetItem(index));
+}
+
+FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV
+FPDFPageObj_AddExistingMark(FPDF_PAGEOBJECT page_object,
+                            FPDF_PAGEOBJECTMARK mark) {
+  CPDF_PageObject* page = CPDFPageObjectFromFPDFPageObject(page_object);
+  CPDF_ContentMarkItem* mark_item =
+      CPDFContentMarkItemFromFPDFPageObjectMark(mark);
+  if (!page || !mark_item) {
+    return false;
+  }
+
+  CPDF_ContentMarks* marks = page->GetContentMarks();
+  marks->AddExistingMark(pdfium::WrapRetain(mark_item));
+  page->SetDirty(true);
+  return true;
 }
 
 FPDF_EXPORT FPDF_PAGEOBJECTMARK FPDF_CALLCONV
@@ -1216,6 +1343,18 @@ FPDFPageObj_SetDashArray(FPDF_PAGEOBJECT page_object,
   pPageObj->mutable_graph_state().SetLineDash(dashes, phase);
   pPageObj->SetDirty(true);
   return true;
+}
+
+FPDF_EXPORT FPDF_BITMAP FPDF_CALLCONV
+FPDFPageObj_GetRenderedStrokePattern(FPDF_DOCUMENT document,
+                                     FPDF_PAGEOBJECT page_object) {
+  return GetRenderedPattern(document, page_object, /*use_stroke_color=*/true);
+}
+
+FPDF_EXPORT FPDF_BITMAP FPDF_CALLCONV
+FPDFPageObj_GetRenderedFillPattern(FPDF_DOCUMENT document,
+                                   FPDF_PAGEOBJECT page_object) {
+  return GetRenderedPattern(document, page_object, /*use_stroke_color=*/false);
 }
 
 FPDF_EXPORT int FPDF_CALLCONV

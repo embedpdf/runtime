@@ -177,21 +177,21 @@ CFX_Color GetFormControlColor(CPDF_FormControl* pFormControl,
                               ByteStringView entry) {
   switch (pFormControl->GetColorARGB(entry).color_type) {
     case CFX_Color::Type::kTransparent:
-      return CFX_Color(CFX_Color::Type::kTransparent);
+      return CFX_Color::MakeTransparent();
     case CFX_Color::Type::kGray:
-      return CFX_Color(CFX_Color::Type::kGray,
-                       pFormControl->GetOriginalColorComponent(0, entry));
+      return CFX_Color::MakeGray(
+          pFormControl->GetOriginalColorComponent(0, entry));
     case CFX_Color::Type::kRGB:
-      return CFX_Color(CFX_Color::Type::kRGB,
-                       pFormControl->GetOriginalColorComponent(0, entry),
-                       pFormControl->GetOriginalColorComponent(1, entry),
-                       pFormControl->GetOriginalColorComponent(2, entry));
+      return CFX_Color::MakeRGB(
+          pFormControl->GetOriginalColorComponent(0, entry),
+          pFormControl->GetOriginalColorComponent(1, entry),
+          pFormControl->GetOriginalColorComponent(2, entry));
     case CFX_Color::Type::kCMYK:
-      return CFX_Color(CFX_Color::Type::kCMYK,
-                       pFormControl->GetOriginalColorComponent(0, entry),
-                       pFormControl->GetOriginalColorComponent(1, entry),
-                       pFormControl->GetOriginalColorComponent(2, entry),
-                       pFormControl->GetOriginalColorComponent(3, entry));
+      return CFX_Color::MakeCMYK(
+          pFormControl->GetOriginalColorComponent(0, entry),
+          pFormControl->GetOriginalColorComponent(1, entry),
+          pFormControl->GetOriginalColorComponent(2, entry),
+          pFormControl->GetOriginalColorComponent(3, entry));
   }
 }
 
@@ -532,7 +532,7 @@ void SetFieldValue(CPDFSDK_FormFillEnvironment* pFormFillEnv,
 wchar_t GetSelectorFromCaptionForFieldType(const WideString& caption,
                                            CPDF_FormField::Type type) {
   if (!caption.IsEmpty()) {
-    return caption[0];
+    return caption.Front();
   }
 
   switch (type) {
@@ -636,20 +636,14 @@ const JSMethodSpec CJS_Field::MethodSpecs[] = {
     {"signatureSign", signatureSign_static},
     {"signatureValidate", signatureValidate_static}};
 
-uint32_t CJS_Field::ObjDefnID = 0;
 const char CJS_Field::kName[] = "Field";
 
 // static
-uint32_t CJS_Field::GetObjDefnID() {
-  return ObjDefnID;
-}
-
-// static
 void CJS_Field::DefineJSObjects(CFXJS_Engine* pEngine) {
-  ObjDefnID = pEngine->DefineObj(CJS_Field::kName, FXJSOBJTYPE_DYNAMIC,
-                                 JSConstructor<CJS_Field>, JSDestructor);
-  DefineProps(pEngine, ObjDefnID, PropertySpecs);
-  DefineMethods(pEngine, ObjDefnID, MethodSpecs);
+  pEngine->DefineObj(kObjDefnId, CJS_Field::kName, FXJSOBJTYPE_DYNAMIC,
+                     JSConstructor<CJS_Field>, JSDestructor);
+  DefineProps(pEngine, kObjDefnId, PropertySpecs);
+  DefineMethods(pEngine, kObjDefnId, MethodSpecs);
 }
 
 CJS_Field::CJS_Field(v8::Local<v8::Object> pObject, CJS_Runtime* pRuntime)
@@ -777,12 +771,16 @@ CJS_Result CJS_Field::get_border_style(CJS_Runtime* pRuntime) {
 
 CJS_Result CJS_Field::set_border_style(CJS_Runtime* pRuntime,
                                        v8::Local<v8::Value> vp) {
-  DCHECK(form_fill_env_);
   if (!can_set_) {
     return CJS_Result::Failure(JSMessage::kReadOnlyError);
   }
+  ByteString byte_str = pRuntime->ToByteStringReentrant(vp);
 
-  ByteString byte_str = pRuntime->ToByteString(vp);
+  // Check if still exists following JS re-entrancy.
+  if (!form_fill_env_) {
+    return CJS_Result::Failure(JSMessage::kBadObjectError);
+  }
+
   if (delay_) {
     AddDelay_String(FP_BORDERSTYLE, byte_str);
   } else {
@@ -902,7 +900,7 @@ CJS_Result CJS_Field::get_button_position(CJS_Runtime* pRuntime) {
   }
 
   return CJS_Result::Success(
-      pRuntime->NewNumber(pFormControl->GetTextPosition()));
+      pRuntime->NewNumber(static_cast<int>(pFormControl->GetTextPosition())));
 }
 
 CJS_Result CJS_Field::set_button_position(CJS_Runtime* pRuntime,
@@ -1104,7 +1102,7 @@ CJS_Result CJS_Field::get_current_value_indices(CJS_Runtime* pRuntime) {
 
   v8::Local<v8::Array> SelArray = pRuntime->NewArray();
   for (int i = 0; i < count; i++) {
-    pRuntime->PutArrayElement(
+    pRuntime->PutArrayElementReentrant(
         SelArray, i, pRuntime->NewNumber(pFormField->GetSelectedIndex(i)));
   }
   if (SelArray.IsEmpty()) {
@@ -1121,13 +1119,18 @@ CJS_Result CJS_Field::set_current_value_indices(CJS_Runtime* pRuntime,
 
   std::vector<uint32_t> array;
   if (vp->IsNumber()) {
-    array.push_back(pRuntime->ToInt32(vp));
+    array.push_back(pRuntime->ToInt32Reentrant(vp));
   } else if (fxv8::IsArray(vp)) {
-    v8::Local<v8::Array> SelArray = pRuntime->ToArray(vp);
+    v8::Local<v8::Array> SelArray = pRuntime->ToArrayReentrant(vp);
     for (size_t i = 0; i < pRuntime->GetArrayLength(SelArray); i++) {
-      array.push_back(
-          pRuntime->ToInt32(pRuntime->GetArrayElement(SelArray, i)));
+      array.push_back(pRuntime->ToInt32Reentrant(
+          pRuntime->GetArrayElementReentrant(SelArray, i)));
     }
+  }
+
+  // Check if still exists following JS re-entrancy.
+  if (!form_fill_env_) {
+    return CJS_Result::Failure(JSMessage::kBadObjectError);
   }
 
   if (delay_) {
@@ -1235,7 +1238,7 @@ CJS_Result CJS_Field::set_delay(CJS_Runtime* pRuntime,
     return CJS_Result::Failure(JSMessage::kReadOnlyError);
   }
 
-  SetDelay(pRuntime->ToBoolean(vp));
+  SetDelay(pRuntime->ToBooleanReentrant(vp));
   return CJS_Result::Success();
 }
 
@@ -1271,12 +1274,17 @@ CJS_Result CJS_Field::set_display(CJS_Runtime* pRuntime,
   if (!can_set_) {
     return CJS_Result::Failure(JSMessage::kReadOnlyError);
   }
+  int value = pRuntime->ToInt32Reentrant(vp);
+
+  // Check if still exists following JS re-entrancy.
+  if (!form_fill_env_) {
+    return CJS_Result::Failure(JSMessage::kBadObjectError);
+  }
 
   if (delay_) {
-    AddDelay_Int(FP_DISPLAY, pRuntime->ToInt32(vp));
+    AddDelay_Int(FP_DISPLAY, value);
   } else {
-    SetDisplay(form_fill_env_.Get(), field_name_, form_control_index_,
-               pRuntime->ToInt32(vp));
+    SetDisplay(form_fill_env_.Get(), field_name_, form_control_index_, value);
   }
   return CJS_Result::Success();
 }
@@ -1325,7 +1333,7 @@ CJS_Result CJS_Field::get_export_values(CJS_Runtime* pRuntime) {
   if (form_control_index_ < 0) {
     for (int i = 0, sz = pFormField->CountControls(); i < sz; i++) {
       CPDF_FormControl* pFormControl = pFormField->GetControl(i);
-      pRuntime->PutArrayElement(
+      pRuntime->PutArrayElementReentrant(
           ExportValuesArray, i,
           pRuntime->NewString(pFormControl->GetExportValue().AsStringView()));
     }
@@ -1340,7 +1348,7 @@ CJS_Result CJS_Field::get_export_values(CJS_Runtime* pRuntime) {
       return CJS_Result::Failure(JSMessage::kBadObjectError);
     }
 
-    pRuntime->PutArrayElement(
+    pRuntime->PutArrayElementReentrant(
         ExportValuesArray, 0,
         pRuntime->NewString(pFormControl->GetExportValue().AsStringView()));
   }
@@ -1459,12 +1467,17 @@ CJS_Result CJS_Field::set_hidden(CJS_Runtime* pRuntime,
   if (!can_set_) {
     return CJS_Result::Failure(JSMessage::kReadOnlyError);
   }
+  const bool value = pRuntime->ToBooleanReentrant(vp);
+
+  // Check if still exists following JS re-entrancy.
+  if (!form_fill_env_) {
+    return CJS_Result::Failure(JSMessage::kBadObjectError);
+  }
 
   if (delay_) {
-    AddDelay_Bool(FP_HIDDEN, pRuntime->ToBoolean(vp));
+    AddDelay_Bool(FP_HIDDEN, value);
   } else {
-    SetHidden(form_fill_env_.Get(), field_name_, form_control_index_,
-              pRuntime->ToBoolean(vp));
+    SetHidden(form_fill_env_.Get(), field_name_, form_control_index_, value);
   }
   return CJS_Result::Success();
 }
@@ -1540,12 +1553,17 @@ CJS_Result CJS_Field::set_line_width(CJS_Runtime* pRuntime,
   if (!can_set_) {
     return CJS_Result::Failure(JSMessage::kReadOnlyError);
   }
+  const int value = pRuntime->ToInt32Reentrant(vp);
+
+  // Check if still exists following JS re-entrancy.
+  if (!form_fill_env_) {
+    return CJS_Result::Failure(JSMessage::kBadObjectError);
+  }
 
   if (delay_) {
-    AddDelay_Int(FP_LINEWIDTH, pRuntime->ToInt32(vp));
+    AddDelay_Int(FP_LINEWIDTH, value);
   } else {
-    SetLineWidth(form_fill_env_.Get(), field_name_, form_control_index_,
-                 pRuntime->ToInt32(vp));
+    SetLineWidth(form_fill_env_.Get(), field_name_, form_control_index_, value);
   }
   return CJS_Result::Success();
 }
@@ -1650,7 +1668,7 @@ CJS_Result CJS_Field::get_page(CJS_Runtime* pRuntime) {
       return CJS_Result::Failure(JSMessage::kBadObjectError);
     }
 
-    pRuntime->PutArrayElement(
+    pRuntime->PutArrayElementReentrant(
         PageArray, i,
         pRuntime->NewNumber(pWidget->GetPageView()->GetPageIndex()));
     ++i;
@@ -1710,9 +1728,14 @@ CJS_Result CJS_Field::set_print(CJS_Runtime* pRuntime,
   if (FieldArray.empty()) {
     return CJS_Result::Failure(JSMessage::kBadObjectError);
   }
-
   if (!can_set_) {
     return CJS_Result::Failure(JSMessage::kReadOnlyError);
+  }
+  const bool value = pRuntime->ToBooleanReentrant(vp);
+
+  // Check if still exists following JS re-entrancy.
+  if (!form_fill_env_) {
+    return CJS_Result::Failure(JSMessage::kBadObjectError);
   }
 
   for (CPDF_FormField* pFormField : FieldArray) {
@@ -1722,23 +1745,20 @@ CJS_Result CJS_Field::set_print(CJS_Runtime* pRuntime,
         if (CPDFSDK_Widget* pWidget =
                 pForm->GetWidget(pFormField->GetControl(i))) {
           uint32_t dwFlags = pWidget->GetFlags();
-          if (pRuntime->ToBoolean(vp)) {
+          if (value) {
             dwFlags |= pdfium::annotation_flags::kPrint;
           } else {
             dwFlags &= ~pdfium::annotation_flags::kPrint;
           }
-
           if (dwFlags != pWidget->GetFlags()) {
             pWidget->SetFlags(dwFlags);
             bSet = true;
           }
         }
       }
-
       if (bSet) {
         UpdateFormField(form_fill_env_.Get(), pFormField, false);
       }
-
       continue;
     }
 
@@ -1750,12 +1770,11 @@ CJS_Result CJS_Field::set_print(CJS_Runtime* pRuntime,
             pFormField->GetControl(form_control_index_)) {
       if (CPDFSDK_Widget* pWidget = pForm->GetWidget(pFormControl)) {
         uint32_t dwFlags = pWidget->GetFlags();
-        if (pRuntime->ToBoolean(vp)) {
+        if (value) {
           dwFlags |= pdfium::annotation_flags::kPrint;
         } else {
           dwFlags &= ~pdfium::annotation_flags::kPrint;
         }
-
         if (dwFlags != pWidget->GetFlags()) {
           pWidget->SetFlags(dwFlags);
           UpdateFormControl(form_fill_env_.Get(),
@@ -1815,7 +1834,7 @@ CJS_Result CJS_Field::set_readonly(CJS_Runtime* pRuntime,
     return CJS_Result::Failure(JSMessage::kReadOnlyError);
   }
 
-  const bool bReadOnly = pRuntime->ToBoolean(vp);
+  const bool bReadOnly = pRuntime->ToBooleanReentrant(vp);
   const uint32_t dwFlags = pFormField->GetFieldFlags();
   const uint32_t dwNewFlags = bReadOnly
                                   ? (dwFlags | pdfium::form_flags::kReadOnly)
@@ -1841,13 +1860,13 @@ CJS_Result CJS_Field::get_rect(CJS_Runtime* pRuntime) {
 
   CFX_FloatRect crRect = pWidget->GetRect();
   v8::Local<v8::Array> rcArray = pRuntime->NewArray();
-  pRuntime->PutArrayElement(
+  pRuntime->PutArrayElementReentrant(
       rcArray, 0, pRuntime->NewNumber(static_cast<int32_t>(crRect.left)));
-  pRuntime->PutArrayElement(
+  pRuntime->PutArrayElementReentrant(
       rcArray, 1, pRuntime->NewNumber(static_cast<int32_t>(crRect.top)));
-  pRuntime->PutArrayElement(
+  pRuntime->PutArrayElementReentrant(
       rcArray, 2, pRuntime->NewNumber(static_cast<int32_t>(crRect.right)));
-  pRuntime->PutArrayElement(
+  pRuntime->PutArrayElementReentrant(
       rcArray, 3, pRuntime->NewNumber(static_cast<int32_t>(crRect.bottom)));
 
   return CJS_Result::Success(rcArray);
@@ -1861,19 +1880,24 @@ CJS_Result CJS_Field::set_rect(CJS_Runtime* pRuntime, v8::Local<v8::Value> vp) {
     return CJS_Result::Failure(JSMessage::kValueError);
   }
 
-  v8::Local<v8::Array> rcArray = pRuntime->ToArray(vp);
+  v8::Local<v8::Array> rcArray = pRuntime->ToArrayReentrant(vp);
   if (pRuntime->GetArrayLength(rcArray) < 4) {
     return CJS_Result::Failure(JSMessage::kValueError);
   }
 
-  float f0 = static_cast<float>(
-      pRuntime->ToInt32(pRuntime->GetArrayElement(rcArray, 0)));
-  float f1 = static_cast<float>(
-      pRuntime->ToInt32(pRuntime->GetArrayElement(rcArray, 1)));
-  float f2 = static_cast<float>(
-      pRuntime->ToInt32(pRuntime->GetArrayElement(rcArray, 2)));
-  float f3 = static_cast<float>(
-      pRuntime->ToInt32(pRuntime->GetArrayElement(rcArray, 3)));
+  float f0 = static_cast<float>(pRuntime->ToInt32Reentrant(
+      pRuntime->GetArrayElementReentrant(rcArray, 0)));
+  float f1 = static_cast<float>(pRuntime->ToInt32Reentrant(
+      pRuntime->GetArrayElementReentrant(rcArray, 1)));
+  float f2 = static_cast<float>(pRuntime->ToInt32Reentrant(
+      pRuntime->GetArrayElementReentrant(rcArray, 2)));
+  float f3 = static_cast<float>(pRuntime->ToInt32Reentrant(
+      pRuntime->GetArrayElementReentrant(rcArray, 3)));
+
+  // Check if still exists following JS re-entrancy.
+  if (!form_fill_env_) {
+    return CJS_Result::Failure(JSMessage::kBadObjectError);
+  }
 
   CFX_FloatRect crRect(f0, f1, f2, f3);
   if (delay_) {
@@ -2093,8 +2117,7 @@ CJS_Result CJS_Field::get_text_color(CJS_Runtime* pRuntime) {
           CFX_Color::Type::kTransparent) {
     FX_BGR_STRUCT<uint8_t> bgr =
         ArgbToBGRStruct(maybe_type_argb_pair.value().argb);
-    crRet = CFX_Color(CFX_Color::Type::kRGB, bgr.red / 255.0f,
-                      bgr.green / 255.0f, bgr.blue / 255.0f);
+    crRet = CFX_Color::MakeRGBBytes(bgr.red, bgr.green, bgr.blue);
   }
 
   v8::Local<v8::Value> array =
@@ -2149,12 +2172,10 @@ CJS_Result CJS_Field::get_text_font(CJS_Runtime* pRuntime) {
 
 CJS_Result CJS_Field::set_text_font(CJS_Runtime* pRuntime,
                                     v8::Local<v8::Value> vp) {
-  DCHECK(form_fill_env_);
-
   if (!can_set_) {
     return CJS_Result::Failure(JSMessage::kReadOnlyError);
   }
-  if (pRuntime->ToByteString(vp).IsEmpty()) {
+  if (pRuntime->ToByteStringReentrant(vp).IsEmpty()) {
     return CJS_Result::Failure(JSMessage::kValueError);
   }
   return CJS_Result::Success();
@@ -2266,11 +2287,11 @@ CJS_Result CJS_Field::get_value(CJS_Runtime* pRuntime) {
           index = pFormField->GetSelectedIndex(i);
           ElementValue = pRuntime->NewString(
               pFormField->GetOptionValue(index).AsStringView());
-          if (pRuntime->ToWideString(ElementValue).IsEmpty()) {
+          if (pRuntime->ToWideStringReentrant(ElementValue).IsEmpty()) {
             ElementValue = pRuntime->NewString(
                 pFormField->GetOptionLabel(index).AsStringView());
           }
-          pRuntime->PutArrayElement(ValueArray, i, ElementValue);
+          pRuntime->PutArrayElementReentrant(ValueArray, i, ElementValue);
         }
         ret = ValueArray;
       } else {
@@ -2310,13 +2331,18 @@ CJS_Result CJS_Field::set_value(CJS_Runtime* pRuntime,
 
   std::vector<WideString> strArray;
   if (fxv8::IsArray(vp)) {
-    v8::Local<v8::Array> ValueArray = pRuntime->ToArray(vp);
+    v8::Local<v8::Array> ValueArray = pRuntime->ToArrayReentrant(vp);
     for (size_t i = 0; i < pRuntime->GetArrayLength(ValueArray); i++) {
-      strArray.push_back(
-          pRuntime->ToWideString(pRuntime->GetArrayElement(ValueArray, i)));
+      strArray.push_back(pRuntime->ToWideStringReentrant(
+          pRuntime->GetArrayElementReentrant(ValueArray, i)));
     }
   } else {
-    strArray.push_back(pRuntime->ToWideString(vp));
+    strArray.push_back(pRuntime->ToWideStringReentrant(vp));
+  }
+
+  // Check if still exists following JS re-entrancy.
+  if (!form_fill_env_) {
+    return CJS_Result::Failure(JSMessage::kBadObjectError);
   }
 
   if (delay_) {
@@ -2396,7 +2422,7 @@ CJS_Result CJS_Field::buttonGetCaption(
     pdfium::span<v8::Local<v8::Value>> params) {
   int nface = 0;
   if (params.size() >= 1) {
-    nface = pRuntime->ToInt32(params[0]);
+    nface = pRuntime->ToInt32Reentrant(params[0]);
   }
 
   CPDF_FormField* pFormField = GetFirstFormField();
@@ -2431,7 +2457,7 @@ CJS_Result CJS_Field::buttonGetCaption(
 CJS_Result CJS_Field::buttonGetIcon(CJS_Runtime* pRuntime,
                                     pdfium::span<v8::Local<v8::Value>> params) {
   if (params.size() >= 1) {
-    int nFace = pRuntime->ToInt32(params[0]);
+    int nFace = pRuntime->ToInt32Reentrant(params[0]);
     if (nFace < 0 || nFace > 2) {
       return CJS_Result::Failure(JSMessage::kValueError);
     }
@@ -2451,8 +2477,8 @@ CJS_Result CJS_Field::buttonGetIcon(CJS_Runtime* pRuntime,
     return CJS_Result::Failure(JSMessage::kBadObjectError);
   }
 
-  v8::Local<v8::Object> pObj = pRuntime->NewFXJSBoundObject(
-      CJS_Icon::GetObjDefnID(), FXJSOBJTYPE_DYNAMIC);
+  v8::Local<v8::Object> pObj =
+      pRuntime->NewFXJSBoundObject(CJS_Icon::kObjDefnId, FXJSOBJTYPE_DYNAMIC);
   if (pObj.IsEmpty()) {
     return CJS_Result::Failure(JSMessage::kBadObjectError);
   }
@@ -2491,10 +2517,15 @@ CJS_Result CJS_Field::checkThisBox(CJS_Runtime* pRuntime,
     return CJS_Result::Failure(JSMessage::kReadOnlyError);
   }
 
-  int nWidget = pRuntime->ToInt32(params[0]);
+  int nWidget = pRuntime->ToInt32Reentrant(params[0]);
   bool bCheckit = true;
   if (nSize >= 2) {
-    bCheckit = pRuntime->ToBoolean(params[1]);
+    bCheckit = pRuntime->ToBooleanReentrant(params[1]);
+  }
+
+  // Check if still exists following JS re-entrancy.
+  if (!form_fill_env_) {
+    return CJS_Result::Failure(JSMessage::kBadObjectError);
   }
 
   CPDF_FormField* pFormField = GetFirstFormField();
@@ -2538,7 +2569,7 @@ CJS_Result CJS_Field::defaultIsChecked(
     return CJS_Result::Failure(JSMessage::kBadObjectError);
   }
 
-  int nWidget = pRuntime->ToInt32(params[0]);
+  int nWidget = pRuntime->ToInt32Reentrant(params[0]);
   if (nWidget < 0 || nWidget >= pFormField->CountControls()) {
     return CJS_Result::Failure(JSMessage::kValueError);
   }
@@ -2572,7 +2603,7 @@ CJS_Result CJS_Field::getArray(CJS_Runtime* pRuntime,
   int j = 0;
   for (const auto& pStr : swSort) {
     v8::Local<v8::Object> pObj = pRuntime->NewFXJSBoundObject(
-        CJS_Field::GetObjDefnID(), FXJSOBJTYPE_DYNAMIC);
+        CJS_Field::kObjDefnId, FXJSOBJTYPE_DYNAMIC);
     if (pObj.IsEmpty()) {
       return CJS_Result::Failure(JSMessage::kBadObjectError);
     }
@@ -2580,10 +2611,10 @@ CJS_Result CJS_Field::getArray(CJS_Runtime* pRuntime,
     auto* pJSField = static_cast<CJS_Field*>(
         CFXJS_Engine::GetBinding(pRuntime->GetIsolate(), pObj));
     pJSField->AttachField(js_doc_.Get(), *pStr);
-    pRuntime->PutArrayElement(FormFieldArray, j++,
-                              pJSField
-                                  ? v8::Local<v8::Value>(pJSField->ToV8Object())
-                                  : v8::Local<v8::Value>());
+    pRuntime->PutArrayElementReentrant(
+        FormFieldArray, j++,
+        pJSField ? v8::Local<v8::Value>(pJSField->ToV8Object())
+                 : v8::Local<v8::Value>());
   }
   return CJS_Result::Success(FormFieldArray);
 }
@@ -2593,12 +2624,12 @@ CJS_Result CJS_Field::getItemAt(CJS_Runtime* pRuntime,
   const size_t nSize = params.size();
   int nIdx = -1;
   if (nSize >= 1) {
-    nIdx = pRuntime->ToInt32(params[0]);
+    nIdx = pRuntime->ToInt32Reentrant(params[0]);
   }
 
   bool bExport = true;
   if (nSize >= 2) {
-    bExport = pRuntime->ToBoolean(params[1]);
+    bExport = pRuntime->ToBooleanReentrant(params[1]);
   }
 
   CPDF_FormField* pFormField = GetFirstFormField();
@@ -2640,7 +2671,7 @@ CJS_Result CJS_Field::isBoxChecked(CJS_Runtime* pRuntime,
                                    pdfium::span<v8::Local<v8::Value>> params) {
   int nIndex = -1;
   if (params.size() >= 1) {
-    nIndex = pRuntime->ToInt32(params[0]);
+    nIndex = pRuntime->ToInt32Reentrant(params[0]);
   }
 
   CPDF_FormField* pFormField = GetFirstFormField();
@@ -2662,7 +2693,7 @@ CJS_Result CJS_Field::isDefaultChecked(
     pdfium::span<v8::Local<v8::Value>> params) {
   int nIndex = -1;
   if (params.size() >= 1) {
-    nIndex = pRuntime->ToInt32(params[0]);
+    nIndex = pRuntime->ToInt32Reentrant(params[0]);
   }
 
   CPDF_FormField* pFormField = GetFirstFormField();
@@ -2783,28 +2814,28 @@ void CJS_Field::SetDelay(bool bDelay) {
 void CJS_Field::AddDelay_Int(FIELD_PROP prop, int32_t n) {
   auto pNewData =
       std::make_unique<CJS_DelayData>(prop, form_control_index_, field_name_);
-  pNewData->num = n;
+  pNewData->data = n;
   js_doc_->AddDelayData(std::move(pNewData));
 }
 
 void CJS_Field::AddDelay_Bool(FIELD_PROP prop, bool b) {
   auto pNewData =
       std::make_unique<CJS_DelayData>(prop, form_control_index_, field_name_);
-  pNewData->b = b;
+  pNewData->data = b;
   js_doc_->AddDelayData(std::move(pNewData));
 }
 
 void CJS_Field::AddDelay_String(FIELD_PROP prop, const ByteString& str) {
   auto pNewData =
       std::make_unique<CJS_DelayData>(prop, form_control_index_, field_name_);
-  pNewData->bytestring = str;
+  pNewData->data = str;
   js_doc_->AddDelayData(std::move(pNewData));
 }
 
 void CJS_Field::AddDelay_Rect(FIELD_PROP prop, const CFX_FloatRect& rect) {
   auto pNewData =
       std::make_unique<CJS_DelayData>(prop, form_control_index_, field_name_);
-  pNewData->rect = rect;
+  pNewData->data = rect;
   js_doc_->AddDelayData(std::move(pNewData));
 }
 
@@ -2812,7 +2843,7 @@ void CJS_Field::AddDelay_WordArray(FIELD_PROP prop,
                                    const std::vector<uint32_t>& array) {
   auto pNewData =
       std::make_unique<CJS_DelayData>(prop, form_control_index_, field_name_);
-  pNewData->wordarray = array;
+  pNewData->data = array;
   js_doc_->AddDelayData(std::move(pNewData));
 }
 
@@ -2820,7 +2851,7 @@ void CJS_Field::AddDelay_WideStringArray(FIELD_PROP prop,
                                          const std::vector<WideString>& array) {
   auto pNewData =
       std::make_unique<CJS_DelayData>(prop, form_control_index_, field_name_);
-  pNewData->widestringarray = array;
+  pNewData->data = array;
   js_doc_->AddDelayData(std::move(pNewData));
 }
 
@@ -2830,31 +2861,32 @@ void CJS_Field::DoDelay(CPDFSDK_FormFillEnvironment* pFormFillEnv,
   switch (pData->eProp) {
     case FP_BORDERSTYLE:
       SetBorderStyle(pFormFillEnv, pData->sFieldName, pData->nControlIndex,
-                     pData->bytestring);
+                     std::get<ByteString>(pData->data));
       break;
     case FP_CURRENTVALUEINDICES:
       SetCurrentValueIndices(pFormFillEnv, pData->sFieldName,
-                             pData->nControlIndex, pData->wordarray);
+                             pData->nControlIndex,
+                             std::get<std::vector<uint32_t>>(pData->data));
       break;
     case FP_DISPLAY:
       SetDisplay(pFormFillEnv, pData->sFieldName, pData->nControlIndex,
-                 pData->num);
+                 std::get<int32_t>(pData->data));
       break;
     case FP_HIDDEN:
       SetHidden(pFormFillEnv, pData->sFieldName, pData->nControlIndex,
-                pData->b);
+                std::get<bool>(pData->data));
       break;
     case FP_LINEWIDTH:
       SetLineWidth(pFormFillEnv, pData->sFieldName, pData->nControlIndex,
-                   pData->num);
+                   std::get<int32_t>(pData->data));
       break;
     case FP_RECT:
       SetRect(pFormFillEnv, pData->sFieldName, pData->nControlIndex,
-              pData->rect);
+              std::get<CFX_FloatRect>(pData->data));
       break;
     case FP_VALUE:
       SetFieldValue(pFormFillEnv, pData->sFieldName, pData->nControlIndex,
-                    pData->widestringarray);
+                    std::get<std::vector<WideString>>(pData->data));
       break;
   }
 }

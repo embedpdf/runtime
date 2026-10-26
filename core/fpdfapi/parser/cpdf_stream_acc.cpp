@@ -167,16 +167,14 @@ uint64_t CPDF_StreamAcc::KeyForCache() const {
 }
 
 DataVector<uint8_t> CPDF_StreamAcc::ComputeDigest() const {
-  return CRYPT_SHA1Generate(GetSpan());
+  return CryptSha1Generate(GetSpan());
 }
 
 DataVector<uint8_t> CPDF_StreamAcc::DetachData() {
   if (is_owned()) {
     return std::move(std::get<DataVector<uint8_t>>(data_));
   }
-
-  auto span = std::get<pdfium::raw_span<const uint8_t>>(data_);
-  return DataVector<uint8_t>(span.begin(), span.end());
+  return ToDataVector(std::get<pdfium::raw_span<const uint8_t>>(data_));
 }
 
 void CPDF_StreamAcc::ProcessRawData() {

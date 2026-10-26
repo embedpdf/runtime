@@ -2,6 +2,7 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
+#include <array>
 #include <string>
 #include <vector>
 
@@ -12,8 +13,10 @@
 #include "core/fxcrt/fx_coordinates.h"
 #include "core/fxcrt/fx_string.h"
 #include "core/fxcrt/fx_system.h"
-#include "core/fxge/cfx_defaultrenderdevice.h"
+#include "core/fxcrt/span.h"
+#include "core/fxge/cfx_renderdevice.h"
 #include "public/cpp/fpdf_scopers.h"
+#include "public/fpdf_annot.h"
 #include "public/fpdf_formfill.h"
 #include "public/fpdf_fwlevent.h"
 #include "public/fpdf_progressive.h"
@@ -98,6 +101,16 @@ class FPDFFormFillInteractiveEmbedderTest : public FPDFFormFillEmbedderTest {
     // Type text starting with 'A' to as many chars as specified by |num_chars|.
     for (int i = 0; i < num_chars; ++i) {
       FORM_OnChar(form_handle(), page_, 'A' + i, 0);
+    }
+  }
+
+  void TypeCharactersIntoTextField(pdfium::span<const uint32_t> characters,
+                                   const CFX_PointF& point) {
+    EXPECT_EQ(GetFormType(), GetFormTypeAtPoint(point));
+    ClickOnFormFieldAtPoint(point);
+
+    for (uint32_t c : characters) {
+      FORM_OnChar(form_handle(), page_, c, 0);
     }
   }
 
@@ -240,14 +253,14 @@ class FPDFFormFillTextFormEmbedderTest
   }
 
   static CFX_PointF CharLimitFormAtX(float x) {
-    DCHECK(x >= kFormBeginX);
-    DCHECK(x <= kFormEndX);
+    DCHECK_GE(x, kFormBeginX);
+    DCHECK_LE(x, kFormEndX);
     return CFX_PointF(x, kCharLimitFormY);
   }
 
   static CFX_PointF RegularFormAtX(float x) {
-    DCHECK(x >= kFormBeginX);
-    DCHECK(x <= kFormEndX);
+    DCHECK_GE(x, kFormBeginX);
+    DCHECK_LE(x, kFormEndX);
     return CFX_PointF(x, kRegularFormY);
   }
 
@@ -284,14 +297,14 @@ class FPDFFormFillComboBoxFormEmbedderTest
   }
 
   void SelectEditableFormOption(int item_index) {
-    DCHECK(item_index >= 0);
-    DCHECK(item_index < 3);
+    DCHECK_GE(item_index, 0);
+    DCHECK_LT(item_index, 3);
     SelectOption(item_index, EditableFormDropDown());
   }
 
   void SelectNonEditableFormOption(int item_index) {
-    DCHECK(item_index >= 0);
-    DCHECK(item_index < 26);
+    DCHECK_GE(item_index, 0);
+    DCHECK_LT(item_index, 26);
     SelectOption(item_index, NonEditableFormDropDown());
   }
 
@@ -334,14 +347,14 @@ class FPDFFormFillComboBoxFormEmbedderTest
   }
 
   static CFX_PointF EditableFormAtX(float x) {
-    DCHECK(x >= kFormBeginX);
-    DCHECK(x <= kFormEndX);
+    DCHECK_GE(x, kFormBeginX);
+    DCHECK_LE(x, kFormEndX);
     return CFX_PointF(x, kEditableFormY);
   }
 
   static CFX_PointF NonEditableFormAtX(float x) {
-    DCHECK(x >= kFormBeginX);
-    DCHECK(x <= kFormEndX);
+    DCHECK_GE(x, kFormBeginX);
+    DCHECK_LE(x, kFormEndX);
     return CFX_PointF(x, kNonEditableFormY);
   }
 
@@ -430,8 +443,8 @@ class FPDFFormFillListBoxFormEmbedderTest
   void ClickOnSingleSelectFormOption(int item_index) {
     // Only the first two indices are visible so can only click on those
     // without scrolling.
-    DCHECK(item_index >= 0);
-    DCHECK(item_index < 2);
+    DCHECK_GE(item_index, 0);
+    DCHECK_LT(item_index, 2);
     if (item_index == 0) {
       ClickOnFormFieldAtPoint(SingleSelectFirstVisibleOption());
     } else {
@@ -442,8 +455,8 @@ class FPDFFormFillListBoxFormEmbedderTest
   void ClickOnMultiSelectFormOption(int item_index) {
     // Only the first two indices are visible so can only click on those
     // without scrolling.
-    DCHECK(item_index >= 0);
-    DCHECK(item_index < 2);
+    DCHECK_GE(item_index, 0);
+    DCHECK_LT(item_index, 2);
     if (item_index == 0) {
       ClickOnFormFieldAtPoint(MultiSelectFirstVisibleOption());
     } else {
@@ -454,8 +467,8 @@ class FPDFFormFillListBoxFormEmbedderTest
   void ClickOnMultiSelectMultipleValuesFormOption(int item_index) {
     // Only two indices are visible so can only click on those
     // without scrolling.
-    DCHECK(item_index >= 0);
-    DCHECK(item_index < 2);
+    DCHECK_GE(item_index, 0);
+    DCHECK_LT(item_index, 2);
     if (item_index == 0) {
       ClickOnFormFieldAtPoint(MultiSelectMultipleValuesFirstVisibleOption());
     } else {
@@ -466,8 +479,8 @@ class FPDFFormFillListBoxFormEmbedderTest
   void ClickOnSingleSelectLastSelectedFormOption(int item_index) {
     // Only two indices are visible so can only click on those
     // without scrolling.
-    DCHECK(item_index >= 0);
-    DCHECK(item_index < 2);
+    DCHECK_GE(item_index, 0);
+    DCHECK_LT(item_index, 2);
     if (item_index == 0) {
       ClickOnFormFieldAtPoint(SingleSelectLastSelectedFirstVisibleOption());
     } else {
@@ -596,7 +609,7 @@ class FPDFFormFillTextFormEmbedderTestVersion2
 };
 
 TEST_F(FPDFFormFillEmbedderTest, FirstTest) {
-  EmbedderTestMockDelegate mock;
+  auto& mock = SetOwnedDelegate<EmbedderTestMockDelegate>();
   EXPECT_CALL(mock, Alert(_, _, _, _)).Times(0);
   EXPECT_CALL(mock, UnsupportedHandler(_)).Times(0);
   EXPECT_CALL(mock, SetTimer(_, _)).Times(0);
@@ -605,16 +618,23 @@ TEST_F(FPDFFormFillEmbedderTest, FirstTest) {
   EXPECT_CALL(mock, DoURIAction(_)).Times(0);
   EXPECT_CALL(mock, DoURIActionWithKeyboardModifier(_, _, _)).Times(0);
   EXPECT_CALL(mock, DoGoToAction(_, _, _, _, _)).Times(0);
-  SetDelegate(&mock);
-
+  EXPECT_CALL(mock, ExecuteNamedAction(_)).Times(0);
   ASSERT_TRUE(OpenDocument("hello_world.pdf"));
   ScopedPage page = LoadScopedPage(0);
   EXPECT_TRUE(page);
 }
 
+TEST_F(FPDFFormFillEmbedderTest, OpenActionNamedAction) {
+  auto& mock = SetOwnedDelegate<EmbedderTestMockDelegate>();
+  EXPECT_CALL(mock, ExecuteNamedAction(StrEq("Print")));
+  ASSERT_TRUE(OpenDocument("named_action.pdf"));
+  ScopedPage page = LoadScopedPage(0);
+  EXPECT_TRUE(page);
+  DoOpenActions();
+}
+
 TEST_F(FPDFFormFillEmbedderTest, Bug487928) {
-  EmbedderTestTimerHandlingDelegate delegate;
-  SetDelegate(&delegate);
+  auto& delegate = SetOwnedDelegate<EmbedderTestTimerHandlingDelegate>();
 
   ASSERT_TRUE(OpenDocument("bug_487928.pdf"));
   ScopedPage page = LoadScopedPage(0);
@@ -624,8 +644,7 @@ TEST_F(FPDFFormFillEmbedderTest, Bug487928) {
 }
 
 TEST_F(FPDFFormFillEmbedderTest, Bug507316) {
-  EmbedderTestTimerHandlingDelegate delegate;
-  SetDelegate(&delegate);
+  auto& delegate = SetOwnedDelegate<EmbedderTestTimerHandlingDelegate>();
 
   ASSERT_TRUE(OpenDocument("bug_507316.pdf"));
   ScopedPage page = LoadScopedPage(2);
@@ -645,8 +664,7 @@ TEST_F(FPDFFormFillEmbedderTest, Bug514690) {
 }
 
 TEST_F(FPDFFormFillEmbedderTest, Bug900552) {
-  EmbedderTestTimerHandlingDelegate delegate;
-  SetDelegate(&delegate);
+  auto& delegate = SetOwnedDelegate<EmbedderTestTimerHandlingDelegate>();
 
   ASSERT_TRUE(OpenDocument("bug_900552.pdf"));
   ScopedPage page = LoadScopedPage(0);
@@ -663,8 +681,7 @@ TEST_F(FPDFFormFillEmbedderTest, Bug900552) {
 }
 
 TEST_F(FPDFFormFillEmbedderTest, Bug901654Case1) {
-  EmbedderTestTimerHandlingDelegate delegate;
-  SetDelegate(&delegate);
+  auto& delegate = SetOwnedDelegate<EmbedderTestTimerHandlingDelegate>();
 
   ASSERT_TRUE(OpenDocument("bug_901654.pdf"));
   ScopedPage page = LoadScopedPage(0);
@@ -681,8 +698,7 @@ TEST_F(FPDFFormFillEmbedderTest, Bug901654Case1) {
 }
 
 TEST_F(FPDFFormFillEmbedderTest, Bug901654Case2) {
-  EmbedderTestTimerHandlingDelegate delegate;
-  SetDelegate(&delegate);
+  auto& delegate = SetOwnedDelegate<EmbedderTestTimerHandlingDelegate>();
 
   ASSERT_TRUE(OpenDocument("bug_901654_2.pdf"));
   ScopedPage page = LoadScopedPage(0);
@@ -935,21 +951,14 @@ TEST_F(FPDFFormFillEmbedderTest, DoNotHandleShortcutsOnKeyDown) {
   EXPECT_TRUE(FORM_OnKeyDown(form_handle(), page.get(), FWL_VKEY_Up, 0));
   EXPECT_TRUE(FORM_OnKeyDown(form_handle(), page.get(), FWL_VKEY_Right, 0));
 
-  // Edit shortcuts should not be handled by PDFium so that embedders can handle
-  // these shortcuts on platforms like MacOS which don't send OnChar events for
-  // the shortcuts.
-  EXPECT_FALSE(
-      FORM_OnKeyDown(form_handle(), page.get(), FWL_VKEY_A, kModifier));
+  // Clipboard shortcuts (C, V, X) should not be handled by PDFium so that
+  // embedders can handle these shortcuts via platform clipboard handlers.
   EXPECT_FALSE(
       FORM_OnKeyDown(form_handle(), page.get(), FWL_VKEY_C, kModifier));
   EXPECT_FALSE(
       FORM_OnKeyDown(form_handle(), page.get(), FWL_VKEY_V, kModifier));
   EXPECT_FALSE(
       FORM_OnKeyDown(form_handle(), page.get(), FWL_VKEY_X, kModifier));
-  EXPECT_FALSE(
-      FORM_OnKeyDown(form_handle(), page.get(), FWL_VKEY_Z, kModifier));
-  EXPECT_FALSE(FORM_OnKeyDown(form_handle(), page.get(), FWL_VKEY_Z,
-                              kModifier | FWL_EVENTFLAG_ShiftKey));
 }
 
 #ifdef PDF_ENABLE_XFA
@@ -1053,8 +1062,7 @@ class DoURIActionBlockedDelegate final : public EmbedderTest::Delegate {
 };
 
 TEST_F(FPDFFormFillEmbedderTest, Bug851821) {
-  DoURIActionBlockedDelegate delegate;
-  SetDelegate(&delegate);
+  SetOwnedDelegate<DoURIActionBlockedDelegate>();
 
   ASSERT_TRUE(OpenDocument("redirect.pdf"));
   ScopedPage page = LoadScopedPage(0);
@@ -1063,8 +1071,7 @@ TEST_F(FPDFFormFillEmbedderTest, Bug851821) {
 }
 
 TEST_F(FPDFFormFillEmbedderTest, CheckReadOnlyInCheckbox) {
-  EmbedderTestTimerHandlingDelegate delegate;
-  SetDelegate(&delegate);
+  SetOwnedDelegate<EmbedderTestTimerHandlingDelegate>();
 
   ASSERT_TRUE(OpenDocument("click_form.pdf"));
   ScopedPage page = LoadScopedPage(0);
@@ -1099,8 +1106,7 @@ TEST_F(FPDFFormFillEmbedderTest, CheckReadOnlyInCheckbox) {
 }
 
 TEST_F(FPDFFormFillEmbedderTest, CheckReadOnlyInRadiobutton) {
-  EmbedderTestTimerHandlingDelegate delegate;
-  SetDelegate(&delegate);
+  SetOwnedDelegate<EmbedderTestTimerHandlingDelegate>();
 
   ASSERT_TRUE(OpenDocument("click_form.pdf"));
   ScopedPage page = LoadScopedPage(0);
@@ -1136,8 +1142,7 @@ TEST_F(FPDFFormFillEmbedderTest, CheckReadOnlyInRadiobutton) {
 #ifdef PDF_ENABLE_V8
 TEST_F(FPDFFormFillEmbedderTest, DisableJavaScript) {
   // Test that timers and intervals can't fire without JS.
-  EmbedderTestTimerHandlingDelegate delegate;
-  SetDelegate(&delegate);
+  auto& delegate = SetOwnedDelegate<EmbedderTestTimerHandlingDelegate>();
 
   ASSERT_TRUE(OpenDocumentWithoutJavaScript("bug_551248.pdf"));
   ScopedPage page = LoadScopedPage(0);
@@ -1164,8 +1169,7 @@ TEST_F(FPDFFormFillEmbedderTest, DisableJavaScript) {
 }
 
 TEST_F(FPDFFormFillEmbedderTest, DocumentAActions) {
-  EmbedderTestTimerHandlingDelegate delegate;
-  SetDelegate(&delegate);
+  auto& delegate = SetOwnedDelegate<EmbedderTestTimerHandlingDelegate>();
 
   ASSERT_TRUE(OpenDocument("document_aactions.pdf"));
   ScopedPage page = LoadScopedPage(0);
@@ -1187,8 +1191,7 @@ TEST_F(FPDFFormFillEmbedderTest, DocumentAActions) {
 }
 
 TEST_F(FPDFFormFillEmbedderTest, DocumentAActionsDisableJavaScript) {
-  EmbedderTestTimerHandlingDelegate delegate;
-  SetDelegate(&delegate);
+  auto& delegate = SetOwnedDelegate<EmbedderTestTimerHandlingDelegate>();
 
   ASSERT_TRUE(OpenDocumentWithoutJavaScript("document_aactions.pdf"));
   ScopedPage page = LoadScopedPage(0);
@@ -1207,8 +1210,7 @@ TEST_F(FPDFFormFillEmbedderTest, DocumentAActionsDisableJavaScript) {
 
 TEST_F(FPDFFormFillEmbedderTest, Bug551248) {
   // Test that timers fire once and intervals fire repeatedly.
-  EmbedderTestTimerHandlingDelegate delegate;
-  SetDelegate(&delegate);
+  auto& delegate = SetOwnedDelegate<EmbedderTestTimerHandlingDelegate>();
 
   ASSERT_TRUE(OpenDocument("bug_551248.pdf"));
   ScopedPage page = LoadScopedPage(0);
@@ -1258,8 +1260,7 @@ TEST_F(FPDFFormFillEmbedderTest, Bug551248) {
 
 TEST_F(FPDFFormFillEmbedderTest, Bug620428) {
   // Test that timers and intervals are cancelable.
-  EmbedderTestTimerHandlingDelegate delegate;
-  SetDelegate(&delegate);
+  auto& delegate = SetOwnedDelegate<EmbedderTestTimerHandlingDelegate>();
 
   ASSERT_TRUE(OpenDocument("bug_620428.pdf"));
   ScopedPage page = LoadScopedPage(0);
@@ -1274,8 +1275,7 @@ TEST_F(FPDFFormFillEmbedderTest, Bug620428) {
 
 TEST_F(FPDFFormFillEmbedderTest, Bug634394) {
   // Cancel timer inside timer callback.
-  EmbedderTestTimerHandlingDelegate delegate;
-  SetDelegate(&delegate);
+  auto& delegate = SetOwnedDelegate<EmbedderTestTimerHandlingDelegate>();
 
   ASSERT_TRUE(OpenDocument("bug_634394.pdf"));
   ScopedPage page = LoadScopedPage(0);
@@ -1295,8 +1295,7 @@ TEST_F(FPDFFormFillEmbedderTest, Bug634394) {
 }
 
 TEST_F(FPDFFormFillEmbedderTest, Bug634716) {
-  EmbedderTestTimerHandlingDelegate delegate;
-  SetDelegate(&delegate);
+  auto& delegate = SetOwnedDelegate<EmbedderTestTimerHandlingDelegate>();
 
   ASSERT_TRUE(OpenDocument("bug_634716.pdf"));
   ScopedPage page = LoadScopedPage(0);
@@ -1316,8 +1315,7 @@ TEST_F(FPDFFormFillEmbedderTest, Bug634716) {
 }
 
 TEST_F(FPDFFormFillEmbedderTest, Bug679649) {
-  EmbedderTestTimerHandlingDelegate delegate;
-  SetDelegate(&delegate);
+  auto& delegate = SetOwnedDelegate<EmbedderTestTimerHandlingDelegate>();
 
   ASSERT_TRUE(OpenDocument("bug_679649.pdf"));
   ScopedPage page = LoadScopedPage(0);
@@ -1332,8 +1330,7 @@ TEST_F(FPDFFormFillEmbedderTest, Bug679649) {
 }
 
 TEST_F(FPDFFormFillEmbedderTest, Bug707673) {
-  EmbedderTestTimerHandlingDelegate delegate;
-  SetDelegate(&delegate);
+  auto& delegate = SetOwnedDelegate<EmbedderTestTimerHandlingDelegate>();
 
   ASSERT_TRUE(OpenDocument("bug_707673.pdf"));
   ScopedPage page = LoadScopedPage(0);
@@ -1360,8 +1357,7 @@ TEST_F(FPDFFormFillEmbedderTest, Bug765384) {
 
 // Test passes if DCHECK() not hit.
 TEST_F(FPDFFormFillEmbedderTest, Bug1477093) {
-  EmbedderTestTimerHandlingDelegate delegate;
-  SetDelegate(&delegate);
+  auto& delegate = SetOwnedDelegate<EmbedderTestTimerHandlingDelegate>();
 
   ASSERT_TRUE(OpenDocument("bug_1477093.pdf"));
   ScopedPage page = LoadScopedPage(0);
@@ -1375,16 +1371,11 @@ TEST_F(FPDFFormFillEmbedderTest, Bug1477093) {
 #endif  // PDF_ENABLE_V8
 
 TEST_F(FPDFFormFillEmbedderTest, FormText) {
-  static constexpr char kFocusedTextFormWithAbcPng[] =
-      "focused_text_form_with_abc";
-  static constexpr char kUnfocusedTextFormWithAbcPng[] =
-      "unfocused_text_form_with_abc";
   {
     ASSERT_TRUE(OpenDocument("text_form.pdf"));
     ScopedPage page = LoadScopedPage(0);
     ASSERT_TRUE(page);
-    ScopedFPDFBitmap bitmap1 = RenderLoadedPage(page.get());
-    CompareBitmapWithExpectationSuffix(bitmap1.get(), kTextFormPng);
+    CompareDisplayList(RenderLoadedPageToDisplayList(page.get()), "text_form");
 
     // Click on the textfield
     EXPECT_EQ(
@@ -1400,30 +1391,27 @@ TEST_F(FPDFFormFillEmbedderTest, FormText) {
     FORM_OnChar(form_handle(), page.get(), 'A', 0);
     FORM_OnChar(form_handle(), page.get(), 'B', 0);
     FORM_OnChar(form_handle(), page.get(), 'C', 0);
-    ScopedFPDFBitmap bitmap2 = RenderLoadedPage(page.get());
-    CompareBitmapWithExpectationSuffix(bitmap2.get(),
-                                       kFocusedTextFormWithAbcPng);
+    CompareDisplayList(RenderLoadedPageToDisplayList(page.get()),
+                       "focused_text_form_with_abc");
 
     // Focus remains despite right clicking out of the textfield
     FORM_OnMouseMove(form_handle(), page.get(), 0, 15.0, 15.0);
     FORM_OnRButtonDown(form_handle(), page.get(), 0, 15.0, 15.0);
     FORM_OnRButtonUp(form_handle(), page.get(), 0, 15.0, 15.0);
-    ScopedFPDFBitmap bitmap3 = RenderLoadedPage(page.get());
-    CompareBitmapWithExpectationSuffix(bitmap3.get(),
-                                       kFocusedTextFormWithAbcPng);
+    CompareDisplayList(RenderLoadedPageToDisplayList(page.get()),
+                       "focused_text_form_with_abc");
 
     // Take out focus by clicking out of the textfield
     FORM_OnMouseMove(form_handle(), page.get(), 0, 15.0, 15.0);
     FORM_OnLButtonDown(form_handle(), page.get(), 0, 15.0, 15.0);
     FORM_OnLButtonUp(form_handle(), page.get(), 0, 15.0, 15.0);
-    ScopedFPDFBitmap bitmap4 = RenderLoadedPage(page.get());
-    CompareBitmapWithExpectationSuffix(bitmap4.get(),
-                                       kUnfocusedTextFormWithAbcPng);
+    CompareDisplayList(RenderLoadedPageToDisplayList(page.get()),
+                       "unfocused_text_form_with_abc");
 
     EXPECT_TRUE(FPDF_SaveAsCopy(document(), this, 0));
   }
   // Check saved document
-  VerifySavedDocumentWithExpectationSuffix(kUnfocusedTextFormWithAbcPng);
+  VerifySavedDocumentWithDisplayList("unfocused_text_form_with_abc");
 }
 
 // Tests using FPDF_REVERSE_BYTE_ORDER with FPDF_FFLDraw(). The two rendered
@@ -1439,28 +1427,24 @@ TEST_F(FPDFFormFillEmbedderTest, Bug1281) {
 
   ScopedFPDFBitmap bitmap_reverse_byte_order =
       RenderLoadedPageWithFlags(page.get(), FPDF_REVERSE_BYTE_ORDER);
-  CompareBitmapWithFuzzyExpectationSuffix(bitmap_reverse_byte_order.get(),
-                                          "bug_890322_reverse");
+  CompareBitmapWithExpectationSuffix(bitmap_reverse_byte_order.get(),
+                                     "bug_890322_reverse", kFuzzyDiffOptions);
 }
 
 TEST_F(FPDFFormFillEmbedderTest, Bug1302455RenderOnly) {
-  static constexpr char kBug1302455ReadOnlyPng[] = "bug_1302455_read_only";
   {
     ASSERT_TRUE(OpenDocument("bug_1302455.pdf"));
     ScopedPage page = LoadScopedPage(0);
     ASSERT_TRUE(page);
-
-    ScopedFPDFBitmap bitmap = RenderLoadedPage(page.get());
-    CompareBitmapWithExpectationSuffix(bitmap.get(), kBug1302455ReadOnlyPng);
+    CompareDisplayList(RenderLoadedPageToDisplayList(page.get()),
+                       "bug_1302455_read_only");
 
     EXPECT_TRUE(FPDF_SaveAsCopy(document(), this, 0));
   }
-  VerifySavedDocumentWithExpectationSuffix(kBug1302455ReadOnlyPng);
+  VerifySavedDocumentWithDisplayList("bug_1302455_read_only");
 }
 
 TEST_F(FPDFFormFillEmbedderTest, Bug1302455EditFirstForm) {
-  static constexpr char kBug1302455EditFirstFormPng[] =
-      "bug_1302455_edit_first_form";
   {
     ASSERT_TRUE(OpenDocument("bug_1302455.pdf"));
     ScopedPage page = LoadScopedPage(0);
@@ -1475,18 +1459,15 @@ TEST_F(FPDFFormFillEmbedderTest, Bug1302455EditFirstForm) {
     FORM_OnChar(form_handle(), page.get(), 'A', 0);
 
     FORM_ForceToKillFocus(form_handle());
-    ScopedFPDFBitmap bitmap = RenderLoadedPage(page.get());
-    CompareBitmapWithExpectationSuffix(bitmap.get(),
-                                       kBug1302455EditFirstFormPng);
+    CompareDisplayList(RenderLoadedPageToDisplayList(page.get()),
+                       "bug_1302455_edit_first_form");
 
     EXPECT_TRUE(FPDF_SaveAsCopy(document(), this, 0));
   }
-  VerifySavedDocumentWithExpectationSuffix(kBug1302455EditFirstFormPng);
+  VerifySavedDocumentWithDisplayList("bug_1302455_edit_first_form");
 }
 
 TEST_F(FPDFFormFillEmbedderTest, Bug1302455EditSecondForm) {
-  static constexpr char kBug1302455EditSecondFormPng[] =
-      "bug_1302455_edit_second_form";
   {
     ASSERT_TRUE(OpenDocument("bug_1302455.pdf"));
     ScopedPage page = LoadScopedPage(0);
@@ -1501,18 +1482,15 @@ TEST_F(FPDFFormFillEmbedderTest, Bug1302455EditSecondForm) {
     FORM_OnChar(form_handle(), page.get(), 'B', 0);
 
     FORM_ForceToKillFocus(form_handle());
-    ScopedFPDFBitmap bitmap = RenderLoadedPage(page.get());
-    CompareBitmapWithExpectationSuffix(bitmap.get(),
-                                       kBug1302455EditSecondFormPng);
+    CompareDisplayList(RenderLoadedPageToDisplayList(page.get()),
+                       "bug_1302455_edit_second_form");
 
     EXPECT_TRUE(FPDF_SaveAsCopy(document(), this, 0));
   }
-  VerifySavedDocumentWithExpectationSuffix(kBug1302455EditSecondFormPng);
+  VerifySavedDocumentWithDisplayList("bug_1302455_edit_second_form");
 }
 
 TEST_F(FPDFFormFillEmbedderTest, Bug1302455EditBothForms) {
-  static constexpr char kBug1302455EditBothFormsPng[] =
-      "bug_1302455_edit_both_forms";
   {
     ASSERT_TRUE(OpenDocument("bug_1302455.pdf"));
     ScopedPage page = LoadScopedPage(0);
@@ -1535,31 +1513,28 @@ TEST_F(FPDFFormFillEmbedderTest, Bug1302455EditBothForms) {
     FORM_OnChar(form_handle(), page.get(), 'B', 0);
 
     FORM_ForceToKillFocus(form_handle());
-    ScopedFPDFBitmap bitmap = RenderLoadedPage(page.get());
-    CompareBitmapWithExpectationSuffix(bitmap.get(),
-                                       kBug1302455EditBothFormsPng);
+    CompareDisplayList(RenderLoadedPageToDisplayList(page.get()),
+                       "bug_1302455_edit_both_forms");
 
     EXPECT_TRUE(FPDF_SaveAsCopy(document(), this, 0));
   }
-  VerifySavedDocumentWithExpectationSuffix(kBug1302455EditBothFormsPng);
+  VerifySavedDocumentWithDisplayList("bug_1302455_edit_both_forms");
 }
 
 TEST_F(FPDFFormFillEmbedderTest, RemoveFormFieldHighlight) {
   ASSERT_TRUE(OpenDocument("text_form.pdf"));
   ScopedPage page = LoadScopedPage(0);
   ASSERT_TRUE(page);
-  ScopedFPDFBitmap bitmap1 = RenderLoadedPage(page.get());
-  CompareBitmapWithExpectationSuffix(bitmap1.get(), kTextFormPng);
+  CompareDisplayList(RenderLoadedPageToDisplayList(page.get()), "text_form");
 
   // Removing the highlight changes the rendering.
   FPDF_RemoveFormFieldHighlight(form_handle());
-  ScopedFPDFBitmap bitmap2 = RenderLoadedPage(page.get());
-  CompareBitmapWithExpectationSuffix(bitmap2.get(), "text_form_no_highlight");
+  CompareDisplayList(RenderLoadedPageToDisplayList(page.get()),
+                     "text_form_no_highlight");
 
   // Restoring it gives the original rendering.
   SetInitialFormFieldHighlight(form_handle());
-  ScopedFPDFBitmap bitmap3 = RenderLoadedPage(page.get());
-  CompareBitmapWithExpectationSuffix(bitmap3.get(), kTextFormPng);
+  CompareDisplayList(RenderLoadedPageToDisplayList(page.get()), "text_form");
 }
 
 TEST_F(FPDFFormFillEmbedderTest, HasFormInfoNone) {
@@ -1672,6 +1647,60 @@ TEST_F(FPDFFormFillEmbedderTest, SelectAllText) {
   EXPECT_EQ("Hello", GetPlatformString(buffer));
 }
 
+TEST_F(FPDFFormFillEmbedderTest,
+       SetTextDirectionUpdatesRenderingOfFocusedTextField) {
+  ASSERT_TRUE(OpenDocument("text_form.pdf"));
+  ScopedPage page = LoadScopedPage(0);
+  ASSERT_TRUE(page);
+
+  ScopedFPDFAnnotation annot(FPDFPage_GetAnnot(page.get(), 0));
+  ASSERT_TRUE(annot);
+
+  // Focus the field and type BiDi text.
+  EXPECT_TRUE(FORM_OnFocus(form_handle(), page.get(), 0, 120.0, 120.0));
+  constexpr auto kInput =
+      std::to_array<uint32_t>({'A', ' ', 0x05E9, ' ', 0x05DE, ' ', 'B'});
+  for (uint32_t c : kInput) {
+    EXPECT_TRUE(FORM_OnChar(form_handle(), page.get(), c, 0));
+  }
+
+  EXPECT_EQ(FPDF_TEXTDIR_AUTO,
+            FORM_GetTextDirection(form_handle(), annot.get()));
+
+  // Live rendering in AUTO direction (resolves to LTR for this input).
+  ScopedFPDFBitmap bitmap_auto = RenderLoadedPage(page.get());
+
+  // Change text direction to Right-to-Left (RTL) while remaining focused.
+  EXPECT_TRUE(
+      FORM_SetTextDirection(form_handle(), annot.get(), FPDF_TEXTDIR_RTL));
+  EXPECT_EQ(FPDF_TEXTDIR_RTL,
+            FORM_GetTextDirection(form_handle(), annot.get()));
+
+  // Live rendering should immediately reflect RTL.
+  ScopedFPDFBitmap bitmap_rtl = RenderLoadedPage(page.get());
+
+  // Change text direction back to Left-to-Right (LTR) while remaining focused.
+  EXPECT_TRUE(
+      FORM_SetTextDirection(form_handle(), annot.get(), FPDF_TEXTDIR_LTR));
+  EXPECT_EQ(FPDF_TEXTDIR_LTR,
+            FORM_GetTextDirection(form_handle(), annot.get()));
+
+  // Live rendering should immediately reflect LTR.
+  ScopedFPDFBitmap bitmap_ltr = RenderLoadedPage(page.get());
+
+  // Rendering should be visually different when the text direction changes.
+  EXPECT_NE(HashBitmap(bitmap_auto.get()), HashBitmap(bitmap_rtl.get()));
+  EXPECT_NE(HashBitmap(bitmap_rtl.get()), HashBitmap(bitmap_ltr.get()));
+  EXPECT_EQ(HashBitmap(bitmap_auto.get()), HashBitmap(bitmap_ltr.get()));
+}
+
+TEST_F(FPDFFormFillTextFormEmbedderTest, FormTextFieldBiDiLiveEdit) {
+  constexpr auto kInput =
+      std::to_array<uint32_t>({'A', ' ', 0x05E9, ' ', 0x05DE, ' ', 'B'});
+  TypeCharactersIntoTextField(kInput, RegularFormBegin());
+  CompareDisplayList(RenderLoadedPageToDisplayList(page()), "bug_535730401");
+}
+
 TEST_F(FPDFFormFillTextFormEmbedderTest, GetSelectedTextEmptyAndBasicKeyboard) {
   // Test empty selection.
   EXPECT_EQ(FocusedFieldText(), "");
@@ -1744,6 +1773,14 @@ TEST_F(FPDFFormFillTextFormEmbedderTest, GetSelectedTextFragmentsMouse) {
   // Test selecting last character in backwards direction.
   SelectTextWithMouse(RegularFormEnd(), RegularFormAtX(186.0));
   EXPECT_EQ(Selection(), "L");
+}
+
+TEST_F(FPDFFormFillComboBoxFormEmbedderTest, FormComboBoxBiDiLiveEdit) {
+  constexpr auto kInput =
+      std::to_array<uint32_t>({'A', ' ', 0x05E9, ' ', 0x05DE, ' ', 'B'});
+  TypeCharactersIntoTextField(kInput, EditableFormBegin());
+  CompareDisplayList(RenderLoadedPageToDisplayList(page()),
+                     "bug_535730401_combobox");
 }
 
 TEST_F(FPDFFormFillComboBoxFormEmbedderTest,
@@ -2014,6 +2051,29 @@ TEST_F(FPDFFormFillTextFormEmbedderTest, DeleteTextFieldEntireSelection) {
 
   SelectTextWithKeyboard(12, FWL_VKEY_Left, RegularFormEnd());
   EXPECT_EQ(Selection(), "");
+}
+
+TEST_F(FPDFFormFillTextFormEmbedderTest,
+       ControlCharacterChordsDoNotClearSelection) {
+  // Regression test for https://crbug.com/528342021. A modifier chord may
+  // produce a control character even when the modifier is not the platform
+  // shortcut key, e.g. Ctrl-C on Apple platforms. Such characters must not be
+  // typed into the field, where they would replace (and effectively clear)
+  // the current selection.
+  TypeTextIntoTextField(3, RegularFormBegin());
+  SelectAllTextAtPoint(RegularFormBegin());
+  EXPECT_EQ(FocusedFieldText(), "ABC");
+  EXPECT_EQ(Selection(), "ABC");
+
+  // ETX (0x03), as produced by Ctrl-C. This chord is not the platform
+  // shortcut on Apple platforms.
+  FORM_OnChar(form_handle(), page(), 0x03, FWL_EVENTFLAG_ControlKey);
+  EXPECT_EQ(FocusedFieldText(), "ABC");
+
+  // The same character as produced by Cmd-C, which is not the platform
+  // shortcut on non-Apple platforms.
+  FORM_OnChar(form_handle(), page(), 0x03, FWL_EVENTFLAG_MetaKey);
+  EXPECT_EQ(FocusedFieldText(), "ABC");
 }
 
 TEST_F(FPDFFormFillTextFormEmbedderTest, DeleteTextFieldSelectionMiddle) {
@@ -2728,8 +2788,7 @@ TEST_F(FPDFFormFillTextFormEmbedderTest, DoubleClickInTextField) {
 }
 
 TEST_F(FPDFFormFillTextFormEmbedderTest, FocusAnnotationUpdateToEmbedder) {
-  testing::NiceMock<EmbedderTestMockDelegate> mock;
-  SetDelegate(&mock);
+  auto& mock = SetOwnedDelegate<testing::NiceMock<EmbedderTestMockDelegate>>();
   EXPECT_EQ(FocusedFieldText(), "");
 
 #ifdef PDF_ENABLE_XFA
@@ -2743,8 +2802,7 @@ TEST_F(FPDFFormFillTextFormEmbedderTest, FocusAnnotationUpdateToEmbedder) {
 
 TEST_F(FPDFFormFillTextFormEmbedderTestVersion2,
        FocusAnnotationUpdateToEmbedder) {
-  testing::NiceMock<EmbedderTestMockDelegate> mock;
-  SetDelegate(&mock);
+  auto& mock = SetOwnedDelegate<testing::NiceMock<EmbedderTestMockDelegate>>();
   EXPECT_EQ(FocusedFieldText(), "");
 
   EXPECT_CALL(mock, OnFocusChange(_, _, 0)).Times(1);
@@ -3401,20 +3459,47 @@ TEST_F(FPDFFormFillTextFormEmbedderTest, RedoCutSelection) {
   EXPECT_EQ(Selection(), "");
 }
 
-TEST_F(FPDFFormFillTextFormEmbedderTest, SelectAllWithKeyboardShortcut) {
+TEST_F(FPDFFormFillTextFormEmbedderTest, DoNotHandleSelectAllOnChar) {
   // Start with a couple of letters in the text form.
   TypeTextIntoTextField(2, RegularFormBegin());
   EXPECT_EQ(FocusedFieldText(), "AB");
   EXPECT_EQ(Selection(), "");
 
-  // Select all with the keyboard shortcut.
+  // FORM_OnChar should not handle Select All; this is now handled via
+  // OnKeyDown.
 #if BUILDFLAG(IS_APPLE)
   static constexpr int kCorrectModifier = FWL_EVENTFLAG_MetaKey;
 #else
   static constexpr int kCorrectModifier = FWL_EVENTFLAG_ControlKey;
 #endif
-  FORM_OnChar(form_handle(), page(), pdfium::ascii::kControlA,
-              kCorrectModifier);
+  EXPECT_FALSE(FORM_OnChar(form_handle(), page(), pdfium::ascii::kControlA,
+                           kCorrectModifier));
+  EXPECT_EQ(Selection(), "");
+
+  // Select all with the keyboard shortcut using the wrong modifier key.
+#if BUILDFLAG(IS_APPLE)
+  static constexpr int kWrongModifier = FWL_EVENTFLAG_ControlKey;
+#else
+  static constexpr int kWrongModifier = FWL_EVENTFLAG_MetaKey;
+#endif
+  FORM_OnChar(form_handle(), page(), pdfium::ascii::kControlA, kWrongModifier);
+  EXPECT_EQ(Selection(), "");
+}
+
+TEST_F(FPDFFormFillTextFormEmbedderTest, SelectAllWithOnKeyDown) {
+  // Start with a couple of letters in the text form.
+  TypeTextIntoTextField(2, RegularFormBegin());
+  EXPECT_EQ(FocusedFieldText(), "AB");
+  EXPECT_EQ(Selection(), "");
+
+  // Select all with the keyboard shortcut via OnKeyDown.
+#if BUILDFLAG(IS_APPLE)
+  static constexpr int kCorrectModifier = FWL_EVENTFLAG_MetaKey;
+#else
+  static constexpr int kCorrectModifier = FWL_EVENTFLAG_ControlKey;
+#endif
+  EXPECT_TRUE(
+      FORM_OnKeyDown(form_handle(), page(), FWL_VKEY_A, kCorrectModifier));
   EXPECT_EQ(Selection(), "AB");
 
   // Reset the selection again.
@@ -3427,8 +3512,81 @@ TEST_F(FPDFFormFillTextFormEmbedderTest, SelectAllWithKeyboardShortcut) {
 #else
   static constexpr int kWrongModifier = FWL_EVENTFLAG_MetaKey;
 #endif
-  FORM_OnChar(form_handle(), page(), pdfium::ascii::kControlA, kWrongModifier);
+  EXPECT_FALSE(
+      FORM_OnKeyDown(form_handle(), page(), FWL_VKEY_A, kWrongModifier));
   EXPECT_EQ(Selection(), "");
+
+  // Select all with Shift key pressed should not be handled.
+  EXPECT_FALSE(FORM_OnKeyDown(form_handle(), page(), FWL_VKEY_A,
+                              kCorrectModifier | FWL_EVENTFLAG_ShiftKey));
+  EXPECT_EQ(Selection(), "");
+}
+
+TEST_F(FPDFFormFillTextFormEmbedderTest, UndoWithOnKeyDown) {
+  // Start with a couple of letters in the text form.
+  TypeTextIntoTextField(2, RegularFormBegin());
+  EXPECT_EQ(FocusedFieldText(), "AB");
+
+  // Undo with the keyboard shortcut via OnKeyDown.
+#if BUILDFLAG(IS_APPLE)
+  static constexpr int kCorrectModifier = FWL_EVENTFLAG_MetaKey;
+#else
+  static constexpr int kCorrectModifier = FWL_EVENTFLAG_ControlKey;
+#endif
+  // First undo reverts 'B'.
+  EXPECT_TRUE(
+      FORM_OnKeyDown(form_handle(), page(), FWL_VKEY_Z, kCorrectModifier));
+  EXPECT_EQ(FocusedFieldText(), "A");
+
+  // Second undo reverts 'A'.
+  EXPECT_TRUE(
+      FORM_OnKeyDown(form_handle(), page(), FWL_VKEY_Z, kCorrectModifier));
+  EXPECT_EQ(FocusedFieldText(), "");
+
+  // First redo restores 'A'.
+  EXPECT_TRUE(FORM_OnKeyDown(form_handle(), page(), FWL_VKEY_Z,
+                             kCorrectModifier | FWL_EVENTFLAG_ShiftKey));
+  EXPECT_EQ(FocusedFieldText(), "A");
+
+  // Second redo restores 'B'.
+  EXPECT_TRUE(FORM_OnKeyDown(form_handle(), page(), FWL_VKEY_Z,
+                             kCorrectModifier | FWL_EVENTFLAG_ShiftKey));
+  EXPECT_EQ(FocusedFieldText(), "AB");
+
+  // Undo with the keyboard shortcut using the wrong modifier key.
+#if BUILDFLAG(IS_APPLE)
+  static constexpr int kWrongModifier = FWL_EVENTFLAG_ControlKey;
+#else
+  static constexpr int kWrongModifier = FWL_EVENTFLAG_MetaKey;
+#endif
+  EXPECT_FALSE(
+      FORM_OnKeyDown(form_handle(), page(), FWL_VKEY_Z, kWrongModifier));
+  EXPECT_EQ(FocusedFieldText(), "AB");
+}
+
+TEST_F(FPDFFormFillTextFormEmbedderTest, RedoWithCtrlYKeyboardShortcut) {
+  // Start with a letter in the text form.
+  TypeTextIntoTextField(1, RegularFormBegin());
+  EXPECT_EQ(FocusedFieldText(), "A");
+
+  // Undo with the keyboard shortcut.
+  EXPECT_TRUE(FORM_OnKeyDown(form_handle(), page(), FWL_VKEY_Z, kModifier));
+  EXPECT_EQ(FocusedFieldText(), "");
+
+  // Shortcut with Shift key pressed should not be handled.
+  EXPECT_FALSE(FORM_OnKeyDown(form_handle(), page(), FWL_VKEY_Y,
+                              kModifier | FWL_EVENTFLAG_ShiftKey));
+  EXPECT_EQ(FocusedFieldText(), "");
+
+#if BUILDFLAG(IS_APPLE)
+  // On Apple platforms, Cmd+Y is not Redo and should not be handled.
+  EXPECT_FALSE(FORM_OnKeyDown(form_handle(), page(), FWL_VKEY_Y, kModifier));
+  EXPECT_EQ(FocusedFieldText(), "");
+#else
+  // On non-Apple platforms, Ctrl+Y is Redo.
+  EXPECT_TRUE(FORM_OnKeyDown(form_handle(), page(), FWL_VKEY_Y, kModifier));
+  EXPECT_EQ(FocusedFieldText(), "A");
+#endif
 }
 
 class FPDFXFAFormBug1055869EmbedderTest
@@ -3505,11 +3663,9 @@ class FPDFFormFillActionUriTest : public EmbedderTest {
 };
 
 TEST_F(FPDFFormFillActionUriTest, ButtonActionInvokeTest) {
-  NiceMock<EmbedderTestMockDelegate> mock;
+  auto& mock = SetOwnedDelegate<NiceMock<EmbedderTestMockDelegate>>();
   // TODO(crbug.com/1028991): DoURIAction expect call should be 1.
   EXPECT_CALL(mock, DoURIAction(_)).Times(0);
-  SetDelegate(&mock);
-
   SetFocusOnNthAnnot(1);
 
   // Tab once from first form to go to button widget.
@@ -3521,7 +3677,7 @@ TEST_F(FPDFFormFillActionUriTest, ButtonActionInvokeTest) {
 }
 
 TEST_F(FPDFFormFillActionUriTest, LinkActionInvokeTest) {
-  NiceMock<EmbedderTestMockDelegate> mock;
+  auto& mock = SetOwnedDelegate<NiceMock<EmbedderTestMockDelegate>>();
   {
     InSequence sequence;
     const char kExpectedUri[] = "https://cs.chromium.org/";
@@ -3534,7 +3690,6 @@ TEST_F(FPDFFormFillActionUriTest, LinkActionInvokeTest) {
     EXPECT_CALL(mock, DoURIActionWithKeyboardModifier(_, _, _)).Times(0);
 #endif  // PDF_ENABLE_XFA
   }
-  SetDelegate(&mock);
   SetFocusOnNthAnnot(3);
   int modifier = 0;
   ASSERT_TRUE(FORM_OnKeyDown(form_handle(), page(), FWL_VKEY_Return, modifier));
@@ -3557,9 +3712,8 @@ TEST_F(FPDFFormFillActionUriTest, LinkActionInvokeTest) {
 }
 
 TEST_F(FPDFFormFillActionUriTest, InternalLinkActionInvokeTest) {
-  NiceMock<EmbedderTestMockDelegate> mock;
+  auto& mock = SetOwnedDelegate<NiceMock<EmbedderTestMockDelegate>>();
   EXPECT_CALL(mock, DoGoToAction(_, _, 1, _, _)).Times(12);
-  SetDelegate(&mock);
 
   SetFocusOnNthAnnot(4);
   int modifier = 0;
@@ -3610,7 +3764,7 @@ class FPDFFormFillActionUriTestVersion2 : public FPDFFormFillActionUriTest {
 };
 
 TEST_F(FPDFFormFillActionUriTestVersion2, LinkActionInvokeTest) {
-  NiceMock<EmbedderTestMockDelegate> mock;
+  auto& mock = SetOwnedDelegate<NiceMock<EmbedderTestMockDelegate>>();
   {
     InSequence sequence;
     EXPECT_CALL(mock, DoURIAction(_)).Times(0);
@@ -3624,7 +3778,6 @@ TEST_F(FPDFFormFillActionUriTestVersion2, LinkActionInvokeTest) {
     EXPECT_CALL(mock,
                 DoURIActionWithKeyboardModifier(_, StrEq(kExpectedUri), 3));
   }
-  SetDelegate(&mock);
   SetFocusOnNthAnnot(3);
   int modifier = 0;
   ASSERT_TRUE(FORM_OnKeyDown(form_handle(), page(), FWL_VKEY_Return, modifier));

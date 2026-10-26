@@ -19,18 +19,37 @@
 #include "core/fxcrt/observed_ptr.h"
 #include "core/fxcrt/retain_ptr.h"
 #include "core/fxcrt/span.h"
-#include "core/fxge/freetype/fx_freetype.h"
 #include "core/fxge/fx_font.h"
+#include "core/fxge/fx_fontencoding.h"
 
-namespace fxge {
-enum class FontEncoding : uint32_t;
-}
+#if defined(PDF_USE_SKIA)
+#include "third_party/skia/include/core/SkRefCnt.h"  // nogncheck
+#endif
 
-class CFX_Font;
-class CFX_FontMgr;
+#if defined(PDF_ENABLE_FREETYPE)
+#include "core/fxge/freetype/fx_freetype.h"
+#else
+using FT_FaceRec = struct FT_FaceRec_;
+#endif  // defined(PDF_ENABLE_FREETYPE)
+
+class CFX_CTTGSUBTable;
 class CFX_GlyphBitmap;
 class CFX_Path;
 class CFX_SubstFont;
+
+#if defined(PDF_ENABLE_XFA)
+class CFX_CTTNameTable;
+#endif  // defined(PDF_ENABLE_XFA)
+
+#if defined(PDF_USE_SKIA)
+class SkTypeface;
+#endif
+
+struct SkrifaFontHolder;
+
+namespace fxge {
+enum class FontEncoding : uint32_t;
+}  // namespace fxge
 
 class CFX_Face final : public Retainable, public Observable {
  public:
@@ -38,33 +57,34 @@ class CFX_Face final : public Retainable, public Observable {
 
   // Note that this corresponds to the cmap header in fonts, and not the cmap
   // data in PDFs.
-  struct CharMapId {
-    friend constexpr bool operator==(const CharMapId&,
-                                     const CharMapId&) = default;
+  struct CharMapIdPair {
+    friend constexpr bool operator==(const CharMapIdPair&,
+                                     const CharMapIdPair&) = default;
 
-    int platform_id;
-    int encoding_id;
+    uint16_t platform_id;
+    uint16_t encoding_id;
   };
 
   // Aliases for some commonly used cmaps.
-  static constexpr CharMapId kMacRomanCmapId{1, 0};
-  static constexpr CharMapId kWindowsSymbolCmapId{3, 0};
-  static constexpr CharMapId kWindowsUnicodeCmapId{3, 1};
+  static constexpr CharMapIdPair kMacRomanCharMapIdPair{
+      .platform_id = kPlatformMac,
+      .encoding_id = kMacEncodingRoman};
+  static constexpr CharMapIdPair kWindowsSymbolCharMapIdPair{
+      .platform_id = kPlatformWindows,
+      .encoding_id = kWindowsEncodingSymbol};
+  static constexpr CharMapIdPair kWindowsUnicodeCharMapIdPair{
+      .platform_id = kPlatformWindows,
+      .encoding_id = kWindowsEncodingUnicode};
 
-  static RetainPtr<CFX_Face> New(CFX_FontMgr* font_mgr,
-                                 RetainPtr<Retainable> desc,
-                                 pdfium::span<const uint8_t> data,
+  static RetainPtr<CFX_Face> New(RetainPtr<Retainable> cache_entry,
+                                 RetainPtr<CFX_ReadOnlySpanStream> font_stream,
                                  uint32_t face_index);
-
-#if defined(PDF_ENABLE_XFA) || BUILDFLAG(IS_ANDROID)
-  static RetainPtr<CFX_Face> NewFromSpanStream(
-      CFX_FontMgr* font_mgr,
-      const RetainPtr<CFX_ReadOnlySpanStream>& font_stream,
-      uint32_t face_index);
-#endif  // defined(PDF_ENABLE_XFA) || BUILDFLAG(IS_ANDROID)
+  static wchar_t UnicodeFromAdobeName(const char* name);
+  static ByteString AdobeNameFromUnicode(wchar_t unicode);
 
   bool HasGlyphNames() const;
   bool IsTtOt() const;
+  ByteString GetFontFormat();
   bool IsFixedWidth() const;
   bool IsItalic() const;
   bool IsBold() const;
@@ -83,30 +103,29 @@ class CFX_Face final : public Retainable, public Observable {
 
   FX_RECT GetBBox() const;
   uint16_t GetUnitsPerEm() const;
+  int EmAdjust(int value) const;
   int16_t GetAscender() const;
   int16_t GetDescender() const;
 
-  pdfium::span<uint8_t> GetData() const;
+  pdfium::span<const uint8_t> GetData() const;
 
-  // Returns the size of the data, or 0 on failure. Only write into `buffer` if
-  // it is large enough to hold the data.
-  size_t GetSfntTable(uint32_t table, pdfium::span<uint8_t> buffer);
+  std::unique_ptr<CFX_CTTGSUBTable> ParseGSUBTable();
 
   int GetGlyphCount() const;
-  // TODO(crbug.com/42271048): Can this method be private?
-  FX_RECT GetGlyphBBox() const;
+  FX_RECT GetGlyphBBox(uint32_t glyph_index) const;
   std::optional<FX_RECT> GetFontGlyphBBox(uint32_t glyph_index);
-  std::unique_ptr<CFX_GlyphBitmap> RenderGlyph(const CFX_Font* font,
-                                               uint32_t glyph_index,
-                                               bool bFontStyle,
+  std::unique_ptr<CFX_GlyphBitmap> RenderGlyph(uint32_t glyph_index,
+                                               bool is_cid_font,
+                                               bool is_vertical,
                                                const CFX_Matrix& matrix,
                                                int dest_width,
-                                               FontAntiAliasingMode anti_alias);
+                                               FontAntiAliasingMode anti_alias,
+                                               const CFX_SubstFont* subst_font);
   std::unique_ptr<CFX_Path> LoadGlyphPath(uint32_t glyph_index,
                                           int dest_width,
                                           bool is_vertical,
                                           const CFX_SubstFont* subst_font);
-  int GetGlyphTTWidth() const;
+  int GetGlyphTTWidth(uint32_t glyph_index) const;
   int GetGlyphWidth(uint32_t glyph_index,
                     int dest_width,
                     int weight,
@@ -130,19 +149,17 @@ class CFX_Face final : public Retainable, public Observable {
 
   CharMap GetCurrentCharMap() const;
   std::optional<fxge::FontEncoding> GetCurrentCharMapEncoding() const;
-  CharMapId GetCharMapIdByIndex(size_t index) const;
-  int GetCharMapPlatformIdByIndex(size_t index) const;
-  int GetCharMapEncodingIdByIndex(size_t index) const;
+  CharMapIdPair GetCharMapIdPairByIndex(size_t index) const;
+  uint16_t GetCharMapPlatformIdByIndex(size_t index) const;
   fxge::FontEncoding GetCharMapEncodingByIndex(size_t index) const;
   size_t GetCharMapCount() const;
   int LoadGlyph(uint32_t glyph_index, bool scale);
   ByteString GetPostscriptName();
-  CFX_Size GetPixelSize() const;
   void SetCharMap(CharMap map);
   void SetCharMapByIndex(size_t index);
   bool SelectCharMap(fxge::FontEncoding encoding);
 
-#if defined(PDF_ENABLE_XFA) || BUILDFLAG(IS_ANDROID)
+#if defined(PDF_ENABLE_XFA) || BUILDFLAG(IS_ANDROID) || BUILDFLAG(IS_LINUX)
   // Returns enum FontStyle values.
   uint32_t GetFontStyle();
 
@@ -152,6 +169,7 @@ class CFX_Face final : public Retainable, public Observable {
 #if defined(PDF_ENABLE_XFA)
   bool IsScalable() const;
   int GetNumFaces() const;
+  std::unique_ptr<CFX_CTTNameTable> ParseNameTable();
   std::optional<std::array<uint32_t, 4>> GetOs2UnicodeRange();
 #endif
 
@@ -159,29 +177,76 @@ class CFX_Face final : public Retainable, public Observable {
   bool CanEmbed();
 #endif
 
-  bool HasFaceRec() const { return !!GetRec(); }
+#if defined(PDF_USE_SKIA)
+  SkTypeface* GetOrCreateSkTypeface();
+#endif
 
  private:
-  CFX_Face(FXFT_FaceRec* pRec, RetainPtr<Retainable> pDesc);
+  CFX_Face(RetainPtr<Retainable> cache_entry,
+           RetainPtr<CFX_ReadOnlySpanStream> font_stream,
+           FT_FaceRec* rec,
+           SkrifaFontHolder* skrifa_font);
+
   ~CFX_Face() override;
 
-  FXFT_FaceRec* GetRec() { return rec_.get(); }
-  const FXFT_FaceRec* GetRec() const { return rec_.get(); }
+#if defined(PDF_ENABLE_FREETYPE)
+  FT_FaceRec* GetRec() { return rec_.get(); }
+  const FT_FaceRec* GetRec() const { return rec_.get(); }
+#endif
+
+  uint16_t GetCharMapEncodingIdByIndex(size_t index) const;
+  CFX_Size GetPixelSize() const;
 
   bool IsTricky() const;
-  bool SetPixelSize(uint32_t width, uint32_t height);
+#if defined(PDF_ENABLE_FREETYPE)
   void AdjustVariationParams(int glyph_index, int dest_width, int weight);
-
+#endif
+#if defined(PDF_ENABLE_FONTATIONS)
+  void AdjustSubstFontTransform(const CFX_SubstFont* subst_font,
+                                int dest_width,
+                                float advance_width,
+                                bool is_cid_font,
+                                bool is_vertical,
+                                CFX_Matrix* matrix) const;
+#endif
+#if defined(PDF_ENABLE_FREETYPE)
   pdfium::span<const FT_CharMap> GetCharMaps() const;
+#endif
 
-#if BUILDFLAG(IS_ANDROID) || defined(PDF_ENABLE_XFA)
+  // Returns the size of the data, or 0 on failure. Only write into `buffer` if
+  // it is large enough to hold the data.
+  size_t GetSfntTable(uint32_t table, pdfium::span<uint8_t> buffer);
+
+#if defined(PDF_ENABLE_XFA) || BUILDFLAG(IS_ANDROID) || BUILDFLAG(IS_LINUX)
   std::optional<std::array<uint8_t, 2>> GetOs2Panose();
 #endif
 
-  // `owned_font_stream_` must outlive `rec_`.
-  RetainPtr<CFX_ReadOnlySpanStream> owned_font_stream_;
+#if defined(PDF_ENABLE_FONTATIONS)
+  bool IsPostScriptFont() const;
+#endif
+
+  // `cache_entry_` must outlive `font_stream_`. Faces managed by a cache
+  // and sharing the same `font_stream_` keep the cache entry that indexes
+  // that stream alive via this member while there is at least one face
+  // using it. This may be nullptr for faces not managed by a cache.
+  RetainPtr<Retainable> cache_entry_;
+
+  // `font_stream_` must outlive `rec_` and `skia_typeface_`. Faces keep
+  // the actual data backing the `rec_` and `skia_typeface_` alive via
+  // this member while the `rec_` and `skia_typeface_` is still using it.
+  RetainPtr<CFX_ReadOnlySpanStream> font_stream_;
+
+#if defined(PDF_ENABLE_FREETYPE)
   ScopedFXFTFaceRec const rec_;
-  RetainPtr<Retainable> const desc_;
+#endif
+#if defined(PDF_USE_SKIA)
+  sk_sp<SkTypeface> skia_typeface_;
+#endif  // defined(PDF_USE_SKIA)
+#if defined(PDF_ENABLE_FONTATIONS)
+  std::unique_ptr<SkrifaFontHolder> const skrifa_font_;
+  std::optional<size_t> selected_charmap_index_;
+#endif  // defined(PDF_ENABLE_FONTATIONS)
+  fxge::FontEncoding selected_encoding_ = fxge::FontEncoding::kNone;
 };
 
 #endif  // CORE_FXGE_CFX_FACE_H_

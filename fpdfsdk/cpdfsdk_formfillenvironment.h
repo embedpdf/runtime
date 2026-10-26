@@ -39,6 +39,12 @@ class IJS_Runtime;
 class IPDF_Page;
 struct CFFL_FieldAction;
 
+#ifdef PDF_ENABLE_V8
+namespace v8 {
+class Isolate;
+}  // namespace v8
+#endif  // PDF_ENABLE_V8
+
 // NOTE: |bsUTF16LE| must outlive the use of the result. Care must be taken
 // since modifying the result would impact |bsUTF16LE|.
 FPDF_WIDESTRING AsFPDFWideString(ByteString* bsUTF16LE);
@@ -85,12 +91,15 @@ class CPDFSDK_FormFillEnvironment final
   bool HasPermissions(uint32_t flags) const override;
   void OnChange() override;
 
+  bool InPassiveFFICallback() const { return in_passive_ffi_callback_; }
+
   CPDFSDK_PageView* GetPageViewAtIndex(int nIndex);
   void RemovePageView(IPDF_Page* pUnderlyingPage);
   void UpdateAllViews(CPDFSDK_Annot* pAnnot);
 
   bool KillFocusAnnot(Mask<FWL_EVENTFLAG> nFlags);
   void ClearAllFocusedAnnots();
+  void OnDetachFromDocument();
 
   int GetPageCount() const;
 
@@ -107,10 +116,13 @@ class CPDFSDK_FormFillEnvironment final
                     int zoomMode,
                     pdfium::span<float> fPosArray);
 
-  CPDF_Document* GetPDFDocument() const { return cpdfdoc_; }
+  CPDF_Document* GetPDFDocument() const { return cpdfdoc_.Get(); }
   CPDF_Document::Extension* GetDocExtension() const {
-    return cpdfdoc_->GetExtension();
+    return cpdfdoc_ ? cpdfdoc_->GetExtension() : nullptr;
   }
+#ifdef PDF_ENABLE_V8
+  v8::Isolate* GetIsolate() const;
+#endif  // PDF_ENABLE_V8
 
   bool IsJSPlatformPresent() const { return info_ && info_->m_pJsPlatform; }
   IPDF_JSPLATFORM* GetJSPlatform() const {
@@ -146,7 +158,7 @@ class CPDFSDK_FormFillEnvironment final
 
 #ifdef PDF_ENABLE_V8
   CPDFSDK_PageView* GetCurrentView();
-  IPDF_Page* GetCurrentPage() const;
+  IPDF_Page* GetCurrentPage();
 
   WideString GetLanguage();
   WideString GetPlatform();
@@ -189,11 +201,11 @@ class CPDFSDK_FormFillEnvironment final
                     double top,
                     double right,
                     double bottom);
-  int GetCurrentPageIndex() const;
+  int GetCurrentPageIndex();
   void SetCurrentPage(int iCurPage);
 
   // TODO(dsinclair): This should probably change to PDFium?
-  WideString FFI_GetAppName() const { return WideString::FromASCII("Acrobat"); }
+  WideString GetXfaAppName() const { return WideString::FromASCII("Acrobat"); }
 
   void GotoURL(const WideString& wsURL);
   FS_RECTF GetPageViewRect(IPDF_Page* page);
@@ -220,13 +232,12 @@ class CPDFSDK_FormFillEnvironment final
                           const WideString& wsData,
                           const WideString& wsEncode);
 
-  void PageEvent(int iPageCount, uint32_t dwEventType) const;
+  void PageEvent(int iPageCount, uint32_t dwEventType);
 #endif  // PDF_ENABLE_XFA
 #endif  // PDF_ENABLE_V8
 
   WideString GetFilePath() const;
   ByteString GetAppName() const { return ByteString(); }
-  FPDF_FORMFILLINFO* GetFormFillInfo() const { return info_; }
   void SubmitForm(pdfium::span<const uint8_t> form_data, const WideString& URL);
 
   void SetFocusableAnnotSubtypes(
@@ -248,22 +259,24 @@ class CPDFSDK_FormFillEnvironment final
  private:
   using RunScriptCallback = std::function<void(IJS_EventContext* context)>;
 
-  IPDF_Page* GetPage(int nIndex) const;
+  IPDF_Page* GetPage(int nIndex);
   void OnSetFieldInputFocusInternal(const WideString& text, bool bFocus);
   void SendOnFocusChange(ObservedPtr<CPDFSDK_Annot>& pAnnot);
 
   // Support methods for Actions.
   void RunScript(const WideString& script, const RunScriptCallback& cb);
-  bool ExecuteDocumentOpenAction(const CPDF_Action& action,
-                                 std::set<const CPDF_Dictionary*>* visited);
-  bool ExecuteDocumentPageAction(const CPDF_Action& action,
-                                 CPDF_AAction::AActionType type,
-                                 std::set<const CPDF_Dictionary*>* visited);
+  bool ExecuteDocumentOpenAction(
+      const CPDF_Action& action,
+      std::set<RetainPtr<const CPDF_Dictionary>>* visited);
+  bool ExecuteDocumentPageAction(
+      const CPDF_Action& action,
+      CPDF_AAction::AActionType type,
+      std::set<RetainPtr<const CPDF_Dictionary>>* visited);
   bool ExecuteFieldAction(const CPDF_Action& action,
                           CPDF_AAction::AActionType type,
                           CPDF_FormField* pFormField,
                           CFFL_FieldAction* data,
-                          std::set<const CPDF_Dictionary*>* visited);
+                          std::set<RetainPtr<const CPDF_Dictionary>>* visited);
   void RunDocumentPageJavaScript(CPDF_AAction::AActionType type,
                                  const WideString& script);
   void RunDocumentOpenJavaScript(const WideString& sScriptName,
@@ -282,10 +295,12 @@ class CPDFSDK_FormFillEnvironment final
 
   std::unique_ptr<CPDFSDK_InteractiveForm> interactive_form_;
   ObservedPtr<CPDFSDK_Annot> focus_annot_;
-  UnownedPtr<CPDF_Document> const cpdfdoc_;
+  ObservedPtr<CPDF_Document> cpdfdoc_;
   std::unique_ptr<CFFL_InteractiveFormFiller> interactive_form_filler_;
   bool change_mask_ = false;
   bool being_destroyed_ = false;
+  bool in_active_ffi_callback_ = false;
+  bool in_passive_ffi_callback_ = false;
 
   // Holds the list of focusable annot types.
   // Annotations of type WIDGET are by default focusable.

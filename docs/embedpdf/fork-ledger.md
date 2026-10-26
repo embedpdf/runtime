@@ -84,8 +84,9 @@ layer sees.
 `fpdfsdk/`. Every function in `epdf_annot.cpp` opens one before it walks the document's objects.
 **Guarded by.** `cpdf_base_document_unittest.cpp`, `cpdf_layer_document_unittest.cpp`,
 `EPDFAnnotEmbedderTest.ReadsResolveThroughTheLayer`.
-**When upstream touches this.** A new read entry point that walks a document's objects opens a
-scope. Without one, a base page with layer `/Annots` crashes the view detector.
+**When upstream touches this.** A new entry point that walks objects beyond its own page opens a
+scope, whether it reads or writes: `FPDFPage_Flatten()` writes one page but reads every page's
+`/Annots`. Without a scope, a base page with layer `/Annots` crashes the view detector.
 
 ### overlay-epoch
 **Rule.** Anything that caches an object pointer, or something derived from one, re-reads it when
@@ -116,7 +117,8 @@ saved.
 edits, and the copy happens outside any transaction. On a frozen base it writes shared state.
 **Where.** Const walks in the content parser, `cpdf_interactiveform.cpp`, `cpdf_nametree.cpp`
 (`CreateForReading`), `cpdf_linklist.cpp` and `cpdf_annotlist.cpp`; in-memory appearances in
-`cpdf_annot.cpp`.
+`cpdf_annot.cpp`. Writes that read first: the field pruning in `fpdf_flatten.cpp` compares fields
+read const and takes an array mutable only when an entry goes.
 **Guarded by.** `cpdf_read_only_graph_guard_unittest.cpp`,
 `EPDFAnnotEmbedderTest.DrawingARedactionMarkWithoutAppearanceWritesNone`; layer mode's list of
 tests that write (`testing/embedpdf_layer_mode_writers.txt`): a test that only reads must leave
@@ -182,10 +184,27 @@ filling the live document's caches.
 **Why.** Full rewrites of large files kept every object parsed in memory, and stale cross-reference
 and encryption objects leaked into saves.
 **Where.** `cpdf_save_trailer`, `cpdf_reference_index`, `cpdf_save_object_reader`,
-`cpdf_object_stream_cache`, `CPDF_Parser::ParseIndirectObjectForSave`.
+`cpdf_object_stream_cache`, `CPDF_Parser::ParseIndirectObjectForSave`, and
+`ByteStringPool::Clear()`: the save reader empties its own pool between objects. Upstream removed
+`Clear()` as unused; we put it back.
 **Guarded by.** `cpdf_save_trailer_unittest.cpp`, `cpdf_reference_index_unittest.cpp`,
 `cpdf_object_stream_cache_unittest.cpp`.
 **When upstream touches this.** The creator's traversal and the parser's object stream access.
+
+### complete-xref
+**Rule.** A full save's cross-reference table is one subsection, from object 0 through the last
+number it writes. A number no written object holds is a free entry with generation 0; entry 0
+heads the list of free entries, each links to the next higher one, and the last links back to 0.
+Object numbers are never changed to close the holes.
+**Why.** ISO 32000-1 7.5.4: a file that was never updated has one subsection, numbered from 0.
+Editing sessions reserve numbers they may not use, and upstream gave the numbers between runs of
+written objects no entry at all. Acrobat can't judge a later revision's changes against such a
+table, so a signature over a rewritten file read as indeterminate after any edit
+(`HasSparseXref`). Object numbers are the engine's identities.
+**Where.** `CPDF_Creator::WriteDoc_Stage3`, the `kWriteXrefsNotIncremental81` stage.
+**Guarded by.** `EPDFObjectNumberEmbedderTest.FullSaveListsUnusedNumbersAsFree`.
+**When upstream touches this.** The full save's cross-reference writer: keep the one subsection
+and the free list. Update sections (incremental saves) stay sparse.
 
 ### save-security
 **Rule.** Pending encryption settings belong to the document, not to a global. AES-256 encryption
@@ -331,9 +350,11 @@ text markup reads oriented quads.
 **Rule.** Glyph bounds of substitute fonts are measured as drawn, including multiple-master design
 changes.
 **Why.** Text bounds of substituted fonts came out wrong, while renders were right.
-**Where.** `cfx_face.cpp`.
+**Where.** `cfx_face.cpp`, inside upstream's `PDF_ENABLE_FREETYPE` guards: the scoped variation
+calls FreeType.
 **Guarded by.** `epdf_text_bounds_embeddertest.cpp`.
-**When upstream touches this.** `CFX_Face` metrics.
+**When upstream touches this.** `CFX_Face` metrics, and the FreeType and Fontations branches of
+`CFX_Face`.
 
 ## Annotations, forms and features
 
@@ -390,7 +411,9 @@ expect standard fonts from the test fonts, so the embedder test environment turn
 `EPDFViewEmbedderTest.StandardFontsDrawWithBuiltInFaces` for standard fonts.
 **When upstream touches this.** Font loading and mapping. A new upstream test that expects the test
 fonts for a standard font passes as it is; one of ours that expects the built-in faces turns the
-switch off.
+switch off. Our font code calls FreeType directly (`CFX_Face::GetFsTypeFlags()`, CID-keyed CFF,
+the registry), so our builds keep `pdf_enable_freetype` on; a Fontations-only build would need
+Skrifa versions of them.
 
 ### measurement
 **Rule.** Measurement dictionaries and dimension appearances.

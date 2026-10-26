@@ -331,7 +331,7 @@ def _CheckIncludeOrderInFile(input_api, f, changed_linenums):
   # check.
   uncheckable_includes_pattern = input_api.re.compile(
       r'\s*#include '
-      '("ipc/.*macros\.h"|<windows\.h>|".*gl.*autogen.h")\s*')
+      r'("ipc/.*macros\.h"|<windows\.h>|".*gl.*autogen.h")\s*')
 
   contents = f.NewContents()
   warnings = []
@@ -433,6 +433,27 @@ def _CheckLibcxxRevision(input_api, output_api):
   return []
 
 
+def _CheckLibclangRevision(input_api, output_api):
+  """Makes sure that third_party/llvm-libclang and third_party/rust-toolchain
+  are in sync in DEPS.
+  """
+  if 'DEPS' not in [f.LocalPath() for f in input_api.AffectedFiles()]:
+    return []
+
+  script_path = input_api.os_path.join('testing', 'tools', 'libclang_check.py')
+
+  try:
+    errors = input_api.subprocess.check_output([script_path, 'DEPS'])
+  except input_api.subprocess.CalledProcessError as error:
+    msg = 'libclang_check.py failed:'
+    long_text = error.output.decode('utf-8', 'ignore')
+    return [output_api.PresubmitError(msg, long_text=long_text)]
+
+  if errors:
+    return [output_api.PresubmitError(errors)]
+  return []
+
+
 def _CheckTestDuplicates(input_api, output_api):
   """Checks that pixel and javascript tests don't contain duplicates.
   We use .in and .pdf files, having both can cause race conditions on the bots,
@@ -464,23 +485,23 @@ def _CheckTestDuplicates(input_api, output_api):
 
 
 def _CheckPngNames(input_api, output_api):
-  """Checks that .png files have the right file name format.
+  r"""Checks that .png files have the right file name format.
 
   For most directories, including those used for pixel tests, they must be in
   the form of:
 
-  NAME_expected(_gdi)?(_(agg|skia))?(_(linux|mac|win))?.pdf.\d+.png
+  NAME_expected(_(agg|skia))?(_(linux|mac|win|gdi))?.pdf.\d+.png
 
   This must be the same format as the one in testing/corpus's PRESUBMIT.py.
 
   For testing/resources/embedder_tests, they must be in the form of:
 
-  NAME(_gdi)?(_(agg|skia))?(_(linux|mac|win))?.png
+  NAME(_(agg|skia))?(_(linux|mac|win|gdi))?.png
   """
   expected_pattern = input_api.re.compile(
-      r'.+_expected(_gdi)?(_(agg|skia))?(_(linux|mac|win))?\.pdf\.\d+.png')
+      r'.+_expected(_(agg|skia))?(_(linux|mac|win|gdi))?\.pdf\.\d+.png')
   expected_embedder_tests_pattern = input_api.re.compile(
-      r'.+(_gdi)?(_(agg|skia))?(_(linux|mac|win))?.png')
+      r'.+(_(agg|skia))?(_(linux|mac|win|gdi))?\.png')
   results = []
   for f in input_api.AffectedFiles(include_deletes=False):
     if not f.LocalPath().endswith('.png'):
@@ -568,6 +589,27 @@ def ChecksCommon(input_api, output_api):
   return results
 
 
+def CheckNoIOStreamInHeaders(input_api, output_api):
+  """Checks to make sure no .h files include <iostream>."""
+  files = []
+  pattern = input_api.re.compile(r'^#include\s*<iostream>',
+                                 input_api.re.MULTILINE)
+  for f in input_api.AffectedSourceFiles(input_api.FilterSourceFile):
+    if not f.LocalPath().endswith('.h'):
+      continue
+    contents = input_api.ReadFile(f)
+    if pattern.search(contents):
+      files.append(f)
+
+  if files:
+    return [
+        output_api.PresubmitError(
+            'Do not #include <iostream> in header files, since it inserts '
+            'static initialization into every file including the header. '
+            'Instead, #include <ostream>. See http://crbug.com/94794', files)
+    ]
+  return []
+
 def CheckChangeOnUpload(input_api, output_api):
   results = []
   results.extend(_CheckNoBannedFunctions(input_api, output_api))
@@ -578,6 +620,7 @@ def CheckChangeOnUpload(input_api, output_api):
           input_api, output_api, lint_filters=LINT_FILTERS))
   results.extend(_CheckIncludeOrder(input_api, output_api))
   results.extend(_CheckLibcxxRevision(input_api, output_api))
+  results.extend(_CheckLibclangRevision(input_api, output_api))
   results.extend(_CheckTestDuplicates(input_api, output_api))
   results.extend(_CheckPngNames(input_api, output_api))
   results.extend(_CheckUselessForwardDeclarations(input_api, output_api))

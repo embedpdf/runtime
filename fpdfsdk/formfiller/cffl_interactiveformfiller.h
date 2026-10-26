@@ -11,6 +11,7 @@
 #include <memory>
 #include <utility>
 
+#include "core/fxcrt/cfx_bidi_resolver.h"
 #include "core/fxcrt/cfx_timer.h"
 #include "core/fxcrt/mask.h"
 #include "core/fxcrt/observed_ptr.h"
@@ -33,8 +34,12 @@ class CFFL_InteractiveFormFiller final : public IPWL_FillerNotify {
     virtual void OnCalculate(ObservedPtr<CPDFSDK_Annot>& pAnnot) = 0;
     virtual void OnFormat(ObservedPtr<CPDFSDK_Annot>& pAnnot) = 0;
     virtual void Invalidate(IPDF_Page* pPage, const FX_RECT& rect) = 0;
+
+    // Never returns nullptr.
     virtual CPDFSDK_PageView* GetOrCreatePageView(IPDF_Page* pPage) = 0;
+    // Returns nullptr if the page view does not exist.
     virtual CPDFSDK_PageView* GetPageView(IPDF_Page* pPage) = 0;
+
     virtual CFX_Timer::HandlerIface* GetTimerHandler() = 0;
     virtual CPDFSDK_Annot* GetFocusAnnot() const = 0;
     virtual bool SetFocusAnnot(ObservedPtr<CPDFSDK_Annot>& pAnnot) = 0;
@@ -157,6 +162,10 @@ class CFFL_InteractiveFormFiller final : public IPWL_FillerNotify {
                         bool selected);
   bool IsIndexSelected(ObservedPtr<CPDFSDK_Widget>& pWidget, int index);
 
+  void UpdateFormFieldTextDirection(
+      CPDFSDK_Widget* widget,
+      CFX_BidiResolver::ParagraphDirection direction);
+
  private:
   using WidgetToFormFillerMap =
       std::map<CPDFSDK_Widget*, std::unique_ptr<CFFL_FormField>>;
@@ -204,7 +213,7 @@ class CFFL_InteractiveFormFiller final : public IPWL_FillerNotify {
   bool IsFillingAllowed(CPDFSDK_Widget* pWidget) const;
   CFFL_FormField* GetFormField(CPDFSDK_Widget* pWidget);
   CFFL_FormField* GetOrCreateFormField(CPDFSDK_Widget* pWidget);
-  void UnregisterFormField(CPDFSDK_Widget* pWidget);
+  void UnregisterFormField(CPDFSDK_Widget* widget);
 
   UnownedPtr<CallbackIface> const callback_iface_;
   WidgetToFormFillerMap map_;

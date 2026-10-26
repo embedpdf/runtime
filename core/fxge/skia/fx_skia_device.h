@@ -29,8 +29,8 @@ class SkCanvas;
 class SkPaint;
 class SkPath;
 class SkSurface;
-class TextCharPos;
 struct CFX_TextRenderOptions;
+struct TextCharPos;
 
 // Assumes Skia is not going to add non-data members to its fundamental types.
 FX_DATA_PARTITION_EXCEPTION(SkColor4f);
@@ -42,15 +42,25 @@ class CFX_SkiaDeviceDriver final : public RenderDeviceDriverIface {
   static std::unique_ptr<CFX_SkiaDeviceDriver> Create(
       RetainPtr<CFX_DIBitmap> pBitmap,
       bool bRgbByteOrder,
-      RetainPtr<CFX_DIBitmap> pBackdropBitmap,
-      bool bGroupKnockout);
+      RetainPtr<CFX_DIBitmap> pBackdropBitmap);
   static std::unique_ptr<CFX_SkiaDeviceDriver> Create(SkCanvas& canvas);
 
   ~CFX_SkiaDeviceDriver() override;
 
   // RenderDeviceDriverIface:
   DeviceType GetDeviceType() const override;
-  int GetDeviceCaps(int caps_id) const override;
+  bool RenderCapGetBits() const override;
+  bool RenderCapAlphaImage() const override;
+  bool RenderCapBlendMode() const override;
+  bool RenderCapSoftClip() const override;
+  bool RenderCapAlphaOutput() const override;
+  bool RenderCapFillStrokePath() const override;
+  bool RenderCapShading() const override;
+  bool RenderCapPremultipliedAlpha() const override;
+  int GetPixelWidth() const override;
+  int GetPixelHeight() const override;
+  int GetBitsPerPixel() const override;
+  void Clear(uint32_t color) override;
   void SaveState() override;
   void RestoreState(bool bKeepSaved) override;
   bool SetClip_PathFill(const CFX_Path& path,
@@ -64,6 +74,7 @@ class CFX_SkiaDeviceDriver final : public RenderDeviceDriverIface {
                 const CFX_GraphStateData* pGraphState,
                 uint32_t fill_color,
                 uint32_t stroke_color,
+                bool group_knockout,
                 const CFX_FillRenderOptions& fill_options) override;
   bool FillRect(const FX_RECT& rect, uint32_t fill_color) override;
   FX_RECT GetClipBox() const override;
@@ -83,7 +94,6 @@ class CFX_SkiaDeviceDriver final : public RenderDeviceDriverIface {
                        int dest_top,
                        float alpha,
                        BlendMode blend_type) override;
-  void SetGroupKnockout(bool group_knockout) override;
   void SyncInternalBitmaps() override;
   bool StretchDIBits(RetainPtr<const CFX_DIBBase> bitmap,
                      uint32_t color,
@@ -120,7 +130,6 @@ class CFX_SkiaDeviceDriver final : public RenderDeviceDriverIface {
   bool MultiplyAlpha(float alpha) override;
   bool MultiplyAlphaMask(RetainPtr<const CFX_DIBitmap> mask) override;
 
-  void Clear(uint32_t color);
   void Dump() const;
 
  private:
@@ -161,8 +170,7 @@ class CFX_SkiaDeviceDriver final : public RenderDeviceDriverIface {
   // Use the public creation methods instead.
   CFX_SkiaDeviceDriver(RetainPtr<CFX_DIBitmap> pBitmap,
                        bool bRgbByteOrder,
-                       RetainPtr<CFX_DIBitmap> pBackdropBitmap,
-                       bool bGroupKnockout);
+                       RetainPtr<CFX_DIBitmap> pBackdropBitmap);
   explicit CFX_SkiaDeviceDriver(SkCanvas& canvas);
 
   bool TryDrawText(pdfium::span<const TextCharPos> char_pos,
@@ -171,6 +179,15 @@ class CFX_SkiaDeviceDriver final : public RenderDeviceDriverIface {
                    float font_size,
                    uint32_t color,
                    const CFX_TextRenderOptions& options);
+
+  // Fills the glyph outlines for `char_pos` directly, for fonts that Skia
+  // cannot render as text, e.g. those without an `SkTypeface`.
+  void DrawDeviceTextAsPath(pdfium::span<const TextCharPos> char_pos,
+                            const CFX_Font* font,
+                            const CFX_Matrix& matrix,
+                            float font_size,
+                            uint32_t color,
+                            const CFX_TextRenderOptions& options);
 
   bool StartDIBitsSkia(RetainPtr<const CFX_DIBBase> bitmap,
                        const FX_RECT& src_rect,
@@ -194,9 +211,8 @@ class CFX_SkiaDeviceDriver final : public RenderDeviceDriverIface {
   UnownedPtr<SkCanvas> canvas_;
   CFX_FillRenderOptions fill_options_;
   const bool rgb_byte_order_;
-  bool group_knockout_;
-
   CharDetail char_details_;
+
   // accumulator for txt rotate/scale/translate
   DataVector<SkRSXform> rsxform_;
 };

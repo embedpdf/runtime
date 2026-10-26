@@ -49,6 +49,11 @@ void CPDF_ContentMarks::AddMark(ByteString name) {
   mark_data_->AddMark(std::move(name));
 }
 
+void CPDF_ContentMarks::AddExistingMark(RetainPtr<CPDF_ContentMarkItem> mark) {
+  EnsureMarkDataExists();
+  mark_data_->AddExistingMark(std::move(mark));
+}
+
 void CPDF_ContentMarks::AddMarkWithDirectDict(ByteString name,
                                               RetainPtr<CPDF_Dictionary> dict) {
   EnsureMarkDataExists();
@@ -136,6 +141,11 @@ void CPDF_ContentMarks::MarkData::AddMark(ByteString name) {
   marks_.push_back(pItem);
 }
 
+void CPDF_ContentMarks::MarkData::AddExistingMark(
+    RetainPtr<CPDF_ContentMarkItem> mark) {
+  marks_.push_back(std::move(mark));
+}
+
 void CPDF_ContentMarks::MarkData::AddMarkWithDirectDict(
     ByteString name,
     RetainPtr<CPDF_Dictionary> dict) {
@@ -153,12 +163,12 @@ void CPDF_ContentMarks::MarkData::AddMarkWithPropertiesHolder(
   marks_.push_back(std::move(pItem));
 }
 
-bool CPDF_ContentMarks::MarkData::RemoveMark(CPDF_ContentMarkItem* pMarkItem) {
-  for (auto it = marks_.begin(); it != marks_.end(); ++it) {
-    if (*it == pMarkItem) {
-      marks_.erase(it);
-      return true;
-    }
+bool CPDF_ContentMarks::MarkData::RemoveMark(CPDF_ContentMarkItem* mark_item) {
+  auto it = std::ranges::find(marks_, mark_item);
+  if (it == marks_.end()) {
+    return false;
   }
-  return false;
+
+  marks_.erase(it);
+  return true;
 }

@@ -9,21 +9,33 @@
 
 #include <windows.h>
 
+#include <memory>
 #include <optional>
 
 #include "core/fxcrt/retain_ptr.h"
 #include "core/fxge/renderdevicedriver_iface.h"
 
 class CFX_DIBBase;
+class CFX_PSFontTracker;
 
 class CGdiDeviceDriver : public RenderDeviceDriverIface {
+ public:
+  static std::unique_ptr<RenderDeviceDriverIface> CreateDriver(
+      HDC hdc,
+      CFX_PSFontTracker* ps_font_tracker);
+
  protected:
-  CGdiDeviceDriver(HDC hDC, DeviceType device_type);
+  CGdiDeviceDriver(HDC hdc, DeviceType device_type);
   ~CGdiDeviceDriver() override;
 
   // RenderDeviceDriverIface:
   DeviceType GetDeviceType() const override;
-  int GetDeviceCaps(int caps_id) const override;
+  bool RenderCapGetBits() const override;
+  bool RenderCapAlphaImage() const override;
+  int GetPixelWidth() const override;
+  int GetPixelHeight() const override;
+  int GetBitsPerPixel() const override;
+  void Clear(uint32_t color) override;
   void SaveState() override;
   void RestoreState(bool bKeepSaved) override;
   void SetBaseClip(const FX_RECT& rect) override;
@@ -38,6 +50,7 @@ class CGdiDeviceDriver : public RenderDeviceDriverIface {
                 const CFX_GraphStateData* pGraphState,
                 uint32_t fill_color,
                 uint32_t stroke_color,
+                bool group_knockout,
                 const CFX_FillRenderOptions& fill_options) override;
   bool FillRect(const FX_RECT& rect, uint32_t fill_color) override;
   bool DrawCosmeticLine(const CFX_PointF& ptMoveTo,
@@ -72,7 +85,8 @@ class CGdiDeviceDriver : public RenderDeviceDriverIface {
   int height_;
   int bits_per_pixel_;
   const DeviceType device_type_;
-  int render_caps_;
+  bool render_cap_get_bits_ = false;
+  bool render_cap_alpha_image_ = false;
   std::optional<FX_RECT> base_clip_box_;
 };
 

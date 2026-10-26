@@ -34,8 +34,7 @@ class CFX_AggDeviceDriver final : public RenderDeviceDriverIface {
  public:
   CFX_AggDeviceDriver(RetainPtr<CFX_DIBitmap> pBitmap,
                       bool bRgbByteOrder,
-                      RetainPtr<CFX_DIBitmap> pBackdropBitmap,
-                      bool bGroupKnockout);
+                      RetainPtr<CFX_DIBitmap> pBackdropBitmap);
   ~CFX_AggDeviceDriver() override;
 
   void InitPlatform();
@@ -43,7 +42,16 @@ class CFX_AggDeviceDriver final : public RenderDeviceDriverIface {
 
   // RenderDeviceDriverIface:
   DeviceType GetDeviceType() const override;
-  int GetDeviceCaps(int caps_id) const override;
+  bool RenderCapGetBits() const override;
+  bool RenderCapAlphaImage() const override;
+  bool RenderCapBlendMode() const override;
+  bool RenderCapSoftClip() const override;
+  bool RenderCapAlphaOutput() const override;
+  bool RenderCapByteMaskOutput() const override;
+  int GetPixelWidth() const override;
+  int GetPixelHeight() const override;
+  int GetBitsPerPixel() const override;
+  void Clear(uint32_t color) override;
   void SaveState() override;
   void RestoreState(bool bKeepSaved) override;
   bool SetClip_PathFill(const CFX_Path& path,
@@ -57,6 +65,7 @@ class CFX_AggDeviceDriver final : public RenderDeviceDriverIface {
                 const CFX_GraphStateData* pGraphState,
                 uint32_t fill_color,
                 uint32_t stroke_color,
+                bool group_knockout,
                 const CFX_FillRenderOptions& fill_options) override;
   bool FillRect(const FX_RECT& rect, uint32_t fill_color) override;
   FX_RECT GetClipBox() const override;
@@ -85,7 +94,7 @@ class CFX_AggDeviceDriver final : public RenderDeviceDriverIface {
                           const CFX_Matrix& matrix,
                           const FXDIB_ResampleOptions& options,
                           BlendMode blend_type) override;
-  bool ContinueDIBits(CFX_AggImageRenderer* handle,
+  bool ContinueDIBits(RenderDeviceDriverIface::Continuation* continuation,
                       PauseIndicatorIface* pPause) override;
   bool DrawDeviceText(pdfium::span<const TextCharPos> pCharPos,
                       CFX_Font* font,
@@ -96,8 +105,6 @@ class CFX_AggDeviceDriver final : public RenderDeviceDriverIface {
   int GetDriverType() const override;
   bool MultiplyAlpha(float alpha) override;
   bool MultiplyAlphaMask(RetainPtr<const CFX_DIBitmap> mask) override;
-
-  void Clear(uint32_t color);
 
   // EmbedPDF(render-speedup): the off switch the off/on comparisons use.
   // Turns off the reuse of a repeated path's rasterizer output, so a test can
@@ -128,6 +135,7 @@ class CFX_AggDeviceDriver final : public RenderDeviceDriverIface {
                       const CFX_GraphStateData* pGraphState,
                       uint32_t fill_color,
                       uint32_t stroke_color,
+                      bool group_knockout,
                       const CFX_FillRenderOptions& fill_options,
                       PathMemo* record);
 
@@ -154,7 +162,6 @@ class CFX_AggDeviceDriver final : public RenderDeviceDriverIface {
 #endif
   CFX_FillRenderOptions fill_options_;
   const bool rgb_byte_order_;
-  const bool group_knockout_;
   RetainPtr<CFX_DIBitmap> backdrop_bitmap_;
   // EmbedPDF(render-speedup): reused path storage and the path memo.
   std::unique_ptr<Workspace> workspace_;

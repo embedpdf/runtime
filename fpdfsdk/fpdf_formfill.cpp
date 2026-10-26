@@ -21,13 +21,17 @@
 #include "core/fpdfdoc/cpdf_formcontrol.h"
 #include "core/fpdfdoc/cpdf_formfield.h"
 #include "core/fpdfdoc/cpdf_interactiveform.h"
-#include "core/fxge/cfx_defaultrenderdevice.h"
+#include "core/fxcrt/cfx_bidi_resolver.h"
+#include "core/fxcrt/notreached.h"
+#include "core/fxge/cfx_gemodule.h"
+#include "core/fxge/cfx_renderdevice.h"
 #include "core/fxge/dib/cfx_dibitmap.h"
 #include "fpdfsdk/cpdfsdk_annot.h"
 #include "fpdfsdk/cpdfsdk_formfillenvironment.h"
 #include "fpdfsdk/cpdfsdk_helpers.h"
 #include "fpdfsdk/cpdfsdk_interactiveform.h"
 #include "fpdfsdk/cpdfsdk_pageview.h"
+#include "fpdfsdk/cpdfsdk_widget.h"
 #include "public/fpdfview.h"
 
 #ifdef PDF_ENABLE_XFA
@@ -166,6 +170,24 @@ static_assert(static_cast<int>(CPDF_AAction::kDocumentPrinted) ==
 
 namespace {
 
+CPDFSDK_Widget* GetWidget(FPDF_FORMHANDLE handle, FPDF_ANNOTATION annot) {
+  auto* form_fill_env = CPDFSDKFormFillEnvironmentFromFPDFFormHandle(handle);
+  if (!form_fill_env) {
+    return nullptr;
+  }
+  auto* annot_context = CPDFAnnotContextFromFPDFAnnotation(annot);
+  if (!annot_context) {
+    return nullptr;
+  }
+  auto* page_view =
+      form_fill_env->GetOrCreatePageView(annot_context->GetPage());
+  if (!page_view->IsValid()) {
+    return nullptr;
+  }
+  return ToCPDFSDKWidget(
+      page_view->GetAnnotByDict(annot_context->GetAnnotDict()));
+}
+
 CPDFSDK_PageView* FormHandleToPageView(FPDF_FORMHANDLE hHandle,
                                        FPDF_PAGE fpdf_page) {
   IPDF_Page* pPage = IPDFPageFromFPDFPage(fpdf_page);
@@ -214,7 +236,7 @@ void FFLCommon(FPDF_FORMHANDLE hHandle,
     CHECK(holder);
   } else {
 #if defined(PDF_USE_SKIA)
-    if (!CFX_DefaultRenderDevice::UseSkiaRenderer()) {
+    if (!CFX_GEModule::IsSkiaRenderer()) {
       return;
     }
 
@@ -229,18 +251,18 @@ void FFLCommon(FPDF_FORMHANDLE hHandle,
   const FX_RECT rect(start_x, start_y, start_x + size_x, start_y + size_y);
   CFX_Matrix matrix = pPage->GetDisplayMatrixForRect(rect, rotate);
 
-  auto pDevice = std::make_unique<CFX_DefaultRenderDevice>();
+  std::unique_ptr<CFX_RenderDevice> pDevice;
   if (dest_is_bitmap) {
-    if (!pDevice->AttachWithRgbByteOrder(holder,
-                                         !!(flags & FPDF_REVERSE_BYTE_ORDER))) {
-      return;
-    }
+    pDevice =
+        CFX_RenderDevice::CreateForBitmap(holder, /*backdrop_bitmap=*/nullptr,
+                                          !!(flags & FPDF_REVERSE_BYTE_ORDER));
   } else {
 #if defined(PDF_USE_SKIA)
-    if (!pDevice->AttachCanvas(*canvas)) {
-      return;
-    }
+    pDevice = CFX_RenderDevice::CreateForSkiaCanvas(*canvas);
 #endif
+  }
+  if (!pDevice) {
+    return;
   }
 
   {
@@ -829,6 +851,12 @@ FPDF_RemoveFormFieldHighlight(FPDF_FORMHANDLE hHandle) {
 
 FPDF_EXPORT void FPDF_CALLCONV FORM_OnAfterLoadPage(FPDF_PAGE page,
                                                     FPDF_FORMHANDLE hHandle) {
+  CPDFSDK_FormFillEnvironment* pFormFillEnv =
+      CPDFSDKFormFillEnvironmentFromFPDFFormHandle(hHandle);
+  if (!pFormFillEnv || pFormFillEnv->InPassiveFFICallback()) {
+    return;
+  }
+
   if (CPDFSDK_PageView* pPageView = FormHandleToPageView(hHandle, page)) {
     pPageView->SetValid(true);
   }
@@ -838,7 +866,7 @@ FPDF_EXPORT void FPDF_CALLCONV FORM_OnBeforeClosePage(FPDF_PAGE page,
                                                       FPDF_FORMHANDLE hHandle) {
   CPDFSDK_FormFillEnvironment* pFormFillEnv =
       CPDFSDKFormFillEnvironmentFromFPDFFormHandle(hHandle);
-  if (!pFormFillEnv) {
+  if (!pFormFillEnv || pFormFillEnv->InPassiveFFICallback()) {
     return;
   }
 
@@ -859,7 +887,11 @@ FPDF_EXPORT void FPDF_CALLCONV
 FORM_DoDocumentJSAction(FPDF_FORMHANDLE hHandle) {
   CPDFSDK_FormFillEnvironment* pFormFillEnv =
       CPDFSDKFormFillEnvironmentFromFPDFFormHandle(hHandle);
-  if (pFormFillEnv && pFormFillEnv->IsJSPlatformPresent()) {
+  if (!pFormFillEnv || pFormFillEnv->InPassiveFFICallback()) {
+    return;
+  }
+
+  if (pFormFillEnv->IsJSPlatformPresent()) {
     pFormFillEnv->ProcJavascriptAction();
   }
 }
@@ -868,16 +900,18 @@ FPDF_EXPORT void FPDF_CALLCONV
 FORM_DoDocumentOpenAction(FPDF_FORMHANDLE hHandle) {
   CPDFSDK_FormFillEnvironment* pFormFillEnv =
       CPDFSDKFormFillEnvironmentFromFPDFFormHandle(hHandle);
-  if (pFormFillEnv) {
-    pFormFillEnv->ProcOpenAction();
+  if (!pFormFillEnv || pFormFillEnv->InPassiveFFICallback()) {
+    return;
   }
+
+  pFormFillEnv->ProcOpenAction();
 }
 
 FPDF_EXPORT void FPDF_CALLCONV FORM_DoDocumentAAction(FPDF_FORMHANDLE hHandle,
                                                       int aaType) {
   CPDFSDK_FormFillEnvironment* pFormFillEnv =
       CPDFSDKFormFillEnvironmentFromFPDFFormHandle(hHandle);
-  if (!pFormFillEnv) {
+  if (!pFormFillEnv || pFormFillEnv->InPassiveFFICallback()) {
     return;
   }
 
@@ -899,7 +933,7 @@ FPDF_EXPORT void FPDF_CALLCONV FORM_DoPageAAction(FPDF_PAGE page,
                                                   int aaType) {
   CPDFSDK_FormFillEnvironment* pFormFillEnv =
       CPDFSDKFormFillEnvironmentFromFPDFFormHandle(hHandle);
-  if (!pFormFillEnv) {
+  if (!pFormFillEnv || pFormFillEnv->InPassiveFFICallback()) {
     return;
   }
 
@@ -935,4 +969,54 @@ FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV
 FORM_IsIndexSelected(FPDF_FORMHANDLE hHandle, FPDF_PAGE page, int index) {
   CPDFSDK_PageView* pPageView = FormHandleToPageView(hHandle, page);
   return pPageView && pPageView->IsIndexSelected(index);
+}
+
+FPDF_EXPORT FPDF_TEXT_DIRECTION FPDF_CALLCONV
+FORM_GetTextDirection(FPDF_FORMHANDLE handle, FPDF_ANNOTATION annot) {
+  CPDFSDK_Widget* widget = GetWidget(handle, annot);
+  if (!widget) {
+    return FPDF_TEXTDIR_UNKNOWN;
+  }
+
+  switch (widget->GetTextDirection()) {
+    case CFX_BidiResolver::ParagraphDirection::kAuto:
+      return FPDF_TEXTDIR_AUTO;
+    case CFX_BidiResolver::ParagraphDirection::kLeftToRight:
+      return FPDF_TEXTDIR_LTR;
+    case CFX_BidiResolver::ParagraphDirection::kRightToLeft:
+      return FPDF_TEXTDIR_RTL;
+  }
+  NOTREACHED();
+}
+
+FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV
+FORM_SetTextDirection(FPDF_FORMHANDLE handle,
+                      FPDF_ANNOTATION annot,
+                      FPDF_TEXT_DIRECTION direction) {
+  CPDFSDK_Widget* widget = GetWidget(handle, annot);
+  if (!widget) {
+    return false;
+  }
+
+  CFX_BidiResolver::ParagraphDirection paragraph_direction;
+  switch (direction) {
+    case FPDF_TEXTDIR_AUTO:
+      paragraph_direction = CFX_BidiResolver::ParagraphDirection::kAuto;
+      break;
+    case FPDF_TEXTDIR_LTR:
+      paragraph_direction = CFX_BidiResolver::ParagraphDirection::kLeftToRight;
+      break;
+    case FPDF_TEXTDIR_RTL:
+      paragraph_direction = CFX_BidiResolver::ParagraphDirection::kRightToLeft;
+      break;
+    default:
+      return false;
+  }
+
+  auto* form_fill_env = CPDFSDKFormFillEnvironmentFromFPDFFormHandle(handle);
+  CFFL_InteractiveFormFiller* form_filler =
+      form_fill_env->GetInteractiveFormFiller();
+  form_filler->UpdateFormFieldTextDirection(widget, paragraph_direction);
+
+  return true;
 }

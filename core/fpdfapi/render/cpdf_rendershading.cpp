@@ -34,9 +34,9 @@
 #include "core/fxcrt/span_util.h"
 #include "core/fxcrt/stl_util.h"
 #include "core/fxcrt/unowned_ptr.h"
-#include "core/fxge/cfx_defaultrenderdevice.h"
 #include "core/fxge/cfx_fillrenderoptions.h"
 #include "core/fxge/cfx_path.h"
+#include "core/fxge/cfx_renderdevice.h"
 #include "core/fxge/dib/cfx_dibitmap.h"
 #include "core/fxge/dib/fx_dib.h"
 
@@ -586,13 +586,15 @@ void DrawLatticeGouraudShading(
 }
 
 struct CubicBezierPatch {
+  static constexpr size_t kBoundaryPathSize = 13u;
+
   bool IsSmall() const {
     CFX_FloatRect bbox = CFX_FloatRect::GetBBox(
         fxcrt::reinterpret_span<const CFX_PointF>(pdfium::span(points)));
     return bbox.Width() < 2 && bbox.Height() < 2;
   }
 
-  void GetBoundary(pdfium::span<CFX_Path::Point> boundary) {
+  void GetBoundary(pdfium::span<CFX_Path::Point, kBoundaryPathSize> boundary) {
     // Returns a cubic bezier path consisting of the outer control points.
     // Note that patch boundary does not always contain all patch points,
     // but for "small" patches it's reasonably close.
@@ -776,7 +778,7 @@ struct PatchDrawer {
         (d_bottom < kCoonColorThreshold && d_left < kCoonColorThreshold &&
          d_top < kCoonColorThreshold && d_right < kCoonColorThreshold)) {
       pdfium::span<CFX_Path::Point> points = path.GetPoints();
-      patch.GetBoundary(points);
+      patch.GetBoundary(points.first<CubicBezierPatch::kBoundaryPathSize>());
       CFX_FillRenderOptions fill_options(
           CFX_FillRenderOptions::WindingOptions());
       fill_options.full_cover = true;
@@ -856,8 +858,11 @@ void DrawCoonPatchMeshes(
   DCHECK(type == kCoonsPatchMeshShading ||
          type == kTensorProductPatchMeshShading);
 
-  CFX_DefaultRenderDevice device;
-  device.Attach(pBitmap);
+  std::unique_ptr<CFX_RenderDevice> device =
+      CFX_RenderDevice::CreateForBitmap(pBitmap);
+  if (!device) {
+    return;
+  }
 
   CPDF_MeshStream stream(type, funcs, std::move(pShadingStream), pCS);
   if (!stream.Load()) {
@@ -876,10 +881,10 @@ void DrawCoonPatchMeshes(
 
   PatchDrawer patch_drawer;
   patch_drawer.alpha = alpha;
-  patch_drawer.pDevice = &device;
+  patch_drawer.pDevice = device.get();
   patch_drawer.bNoPathSmooth = bNoPathSmooth;
 
-  for (int i = 0; i < 13; i++) {
+  for (size_t i = 0; i < CubicBezierPatch::kBoundaryPathSize; i++) {
     patch_drawer.path.AppendPoint(
         CFX_PointF(),
         i == 0 ? CFX_Path::Point::Type::kMove : CFX_Path::Point::Type::kBezier);
@@ -1034,7 +1039,7 @@ void CPDF_RenderShading::Draw(CFX_RenderDevice* pDevice,
         mtMatrix.TransformRect(dict->GetRectFor("BBox")).GetOuterRect());
   }
 #if defined(PDF_USE_SKIA)
-  if ((pDevice->GetDeviceCaps(FXDC_RENDER_CAPS) & FXRC_SHADING) &&
+  if (pDevice->RenderCapShading() &&
       pDevice->DrawShading(*pPattern, mtMatrix, clip_rect_bbox, alpha)) {
     return;
   }
@@ -1106,7 +1111,7 @@ void CPDF_RenderShading::Draw(CFX_RenderDevice* pDevice,
   if (options.ColorModeIs(CPDF_RenderOptions::kAlpha)) {
     pBitmap->SetRedFromAlpha();
   } else if (options.ColorModeIs(CPDF_RenderOptions::kGray)) {
-    pBitmap->ConvertColorScale(0, 0xffffff);
+    pBitmap->ConvertColorScale(/*is_white_on_black=*/false);
   }
 
   buffer.OutputToDevice();

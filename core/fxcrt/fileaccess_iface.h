@@ -17,14 +17,14 @@ class FileAccessIface {
   static std::unique_ptr<FileAccessIface> Create();
   virtual ~FileAccessIface() = default;
 
-  // Opens in read-only mode. `fileName` is UTF-8 on all platforms.
-  virtual bool Open(ByteStringView fileName) = 0;
+  // Opens in read-only mode. `file_name` is UTF-8 on all platforms.
+  virtual bool Open(const ByteString& file_name) = 0;
   virtual void Close() = 0;
   virtual FX_FILESIZE GetSize() const = 0;
   virtual FX_FILESIZE GetPosition() const = 0;
   virtual FX_FILESIZE SetPosition(FX_FILESIZE pos) = 0;
   virtual size_t Read(pdfium::span<uint8_t> buffer) = 0;
-  virtual size_t Write(pdfium::span<const uint8_t> buffer) = 0;
+  virtual bool Write(pdfium::span<const uint8_t> buffer) = 0;
   virtual size_t ReadPos(pdfium::span<uint8_t> buffer, FX_FILESIZE pos) = 0;
   virtual bool Flush() = 0;
   virtual bool Truncate(FX_FILESIZE szFile) = 0;

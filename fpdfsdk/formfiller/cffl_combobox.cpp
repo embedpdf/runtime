@@ -10,6 +10,7 @@
 
 #include "constants/form_flags.h"
 #include "core/fpdfdoc/cpdf_bafontmap.h"
+#include "core/fxcrt/cfx_bidi_resolver.h"
 #include "fpdfsdk/cpdfsdk_widget.h"
 #include "fpdfsdk/formfiller/cffl_interactiveformfiller.h"
 #include "fpdfsdk/formfiller/cffl_perwindowdata.h"
@@ -21,7 +22,7 @@ CFFL_ComboBox::CFFL_ComboBox(CFFL_InteractiveFormFiller* pFormFiller,
     : CFFL_TextObject(pFormFiller, pWidget) {}
 
 CFFL_ComboBox::~CFFL_ComboBox() {
-  // See comment in cffl_formfiller.h.
+  // See comment in cffl_formfield.h.
   // The font map should be stored somewhere more appropriate so it will live
   // until the PWL_Edit is done with it. pdfium:566
   DestroyWindows();
@@ -30,7 +31,7 @@ CFFL_ComboBox::~CFFL_ComboBox() {
 CPWL_Wnd::CreateParams CFFL_ComboBox::GetCreateParam() {
   CPWL_Wnd::CreateParams cp = CFFL_TextObject::GetCreateParam();
   if (widget_->GetFieldFlags() & pdfium::form_flags::kChoiceEdit) {
-    cp.dwFlags |= PCBS_ALLOWCUSTOMTEXT;
+    cp.dwFlags |= CPWL_Wnd::Styles::kComboboxAllowCustomText;
   }
 
   cp.font_map = GetOrCreateFontMap();
@@ -56,6 +57,7 @@ std::unique_ptr<CPWL_Wnd> CFFL_ComboBox::NewPWLWindow(
     pWnd->AddString(widget_->GetOptionLabel(i));
   }
 
+  pWnd->SetTextDirection(widget_->GetTextDirection());
   pWnd->SetSelect(nCurSel);
   pWnd->SetText(swText);
   return pWnd;
@@ -126,14 +128,13 @@ void CFFL_ComboBox::GetActionData(const CPDFSDK_PageView* pPageView,
     case CPDF_AAction::kKeyStroke:
       if (CPWL_ComboBox* pComboBox = GetPWLComboBox(pPageView)) {
         if (CPWL_Edit* pEdit = pComboBox->GetEdit()) {
-          fa.bFieldFull = pEdit->IsTextFull();
-          std::tie(fa.nSelStart, fa.nSelEnd) = pEdit->GetSelection();
-          fa.sValue = pEdit->GetText();
-          fa.sChangeEx = GetSelectExportText();
-
-          if (fa.bFieldFull) {
-            fa.sChange.clear();
-            fa.sChangeEx.clear();
+          fa.field_full = pEdit->IsTextFull();
+          std::tie(fa.sel_start, fa.sel_end) = pEdit->GetSelection();
+          fa.value = pEdit->GetText();
+          fa.change_ex = GetSelectExportText();
+          if (fa.field_full) {
+            fa.change.clear();
+            fa.change_ex.clear();
           }
         }
       }
@@ -141,13 +142,13 @@ void CFFL_ComboBox::GetActionData(const CPDFSDK_PageView* pPageView,
     case CPDF_AAction::kValidate:
       if (CPWL_ComboBox* pComboBox = GetPWLComboBox(pPageView)) {
         if (CPWL_Edit* pEdit = pComboBox->GetEdit()) {
-          fa.sValue = pEdit->GetText();
+          fa.value = pEdit->GetText();
         }
       }
       break;
     case CPDF_AAction::kLoseFocus:
     case CPDF_AAction::kGetFocus:
-      fa.sValue = widget_->GetValue();
+      fa.value = widget_->GetValue();
       break;
     default:
       break;
@@ -161,8 +162,8 @@ void CFFL_ComboBox::SetActionData(const CPDFSDK_PageView* pPageView,
     case CPDF_AAction::kKeyStroke:
       if (CPWL_ComboBox* pComboBox = GetPWLComboBox(pPageView)) {
         if (CPWL_Edit* pEdit = pComboBox->GetEdit()) {
-          pEdit->SetSelection(fa.nSelStart, fa.nSelEnd);
-          pEdit->ReplaceSelection(fa.sChange);
+          pEdit->SetSelection(fa.sel_start, fa.sel_end);
+          pEdit->ReplaceSelection(fa.change);
         }
       }
       break;

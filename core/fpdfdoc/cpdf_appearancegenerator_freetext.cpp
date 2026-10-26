@@ -18,7 +18,7 @@
 #include <vector>
 
 #include "constants/annotation_common.h"
-#include "core/fpdfapi/edit/cpdf_contentstream_write_utils.h"
+#include "core/fxcrt/stream_write_utils.h"
 #include "core/fpdfapi/font/cpdf_font.h"
 #include "core/fpdfapi/page/cpdf_docpagedata.h"
 #include "core/fpdfapi/parser/cpdf_array.h"
@@ -138,8 +138,7 @@ CalloutEnvelope AppendCalloutEnvelope(fxcrt::ostringstream& appearance_stream,
   // PDF's default black fill. Mirrors GenerateCircleAP / GenerateSquareAP.
   auto color_array = annot_dict->GetArrayFor(pdfium::annotation::kC);
   appearance_stream << GetColorStringWithDefault(
-      color_array.Get(), CFX_Color(CFX_Color::Type::kTransparent),
-      PaintOperation::kFill);
+      color_array.Get(), CFX_Color::MakeTransparent(), PaintOperation::kFill);
   appearance_stream << GenerateColorAP(da_color, PaintOperation::kStroke);
   if (border_w > 0) {
     appearance_stream << border_w << " w\n";
@@ -623,7 +622,7 @@ void EmitRichTextBody(fxcrt::ostringstream& s,
       auto nominal_advance = [&](const ShapedGlyph& glyph, uint16_t code) {
         const int width =
             simple
-                ? (code ? face.pdf_font->GetCharWidthF(code) : 0)
+                ? (code ? face.pdf_font->GetCharWidth(code) : 0)
                 : (face.program ? face.program->GetGlyphWidth(glyph.gid) : 0);
         return (width * size / 1000.0f + run.style.letter_spacing) * scale;
       };

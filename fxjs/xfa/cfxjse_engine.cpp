@@ -21,12 +21,12 @@
 #include "fxjs/xfa/cfxjse_isolatetracker.h"
 #include "fxjs/xfa/cfxjse_nodehelper.h"
 #include "fxjs/xfa/cfxjse_resolveprocessor.h"
-#include "fxjs/xfa/cfxjse_value.h"
 #include "fxjs/xfa/cjx_object.h"
 #include "v8/include/v8-function-callback.h"
 #include "v8/include/v8-function.h"
 #include "v8/include/v8-local-handle.h"
 #include "v8/include/v8-object.h"
+#include "v8/include/v8-persistent-handle.h"
 #include "xfa/fxfa/cxfa_eventparam.h"
 #include "xfa/fxfa/cxfa_ffdoc.h"
 #include "xfa/fxfa/cxfa_ffnotify.h"
@@ -75,6 +75,35 @@ namespace {
 
 const char kFormCalcRuntime[] = "pfm_rt";
 
+v8::Local<v8::Function> NewBoundFunction(v8::Isolate* pIsolate,
+                                         v8::Local<v8::Function> hOldFunction,
+                                         v8::Local<v8::Object> hNewThis) {
+  DCHECK(!hOldFunction.IsEmpty());
+  DCHECK(!hNewThis.IsEmpty());
+
+  CFXJSE_ScopeUtil_RootContext scope(pIsolate);
+  v8::Local<v8::Value> rgArgs[2];
+  rgArgs[0] = hOldFunction;
+  rgArgs[1] = hNewThis;
+  v8::Local<v8::String> hBinderFuncSource = fxv8::NewStringHelper(
+      pIsolate, "(function (fn, obj) { return fn.bind(obj); })");
+  v8::Local<v8::Context> hContext = pIsolate->GetCurrentContext();
+  v8::Local<v8::Function> hBinderFunc =
+      v8::Script::Compile(hContext, hBinderFuncSource)
+          .ToLocalChecked()
+          ->Run(hContext)
+          .ToLocalChecked()
+          .As<v8::Function>();
+  v8::Local<v8::Value> hBoundFunction =
+      hBinderFunc->Call(hContext, hContext->Global(), 2, rgArgs)
+          .ToLocalChecked();
+  if (!fxv8::IsFunction(hBoundFunction)) {
+    return v8::Local<v8::Function>();
+  }
+
+  return hBoundFunction.As<v8::Function>();
+}
+
 }  // namespace
 
 CFXJSE_Engine::ResolveResult::ResolveResult() = default;
@@ -103,11 +132,6 @@ CXFA_Object* CFXJSE_Engine::ToObject(v8::Isolate* pIsolate,
   return ToObject(FXJSE_RetrieveObjectBinding(value.As<v8::Object>()));
 }
 
-// static.
-CXFA_Object* CFXJSE_Engine::ToObject(v8::Isolate* pIsolate,
-                                     CFXJSE_Value* pValue) {
-  return ToObject(pValue->ToHostObject(pIsolate));
-}
 
 // static
 CXFA_Object* CFXJSE_Engine::ToObject(CFXJSE_HostObject* pHostObj) {
@@ -119,11 +143,10 @@ CXFA_Object* CFXJSE_Engine::ToObject(CFXJSE_HostObject* pHostObj) {
   return pJSObject ? pJSObject->GetXFAObject() : nullptr;
 }
 
-CFXJSE_Engine::CFXJSE_Engine(CXFA_Document* document, CJS_Runtime* fxjs_runtime)
-    : CFX_V8(fxjs_runtime->GetIsolate()),
-      subordinate_runtime_(fxjs_runtime),
+CFXJSE_Engine::CFXJSE_Engine(CXFA_Document* document, v8::Isolate* isolate)
+    : CFX_IsolateWrapper(isolate),
       document_(document),
-      js_context_(CFXJSE_Context::Create(fxjs_runtime->GetIsolate(),
+      js_context_(CFXJSE_Context::Create(isolate,
                                          &kGlobalClassDescriptor,
                                          document->GetRoot()->JSObject(),
                                          nullptr)),
@@ -147,6 +170,10 @@ CFXJSE_Engine::~CFXJSE_Engine() {
     const v8::Global<v8::Object>& binding = pair.second;
     FXJSE_ClearObjectBinding(v8::Local<v8::Object>::New(GetIsolate(), binding));
   }
+  for (const auto& pair : map_variable_to_context_) {
+    FXJSE_ClearObjectBinding(pair.second->GetGlobalObject());
+  }
+  FXJSE_ClearObjectBinding(js_context_->GetGlobalObject());
 }
 
 CFXJSE_Engine::EventParamScope::EventParamScope(CFXJSE_Engine* pEngine,
@@ -164,14 +191,23 @@ CFXJSE_Engine::EventParamScope::~EventParamScope() {
   engine_->event_param_ = prev_event_param_;
 }
 
+// The runtime belongs to the form fill environment, which may depart before
+// this object does, so look it up rather than holding it.
+CJS_Runtime* CFXJSE_Engine::GetCJSRuntime() const {
+  CXFA_FFNotify* notify = document_ ? document_->GetNotify() : nullptr;
+  if (!notify) {
+    return nullptr;
+  }
+  IJS_Runtime* runtime = notify->GetFFDoc()->GetIJSRuntime();
+  return runtime ? runtime->AsCJSRuntime() : nullptr;
+}
+
 CFXJSE_Context::ExecutionResult CFXJSE_Engine::RunScript(
     CXFA_Script::Type eScriptType,
     WideStringView wsScript,
     CXFA_Object* pThisObject) {
   CFXJSE_ScopeUtil_IsolateHandleContext scope(GetJseContext());
-  AutoRestorer<CXFA_Script::Type> typeRestorer(&script_type_);
-  script_type_ = eScriptType;
-
+  AutoRestorer<CXFA_Script::Type> typeRestorer(&script_type_, eScriptType);
   ByteString btScript;
   if (eScriptType == CXFA_Script::Type::Formcalc) {
     if (!form_calc_context_) {
@@ -181,8 +217,8 @@ CFXJSE_Context::ExecutionResult CFXJSE_Engine::RunScript(
     std::optional<WideTextBuffer> wsJavaScript =
         CFXJSE_FormCalcContext::Translate(document_->GetHeap(), wsScript);
     if (!wsJavaScript.has_value()) {
-      auto undefined_value = std::make_unique<CFXJSE_Value>();
-      undefined_value->SetUndefined(GetIsolate());
+      v8::Global<v8::Value> undefined_value(
+          GetIsolate(), fxv8::NewUndefinedHelper(GetIsolate()));
       return CFXJSE_Context::ExecutionResult(false, std::move(undefined_value));
     }
     btScript = FX_UTF8Encode(wsJavaScript.value().AsStringView());
@@ -197,7 +233,12 @@ CFXJSE_Context::ExecutionResult CFXJSE_Engine::RunScript(
     pThisBinding = GetOrCreateJSBindingFromMap(pThisObject);
   }
 
-  IJS_Runtime::ScopedEventContext ctx(subordinate_runtime_);
+  CJS_Runtime* runtime = GetCJSRuntime();
+  if (!runtime) {
+    return CFXJSE_Context::ExecutionResult();
+  }
+
+  IJS_Runtime::ScopedEventContext ctx(runtime);
   return js_context_->ExecuteScript(btScript.AsStringView(), pThisBinding);
 }
 
@@ -281,13 +322,7 @@ void CFXJSE_Engine::GlobalPropertySetter(v8::Isolate* pIsolate,
                                               pObject, szPropName);
     return;
   }
-  CXFA_FFNotify* pNotify = doc->GetNotify();
-  if (!pNotify) {
-    return;
-  }
-
-  CXFA_FFDoc* hDoc = pNotify->GetFFDoc();
-  auto* pCJSRuntime = static_cast<CJS_Runtime*>(hDoc->GetIJSRuntime());
+  CJS_Runtime* pCJSRuntime = pScriptContext->GetCJSRuntime();
   if (!pCJSRuntime) {
     return;
   }
@@ -352,13 +387,7 @@ v8::Local<v8::Value> CFXJSE_Engine::GlobalPropertyGetter(
     return pValue;
   }
 
-  CXFA_FFNotify* pNotify = doc->GetNotify();
-  if (!pNotify) {
-    return pValue;
-  }
-
-  CXFA_FFDoc* hDoc = pNotify->GetFFDoc();
-  auto* pCJSRuntime = static_cast<CJS_Runtime*>(hDoc->GetIJSRuntime());
+  CJS_Runtime* pCJSRuntime = pScriptContext->GetCJSRuntime();
   if (!pCJSRuntime) {
     return pValue;
   }
@@ -449,13 +478,7 @@ v8::Local<v8::Value> CFXJSE_Engine::NormalPropertyGetter(
     return pReturnValue;
   }
 
-  CXFA_FFNotify* pNotify = pObject->GetDocument()->GetNotify();
-  if (!pNotify) {
-    return pReturnValue;
-  }
-
-  CXFA_FFDoc* hDoc = pNotify->GetFFDoc();
-  auto* pCJSRuntime = static_cast<CJS_Runtime*>(hDoc->GetIJSRuntime());
+  CJS_Runtime* pCJSRuntime = pScriptContext->GetCJSRuntime();
   if (!pCJSRuntime) {
     return pReturnValue;
   }
@@ -497,7 +520,7 @@ void CFXJSE_Engine::NormalPropertySetter(v8::Isolate* pIsolate,
 
   if (pObject->IsNode()) {
     if (wsPropNameView[0] == '#') {
-      wsPropNameView = wsPropNameView.Last(wsPropNameView.GetLength() - 1);
+      wsPropNameView = wsPropNameView.Substr(1);
     }
 
     CXFA_Node* pNode = ToNode(pObject);
@@ -687,7 +710,7 @@ bool CFXJSE_Engine::QueryVariableValue(CXFA_Script* pScriptNode,
   v8::Local<v8::Value> hVariableValue =
       fxv8::ReentrantGetObjectPropertyHelper(GetIsolate(), pObject, szPropName);
   if (fxv8::IsFunction(hVariableValue)) {
-    v8::Local<v8::Function> maybeFunc = CFXJSE_Value::NewBoundFunction(
+    v8::Local<v8::Function> maybeFunc = NewBoundFunction(
         GetIsolate(), hVariableValue.As<v8::Function>(), pObject);
     if (!maybeFunc.IsEmpty()) {
       *pValue = maybeFunc;
@@ -735,9 +758,7 @@ CFXJSE_Engine::ResolveObjectsWithBindNode(CXFA_Object* refObject,
     return std::nullopt;
   }
 
-  AutoRestorer<bool> resolving_restorer(&resolving_nodes_);
-  resolving_nodes_ = true;
-
+  AutoRestorer<bool> resolving_restorer(&resolving_nodes_, true);
   const bool bParentOrSiblings =
       !!(dwStyles & Mask<XFA_ResolveFlag>{XFA_ResolveFlag::kParent,
                                           XFA_ResolveFlag::kSiblings});
@@ -927,11 +948,7 @@ v8::Local<v8::Object> CFXJSE_Engine::GetOrCreateJSBindingFromMap(
     return v8::Local<v8::Object>::New(GetIsolate(), iter->second);
   }
 
-  v8::Local<v8::Object> binding = pCJXObject->NewBoundV8Object(
-      GetIsolate(), js_class_->GetTemplate(GetIsolate()));
-
-  map_object_to_object_[pCJXObject].Reset(GetIsolate(), binding);
-  return binding;
+  return NewNormalXFAObject(pObject);
 }
 
 void CFXJSE_Engine::SetNodesOfRunScript(
@@ -951,20 +968,27 @@ CXFA_Object* CFXJSE_Engine::ToXFAObject(v8::Local<v8::Value> obj) {
   if (!fxv8::IsObject(obj)) {
     return nullptr;
   }
-
-  CFXJSE_HostObject* pHostObj =
+  CFXJSE_HostObject* host_obj =
       FXJSE_RetrieveObjectBinding(obj.As<v8::Object>());
-  if (!pHostObj) {
+  if (!host_obj) {
     return nullptr;
   }
-
-  CJX_Object* pJSObject = pHostObj->AsCJXObject();
-  return pJSObject ? pJSObject->GetXFAObject() : nullptr;
+  CJX_Object* jx_obj = host_obj->AsCJXObject();
+  if (!jx_obj) {
+    return nullptr;
+  }
+  CXFA_Object* xfa_obj = jx_obj->GetXFAObject();
+  if (!xfa_obj || xfa_obj->GetDocument() != document_) {
+    return nullptr;
+  }
+  return xfa_obj;
 }
 
 v8::Local<v8::Object> CFXJSE_Engine::NewNormalXFAObject(CXFA_Object* obj) {
   v8::EscapableHandleScope scope(GetIsolate());
-  v8::Local<v8::Object> object = obj->JSObject()->NewBoundV8Object(
+  CJX_Object* js_object = obj->JSObject();
+  v8::Local<v8::Object> binding = js_object->NewBoundV8Object(
       GetIsolate(), GetJseNormalClass()->GetTemplate(GetIsolate()));
-  return scope.Escape(object);
+  map_object_to_object_[js_object].Reset(GetIsolate(), binding);
+  return scope.Escape(binding);
 }

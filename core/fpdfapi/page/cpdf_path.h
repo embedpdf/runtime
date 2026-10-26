@@ -7,6 +7,7 @@
 #ifndef CORE_FPDFAPI_PAGE_CPDF_PATH_H_
 #define CORE_FPDFAPI_PAGE_CPDF_PATH_H_
 
+#include <optional>
 #include <vector>
 
 #include "core/fxcrt/shared_copy_on_write.h"
@@ -29,7 +30,7 @@ class CPDF_Path {
   CFX_FloatRect GetBoundingBoxForStrokePath(float line_width,
                                             float miter_limit) const;
 
-  bool IsRect() const;
+  std::optional<CFX_PointF> GetRectOppositeCorner() const;
   void Transform(const CFX_Matrix& matrix);
 
   void Append(const CFX_Path& path, const CFX_Matrix* pMatrix);

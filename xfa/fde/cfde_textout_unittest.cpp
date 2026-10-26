@@ -12,8 +12,9 @@
 #include "core/fxcrt/fx_codepage.h"
 #include "core/fxcrt/fx_coordinates.h"
 #include "core/fxcrt/retain_ptr.h"
-#include "core/fxge/cfx_defaultrenderdevice.h"
+#include "core/fxge/cfx_gemodule.h"
 #include "core/fxge/cfx_glyphcache.h"
+#include "core/fxge/cfx_renderdevice.h"
 #include "core/fxge/dib/cfx_dibitmap.h"
 #include "testing/gtest/include/gtest/gtest.h"
 #include "testing/utils/hash.h"
@@ -29,16 +30,13 @@ class CFDETextOutTest : public testing::Test {
   ~CFDETextOutTest() override = default;
 
   void SetUp() override {
-#if defined(PDF_USE_SKIA)
-    CFX_GlyphCache::InitializeGlobals();
-#endif
     CFX_Size bitmap_size = GetBitmapSize();
     bitmap_ = MakeRetain<CFX_DIBitmap>();
     ASSERT_TRUE(bitmap_->Create(bitmap_size.width, bitmap_size.height,
                                 FXDIB_Format::kBgra));
 
-    device_ = std::make_unique<CFX_DefaultRenderDevice>();
-    ASSERT_TRUE(device_->Attach(bitmap_));
+    device_ = CFX_RenderDevice::CreateForBitmap(bitmap_);
+    ASSERT_TRUE(device_);
 
     font_ = LoadFont();
     ASSERT_TRUE(font_);
@@ -56,9 +54,6 @@ class CFDETextOutTest : public testing::Test {
     font_.Reset();
     device_.reset();
     bitmap_.Reset();
-#if defined(PDF_USE_SKIA)
-    CFX_GlyphCache::DestroyGlobals();
-#endif
   }
 
   virtual RetainPtr<CFGAS_GEFont> LoadFont() {
@@ -75,22 +70,22 @@ class CFDETextOutTest : public testing::Test {
     return kEmptyBitmapChecksum;
   }
 
-  CFX_DefaultRenderDevice* device() { return device_.get(); }
+  CFX_RenderDevice* device() { return device_.get(); }
   CFDE_TextOut& text_out() { return *text_out_; }
 
   ByteString GetBitmapChecksum() {
-    CRYPT_md5_context context = CRYPT_MD5Start();
+    CryptMd5Context context = CryptMd5Start();
     for (int i = 0; i < bitmap_->GetHeight(); ++i) {
-      CRYPT_MD5Update(&context, bitmap_->GetScanline(i));
+      CryptMd5Update(&context, bitmap_->GetScanline(i));
     }
     uint8_t digest[16];
-    CRYPT_MD5Finish(&context, digest);
+    CryptMd5Finish(&context, digest);
     return ByteString(CryptToBase16(digest).c_str());
   }
 
  private:
   RetainPtr<CFX_DIBitmap> bitmap_;
-  std::unique_ptr<CFX_DefaultRenderDevice> device_;
+  std::unique_ptr<CFX_RenderDevice> device_;
   RetainPtr<CFGAS_GEFont> font_;
   std::unique_ptr<CFDE_TextOut> text_out_;
 };
@@ -98,12 +93,23 @@ class CFDETextOutTest : public testing::Test {
 TEST_F(CFDETextOutTest, DrawLogicTextBasic) {
   text_out().DrawLogicText(device(), L"foo", CFX_RectF(0, 0, 2100, 100));
   const char* checksum = []() {
+#if defined(PDF_USE_SKIA)
+    if (CFX_GEModule::IsSkiaRenderer()) {
 #if BUILDFLAG(IS_WIN)
-    if (CFX_DefaultRenderDevice::UseSkiaRenderer()) {
-      return "bc1f736237b08d13db06c09f6becc9f7";
+      return "02c55ce12d3c31ae32fa08fe59c38996";
+#elif defined(PDF_ENABLE_FONTATIONS)
+      if (CFX_GEModule::IsFontations()) {
+        return "8a6b320f8a4ae1febfc6e50513506dcf";
+      }
+#endif
     }
 #endif
-    return "b26f1c171fcdbf185823364185adacf0";
+#if defined(PDF_ENABLE_FONTATIONS)
+    if (CFX_GEModule::IsFontations()) {
+      return "0064590d0532663140d521a2ea6780b1";
+    }
+#endif
+    return "c143f8450f661a489cc9423de7cc1acc";
   }();
   EXPECT_EQ(checksum, GetBitmapChecksum());
 }
@@ -136,10 +142,22 @@ class CFDETextOutLargeBitmapTest : public CFDETextOutTest {
   }
 
   const char* GetLargeTextBlobChecksum() {
-    if (CFX_DefaultRenderDevice::UseSkiaRenderer()) {
-      return "6181929583fd7651169306852397806f";
+#if defined(PDF_USE_SKIA)
+    if (CFX_GEModule::IsSkiaRenderer()) {
+#if defined(PDF_ENABLE_FONTATIONS)
+      if (CFX_GEModule::IsFontations()) {
+        return "8b657167ef063bca5adb38f6a5d5ae54";
+      }
+#endif
+      return "e9aaffff1ea680bd5dc40a7b8904788d";
     }
-    return "268b71a8660b51e31c6bf30fc7ff1e08";
+#endif
+#if defined(PDF_ENABLE_FONTATIONS)
+    if (CFX_GEModule::IsFontations()) {
+      return "78842f43dce9b89af92f17b56d9ceaab";
+    }
+#endif
+    return "add7cf2819b3e1397d8a60a9ec436a86";
   }
 };
 

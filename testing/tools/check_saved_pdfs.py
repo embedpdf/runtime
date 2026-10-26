@@ -92,6 +92,23 @@ def check_references(words, xref):
             previous = []
 
 
+def subsections(data, start):
+    """The (first number, count) headers of the classic table at `start`."""
+    words = tokens(data, start + len(b"xref"))
+    headers = []
+    for word in words:
+        if word == b"trailer":
+            break
+        require(INTEGER.fullmatch(word), f"Malformed xref subsection: {word}")
+        count = next(words, None)
+        require(count is not None and INTEGER.fullmatch(count),
+                "Malformed xref subsection header")
+        headers.append((int(word), int(count)))
+        for _ in range(3 * int(count)):
+            require(next(words, None) is not None, "Truncated xref subsection")
+    return headers
+
+
 def json_references(value):
     if isinstance(value, str):
         match = REFERENCE.fullmatch(value)
@@ -169,6 +186,11 @@ def inspect_pdf(path, original_size=0, password=""):
                     f"Full rewrite has orphan objects: {set(xref) - reachable}")
             require(all(gen == 0 for _, gen in xref),
                     "Full rewrite did not normalize generations")
+            if data[start:start + 4] == b"xref":
+                headers = subsections(data, start)
+                require(headers == [(0, trailer.get('/Size'))],
+                        f"Full rewrite's xref is not one subsection from 0 "
+                        f"through /Size: {headers}")
         else:
             require(written <= reachable,
                     f"Revision wrote orphan objects: {written - reachable}")

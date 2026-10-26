@@ -16,6 +16,7 @@
 #include "fxjs/cfx_keyvalue.h"
 #include "fxjs/cjs_object.h"
 #include "fxjs/cjs_result.h"
+#include "fxjs/js_define.h"
 
 class CFX_GlobalData;
 
@@ -31,7 +32,7 @@ class CFX_GlobalData;
 
 class CJS_Global final : public CJS_Object {
  public:
-  static uint32_t GetObjDefnID();
+  static constexpr uint32_t kObjDefnId = kJSGlobalObjDefnID;
   static void DefineJSObjects(CFXJS_Engine* pEngine);
   static void DefineAllProperties(CFXJS_Engine* pEngine);
 
@@ -44,7 +45,7 @@ class CJS_Global final : public CJS_Object {
   static v8::Intercepted putprop_static(
       v8::Local<v8::Name> property,
       v8::Local<v8::Value> value,
-      const v8::PropertyCallbackInfo<void>& info);
+      const v8::PropertyCallbackInfo<v8::Boolean>& info);
   static v8::Intercepted delprop_static(
       v8::Local<v8::Name> property,
       const v8::PropertyCallbackInfo<v8::Boolean>& info);
@@ -57,7 +58,7 @@ class CJS_Global final : public CJS_Object {
   ~CJS_Global() override;
 
  private:
-  struct JSGlobalData : public CFX_Value {
+  class JSGlobalData : public CFX_Value {
    public:
     JSGlobalData();
     ~JSGlobalData();
@@ -67,7 +68,6 @@ class CJS_Global final : public CJS_Object {
     bool bDeleted = false;
   };
 
-  static uint32_t ObjDefnID;
   static const JSMethodSpec MethodSpecs[];
 
   void UpdateGlobalPersistentVariables();

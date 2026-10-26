@@ -136,6 +136,32 @@ FPDFBookmark_GetDest(FPDF_DOCUMENT document, FPDF_BOOKMARK bookmark);
 FPDF_EXPORT FPDF_ACTION FPDF_CALLCONV
 FPDFBookmark_GetAction(FPDF_BOOKMARK bookmark);
 
+// Experimental API.
+// Get the color of a bookmark.
+//
+// bookmark - handle to a bookmark.
+// R        - pointer to a float to receive the red component [0.0 - 1.0].
+// G        - pointer to a float to receive the green component [0.0 - 1.0].
+// B        - pointer to a float to receive the blue component [0.0 - 1.0].
+//
+// Returns TRUE on success, in which case |R|, |G|, and |B| are updated.
+// Returns FALSE on failure, if the bookmark is invalid, output for R, G and B
+// aren't in the range or if the bookmark does not specify a color.
+FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV
+FPDFBookmark_GetColor(FPDF_BOOKMARK bookmark, float* R, float* G, float* B);
+
+// Experimental API.
+// Get the text style of a bookmark.
+//
+// bookmark - handle to a bookmark.
+//
+// Returns the style as an integer, in line with ISO 32000-1:2008 Table 154.
+// The first bit is used to represent if the text is italic and the second
+// bit is used to represent if the text is bold. Returns 0 if the bookmark
+// doesn't have styling or if the handle is invalid. Parsing this value to
+// apply styles remains the responsibility of the embedder.
+FPDF_EXPORT int FPDF_CALLCONV FPDFBookmark_GetStyle(FPDF_BOOKMARK bookmark);
+
 // Get the type of |action|.
 //
 //   action - handle to the action.
@@ -399,7 +425,10 @@ FPDF_GetFileIdentifier(FPDF_DOCUMENT document,
 //   buffer   - a buffer for the tag. May be NULL.
 //   buflen   - the length of the buffer, in bytes. May be 0.
 //
-// Returns the number of bytes in the tag, including trailing zeros.
+// Returns the number of bytes in the tag, including trailing zeros, on success.
+// Returns 0 if |document| or |tag| is NULL. Returns 0 if |document| does not
+// have an /Info dictionary. Returns 2 for an empty string if |tag| is not in
+// the /Info dictionary,
 //
 // The |buffer| is always encoded in UTF-16LE. The |buffer| is followed by two
 // bytes of zeros indicating the end of the string.  If |buflen| is less than

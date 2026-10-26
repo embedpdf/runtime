@@ -8,7 +8,7 @@
 
 #include "build/build_config.h"
 #include "core/fxcrt/check.h"
-#include "core/fxge/cfx_defaultrenderdevice.h"
+#include "core/fxge/cfx_renderdevice.h"
 #include "core/fxge/dib/fx_dib.h"
 #include "public/cpp/fpdf_scopers.h"
 #include "public/fpdf_progressive.h"
@@ -300,11 +300,8 @@ void FPDFProgressiveRenderEmbedderTest::VerifyRenderingWithColorScheme(
   ScopedFPDFBitmap bitmap = RenderPageWithForcedColorScheme(
       page.get(), form_handle(), flags, color_scheme, background_color);
   ASSERT_TRUE(bitmap);
-  if (fuzzy) {
-    CompareBitmapWithFuzzyExpectationSuffix(bitmap.get(), basename);
-  } else {
-    CompareBitmapWithExpectationSuffix(bitmap.get(), basename);
-  }
+  CompareBitmapWithExpectationSuffix(
+      bitmap.get(), basename, fuzzy ? kFuzzyDiffOptions : kExactDiffOptions);
 }
 
 TEST_F(FPDFProgressiveRenderEmbedderTest, RenderTextWithColorScheme) {

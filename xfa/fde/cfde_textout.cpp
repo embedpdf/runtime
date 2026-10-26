@@ -67,10 +67,10 @@ bool CFDE_TextOut::DrawString(CFX_RenderDevice* device,
   uint32_t dwFontStyle = pFont->GetFontStyles();
   CFX_Font FxFont;
   auto SubstFxFont = std::make_unique<CFX_SubstFont>();
-  SubstFxFont->weight_ = FontStyleIsForceBold(dwFontStyle) ? 700 : 400;
-  SubstFxFont->italic_angle_ = FontStyleIsItalic(dwFontStyle) ? -12 : 0;
-  SubstFxFont->weight_cjk_ = SubstFxFont->weight_;
-  SubstFxFont->italic_cjk_ = FontStyleIsItalic(dwFontStyle);
+  SubstFxFont->SetWeight(FontStyleIsForceBold(dwFontStyle) ? 700 : 400);
+  SubstFxFont->SetItalicAngle(FontStyleIsItalic(dwFontStyle) ? -12 : 0);
+  SubstFxFont->SetWeightCJK(SubstFxFont->GetWeight());
+  SubstFxFont->SetItalicCJK(FontStyleIsItalic(dwFontStyle));
   FxFont.SetSubstFont(std::move(SubstFxFont));
 #endif
 
@@ -82,7 +82,7 @@ bool CFDE_TextOut::DrawString(CFX_RenderDevice* device,
     RetainPtr<CFGAS_GEFont> pSTFont =
         pFont->GetSubstFont(static_cast<int32_t>(pos.glyph_index_));
     pos.glyph_index_ &= 0x00FFFFFF;
-    pos.font_style_ = false;
+    pos.is_cid_font_ = false;
     if (pCurFont != pSTFont) {
       if (pCurFont) {
         pFxFont = pCurFont->GetDevFont();
@@ -138,7 +138,7 @@ void CFDE_TextOut::SetFont(RetainPtr<CFGAS_GEFont> pFont) {
 }
 
 void CFDE_TextOut::SetFontSize(float fFontSize) {
-  DCHECK(fFontSize > 0);
+  DCHECK_GT(fFontSize, 0);
   font_size_ = fFontSize;
   txt_break_->SetFontSize(fFontSize);
 }
@@ -171,7 +171,7 @@ void CFDE_TextOut::SetAlignment(FDE_TextAlignment iAlignment) {
 }
 
 void CFDE_TextOut::SetLineSpace(float fLineSpace) {
-  DCHECK(fLineSpace > 1.0f);
+  DCHECK_GT(fLineSpace, 1.0f);
   line_space_ = fLineSpace;
 }
 
@@ -194,7 +194,7 @@ void CFDE_TextOut::CalcLogicSize(WideStringView str, CFX_RectF* pRect) {
   }
 
   DCHECK(font_);
-  DCHECK(font_size_ >= 1.0f);
+  DCHECK_GE(font_size_, 1.0f);
 
   if (!styles_.single_line_) {
     if (pRect->Width() < 1.0f) {
@@ -278,7 +278,7 @@ void CFDE_TextOut::DrawLogicText(CFX_RenderDevice* device,
                                  const WideString& str,
                                  const CFX_RectF& rect) {
   DCHECK(font_);
-  DCHECK(font_size_ >= 1.0f);
+  DCHECK_GE(font_size_, 1.0f);
 
   if (str.IsEmpty()) {
     return;

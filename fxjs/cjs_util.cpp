@@ -81,19 +81,13 @@ const JSMethodSpec CJS_Util::MethodSpecs[] = {
     {"scand", scand_static},
     {"byteToChar", byteToChar_static}};
 
-uint32_t CJS_Util::ObjDefnID = 0;
 const char CJS_Util::kName[] = "util";
 
 // static
-uint32_t CJS_Util::GetObjDefnID() {
-  return ObjDefnID;
-}
-
-// static
 void CJS_Util::DefineJSObjects(CFXJS_Engine* pEngine) {
-  ObjDefnID = pEngine->DefineObj(CJS_Util::kName, FXJSOBJTYPE_STATIC,
-                                 JSConstructor<CJS_Util>, JSDestructor);
-  DefineMethods(pEngine, ObjDefnID, MethodSpecs);
+  pEngine->DefineObj(kObjDefnId, CJS_Util::kName, FXJSOBJTYPE_STATIC,
+                     JSConstructor<CJS_Util>, JSDestructor);
+  DefineMethods(pEngine, kObjDefnId, MethodSpecs);
 }
 
 CJS_Util::CJS_Util(v8::Local<v8::Object> pObject, CJS_Runtime* pRuntime)
@@ -110,7 +104,8 @@ CJS_Result CJS_Util::printf(CJS_Runtime* pRuntime,
 
   // Use 'S' as a sentinel to ensure we always have some text before the first
   // format specifier.
-  WideString unsafe_fmt_string = L'S' + pRuntime->ToWideString(params[0]);
+  WideString unsafe_fmt_string =
+      L'S' + pRuntime->ToWideStringReentrant(params[0]);
   std::vector<WideString> unsafe_conversion_specifiers;
 
   {
@@ -120,7 +115,7 @@ CJS_Result CJS_Util::printf(CJS_Runtime* pRuntime,
           unsafe_fmt_string.Find(L"%", offset + 1);
       if (!offset_end.has_value()) {
         unsafe_conversion_specifiers.push_back(
-            unsafe_fmt_string.Last(unsafe_fmt_string.GetLength() - offset));
+            unsafe_fmt_string.Substr(offset));
         break;
       }
 
@@ -141,15 +136,16 @@ CJS_Result CJS_Util::printf(CJS_Runtime* pRuntime,
     WideString segment;
     switch (ParseDataType(&fmt)) {
       case DataType::kInt:
-        segment = WideString::Format(fmt.c_str(), pRuntime->ToInt32(params[i]));
+        segment = WideString::Format(fmt.c_str(),
+                                     pRuntime->ToInt32Reentrant(params[i]));
         break;
       case DataType::kDouble:
-        segment =
-            WideString::Format(fmt.c_str(), pRuntime->ToDouble(params[i]));
+        segment = WideString::Format(fmt.c_str(),
+                                     pRuntime->ToDoubleReentrant(params[i]));
         break;
       case DataType::kString:
-        segment = WideString::Format(fmt.c_str(),
-                                     pRuntime->ToWideString(params[i]).c_str());
+        segment = WideString::Format(
+            fmt.c_str(), pRuntime->ToWideStringReentrant(params[i]).c_str());
         break;
       default:
         segment = WideString::Format(L"%ls", fmt.c_str());
@@ -161,8 +157,7 @@ CJS_Result CJS_Util::printf(CJS_Runtime* pRuntime,
   // Remove the 'S' sentinel introduced earlier.
   DCHECK_EQ(L'S', result[0]);
   auto result_view = result.AsStringView();
-  return CJS_Result::Success(
-      pRuntime->NewString(result_view.Last(result_view.GetLength() - 1)));
+  return CJS_Result::Success(pRuntime->NewString(result_view.Substr(1)));
 }
 
 CJS_Result CJS_Util::printd(CJS_Runtime* pRuntime,
@@ -177,11 +172,11 @@ CJS_Result CJS_Util::printd(CJS_Runtime* pRuntime,
   }
 
   v8::Local<v8::Date> v8_date = params[1].As<v8::Date>();
-  if (v8_date.IsEmpty() || isnan(pRuntime->ToDouble(v8_date))) {
+  if (v8_date.IsEmpty() || isnan(pRuntime->ToDoubleReentrant(v8_date))) {
     return CJS_Result::Failure(JSMessage::kSecondParamInvalidDateError);
   }
 
-  double date = FX_LocalTime(pRuntime->ToDouble(v8_date));
+  double date = FX_LocalTime(pRuntime->ToDoubleReentrant(v8_date));
   int year = FX_GetYearFromTime(date);
   int month = FX_GetMonthFromTime(date) + 1;  // One-based.
   int day = FX_GetDayFromTime(date);
@@ -191,7 +186,7 @@ CJS_Result CJS_Util::printd(CJS_Runtime* pRuntime,
 
   if (params[0]->IsNumber()) {
     WideString swResult;
-    switch (pRuntime->ToInt32(params[0])) {
+    switch (pRuntime->ToInt32Reentrant(params[0])) {
       case 0:
         swResult = WideString::Format(L"D:%04d%02d%02d%02d%02d%02d", year,
                                       month, day, hour, min, sec);
@@ -216,15 +211,14 @@ CJS_Result CJS_Util::printd(CJS_Runtime* pRuntime,
   }
 
   // We don't support XFAPicture at the moment.
-  if (iSize > 2 && pRuntime->ToBoolean(params[2])) {
+  if (iSize > 2 && pRuntime->ToBooleanReentrant(params[2])) {
     return CJS_Result::Failure(JSMessage::kNotSupportedError);
   }
 
   // Convert PDF-style format specifiers to wcsftime specifiers. Remove any
   // pre-existing %-directives before inserting our own.
-  std::wstring cFormat = pRuntime->ToWideString(params[0]).c_str();
-  cFormat.erase(std::remove(cFormat.begin(), cFormat.end(), '%'),
-                cFormat.end());
+  std::wstring cFormat = pRuntime->ToWideStringReentrant(params[0]).c_str();
+  cFormat.erase(std::ranges::remove(cFormat, '%').begin(), cFormat.end());
 
   for (const auto& conversion : kTbConvertTable) {
     size_t nFound = 0;
@@ -271,6 +265,7 @@ CJS_Result CJS_Util::printd(CJS_Runtime* pRuntime,
   time.tm_hour = hour;
   time.tm_min = min;
   time.tm_sec = sec;
+  time.tm_wday = FX_GetDayOfWeekFromTime(date);
 
   wchar_t buf[64] = {};
   UNSAFE_TODO(FXSYS_wcsftime(buf, 64, cFormat.c_str(), &time));
@@ -284,10 +279,10 @@ CJS_Result CJS_Util::printx(CJS_Runtime* pRuntime,
     return CJS_Result::Failure(JSMessage::kParamError);
   }
 
-  return CJS_Result::Success(
-      pRuntime->NewString(StringPrintx(pRuntime->ToWideString(params[0]),
-                                       pRuntime->ToWideString(params[1]))
-                              .AsStringView()));
+  return CJS_Result::Success(pRuntime->NewString(
+      StringPrintx(pRuntime->ToWideStringReentrant(params[0]),
+                   pRuntime->ToWideStringReentrant(params[1]))
+          .AsStringView()));
 }
 
 // static
@@ -386,8 +381,8 @@ CJS_Result CJS_Util::scand(CJS_Runtime* pRuntime,
     return CJS_Result::Failure(JSMessage::kParamError);
   }
 
-  WideString sFormat = pRuntime->ToWideString(params[0]);
-  WideString sDate = pRuntime->ToWideString(params[1]);
+  WideString sFormat = pRuntime->ToWideStringReentrant(params[0]);
+  WideString sDate = pRuntime->ToWideStringReentrant(params[1]);
   double dDate = FX_GetDateTime();
   if (sDate.GetLength() > 0) {
     dDate = CJS_PublicMethods::ParseDateUsingFormat(pRuntime->GetIsolate(),
@@ -406,7 +401,7 @@ CJS_Result CJS_Util::byteToChar(CJS_Runtime* pRuntime,
     return CJS_Result::Failure(JSMessage::kParamError);
   }
 
-  int arg = pRuntime->ToInt32(params[0]);
+  int arg = pRuntime->ToInt32Reentrant(params[0]);
   if (arg < 0 || arg > 255) {
     return CJS_Result::Failure(JSMessage::kValueError);
   }

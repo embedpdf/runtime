@@ -10,6 +10,7 @@
 
 #include <stdint.h>
 
+#include <list>
 #include <string>
 #include <vector>
 
@@ -29,12 +30,20 @@
 #include "fpdfsdk/epdf_edit_test_util.h"
 #include "public/cpp/fpdf_scopers.h"
 #include "public/epdf_annot.h"
+#include "public/epdf_attachment.h"
 #include "public/epdf_capture.h"
+#include "public/epdf_edit.h"
 #include "public/epdf_form.h"
 #include "public/epdf_layer.h"
+#include "public/epdf_named_pages.h"
+#include "public/epdf_outline.h"
 #include "public/epdf_save.h"
+#include "public/epdf_view.h"
 #include "public/fpdf_annot.h"
+#include "public/fpdf_attachment.h"
+#include "public/fpdf_edit.h"
 #include "public/fpdf_save.h"
+#include "public/fpdf_transformpage.h"
 #include "public/fpdfview.h"
 #include "testing/embedder_test.h"
 #include "testing/fx_string_testhelpers.h"
@@ -203,6 +212,16 @@ std::vector<uint8_t> ExportDict(FPDF_DOCUMENT doc,
   return Take(buffer, size);
 }
 
+std::vector<uint8_t> CanonicalDict(FPDF_DOCUMENT doc,
+                                   uint32_t objnum,
+                                   const char* deep_keys,
+                                   const char* skip_keys) {
+  unsigned long size = 0;
+  void* buffer = EPDFDoc_ExportDictCanonicalToOwnedBuffer(
+      doc, objnum, deep_keys, skip_keys, &size);
+  return Take(buffer, size);
+}
+
 bool ImportDict(FPDF_DOCUMENT doc, const std::vector<uint8_t>& capture) {
   return EPDFDoc_ImportDictRaw(doc, capture.data(),
                                static_cast<unsigned long>(capture.size()));
@@ -264,6 +283,89 @@ uint32_t CreateSquare(FPDF_DOCUMENT doc, int page_index, uint32_t objnum) {
     return 0;
   }
   return Recolor(doc, objnum, 0, 1, 0);
+}
+
+// The objects of the document of pages below.
+constexpr uint32_t kPageTree = 2;
+constexpr uint32_t kCover = 3;
+constexpr uint32_t kIntro = 4;
+constexpr uint32_t kBody = 5;
+constexpr uint32_t kCoverLink = 8;
+constexpr uint32_t kIntroSquare = 9;
+constexpr uint32_t kSignField = 10;
+constexpr uint32_t kSignWidget = 11;
+
+// Three pages, two of them named. The cover (3) links to the body; the
+// intro (4) holds a blue square (9, its appearance 12), and nothing points at
+// it but the page tree and its name; the body (5) holds the widget (11) of the
+// field `sign` (10).
+std::string MakePagesDocument() {
+  return MakePdf({
+      "<< /Type /Catalog /Pages 2 0 R /Names << /Pages << /Names [(Cover) 3 0 "
+      "R (Intro) 4 0 R] >> >> /AcroForm << /Fields [10 0 R] >> >>",
+      "<< /Type /Pages /Kids [3 0 R 4 0 R 5 0 R] /Count 3 >>",
+      "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 300 300] /Contents 6 0 R "
+      "/Resources << >> /Annots [8 0 R] >>",
+      "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 300 300] /Contents 7 0 R "
+      "/Resources << >> /Annots [9 0 R] >>",
+      "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 300 300] /Contents 6 0 R "
+      "/Resources << >> /Annots [11 0 R] >>",
+      Stream("0 0 1 rg 0 0 10 10 re f"),
+      Stream("1 0 0 rg 0 0 20 20 re f"),
+      "<< /Type /Annot /Subtype /Link /Rect [10 10 50 50] /P 3 0 R "
+      "/Dest [5 0 R /Fit] >>",
+      "<< /Type /Annot /Subtype /Square /Rect [20 200 80 260] /C [0 0 1] "
+      "/P 4 0 R /AP << /N 12 0 R >> >>",
+      "<< /T (sign) /FT /Tx /Kids [11 0 R] >>",
+      "<< /Type /Annot /Subtype /Widget /Parent 10 0 R /Rect [20 20 180 44] "
+      "/P 5 0 R >>",
+      "<< /Type /XObject /Subtype /Form /BBox [0 0 60 60] /Length 23 >>\n"
+      "stream\n0 0 1 rg 0 0 60 60 re f\nendstream",
+  });
+}
+
+// The pages of |doc| by object number, in page order.
+std::vector<uint32_t> PageOrder(FPDF_DOCUMENT doc) {
+  std::vector<uint32_t> pages;
+  for (int i = 0; i < FPDF_GetPageCount(doc); ++i) {
+    pages.push_back(EPDFDoc_GetPageObjectNumberByIndex(doc, i));
+  }
+  return pages;
+}
+
+// The /Names /Pages registrations of |doc|, as "key=page", in tree order.
+std::vector<std::wstring> NamedPages(FPDF_DOCUMENT doc) {
+  std::vector<std::wstring> entries;
+  const int count = EPDFDoc_GetNamedPageCount(doc, EPDF_NAMED_PAGE_TREE_PAGES);
+  for (int i = 0; i < count; ++i) {
+    const unsigned long length = EPDFDoc_GetNamedPageAt(
+        doc, EPDF_NAMED_PAGE_TREE_PAGES, i, nullptr, 0, nullptr, nullptr);
+    std::vector<FPDF_WCHAR> buffer = GetFPDFWideStringBuffer(length);
+    unsigned int page = 0;
+    EPDFDoc_GetNamedPageAt(doc, EPDF_NAMED_PAGE_TREE_PAGES, i, buffer.data(),
+                           length, &page, nullptr);
+    entries.push_back(GetPlatformWString(buffer.data()) + L"=" +
+                      std::to_wstring(page));
+  }
+  return entries;
+}
+
+// Whether |capture| holds the object |objnum|.
+bool HoldsObject(const std::vector<uint8_t>& capture, uint32_t objnum) {
+  const std::string text(capture.begin(), capture.end());
+  return text.find("\n" + std::to_string(objnum) + " 0 obj\n") !=
+         std::string::npos;
+}
+
+std::vector<uint8_t> ExportPage(FPDF_DOCUMENT doc, uint32_t page_objnum) {
+  unsigned long size = 0;
+  void* buffer = EPDFPage_ExportRawToOwnedBuffer(doc, page_objnum, &size);
+  return Take(buffer, size);
+}
+
+bool ImportPage(FPDF_DOCUMENT doc, const std::vector<uint8_t>& capture) {
+  return EPDFPage_ImportRaw(doc, capture.data(),
+                            static_cast<unsigned long>(capture.size()));
 }
 
 }  // namespace
@@ -520,6 +622,67 @@ TEST_F(EPDFCaptureEmbedderTest, ImportRefusesWhatDoesNotFit) {
   ASSERT_TRUE(EPDFLayer_AbortTransaction(fresh.get()));
 }
 
+// A capture never holds the catalog, the page tree or a page it isn't of:
+// one that does (here an annotation capture with a catalog put in) is
+// refused whole, and nothing of it is put in.
+TEST_F(EPDFCaptureEmbedderTest, ImportRefusesACaptureHoldingTheCatalog) {
+  ScopedFPDFDocument layer = OpenLayer();
+  ASSERT_TRUE(layer);
+  ASSERT_TRUE(EPDFLayer_BeginTransaction(layer.get()));
+  ASSERT_TRUE(CreateSquare(layer.get(), 1, 20));
+  ASSERT_TRUE(EPDFLayer_CommitTransaction(layer.get()));
+  ASSERT_TRUE(EPDFLayer_BeginTransaction(layer.get()));
+  std::vector<uint8_t> capture = ExportAnnots(layer.get(), 1, {0});
+  ASSERT_FALSE(capture.empty());
+  ASSERT_TRUE(EPDFPage_RemoveAnnotRaw(layer.get(), 1, 0));
+  ASSERT_TRUE(EPDFLayer_CommitTransaction(layer.get()));
+
+  CPDF_Document* pdf = CPDFDocumentFromFPDFDocument(layer.get());
+  const std::string catalog = ObjectGraph(pdf).at(1);
+  const std::string forged = "1 0 obj\n<< /Type /Catalog >>\nendobj\n";
+  capture.insert(capture.end(), forged.begin(), forged.end());
+  ASSERT_TRUE(EPDFLayer_BeginTransaction(layer.get()));
+  EXPECT_FALSE(ImportAnnots(layer.get(), 1, capture));
+  ASSERT_TRUE(EPDFLayer_CommitTransaction(layer.get()));
+  EXPECT_EQ(catalog, ObjectGraph(pdf).at(1));
+  EXPECT_TRUE(Annots(layer.get(), 1).empty());
+}
+
+// A dictionary's canonical bytes change only with what it reads as: not
+// when a key the caller leaves out changes (the page turned and turned back
+// writes /Rotate 0), nor when a save encodes its streams again (a reopen),
+// but when what it holds changes (its square recoloured).
+TEST_F(EPDFCaptureEmbedderTest, CanonicalBytesChangeOnlyWithWhatReads) {
+  ScopedFPDFDocument layer = OpenLayer();
+  ASSERT_TRUE(layer);
+  ASSERT_TRUE(EPDFLayer_BeginTransaction(layer.get()));
+  ASSERT_TRUE(CreateSquare(layer.get(), 1, 20));
+  ASSERT_TRUE(EPDFLayer_CommitTransaction(layer.get()));
+  const std::vector<uint8_t> before =
+      CanonicalDict(layer.get(), 4, "Annots", "Parent Rotate");
+  ASSERT_FALSE(before.empty());
+
+  ASSERT_TRUE(EPDFLayer_BeginTransaction(layer.get()));
+  ASSERT_TRUE(EPDFDoc_SetPageRotationByObjectNumber(layer.get(), 4, 1));
+  ASSERT_TRUE(EPDFDoc_SetPageRotationByObjectNumber(layer.get(), 4, 0));
+  ASSERT_TRUE(EPDFLayer_CommitTransaction(layer.get()));
+  EXPECT_EQ(before, CanonicalDict(layer.get(), 4, "Annots", "Parent Rotate"));
+  const std::vector<uint8_t> stored = ExportDict(layer.get(), 4, "Annots");
+
+  ScopedFPDFDocument reopened = Reopen(layer.get());
+  ASSERT_TRUE(reopened);
+  // The save encoded the square's appearance: its stored bytes differ.
+  EXPECT_NE(stored, ExportDict(reopened.get(), 4, "Annots"));
+  EXPECT_EQ(before,
+            CanonicalDict(reopened.get(), 4, "Annots", "Parent Rotate"));
+
+  ASSERT_TRUE(EPDFLayer_BeginTransaction(reopened.get()));
+  ASSERT_TRUE(Recolor(reopened.get(), 20, 1, 0, 0));
+  ASSERT_TRUE(EPDFLayer_CommitTransaction(reopened.get()));
+  EXPECT_NE(before,
+            CanonicalDict(reopened.get(), 4, "Annots", "Parent Rotate"));
+}
+
 // A dictionary captured before an update comes back exactly: every key as it
 // was, none added, and the appearance under a deep key with its bytes, also
 // after a save and reopen dropped the old appearance.
@@ -731,4 +894,810 @@ TEST_F(EPDFCaptureEmbedderTest, PlainDocumentHasNoCaptures) {
   EXPECT_TRUE(ExportAnnots(doc.get(), 0, {0}).empty());
   EXPECT_TRUE(ExportDict(doc.get(), kFileSquare, "AP").empty());
   EXPECT_TRUE(ExportField(doc.get(), kMergedField).empty());
+}
+
+// Pages (EPDFPage_ExportRawToOwnedBuffer and EPDFPage_ImportRaw), over the
+// document of pages above.
+class EPDFPageCaptureEmbedderTest : public EmbedderTest {
+ protected:
+  void SetUp() override {
+    EmbedderTest::SetUp();
+    input_ = MakePagesDocument();
+    base_ = EPDF_LoadMemBaseDocument(input_.data(), input_.size(), nullptr);
+    ASSERT_TRUE(base_);
+  }
+
+  void TearDown() override {
+    EPDF_ReleaseBaseDocument(base_);
+    EmbedderTest::TearDown();
+  }
+
+  ScopedFPDFDocument OpenLayer() {
+    ScopedFPDFDocument layer(
+        EPDFLayer_OpenLayer(base_, nullptr, nullptr, nullptr));
+    if (layer && !EPDFLayer_RaiseLastObjectNumber(layer.get(), kRaised)) {
+      return nullptr;
+    }
+    return layer;
+  }
+
+  // The layer saved and opened again: what nothing reaches is gone. Each
+  // artifact stays alive as long as the test, for the documents reading it.
+  ScopedFPDFDocument Reopen(FPDF_DOCUMENT layer) {
+    ClearString();
+    EXPECT_TRUE(EPDFLayer_SaveLayerArtifact(layer, this, nullptr));
+    std::string& artifact = artifacts_.emplace_back(GetString());
+    FPDF_FILEACCESS access = {};
+    access.m_FileLen = artifact.size();
+    access.m_GetBlock = GetBlockFromString;
+    access.m_Param = &artifact;
+    EPDFLayerOpenStatus status = EPDFLayerOpenStatus_kOpenFailed;
+    ScopedFPDFDocument reopened(
+        EPDFLayer_OpenLayerArtifact(base_, &access, nullptr, &status));
+    EXPECT_EQ(EPDFLayerOpenStatus_kSuccess, status);
+    return reopened;
+  }
+
+  // The page tree's /Count.
+  int CountOf(FPDF_DOCUMENT doc) {
+    RetainPtr<const CPDF_Dictionary> pages = DictOf(doc, kPageTree);
+    return pages ? pages->GetIntegerFor("Count") : -1;
+  }
+
+  std::string input_;
+  std::list<std::string> artifacts_;
+  EPDF_BASE_DOCUMENT base_ = nullptr;
+};
+
+// A page of the file comes back at its place, with its square and its name.
+// The layer turned the page and recoloured the square, so the capture holds
+// those edits: they come back also when a save and reopen dropped the
+// layer's versions, which nothing reached once the page was gone.
+TEST_F(EPDFPageCaptureEmbedderTest, DeletedFilePageComesBackWithItsEdits) {
+  for (bool reopen : {false, true}) {
+    SCOPED_TRACE(reopen ? "reopened between delete and import"
+                        : "same session");
+    ScopedFPDFDocument layer = OpenLayer();
+    ASSERT_TRUE(layer);
+    const std::string blue = ColorOf(layer.get(), kIntroSquare);
+    ASSERT_TRUE(EPDFLayer_BeginTransaction(layer.get()));
+    ASSERT_TRUE(EPDFDoc_SetPageRotationByObjectNumber(layer.get(), kIntro, 1));
+    Recolor(layer.get(), kIntroSquare, 1, 0, 0);
+    ASSERT_TRUE(EPDFLayer_CommitTransaction(layer.get()));
+    const std::string red = ColorOf(layer.get(), kIntroSquare);
+    ASSERT_NE(blue, red);
+
+    ASSERT_TRUE(EPDFLayer_BeginTransaction(layer.get()));
+    const std::vector<uint8_t> capture = ExportPage(layer.get(), kIntro);
+    ASSERT_FALSE(capture.empty());
+    ASSERT_TRUE(EPDFDoc_DeletePageByObjectNumber(layer.get(), kIntro));
+    ASSERT_TRUE(EPDFLayer_CommitTransaction(layer.get()));
+    EXPECT_THAT(PageOrder(layer.get()), ElementsAre(kCover, kBody));
+    EXPECT_THAT(NamedPages(layer.get()), ElementsAre(L"Cover=3"));
+
+    ScopedFPDFDocument target = reopen ? Reopen(layer.get()) : std::move(layer);
+    ASSERT_TRUE(target);
+    if (reopen) {
+      EXPECT_EQ(0, DictOf(target.get(), kIntro)->GetIntegerFor("Rotate"));
+      EXPECT_EQ(blue, ColorOf(target.get(), kIntroSquare));
+    }
+    ASSERT_TRUE(EPDFLayer_BeginTransaction(target.get()));
+    ASSERT_TRUE(ImportPage(target.get(), capture));
+    ASSERT_TRUE(EPDFLayer_CommitTransaction(target.get()));
+    EXPECT_THAT(PageOrder(target.get()), ElementsAre(kCover, kIntro, kBody));
+    EXPECT_EQ(3, CountOf(target.get()));
+    EXPECT_EQ(kPageTree, RefOf(target.get(), kIntro, "Parent"));
+    EXPECT_EQ(90, DictOf(target.get(), kIntro)->GetIntegerFor("Rotate"));
+    EXPECT_THAT(Annots(target.get(), 1), ElementsAre(kIntroSquare));
+    EXPECT_EQ(red, ColorOf(target.get(), kIntroSquare));
+    EXPECT_THAT(NamedPages(target.get()), ElementsAre(L"Cover=3", L"Intro=4"));
+    ScopedFPDFPage page(FPDF_LoadPage(target.get(), 1));
+    ASSERT_TRUE(page);
+    EXPECT_EQ(1, FPDFPage_GetRotation(page.get()));
+  }
+}
+
+// A page the layer made comes back at its number, over the null its delete
+// left, with its square, the square's appearance and its name, also when a
+// save and reopen dropped all of them; and it saves as itself afterwards.
+TEST_F(EPDFPageCaptureEmbedderTest, DeletedLayerPageComesBack) {
+  for (bool reopen : {false, true}) {
+    SCOPED_TRACE(reopen ? "reopened between delete and import"
+                        : "same session");
+    ScopedFPDFDocument layer = OpenLayer();
+    ASSERT_TRUE(layer);
+    ASSERT_TRUE(EPDFLayer_BeginTransaction(layer.get()));
+    ASSERT_TRUE(EPDFPage_InsertBlankRaw(layer.get(), 3, 300, 300, 20));
+    const uint32_t appearance = CreateSquare(layer.get(), 3, 21);
+    ASSERT_TRUE(appearance);
+    ASSERT_TRUE(EPDFDoc_SetNamedPage(layer.get(),
+                                     GetFPDFWideString(L"Appendix").get(), 20));
+    ASSERT_TRUE(EPDFLayer_CommitTransaction(layer.get()));
+    const std::string appearance_bytes = RawBytesOf(layer.get(), appearance);
+
+    ASSERT_TRUE(EPDFLayer_BeginTransaction(layer.get()));
+    const std::vector<uint8_t> capture = ExportPage(layer.get(), 20);
+    ASSERT_FALSE(capture.empty());
+    EXPECT_TRUE(HoldsObject(capture, 20));
+    EXPECT_TRUE(HoldsObject(capture, 21));
+    EXPECT_TRUE(HoldsObject(capture, appearance));
+    ASSERT_TRUE(EPDFDoc_DeletePageByObjectNumber(layer.get(), 20));
+    ASSERT_TRUE(EPDFLayer_CommitTransaction(layer.get()));
+    EXPECT_THAT(PageOrder(layer.get()), ElementsAre(kCover, kIntro, kBody));
+    EXPECT_FALSE(DictOf(layer.get(), 20));  // the null the delete left
+
+    ScopedFPDFDocument target = reopen ? Reopen(layer.get()) : std::move(layer);
+    ASSERT_TRUE(target);
+    if (reopen) {
+      EXPECT_FALSE(DictOf(target.get(), 21));
+      EXPECT_TRUE(RawBytesOf(target.get(), appearance).empty());
+    }
+    ASSERT_TRUE(EPDFLayer_BeginTransaction(target.get()));
+    ASSERT_TRUE(ImportPage(target.get(), capture));
+    ASSERT_TRUE(EPDFLayer_CommitTransaction(target.get()));
+    EXPECT_THAT(PageOrder(target.get()),
+                ElementsAre(kCover, kIntro, kBody, 20u));
+    EXPECT_EQ(4, CountOf(target.get()));
+    EXPECT_THAT(Annots(target.get(), 3), ElementsAre(21u));
+    EXPECT_EQ(appearance, NormalAppearanceOf(target.get(), 21));
+    EXPECT_EQ(appearance_bytes, RawBytesOf(target.get(), appearance));
+    EXPECT_THAT(NamedPages(target.get()),
+                ElementsAre(L"Appendix=20", L"Cover=3", L"Intro=4"));
+
+    ScopedFPDFDocument saved = Reopen(target.get());
+    ASSERT_TRUE(saved);
+    EXPECT_THAT(PageOrder(saved.get()),
+                ElementsAre(kCover, kIntro, kBody, 20u));
+    EXPECT_THAT(Annots(saved.get(), 3), ElementsAre(21u));
+    EXPECT_EQ(appearance, NormalAppearanceOf(saved.get(), 21));
+  }
+}
+
+// A delete leaves the form alone, so the page brings its widget back into
+// its /Annots, still the kid of its field; the cover's link still names it.
+TEST_F(EPDFPageCaptureEmbedderTest, PageComesBackWithItsFieldsWidget) {
+  ScopedFPDFDocument layer = OpenLayer();
+  ASSERT_TRUE(layer);
+  ASSERT_TRUE(EPDFLayer_BeginTransaction(layer.get()));
+  const std::vector<uint8_t> capture = ExportPage(layer.get(), kBody);
+  ASSERT_FALSE(capture.empty());
+  ASSERT_TRUE(EPDFDoc_DeletePageByObjectNumber(layer.get(), kBody));
+  ASSERT_TRUE(EPDFLayer_CommitTransaction(layer.get()));
+  RetainPtr<const CPDF_Dictionary> field = DictOf(layer.get(), kSignField);
+  ASSERT_TRUE(field);
+  EXPECT_THAT(RefsIn(field->GetArrayFor("Kids").Get()),
+              ElementsAre(kSignWidget));
+
+  ASSERT_TRUE(EPDFLayer_BeginTransaction(layer.get()));
+  ASSERT_TRUE(ImportPage(layer.get(), capture));
+  ASSERT_TRUE(EPDFLayer_CommitTransaction(layer.get()));
+  EXPECT_THAT(PageOrder(layer.get()), ElementsAre(kCover, kIntro, kBody));
+  EXPECT_THAT(Annots(layer.get(), 2), ElementsAre(kSignWidget));
+  EXPECT_EQ(kSignField, RefOf(layer.get(), kSignWidget, "Parent"));
+  EXPECT_EQ(kBody, RefOf(layer.get(), kSignWidget, "P"));
+  RetainPtr<const CPDF_Dictionary> link = DictOf(layer.get(), kCoverLink);
+  ASSERT_TRUE(link);
+  EXPECT_THAT(RefsIn(link->GetArrayFor("Dest").Get()), ElementsAre(kBody, 0u));
+}
+
+// Its place: after the page it followed while that is still in the page
+// tree, wherever that page went since, else first; never twice.
+TEST_F(EPDFPageCaptureEmbedderTest, ImportFindsItsPlace) {
+  ScopedFPDFDocument layer = OpenLayer();
+  ASSERT_TRUE(layer);
+  ASSERT_TRUE(EPDFLayer_BeginTransaction(layer.get()));
+  const std::vector<uint8_t> cover = ExportPage(layer.get(), kCover);
+  const std::vector<uint8_t> intro = ExportPage(layer.get(), kIntro);
+  const std::vector<uint8_t> body = ExportPage(layer.get(), kBody);
+  ASSERT_FALSE(cover.empty());
+  ASSERT_FALSE(intro.empty());
+  ASSERT_FALSE(body.empty());
+  EXPECT_FALSE(ImportPage(layer.get(), intro));  // it's there
+
+  ASSERT_TRUE(EPDFDoc_DeletePageByObjectNumber(layer.get(), kCover));
+  ASSERT_TRUE(EPDFDoc_DeletePageByObjectNumber(layer.get(), kIntro));
+  ASSERT_TRUE(ImportPage(layer.get(), intro));  // the cover is gone: first
+  EXPECT_FALSE(ImportPage(layer.get(), intro));
+  EXPECT_THAT(PageOrder(layer.get()), ElementsAre(kIntro, kBody));
+  ASSERT_TRUE(ImportPage(layer.get(), cover));  // it was first
+  EXPECT_THAT(PageOrder(layer.get()), ElementsAre(kCover, kIntro, kBody));
+
+  // The body follows the intro, wherever the intro is now.
+  const int intro_index = 1;
+  ASSERT_TRUE(FPDF_MovePages(layer.get(), &intro_index, 1, 0));
+  ASSERT_TRUE(EPDFDoc_DeletePageByObjectNumber(layer.get(), kBody));
+  ASSERT_TRUE(ImportPage(layer.get(), body));
+  ASSERT_TRUE(EPDFLayer_CommitTransaction(layer.get()));
+  EXPECT_THAT(PageOrder(layer.get()), ElementsAre(kIntro, kBody, kCover));
+  EXPECT_EQ(3, CountOf(layer.get()));
+  EXPECT_THAT(NamedPages(layer.get()), ElementsAre(L"Cover=3", L"Intro=4"));
+}
+
+// A key another page took in the meantime stays with that page.
+TEST_F(EPDFPageCaptureEmbedderTest, ImportLeavesAKeyAnotherPageTook) {
+  ScopedFPDFDocument layer = OpenLayer();
+  ASSERT_TRUE(layer);
+  ASSERT_TRUE(EPDFLayer_BeginTransaction(layer.get()));
+  const std::vector<uint8_t> capture = ExportPage(layer.get(), kIntro);
+  ASSERT_FALSE(capture.empty());
+  ASSERT_TRUE(EPDFDoc_DeletePageByObjectNumber(layer.get(), kIntro));
+  ASSERT_TRUE(EPDFDoc_SetNamedPage(layer.get(),
+                                   GetFPDFWideString(L"Intro").get(), kBody));
+  ASSERT_TRUE(ImportPage(layer.get(), capture));
+  ASSERT_TRUE(EPDFLayer_CommitTransaction(layer.get()));
+  EXPECT_THAT(PageOrder(layer.get()), ElementsAre(kCover, kIntro, kBody));
+  EXPECT_THAT(NamedPages(layer.get()), ElementsAre(L"Cover=3", L"Intro=5"));
+}
+
+// A page comes back with what it took from the page tree, as its own. The
+// page tree has two branches of different size, turn and resources; the
+// last page of the first branch comes back at its place, which is the start
+// of the second branch now, and still reads as the first branch made it.
+TEST_F(EPDFPageCaptureEmbedderTest, PageKeepsWhatItInheritedFromItsBranch) {
+  EPDF_ReleaseBaseDocument(base_);
+  input_ = MakePdf({
+      "<< /Type /Catalog /Pages 2 0 R >>",
+      "<< /Type /Pages /Kids [3 0 R 4 0 R] /Count 4 >>",
+      "<< /Type /Pages /Parent 2 0 R /Kids [5 0 R 6 0 R] /Count 2 "
+      "/MediaBox [0 0 200 100] /Rotate 90 /Resources 9 0 R >>",
+      "<< /Type /Pages /Parent 2 0 R /Kids [7 0 R 8 0 R] /Count 2 "
+      "/MediaBox [0 0 500 500] /Resources << >> >>",
+      "<< /Type /Page /Parent 3 0 R >>",
+      "<< /Type /Page /Parent 3 0 R >>",
+      "<< /Type /Page /Parent 4 0 R >>",
+      "<< /Type /Page /Parent 4 0 R >>",
+      "<< /ProcSet [/PDF] >>",
+  });
+  base_ = EPDF_LoadMemBaseDocument(input_.data(), input_.size(), nullptr);
+  ASSERT_TRUE(base_);
+  for (bool reopen : {false, true}) {
+    SCOPED_TRACE(reopen ? "reopened between delete and import"
+                        : "same session");
+    ScopedFPDFDocument layer = OpenLayer();
+    ASSERT_TRUE(layer);
+    ASSERT_TRUE(EPDFLayer_BeginTransaction(layer.get()));
+    const std::vector<uint8_t> capture = ExportPage(layer.get(), 6);
+    ASSERT_FALSE(capture.empty());
+    ASSERT_TRUE(EPDFDoc_DeletePageByObjectNumber(layer.get(), 6));
+    ASSERT_TRUE(EPDFLayer_CommitTransaction(layer.get()));
+    EXPECT_THAT(PageOrder(layer.get()), ElementsAre(5, 7, 8));
+
+    ScopedFPDFDocument target = reopen ? Reopen(layer.get()) : std::move(layer);
+    ASSERT_TRUE(target);
+    ASSERT_TRUE(EPDFLayer_BeginTransaction(target.get()));
+    ASSERT_TRUE(ImportPage(target.get(), capture));
+    ASSERT_TRUE(EPDFLayer_CommitTransaction(target.get()));
+    EXPECT_THAT(PageOrder(target.get()), ElementsAre(5, 6, 7, 8));
+    EXPECT_EQ(4u, RefOf(target.get(), 6, "Parent"));  // the other branch
+    EXPECT_EQ(9u, RefOf(target.get(), 6, "Resources"));
+    ScopedFPDFPage page(FPDF_LoadPage(target.get(), 1));
+    ASSERT_TRUE(page);
+    EXPECT_EQ(1, FPDFPage_GetRotation(page.get()));
+    float left = 0;
+    float bottom = 0;
+    float right = 0;
+    float top = 0;
+    ASSERT_TRUE(FPDFPage_GetMediaBox(page.get(), &left, &bottom, &right, &top));
+    EXPECT_EQ(200, right);
+    EXPECT_EQ(100, top);
+    // Turned a quarter, as the first branch turns its pages.
+    EXPECT_EQ(100, FPDF_GetPageWidthF(page.get()));
+    EXPECT_EQ(200, FPDF_GetPageHeightF(page.get()));
+  }
+}
+
+// A capture names the file it was taken on when the layer knows the file's
+// hash, and never makes the layer work it out.
+TEST_F(EPDFPageCaptureEmbedderTest, CaptureNamesItsFileWhenTheHashIsKnown) {
+  ScopedFPDFDocument layer = OpenLayer();
+  ASSERT_TRUE(layer);
+  const std::vector<uint8_t> unnamed = ExportPage(layer.get(), kIntro);
+  ASSERT_FALSE(unnamed.empty());
+  EXPECT_EQ(std::string::npos,
+            std::string(unnamed.begin(), unnamed.end()).find("/Base"));
+  unsigned char sha256[32] = {};
+  ASSERT_TRUE(EPDFLayer_GetBaseSha256(layer.get(), sha256));
+  const std::vector<uint8_t> named = ExportPage(layer.get(), kIntro);
+  EXPECT_NE(std::string::npos,
+            std::string(named.begin(), named.end()).find("/Base"));
+  // Both come back into a layer of this file.
+  for (const std::vector<uint8_t>* capture : {&unnamed, &named}) {
+    ASSERT_TRUE(EPDFLayer_BeginTransaction(layer.get()));
+    ASSERT_TRUE(EPDFDoc_DeletePageByObjectNumber(layer.get(), kIntro));
+    EXPECT_TRUE(ImportPage(layer.get(), *capture));
+    ASSERT_TRUE(EPDFLayer_AbortTransaction(layer.get()));
+  }
+}
+
+// A capture that names its file comes back only into a layer of that file:
+// in another file the same numbers are other objects.
+TEST_F(EPDFPageCaptureEmbedderTest, ImportRefusesACaptureOfAnotherFile) {
+  ScopedFPDFDocument layer = OpenLayer();
+  ASSERT_TRUE(layer);
+  // The layer knows its file's hash, as a host that keeps captures makes it.
+  unsigned char sha256[32] = {};
+  ASSERT_TRUE(EPDFLayer_GetBaseSha256(layer.get(), sha256));
+  const std::vector<uint8_t> capture = ExportPage(layer.get(), kIntro);
+  ASSERT_FALSE(capture.empty());
+
+  // The same objects, with other bytes after the end: another file.
+  const std::string other = input_ + "% another file\n";
+  EPDF_BASE_DOCUMENT other_base =
+      EPDF_LoadMemBaseDocument(other.data(), other.size(), nullptr);
+  ASSERT_TRUE(other_base);
+  {
+    ScopedFPDFDocument other_layer(
+        EPDFLayer_OpenLayer(other_base, nullptr, nullptr, nullptr));
+    ASSERT_TRUE(other_layer);
+    ASSERT_TRUE(EPDFLayer_BeginTransaction(other_layer.get()));
+    ASSERT_TRUE(EPDFDoc_DeletePageByObjectNumber(other_layer.get(), kIntro));
+    EXPECT_FALSE(ImportPage(other_layer.get(), capture));
+    ASSERT_TRUE(EPDFLayer_AbortTransaction(other_layer.get()));
+  }
+  EPDF_ReleaseBaseDocument(other_base);
+}
+
+// What goes back into the page tree is what the page's number holds once
+// the capture is in. A save drops the null a layer page's delete left, so
+// its number is free again; an outline item that took it never becomes a
+// page.
+TEST_F(EPDFPageCaptureEmbedderTest,
+       ImportRefusesWhenItsNumberHoldsSomethingElse) {
+  ScopedFPDFDocument layer = OpenLayer();
+  ASSERT_TRUE(layer);
+  ASSERT_TRUE(EPDFLayer_BeginTransaction(layer.get()));
+  ASSERT_TRUE(EPDFPage_InsertBlankRaw(layer.get(), 3, 300, 300, 20));
+  ASSERT_TRUE(EPDFLayer_CommitTransaction(layer.get()));
+  ASSERT_TRUE(EPDFLayer_BeginTransaction(layer.get()));
+  const std::vector<uint8_t> capture = ExportPage(layer.get(), 20);
+  ASSERT_FALSE(capture.empty());
+  ASSERT_TRUE(EPDFDoc_DeletePageByObjectNumber(layer.get(), 20));
+  ASSERT_TRUE(EPDFLayer_CommitTransaction(layer.get()));
+
+  ScopedFPDFDocument reopened = Reopen(layer.get());
+  ASSERT_TRUE(reopened);
+  ASSERT_TRUE(EPDFLayer_RaiseLastObjectNumber(reopened.get(), kRaised));
+  ASSERT_TRUE(EPDFLayer_BeginTransaction(reopened.get()));
+  ScopedFPDFWideString title = GetFPDFWideString(L"Taken");
+  ASSERT_EQ(20u, EPDFOutline_CreateItem(reopened.get(), 20, 0, 0, title.get()));
+  EXPECT_FALSE(ImportPage(reopened.get(), capture));
+  ASSERT_TRUE(EPDFLayer_CommitTransaction(reopened.get()));
+  EXPECT_THAT(PageOrder(reopened.get()), ElementsAre(kCover, kIntro, kBody));
+}
+
+// A page that comes back under the node it was under takes nothing as its
+// own: its dictionary reads as it did, so what was digested of it still
+// matches.
+TEST_F(EPDFPageCaptureEmbedderTest, PageBackUnderItsNodeGainsNoKeys) {
+  EPDF_ReleaseBaseDocument(base_);
+  input_ = MakePdf({
+      "<< /Type /Catalog /Pages 2 0 R >>",
+      "<< /Type /Pages /Kids [3 0 R 4 0 R] /Count 2 /MediaBox [0 0 200 100] "
+      "/Resources << >> >>",
+      "<< /Type /Page /Parent 2 0 R >>",
+      "<< /Type /Page /Parent 2 0 R >>",
+  });
+  base_ = EPDF_LoadMemBaseDocument(input_.data(), input_.size(), nullptr);
+  ASSERT_TRUE(base_);
+  ScopedFPDFDocument layer = OpenLayer();
+  ASSERT_TRUE(layer);
+  CPDF_Document* pdf = CPDFDocumentFromFPDFDocument(layer.get());
+  const std::string before = ObjectGraph(pdf).at(4);
+  ASSERT_TRUE(EPDFLayer_BeginTransaction(layer.get()));
+  const std::vector<uint8_t> capture = ExportPage(layer.get(), 4);
+  ASSERT_FALSE(capture.empty());
+  ASSERT_TRUE(EPDFDoc_DeletePageByObjectNumber(layer.get(), 4));
+  ASSERT_TRUE(EPDFLayer_CommitTransaction(layer.get()));
+  ASSERT_TRUE(EPDFLayer_BeginTransaction(layer.get()));
+  ASSERT_TRUE(ImportPage(layer.get(), capture));
+  ASSERT_TRUE(EPDFLayer_CommitTransaction(layer.get()));
+  EXPECT_THAT(PageOrder(layer.get()), ElementsAre(3, 4));
+  EXPECT_EQ(before, ObjectGraph(pdf).at(4));
+}
+
+// A capture holds its page, never another page, the page tree or the
+// catalog: the cover links to the body, which the layer turned, and reaches
+// the page tree and the catalog, which the delete changed, through a key a
+// capture follows.
+TEST_F(EPDFPageCaptureEmbedderTest, CaptureHoldsNoOtherPage) {
+  ScopedFPDFDocument layer = OpenLayer();
+  ASSERT_TRUE(layer);
+  ASSERT_TRUE(EPDFLayer_BeginTransaction(layer.get()));
+  ASSERT_TRUE(EPDFDoc_SetPageRotationByObjectNumber(layer.get(), kCover, 1));
+  CPDF_Document* pdf = CPDFDocumentFromFPDFDocument(layer.get());
+  RetainPtr<CPDF_Array> reach =
+      WritableDict(layer.get(), kCover)->SetNewFor<CPDF_Array>("Reach");
+  reach->AppendNew<CPDF_Reference>(pdf, 1);
+  reach->AppendNew<CPDF_Reference>(pdf, kPageTree);
+  ASSERT_TRUE(EPDFDoc_SetPageRotationByObjectNumber(layer.get(), kBody, 2));
+  ASSERT_TRUE(EPDFDoc_DeletePageByObjectNumber(layer.get(), kIntro));
+  ASSERT_TRUE(EPDFLayer_CommitTransaction(layer.get()));
+  const std::vector<uint8_t> capture = ExportPage(layer.get(), kCover);
+  ASSERT_FALSE(capture.empty());
+  EXPECT_TRUE(HoldsObject(capture, kCover));
+  EXPECT_FALSE(HoldsObject(capture, kBody));
+  EXPECT_FALSE(HoldsObject(capture, kPageTree));
+  EXPECT_FALSE(HoldsObject(capture, 1));  // the catalog
+}
+
+// An import that the transaction then drops leaves the page out.
+TEST_F(EPDFPageCaptureEmbedderTest, AbortedImportLeavesThePageOut) {
+  ScopedFPDFDocument layer = OpenLayer();
+  ASSERT_TRUE(layer);
+  ASSERT_TRUE(EPDFLayer_BeginTransaction(layer.get()));
+  const std::vector<uint8_t> capture = ExportPage(layer.get(), kIntro);
+  ASSERT_TRUE(EPDFDoc_DeletePageByObjectNumber(layer.get(), kIntro));
+  ASSERT_TRUE(EPDFLayer_CommitTransaction(layer.get()));
+
+  ASSERT_TRUE(EPDFLayer_BeginTransaction(layer.get()));
+  ASSERT_TRUE(ImportPage(layer.get(), capture));
+  ASSERT_TRUE(EPDFLayer_AbortTransaction(layer.get()));
+  EXPECT_THAT(PageOrder(layer.get()), ElementsAre(kCover, kBody));
+  EXPECT_EQ(2, CountOf(layer.get()));
+  EXPECT_THAT(NamedPages(layer.get()), ElementsAre(L"Cover=3"));
+}
+
+TEST_F(EPDFPageCaptureEmbedderTest, CapturesNeedAPageAndALayer) {
+  ScopedFPDFDocument layer = OpenLayer();
+  ASSERT_TRUE(layer);
+  EXPECT_TRUE(ExportPage(layer.get(), 0).empty());
+  EXPECT_TRUE(ExportPage(layer.get(), 1).empty());  // the catalog
+  EXPECT_TRUE(ExportPage(layer.get(), kPageTree).empty());
+  EXPECT_TRUE(ExportPage(layer.get(), kIntroSquare).empty());
+  EXPECT_TRUE(ExportPage(layer.get(), 99).empty());
+  // Turned, so the capture holds the page: cutting its end leaves an object
+  // without `endobj`.
+  ASSERT_TRUE(EPDFDoc_SetPageRotationByObjectNumber(layer.get(), kIntro, 1));
+  const std::vector<uint8_t> capture = ExportPage(layer.get(), kIntro);
+  ASSERT_TRUE(HoldsObject(capture, kIntro));
+  const std::vector<uint8_t> annots = ExportAnnots(layer.get(), 1, {0});
+  ASSERT_FALSE(annots.empty());
+
+  ASSERT_TRUE(EPDFLayer_BeginTransaction(layer.get()));
+  ASSERT_TRUE(EPDFDoc_DeletePageByObjectNumber(layer.get(), kIntro));
+  EXPECT_TRUE(ExportPage(layer.get(), kIntro).empty());  // out of the tree
+  EXPECT_FALSE(ImportPage(layer.get(), annots));  // another kind
+  const std::vector<uint8_t> cut(capture.begin(), capture.end() - 4);
+  EXPECT_FALSE(ImportPage(layer.get(), cut));
+  EXPECT_FALSE(ImportPage(layer.get(), {}));
+  ASSERT_TRUE(EPDFLayer_CommitTransaction(layer.get()));
+  EXPECT_FALSE(ImportPage(layer.get(), capture));  // outside a transaction
+  EXPECT_THAT(PageOrder(layer.get()), ElementsAre(kCover, kBody));
+
+  ScopedFPDFDocument plain(
+      FPDF_LoadMemDocument(input_.data(), input_.size(), nullptr));
+  ASSERT_TRUE(plain);
+  EXPECT_TRUE(ExportPage(plain.get(), kIntro).empty());
+}
+
+namespace {
+
+// One page and two embedded files: a.txt, whose file specification is an
+// object of its own (4, its stream 5), and b.txt, whose specification is
+// written in the tree (its stream 6).
+std::string MakeAttachmentsDocument() {
+  return MakePdf({
+      "<< /Type /Catalog /Pages 2 0 R /Names << /EmbeddedFiles 7 0 R >> >>",
+      "<< /Type /Pages /Kids [3 0 R] /Count 1 >>",
+      "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 300 300] >>",
+      "<< /Type /Filespec /F (a.txt) /UF (a.txt) /EF << /F 5 0 R >> >>",
+      "<< /Type /EmbeddedFile /Length 5 >>\nstream\nhello\nendstream",
+      "<< /Type /EmbeddedFile /Length 3 >>\nstream\nbye\nendstream",
+      "<< /Names [(a.txt) 4 0 R (b.txt) << /Type /Filespec /F (b.txt) "
+      "/UF (b.txt) /EF << /F 6 0 R >> >>] >>",
+  });
+}
+
+// The same files in a tree with two leaves: a.txt in the first, b.txt in
+// the second.
+std::string MakeAttachmentsTreeDocument() {
+  return MakePdf({
+      "<< /Type /Catalog /Pages 2 0 R /Names << /EmbeddedFiles 7 0 R >> >>",
+      "<< /Type /Pages /Kids [3 0 R] /Count 1 >>",
+      "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 300 300] >>",
+      "<< /Type /Filespec /F (a.txt) /UF (a.txt) /EF << /F 5 0 R >> >>",
+      "<< /Type /EmbeddedFile /Length 5 >>\nstream\nhello\nendstream",
+      "<< /Type /EmbeddedFile /Length 3 >>\nstream\nbye\nendstream",
+      "<< /Kids [8 0 R 9 0 R] >>",
+      "<< /Limits [(a.txt) (a.txt)] /Names [(a.txt) 4 0 R] >>",
+      "<< /Limits [(b.txt) (b.txt)] /Names [(b.txt) 10 0 R] >>",
+      "<< /Type /Filespec /F (b.txt) /UF (b.txt) /EF << /F 6 0 R >> >>",
+  });
+}
+
+// The keys of |doc|'s embedded files, in tree order.
+std::vector<std::wstring> AttachmentKeys(FPDF_DOCUMENT doc) {
+  std::vector<std::wstring> keys;
+  for (int i = 0; i < FPDFDoc_GetAttachmentCount(doc); ++i) {
+    const unsigned long length = EPDFDoc_GetAttachmentKey(doc, i, nullptr, 0);
+    std::vector<FPDF_WCHAR> buffer = GetFPDFWideStringBuffer(length);
+    EPDFDoc_GetAttachmentKey(doc, i, buffer.data(), length);
+    keys.push_back(GetPlatformWString(buffer.data()));
+  }
+  return keys;
+}
+
+// The decoded bytes of the file under |key|, or "(none)".
+std::string AttachmentContent(FPDF_DOCUMENT doc, const wchar_t* key) {
+  ScopedFPDFWideString name = GetFPDFWideString(key);
+  const int index = EPDFDoc_GetAttachmentIndexByKey(doc, name.get());
+  FPDF_ATTACHMENT attachment =
+      index >= 0 ? FPDFDoc_GetAttachment(doc, index) : nullptr;
+  unsigned long length = 0;
+  if (!attachment || !FPDFAttachment_GetFile(attachment, nullptr, 0, &length)) {
+    return "(none)";
+  }
+  std::string bytes(length, '\0');
+  FPDFAttachment_GetFile(attachment, bytes.data(), length, &length);
+  return bytes;
+}
+
+bool DeleteAttachment(FPDF_DOCUMENT doc, const wchar_t* key) {
+  ScopedFPDFWideString name = GetFPDFWideString(key);
+  const int index = EPDFDoc_GetAttachmentIndexByKey(doc, name.get());
+  return index >= 0 && FPDFDoc_DeleteAttachment(doc, index);
+}
+
+// Adds |key| with |content| and returns its file specification's number.
+uint32_t AddAttachment(FPDF_DOCUMENT doc,
+                       const wchar_t* key,
+                       const std::string& content) {
+  ScopedFPDFWideString name = GetFPDFWideString(key);
+  FPDF_ATTACHMENT attachment = FPDFDoc_AddAttachment(doc, name.get());
+  if (!attachment || !FPDFAttachment_SetFile(attachment, doc, content.data(),
+                                             content.size())) {
+    return 0;
+  }
+  return CPDFObjectFromFPDFAttachment(attachment)->GetObjNum();
+}
+
+std::vector<uint8_t> ExportAttachment(FPDF_DOCUMENT doc, const wchar_t* key) {
+  ScopedFPDFWideString name = GetFPDFWideString(key);
+  unsigned long size = 0;
+  void* buffer = EPDFAttachment_ExportRawToOwnedBuffer(doc, name.get(), &size);
+  return Take(buffer, size);
+}
+
+std::vector<uint8_t> CanonicalAttachment(FPDF_DOCUMENT doc,
+                                         const wchar_t* key) {
+  ScopedFPDFWideString name = GetFPDFWideString(key);
+  unsigned long size = 0;
+  void* buffer =
+      EPDFAttachment_ExportCanonicalToOwnedBuffer(doc, name.get(), &size);
+  return Take(buffer, size);
+}
+
+bool ImportAttachment(FPDF_DOCUMENT doc, const std::vector<uint8_t>& capture) {
+  return EPDFAttachment_ImportRaw(doc, capture.data(),
+                                  static_cast<unsigned long>(capture.size()));
+}
+
+}  // namespace
+
+class EPDFAttachmentCaptureEmbedderTest : public EmbedderTest {
+ protected:
+  void TearDown() override {
+    if (base_) {
+      EPDF_ReleaseBaseDocument(base_);
+    }
+    EmbedderTest::TearDown();
+  }
+
+  ScopedFPDFDocument OpenLayer(std::string bytes = MakeAttachmentsDocument()) {
+    input_ = std::move(bytes);
+    base_ = EPDF_LoadMemBaseDocument(input_.data(), input_.size(), nullptr);
+    if (!base_) {
+      return nullptr;
+    }
+    ScopedFPDFDocument layer(
+        EPDFLayer_OpenLayer(base_, nullptr, nullptr, nullptr));
+    if (layer && !EPDFLayer_RaiseLastObjectNumber(layer.get(), kRaised)) {
+      return nullptr;
+    }
+    return layer;
+  }
+
+  // The layer saved and opened again: what nothing reaches is gone.
+  ScopedFPDFDocument Reopen(FPDF_DOCUMENT layer) {
+    ClearString();
+    EXPECT_TRUE(EPDFLayer_SaveLayerArtifact(layer, this, nullptr));
+    artifact_ = GetString();
+    FPDF_FILEACCESS access = {};
+    access.m_FileLen = artifact_.size();
+    access.m_GetBlock = GetBlockFromString;
+    access.m_Param = &artifact_;
+    EPDFLayerOpenStatus status = EPDFLayerOpenStatus_kOpenFailed;
+    ScopedFPDFDocument reopened(
+        EPDFLayer_OpenLayerArtifact(base_, &access, nullptr, &status));
+    EXPECT_EQ(EPDFLayerOpenStatus_kSuccess, status);
+    return reopened;
+  }
+
+  std::string input_;
+  std::string artifact_;
+  EPDF_BASE_DOCUMENT base_ = nullptr;
+};
+
+// A file of the uploaded file comes back under its key, with its bytes:
+// one whose specification is an object of its own, and one written in the
+// tree. Neither was edited, so the capture holds no copy of them.
+TEST_F(EPDFAttachmentCaptureEmbedderTest, FileAttachmentsComeBack) {
+  for (const wchar_t* key : {L"a.txt", L"b.txt"}) {
+    SCOPED_TRACE(GetPlatformString(GetFPDFWideString(key).get()));
+    ScopedFPDFDocument layer = OpenLayer();
+    ASSERT_TRUE(layer);
+    ASSERT_TRUE(EPDFLayer_BeginTransaction(layer.get()));
+    const std::vector<uint8_t> capture = ExportAttachment(layer.get(), key);
+    ASSERT_FALSE(capture.empty());
+    ASSERT_TRUE(DeleteAttachment(layer.get(), key));
+    ASSERT_TRUE(EPDFLayer_CommitTransaction(layer.get()));
+    EXPECT_EQ(1u, AttachmentKeys(layer.get()).size());
+
+    ASSERT_TRUE(EPDFLayer_BeginTransaction(layer.get()));
+    ASSERT_TRUE(ImportAttachment(layer.get(), capture));
+    ASSERT_TRUE(EPDFLayer_CommitTransaction(layer.get()));
+    EXPECT_THAT(AttachmentKeys(layer.get()), ElementsAre(L"a.txt", L"b.txt"));
+    EXPECT_EQ("hello", AttachmentContent(layer.get(), L"a.txt"));
+    EXPECT_EQ("bye", AttachmentContent(layer.get(), L"b.txt"));
+  }
+}
+
+// A file the layer added comes back with its bytes, also when a save and
+// reopen dropped it, which nothing reached once it was deleted.
+TEST_F(EPDFAttachmentCaptureEmbedderTest, LayerAttachmentComesBack) {
+  for (bool reopen : {false, true}) {
+    SCOPED_TRACE(reopen ? "reopened between delete and import"
+                        : "same session");
+    ScopedFPDFDocument layer = OpenLayer();
+    ASSERT_TRUE(layer);
+    ASSERT_TRUE(EPDFLayer_BeginTransaction(layer.get()));
+    ASSERT_TRUE(AddAttachment(layer.get(), L"c.txt", "made here"));
+    ASSERT_TRUE(EPDFLayer_CommitTransaction(layer.get()));
+
+    ASSERT_TRUE(EPDFLayer_BeginTransaction(layer.get()));
+    const std::vector<uint8_t> capture =
+        ExportAttachment(layer.get(), L"c.txt");
+    ASSERT_FALSE(capture.empty());
+    ASSERT_TRUE(DeleteAttachment(layer.get(), L"c.txt"));
+    ASSERT_TRUE(EPDFLayer_CommitTransaction(layer.get()));
+
+    ScopedFPDFDocument target = reopen ? Reopen(layer.get()) : std::move(layer);
+    ASSERT_TRUE(target);
+    EXPECT_EQ("(none)", AttachmentContent(target.get(), L"c.txt"));
+    ASSERT_TRUE(EPDFLayer_BeginTransaction(target.get()));
+    ASSERT_TRUE(ImportAttachment(target.get(), capture));
+    ASSERT_TRUE(EPDFLayer_CommitTransaction(target.get()));
+    EXPECT_THAT(AttachmentKeys(target.get()),
+                ElementsAre(L"a.txt", L"b.txt", L"c.txt"));
+    EXPECT_EQ("made here", AttachmentContent(target.get(), L"c.txt"));
+  }
+}
+
+// A file comes back into the leaf of a tree with kids where its key goes.
+TEST_F(EPDFAttachmentCaptureEmbedderTest, ComesBackIntoATreeWithKids) {
+  ScopedFPDFDocument layer = OpenLayer(MakeAttachmentsTreeDocument());
+  ASSERT_TRUE(layer);
+  ASSERT_TRUE(EPDFLayer_BeginTransaction(layer.get()));
+  const std::vector<uint8_t> capture = ExportAttachment(layer.get(), L"b.txt");
+  ASSERT_FALSE(capture.empty());
+  ASSERT_TRUE(DeleteAttachment(layer.get(), L"b.txt"));
+  ASSERT_TRUE(ImportAttachment(layer.get(), capture));
+  ASSERT_TRUE(EPDFLayer_CommitTransaction(layer.get()));
+  EXPECT_THAT(AttachmentKeys(layer.get()), ElementsAre(L"a.txt", L"b.txt"));
+  EXPECT_EQ("bye", AttachmentContent(layer.get(), L"b.txt"));
+}
+
+// A key another file took since stays with it.
+TEST_F(EPDFAttachmentCaptureEmbedderTest, ImportLeavesAKeyAnotherFileTook) {
+  ScopedFPDFDocument layer = OpenLayer();
+  ASSERT_TRUE(layer);
+  ASSERT_TRUE(EPDFLayer_BeginTransaction(layer.get()));
+  const std::vector<uint8_t> capture = ExportAttachment(layer.get(), L"a.txt");
+  ASSERT_TRUE(DeleteAttachment(layer.get(), L"a.txt"));
+  ASSERT_TRUE(AddAttachment(layer.get(), L"a.txt", "someone else's"));
+  EXPECT_FALSE(ImportAttachment(layer.get(), capture));
+  ASSERT_TRUE(EPDFLayer_CommitTransaction(layer.get()));
+  EXPECT_EQ("someone else's", AttachmentContent(layer.get(), L"a.txt"));
+}
+
+// What goes back under the key is what the file specification's number
+// holds once the capture is in. A save drops a deleted layer file, so its
+// number is free again; an outline item that took it never becomes a file.
+TEST_F(EPDFAttachmentCaptureEmbedderTest,
+       ImportRefusesWhenItsNumberHoldsSomethingElse) {
+  ScopedFPDFDocument layer = OpenLayer();
+  ASSERT_TRUE(layer);
+  ASSERT_TRUE(EPDFLayer_BeginTransaction(layer.get()));
+  const uint32_t spec = AddAttachment(layer.get(), L"c.txt", "made here");
+  ASSERT_TRUE(spec);
+  ASSERT_TRUE(EPDFLayer_CommitTransaction(layer.get()));
+  ASSERT_TRUE(EPDFLayer_BeginTransaction(layer.get()));
+  const std::vector<uint8_t> capture = ExportAttachment(layer.get(), L"c.txt");
+  ASSERT_TRUE(DeleteAttachment(layer.get(), L"c.txt"));
+  ASSERT_TRUE(EPDFLayer_CommitTransaction(layer.get()));
+
+  ScopedFPDFDocument reopened = Reopen(layer.get());
+  ASSERT_TRUE(reopened);
+  ASSERT_TRUE(EPDFLayer_RaiseLastObjectNumber(reopened.get(), kRaised));
+  ASSERT_TRUE(EPDFLayer_BeginTransaction(reopened.get()));
+  ScopedFPDFWideString title = GetFPDFWideString(L"Taken");
+  ASSERT_EQ(spec,
+            EPDFOutline_CreateItem(reopened.get(), spec, 0, 0, title.get()));
+  EXPECT_FALSE(ImportAttachment(reopened.get(), capture));
+  ASSERT_TRUE(EPDFLayer_CommitTransaction(reopened.get()));
+  EXPECT_THAT(AttachmentKeys(reopened.get()), ElementsAre(L"a.txt", L"b.txt"));
+}
+
+// A file reads the same while it is the same file: across a save and reopen,
+// and when its capture brought it back. Another file under its key, with the
+// same bytes, reads differently.
+TEST_F(EPDFAttachmentCaptureEmbedderTest, CanonicalBytesTellTheSameFile) {
+  ScopedFPDFDocument layer = OpenLayer();
+  ASSERT_TRUE(layer);
+  ASSERT_TRUE(EPDFLayer_BeginTransaction(layer.get()));
+  ASSERT_TRUE(AddAttachment(layer.get(), L"c.txt", "made here"));
+  ASSERT_TRUE(EPDFLayer_CommitTransaction(layer.get()));
+  const std::vector<uint8_t> made = CanonicalAttachment(layer.get(), L"c.txt");
+  const std::vector<uint8_t> inline_file =
+      CanonicalAttachment(layer.get(), L"b.txt");
+  ASSERT_FALSE(made.empty());
+  ASSERT_FALSE(inline_file.empty());
+  EXPECT_NE(made, CanonicalAttachment(layer.get(), L"a.txt"));
+
+  ScopedFPDFDocument reopened = Reopen(layer.get());
+  ASSERT_TRUE(reopened);
+  EXPECT_EQ(made, CanonicalAttachment(reopened.get(), L"c.txt"));
+  EXPECT_EQ(inline_file, CanonicalAttachment(reopened.get(), L"b.txt"));
+
+  ASSERT_TRUE(EPDFLayer_RaiseLastObjectNumber(reopened.get(), kRaised));
+  for (const wchar_t* key : {L"c.txt", L"b.txt"}) {
+    SCOPED_TRACE(GetPlatformString(GetFPDFWideString(key).get()));
+    const std::vector<uint8_t> before =
+        CanonicalAttachment(reopened.get(), key);
+    ASSERT_TRUE(EPDFLayer_BeginTransaction(reopened.get()));
+    const std::vector<uint8_t> capture = ExportAttachment(reopened.get(), key);
+    ASSERT_TRUE(DeleteAttachment(reopened.get(), key));
+    EXPECT_TRUE(CanonicalAttachment(reopened.get(), key).empty());
+    ASSERT_TRUE(ImportAttachment(reopened.get(), capture));
+    ASSERT_TRUE(EPDFLayer_CommitTransaction(reopened.get()));
+    EXPECT_EQ(before, CanonicalAttachment(reopened.get(), key));
+  }
+
+  ASSERT_TRUE(EPDFLayer_BeginTransaction(reopened.get()));
+  ASSERT_TRUE(DeleteAttachment(reopened.get(), L"c.txt"));
+  ASSERT_TRUE(AddAttachment(reopened.get(), L"c.txt", "made here"));
+  ASSERT_TRUE(EPDFLayer_CommitTransaction(reopened.get()));
+  EXPECT_NE(made, CanonicalAttachment(reopened.get(), L"c.txt"));
+
+  EXPECT_TRUE(CanonicalAttachment(reopened.get(), L"none.txt").empty());
+  ScopedFPDFDocument plain(
+      FPDF_LoadMemDocument(input_.data(), input_.size(), nullptr));
+  ASSERT_TRUE(plain);
+  EXPECT_TRUE(CanonicalAttachment(plain.get(), L"a.txt").empty());
+}
+
+TEST_F(EPDFAttachmentCaptureEmbedderTest, CapturesNeedAFileAndALayer) {
+  ScopedFPDFDocument layer = OpenLayer();
+  ASSERT_TRUE(layer);
+  EXPECT_TRUE(ExportAttachment(layer.get(), L"none.txt").empty());
+  EXPECT_TRUE(ExportAttachment(layer.get(), L"").empty());
+  const std::vector<uint8_t> capture = ExportAttachment(layer.get(), L"a.txt");
+  ASSERT_FALSE(capture.empty());
+  ASSERT_TRUE(DeleteAttachment(layer.get(), L"a.txt"));
+  EXPECT_FALSE(
+      ImportAttachment(layer.get(), capture));  // outside a transaction
+  ASSERT_TRUE(EPDFLayer_BeginTransaction(layer.get()));
+  EXPECT_FALSE(ImportAttachment(layer.get(), {}));
+  const std::vector<uint8_t> cut(capture.begin(), capture.end() - 4);
+  EXPECT_FALSE(ImportAttachment(layer.get(), cut));
+  // A capture of another kind, and a file capture as another kind.
+  EXPECT_FALSE(EPDFPage_ImportRaw(layer.get(), capture.data(),
+                                  static_cast<unsigned long>(capture.size())));
+  ASSERT_TRUE(EPDFLayer_CommitTransaction(layer.get()));
+  EXPECT_THAT(AttachmentKeys(layer.get()), ElementsAre(L"b.txt"));
+
+  ScopedFPDFDocument plain(
+      FPDF_LoadMemDocument(input_.data(), input_.size(), nullptr));
+  ASSERT_TRUE(plain);
+  EXPECT_TRUE(ExportAttachment(plain.get(), L"a.txt").empty());
 }

@@ -39,8 +39,7 @@ CFX_XMLNode* CFX_XMLElement::Clone(CFX_XMLDocument* doc) {
 
 WideString CFX_XMLElement::GetLocalTagName() const {
   auto pos = name_.Find(L':');
-  return pos.has_value() ? name_.Last(name_.GetLength() - pos.value() - 1)
-                         : name_;
+  return pos.has_value() ? name_.Substr(pos.value() + 1) : name_;
 }
 
 WideString CFX_XMLElement::GetNamespacePrefix() const {
@@ -49,12 +48,10 @@ WideString CFX_XMLElement::GetNamespacePrefix() const {
 }
 
 WideString CFX_XMLElement::GetNamespaceURI() const {
-  WideString attr(L"xmlns");
   WideString wsPrefix = GetNamespacePrefix();
-  if (!wsPrefix.IsEmpty()) {
-    attr += L":";
-    attr += wsPrefix;
-  }
+  WideString attr = wsPrefix.IsEmpty()
+                        ? WideString(L"xmlns")
+                        : WideString({L"xmlns:", wsPrefix.AsStringView()});
   const CFX_XMLNode* pNode = this;
   while (pNode && pNode->GetType() == Type::kElement) {
     auto* pElement = static_cast<const CFX_XMLElement*>(pNode);
@@ -180,10 +177,7 @@ void CFX_XMLElement::RemoveAttribute(const WideString& name) {
 
 WideString CFX_XMLElement::AttributeToString(const WideString& name,
                                              const WideString& value) {
-  WideString ret = L" ";
-  ret += name;
-  ret += L"=\"";
-  ret += value.EncodeEntities();
-  ret += L"\"";
-  return ret;
+  WideString encoded_value = value.EncodeEntities();
+  return WideString(
+      {L' ', name.AsStringView(), L"=\"", encoded_value.AsStringView(), L'"'});
 }

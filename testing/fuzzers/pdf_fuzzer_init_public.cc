@@ -8,16 +8,18 @@
 
 #include <string>
 
+#include "core/fxcrt/compiler_specific.h"
+#include "core/fxcrt/fx_memcpy_wrappers.h"
 #include "testing/fuzzers/pdfium_fuzzer_util.h"
 
 #ifdef PDF_ENABLE_V8
-#include "testing/free_deleter.h"
-#include "testing/v8_initializer.h"
-#include "v8/include/v8-platform.h"
+#include "testing/free_deleter.h"    // nogncheck
+#include "testing/v8_initializer.h"  // nogncheck
+#include "v8/include/v8-platform.h"  // nogncheck
 #ifdef PDF_ENABLE_XFA
-#include "testing/fuzzers/xfa_process_state.h"
-#include "v8/include/v8-array-buffer.h"
-#include "v8/include/v8-isolate.h"
+#include "testing/fuzzers/xfa_process_state.h"  // nogncheck
+#include "v8/include/v8-array-buffer.h"         // nogncheck
+#include "v8/include/v8-isolate.h"              // nogncheck
 #endif  // PDF_ENABLE_XFA
 #endif  // PDF_ENABLE_V8
 
@@ -84,7 +86,7 @@ PDFFuzzerInitPublic::PDFFuzzerInitPublic() {
   isolate_.reset(v8::Isolate::New(create_params));
 #endif  // PDF_ENABLE_XFA
 #endif  // PDF_ENABLE_V8
-  memset(&config_, '\0', sizeof(config_));
+  UNSAFE_TODO(FXSYS_memset(&config_, '\0', sizeof(config_)));
   config_.version = 4;
   config_.m_pUserFontPaths = nullptr;
   config_.m_pPlatform = nullptr;
@@ -101,7 +103,7 @@ PDFFuzzerInitPublic::PDFFuzzerInitPublic() {
 #endif
   FPDF_InitLibraryWithConfig(&config_);
 
-  memset(&unsupport_info_, '\0', sizeof(unsupport_info_));
+  UNSAFE_TODO(FXSYS_memset(&unsupport_info_, '\0', sizeof(unsupport_info_)));
   unsupport_info_.version = 1;
   unsupport_info_.FSDK_UnSupport_Handler = [](UNSUPPORT_INFO*, int) {};
   FSDK_SetUnSpObjProcessHandler(&unsupport_info_);

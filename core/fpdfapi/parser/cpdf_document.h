@@ -112,6 +112,10 @@ class CPDF_Document : public Observable,
   static constexpr int kPageMaxNum = 0xFFFFF;
 
   static bool IsValidPageObject(const CPDF_Object* obj);
+  // EmbedPDF(reads-dont-write): whether `dict` is a leaf of the page tree, a
+  // page: /Type /Page, or no /Kids and any /Type but /Pages. Upstream rewrites
+  // such a /Type to /Page while walking the tree; a read leaves it as it is.
+  static bool IsPageTreeLeaf(const CPDF_Dictionary* dict);
 
   CPDF_Document(std::unique_ptr<RenderDataIface> pRenderData,
                 std::unique_ptr<PageDataIface> pPageData);
@@ -308,6 +312,10 @@ class CPDF_Document : public Observable,
   // when the number can't take it or the page can't be inserted; nothing
   // changes then.
   RetainPtr<CPDF_Dictionary> CreateNewPageAt(int iPage, uint32_t objnum);
+  // EmbedPDF(epdf-api): puts |page_dict|, a page out of the page tree, back
+  // into it at |iPage|, for EPDFPage_ImportRaw(). False when |iPage| is out of
+  // range or the page tree can't take it.
+  bool InsertExistingPage(int iPage, RetainPtr<CPDF_Dictionary> page_dict);
 
   void IncrementParsedPageCount() { ++parsed_page_count_; }
   uint32_t GetParsedPageCountForTesting() { return parsed_page_count_; }
@@ -360,6 +368,18 @@ class CPDF_Document : public Observable,
     UnownedPtr<CPDF_Document::PageDataIface> const page_data_;
   };
 
+  struct PageTreeData {
+    explicit PageTreeData(RetainPtr<CPDF_Dictionary> dict);
+    PageTreeData(PageTreeData&& that) noexcept;
+    PageTreeData& operator=(PageTreeData&& that) noexcept;
+    ~PageTreeData();
+
+    // The dictionary being processed at this level.
+    RetainPtr<CPDF_Dictionary> pages_dict;
+    // Index of the child being processed within the dictionary's /Kids array.
+    size_t child_index = 0;
+  };
+
   // Retrieve page count information by getting count value from the tree nodes
   int RetrievePageCount();
 
@@ -387,11 +407,9 @@ class CPDF_Document : public Observable,
   // EmbedPDF(annot-appearance): see SetPresetFileIdentifier().
   RetainPtr<const CPDF_Array> preset_file_identifier_;
 
-  // Vector of pairs to know current position in the page tree. The index in the
-  // vector corresponds to the level being described. The pair contains a
-  // pointer to the dictionary being processed at the level, and an index of the
-  // of the child being processed within the dictionary's /Kids array.
-  std::vector<std::pair<RetainPtr<CPDF_Dictionary>, size_t>> tree_traversal_;
+  // Vector to keep track of the current position in the page tree. The index
+  // in the vector corresponds to the level being described.
+  std::vector<PageTreeData> tree_traversal_;
 
   // True if the CPDF_Parser succeeded without having to rebuild the cross
   // reference table.

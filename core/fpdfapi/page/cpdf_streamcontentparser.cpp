@@ -42,10 +42,12 @@
 #include "core/fxcrt/autonuller.h"
 #include "core/fxcrt/bytestring.h"
 #include "core/fxcrt/check.h"
+#include "core/fxcrt/check_op.h"
 #include "core/fxcrt/compiler_specific.h"
 #include "core/fxcrt/containers/contains.h"
 #include "core/fxcrt/epdf_tls.h"
 #include "core/fxcrt/fx_safe_types.h"
+#include "core/fxcrt/numerics/safe_conversions.h"
 #include "core/fxcrt/pauseindicator_iface.h"
 #include "core/fxcrt/scoped_set_insertion.h"
 #include "core/fxcrt/span.h"
@@ -602,6 +604,14 @@ std::vector<float> CPDF_StreamContentParser::GetNumbers(size_t count) const {
   return values;
 }
 
+std::optional<int> CPDF_StreamContentParser::GetInteger(uint32_t index) const {
+  float num = GetNumber(index);
+  if (!pdfium::IsValueInRangeForNumericType<int>(num)) {
+    return std::nullopt;
+  }
+  return static_cast<int>(num);
+}
+
 CFX_PointF CPDF_StreamContentParser::GetPoint(uint32_t index) const {
   return CFX_PointF(GetNumber(index + 1), GetNumber(index));
 }
@@ -710,7 +720,7 @@ RetainPtr<CPDF_Stream> CPDF_StreamContentParser::ReadInlineImage(
     }
     // Next `syntax` read below may invalidate `word`. Must save to `key`.
     ByteStringView word = syntax->GetWord();
-    ByteString key(word.Last(word.GetLength() - 1));
+    ByteString key(word.Substr(1));
     auto pObj = syntax->ReadNextObject(false, false, 0);
     if (pObj && !pObj->IsInline()) {
       dict->SetNewFor<CPDF_Reference>(key, document, pObj->GetObjNum());
@@ -1018,12 +1028,12 @@ CPDF_ImageObject* CPDF_StreamContentParser::AddImageObject(
 }
 
 std::vector<float> CPDF_StreamContentParser::GetColors() const {
-  DCHECK(param_count_ > 0);
+  DCHECK_GT(param_count_, 0);
   return GetNumbers(param_count_);
 }
 
 std::vector<float> CPDF_StreamContentParser::GetNamedColors() const {
-  DCHECK(param_count_ > 0);
+  DCHECK_GT(param_count_, 0);
   const uint32_t nvalues = param_count_ - 1;
   std::vector<float> values(nvalues);
   for (size_t i = 0; i < nvalues; ++i) {
@@ -1118,12 +1128,12 @@ void CPDF_StreamContentParser::Handle_BeginImageData() {}
 
 void CPDF_StreamContentParser::Handle_SetLineJoin() {
   cur_states_->mutable_graph_state().SetLineJoin(
-      static_cast<CFX_GraphStateData::LineJoin>(GetInteger(0)));
+      static_cast<CFX_GraphStateData::LineJoin>(GetInteger(0).value_or(0)));
 }
 
 void CPDF_StreamContentParser::Handle_SetLineCap() {
   cur_states_->mutable_graph_state().SetLineCap(
-      static_cast<CFX_GraphStateData::LineCap>(GetInteger(0)));
+      static_cast<CFX_GraphStateData::LineCap>(GetInteger(0).value_or(0)));
 }
 
 void CPDF_StreamContentParser::Handle_SetCMYKColor_Fill() {
@@ -1414,7 +1424,7 @@ RetainPtr<CPDF_ColorSpace> CPDF_StreamContentParser::FindColorSpace(
 
   if (name == "DeviceGray" || name == "DeviceCMYK" || name == "DeviceRGB") {
     ByteString defname = "Default";
-    defname += name.Last(name.GetLength() - 7);
+    defname += name.Substr(6);  // Remove "Device" from e.g. "DeviceCMYK".
     RetainPtr<const CPDF_Object> pDefObj =
         FindResourceObj("ColorSpace", defname);
     if (!pDefObj) {
@@ -1496,7 +1506,7 @@ void CPDF_StreamContentParser::AddTextObject(
     SetGraphicStates(pText.get(), true, true, true);
     if (TextRenderingModeIsStrokeMode(text_mode)) {
       const CFX_Matrix& ctm = cur_states_->current_transformation_matrix();
-      pdfium::span<float> text_ctm =
+      pdfium::span<float, 4> text_ctm =
           pText->mutable_text_state().GetMutableCTM();
       text_ctm[0] = ctm.a;
       text_ctm[1] = ctm.c;
@@ -1617,7 +1627,7 @@ void CPDF_StreamContentParser::OnChangeTextMatrix() {
   text_matrix.Concat(cur_states_->text_matrix());
   text_matrix.Concat(cur_states_->current_transformation_matrix());
   text_matrix.Concat(mt_content_to_user_);
-  pdfium::span<float> pTextMatrix =
+  pdfium::span<float, 4> pTextMatrix =
       cur_states_->mutable_text_state().GetMutableMatrix();
   pTextMatrix[0] = text_matrix.a;
   pTextMatrix[1] = text_matrix.c;
@@ -1627,7 +1637,7 @@ void CPDF_StreamContentParser::OnChangeTextMatrix() {
 
 void CPDF_StreamContentParser::Handle_SetTextRenderMode() {
   TextRenderingMode mode;
-  if (SetTextRenderingModeFromInt(GetInteger(0), &mode)) {
+  if (SetTextRenderingModeFromInt(GetInteger(0).value_or(0), &mode)) {
     cur_states_->mutable_text_state().SetTextMode(mode);
   }
 }
@@ -1825,7 +1835,7 @@ uint32_t CPDF_StreamContentParser::Parse(
     uint32_t start_offset,
     uint32_t max_cost,
     const std::vector<uint32_t>& stream_start_offsets) {
-  DCHECK(start_offset < pData.size());
+  DCHECK_LT(start_offset, pData.size());
 
   // Parsing will be done from within |pDataStart|.
   pdfium::span<const uint8_t> pDataStart = pData.subspan(start_offset);
@@ -1862,7 +1872,7 @@ uint32_t CPDF_StreamContentParser::Parse(
         break;
       case CPDF_StreamParser::ElementType::kName: {
         auto word = syntax_->GetWord();
-        AddNameParam(word.Last(word.GetLength() - 1));
+        AddNameParam(word.Substr(1));
         break;
       }
       default:

@@ -9,6 +9,8 @@ assert(pdf_enable_xfa)
 
 source_set("parser") {
   sources = [
+    "attribute_values.inc",
+    "attributes.inc",
     "cscript_datawindow.cpp",
     "cscript_datawindow.h",
     "cscript_eventpseudomodel.cpp",
@@ -668,7 +670,10 @@ source_set("parser") {
     "cxfa_xsl.h",
     "cxfa_zpl.cpp",
     "cxfa_zpl.h",
+    "element_attributes.inc",
+    "elements.inc",
     "gced_locale_iface.h",
+    "packets.inc",
     "xfa_basic_data.cpp",
     "xfa_basic_data.h",
     "xfa_document_datamerger_imp.cpp",
@@ -682,16 +687,19 @@ source_set("parser") {
     "../../../:pdfium_noshorten_config",
     "../../:xfa_warnings",
   ]
-  deps = [
-    "../../../core/fxcodec",
+  public_deps = [
     "../../../core/fxcrt",
     "../../../core/fxge",
     "../../../fxjs",
     "../../../fxjs:gc",
-    "../../fde",
     "../../fgas/crt",
-    "../../fgas/font",
     "../../fgas/graphics",
+    "//v8:cppgc_headers",
+  ]
+  deps = [
+    "../../../core/fxcodec",
+    "../../fde",
+    "../../fgas/font",
   ]
   visibility = [ "../../../*" ]
 }
@@ -713,6 +721,8 @@ pdfium_unittest_source_set("unittests") {
     ":parser",
     "../../../fxjs",
     "../../../fxjs:gc",
+    "../../../testing:test_support",
+    "//v8:cppgc_headers",
   ]
   pdfium_root_dir = "../../../"
 }

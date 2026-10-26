@@ -11,6 +11,7 @@
 #include <deque>
 #include <functional>
 #include <memory>
+#include <optional>
 #include <set>
 #include <stack>
 #include <variant>
@@ -83,7 +84,7 @@ class CPDF_StreamContentParser {
 
   CPDF_AllStates* GetCurStates() const { return cur_states_.get(); }
   bool IsColored() const { return colored_; }
-  pdfium::span<const float> GetType3Data() const { return type3_data_; }
+  pdfium::span<const float, 6> GetType3Data() const { return type3_data_; }
   RetainPtr<CPDF_Font> FindFont(const ByteString& name);
   CPDF_PageObjectHolder::CTMMap TakeAllCTMs();
 
@@ -130,9 +131,7 @@ class CPDF_StreamContentParser {
   // Calls GetNumber() |count| times and returns the values in reverse order.
   // e.g. for |count| = 3, returns [GetNumber(2), GetNumber(1), GetNumber(0)].
   std::vector<float> GetNumbers(size_t count) const;
-  int GetInteger(uint32_t index) const {
-    return static_cast<int>(GetNumber(index));
-  }
+  std::optional<int> GetInteger(uint32_t index) const;
   // Makes a point from {GetNumber(index + 1), GetNumber(index)}.
   CFX_PointF GetPoint(uint32_t index) const;
   // Makes a matrix from {GetNumber(5), ..., GetNumber(0)}.

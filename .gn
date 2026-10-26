@@ -2,11 +2,13 @@
 # Use of this source code is governed by a BSD-style license that can be
 # found in the LICENSE file.
 
+import("//build/dotfile_settings.gni")
+
 buildconfig = "//build/config/BUILDCONFIG.gn"
 
 # The python interpreter to use by default. On Windows, this will look
 # for python3.exe and python3.bat.
-script_executable = "python3"
+script_executable = "//third_party/cpython3/host/bin/python3"
 
 default_args = {
   # Use a production-performant allocator.
@@ -14,6 +16,9 @@ default_args = {
   # issue and should be removed.
   partition_alloc_is_debug = false
   enable_pkeys = false
+
+  # This security tooling is not needed.
+  v8_enable_generated_code_validator = false
 
   # PDFs only need to run JavaScript.
   v8_enable_webassembly = false
@@ -45,6 +50,13 @@ default_args = {
 
   # Use Siso instead of Ninja.
   use_siso = true
+
+  # Adds -Wexit-time-destructors check to match Chromium.
+  is_wexit_time_destructors_default = true
+
+  # Avoid pulling libjpeg_turbo into libyuv in standalone builds.
+  libyuv_disable_jpeg = true
+  libyuv_include_tests = false
 }
 
 no_check_targets = [
@@ -56,3 +68,5 @@ no_check_targets = [
   "//v8/test/cctest:cctest_sources",
   "//v8/test/unittests:inspector_unittests_sources",
 ]
+
+expand_directory_allowlist = build_dotfile_settings.expand_directory_allowlist

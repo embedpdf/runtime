@@ -8,6 +8,7 @@
 #include "core/fpdfapi/parser/cpdf_array.h"
 #include "core/fpdfapi/parser/cpdf_dictionary.h"
 #include "core/fpdfapi/parser/cpdf_document.h"
+#include "core/fpdfapi/parser/cpdf_layer_document.h"
 #include "core/fpdfapi/parser/cpdf_reference.h"
 
 namespace epdf {
@@ -52,6 +53,20 @@ bool IsAnnotationOfPage(CPDF_Page* page, CPDF_AnnotContext* annotation) {
   return page_object_number != 0 && annotation_page_object_number != 0
              ? page_object_number == annotation_page_object_number
              : page_dictionary.Get() == annotation_page_dictionary.Get();
+}
+
+bool IsIndirectObjectOf(const CPDF_Document* doc, const CPDF_Object* object) {
+  if (!doc || !object) {
+    return false;
+  }
+  const uint32_t objnum = object->GetObjNum();
+  if (objnum == 0) {
+    return false;
+  }
+  if (const CPDF_LayerDocument* layer = CPDF_LayerDocument::FromDocument(doc)) {
+    return layer->IsVersionOf(objnum, object);
+  }
+  return doc->GetIndirectObject(objnum) == object;
 }
 
 }  // namespace epdf

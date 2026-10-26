@@ -35,14 +35,6 @@ CPDF_Type3Font::CPDF_Type3Font(CPDF_Document* document,
 
 CPDF_Type3Font::~CPDF_Type3Font() = default;
 
-bool CPDF_Type3Font::IsType3Font() const {
-  return true;
-}
-
-const CPDF_Type3Font* CPDF_Type3Font::AsType3Font() const {
-  return this;
-}
-
 CPDF_Type3Font* CPDF_Type3Font::AsType3Font() {
   return this;
 }
@@ -118,8 +110,6 @@ bool CPDF_Type3Font::Load() {
   return true;
 }
 
-void CPDF_Type3Font::LoadGlyphMap() {}
-
 void CPDF_Type3Font::CheckType3FontMetrics() {
   CheckFontMetrics();
 }
@@ -193,7 +183,7 @@ CPDF_Type3Char* CPDF_Type3Font::LoadChar(uint32_t charcode) {
   return pCachedChar;
 }
 
-int CPDF_Type3Font::GetCharWidthF(uint32_t charcode) {
+int CPDF_Type3Font::GetCharWidth(uint32_t charcode) {
   if (charcode >= std::size(char_width_l_)) {
     charcode = 0;
   }

@@ -35,23 +35,4 @@ jobs:
 
       - name: Report what embedpdf/main hasn't merged
         shell: bash
-        run: |
-          set -euo pipefail
-          base=$(git merge-base HEAD upstream/main)
-          count=$(git rev-list --count "$base..upstream/main")
-          oldest=$(git log --reverse --format=%ci "$base..upstream/main" | head -1)
-          {
-            echo "## Upstream PDFium not in embedpdf/main"
-            echo
-            echo "- Base: \`$(git log -1 --format='%h %ad %s' --date=short "$base")\`"
-            echo "- Unmerged upstream commits: **$count**${oldest:+, the oldest from $oldest}"
-            echo
-            echo "### Likely security fixes"
-            echo
-          } >> "$GITHUB_STEP_SUMMARY"
-          git log --format='%h%x09%ad%x09%s' --date=short "$base..upstream/main" |
-            grep -iE 'overflow|crash|out[- ]of[- ]bounds|use[- ]after[- ]free|heap|stack[- ]buffer|null deref|fuzz|security|sanitiz' |
-            while IFS=$'\t' read -r hash date subject; do
-              echo "- \`$hash\` $date $subject" >> "$GITHUB_STEP_SUMMARY"
-              echo "::warning title=Likely upstream security fix::$hash $subject"
-            done || true
+        run: python3 scripts/embedpdf-runtime/check-upstream-freshness.py

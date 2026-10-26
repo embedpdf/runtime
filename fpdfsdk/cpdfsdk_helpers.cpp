@@ -9,6 +9,7 @@
 #include <utility>
 
 #include "build/build_config.h"
+#include "constants/catalog.h"
 #include "constants/form_fields.h"
 #include "constants/stream_dict_common.h"
 #include "core/fpdfapi/page/cpdf_annotcontext.h"
@@ -32,7 +33,7 @@
 #include "fpdfsdk/cpdfsdk_formfillenvironment.h"
 
 #if defined(PDF_USE_SKIA)
-#include "core/fxge/cfx_defaultrenderdevice.h"
+#include "core/fxge/cfx_gemodule.h"
 #endif
 
 namespace {
@@ -74,7 +75,8 @@ bool DocHasXFA(const CPDF_Document* doc) {
     return false;
   }
 
-  RetainPtr<const CPDF_Dictionary> form = root->GetDictFor("AcroForm");
+  RetainPtr<const CPDF_Dictionary> form =
+      root->GetDictFor(pdfium::catalog::kAcroForm);
   return form && form->GetArrayFor("XFA");
 }
 
@@ -293,9 +295,8 @@ FXDIB_Format FXDIBFormatFromFPDFFormat(int format) {
       return FXDIB_Format::kBgra;
 #if defined(PDF_USE_SKIA)
     case FPDFBitmap_BGRA_Premul:
-      return CFX_DefaultRenderDevice::UseSkiaRenderer()
-                 ? FXDIB_Format::kBgraPremul
-                 : FXDIB_Format::kInvalid;
+      return CFX_GEModule::IsSkiaRenderer() ? FXDIB_Format::kBgraPremul
+                                            : FXDIB_Format::kInvalid;
 #endif
     default:
       return FXDIB_Format::kInvalid;
@@ -305,7 +306,7 @@ FXDIB_Format FXDIBFormatFromFPDFFormat(int format) {
 void ValidateBitmapPremultiplyState(CFX_DIBitmap* bitmap) {
 #if defined(PDF_USE_SKIA)
   const bool should_be_premultiplied =
-      CFX_DefaultRenderDevice::UseSkiaRenderer() &&
+      CFX_GEModule::IsSkiaRenderer() &&
       bitmap->GetFormat() == FXDIB_Format::kBgraPremul;
   CHECK_EQ(should_be_premultiplied, bitmap->IsPremultiplied());
 #else
@@ -317,12 +318,6 @@ CPDFSDK_InteractiveForm* FormHandleToInteractiveForm(FPDF_FORMHANDLE hHandle) {
   CPDFSDK_FormFillEnvironment* pFormFillEnv =
       CPDFSDKFormFillEnvironmentFromFPDFFormHandle(hHandle);
   return pFormFillEnv ? pFormFillEnv->GetInteractiveForm() : nullptr;
-}
-
-ByteString ByteStringFromFPDFWideString(FPDF_WIDESTRING wide_string) {
-  // SAFETY: caller ensures `wide_string` is NUL-terminated and enforced
-  // by UNSAFE_BUFFER_USAGE in header file.
-  return UNSAFE_BUFFERS(WideStringFromFPDFWideString(wide_string).ToUTF8());
 }
 
 WideString WideStringFromFPDFWideString(FPDF_WIDESTRING wide_string) {
@@ -486,7 +481,8 @@ void ReportUnsupportedFeatures(const CPDF_Document* doc) {
     RaiseUnsupportedError(FPDF_UNSP_DOC_PORTABLECOLLECTION);
   }
 
-  RetainPtr<const CPDF_Dictionary> pNameDict = pRootDict->GetDictFor("Names");
+  RetainPtr<const CPDF_Dictionary> pNameDict =
+      pRootDict->GetDictFor(pdfium::catalog::kNames);
   if (pNameDict) {
     if (pNameDict->KeyExist("EmbeddedFiles")) {
       RaiseUnsupportedError(FPDF_UNSP_DOC_ATTACHMENT);

@@ -29,7 +29,7 @@ constexpr uint16_t kMirrorMax = (1 << kMirrorBitCount) - 1;
 #undef CHARPROP____
 #define CHARPROP____(mirror, ct, bd, bt) \
   ((mirror << kMirrorBitPos) |           \
-   (static_cast<uint16_t>(FX_BIDICLASS::bd) << kBidiClassBitPos)),
+   (static_cast<uint16_t>(BidiClass::bd) << kBidiClassBitPos)),
 constexpr uint16_t kTextLayoutCodeProperties[] = {
 #include "core/fxcrt/fx_ucddata.inc"  // NOLINT(build/include)
 };
@@ -63,9 +63,9 @@ constexpr uint16_t kCharTypeBitMask =
     (((1u << kCharTypeBitCount) - 1) << kCharTypeBitPos);
 
 #undef CHARPROP____
-#define CHARPROP____(mirror, ct, bd, bt)                         \
-  ((static_cast<uint16_t>(FX_CHARTYPE::ct) << kCharTypeBitPos) | \
-   (static_cast<uint16_t>(FX_BREAKPROPERTY::bt) << kBreakTypeBitPos)),
+#define CHARPROP____(mirror, ct, bd, bt)                      \
+  ((static_cast<uint16_t>(CharType::ct) << kCharTypeBitPos) | \
+   (static_cast<uint16_t>(BreakProperty::bt) << kBreakTypeBitPos)),
 constexpr uint16_t kExtendedTextLayoutCodeProperties[] = {
 #include "core/fxcrt/fx_ucddata.inc"  // NOLINT(build/include)
 };
@@ -154,27 +154,27 @@ wchar_t GetMirrorChar(wchar_t wch) {
   return UNSAFE_BUFFERS(kFXTextLayoutBidiMirror[idx]);
 }
 
-FX_BIDICLASS GetBidiClass(wchar_t wch) {
+BidiClass GetBidiClass(wchar_t wch) {
   uint16_t prop = GetUnicodeProperties(wch);
   uint16_t result = (prop & kBidiClassBitMask) >> kBidiClassBitPos;
-  DCHECK(result <= static_cast<uint16_t>(FX_BIDICLASS::kPDF));
-  return static_cast<FX_BIDICLASS>(result);
+  DCHECK_LE(result, static_cast<uint16_t>(BidiClass::kPDF));
+  return static_cast<BidiClass>(result);
 }
 
 // EmbedPDF(rich-text): no PDF_ENABLE_XFA guard around these two: the rich text
 // line breaker uses them too.
-FX_CHARTYPE GetCharType(wchar_t wch) {
+CharType GetCharType(wchar_t wch) {
   uint16_t prop = GetExtendedUnicodeProperties(wch);
   uint16_t result = (prop & kCharTypeBitMask) >> kCharTypeBitPos;
-  DCHECK(result <= static_cast<uint16_t>(FX_CHARTYPE::kArabic));
-  return static_cast<FX_CHARTYPE>(result);
+  DCHECK_LE(result, static_cast<uint16_t>(CharType::kArabic));
+  return static_cast<CharType>(result);
 }
 
-FX_BREAKPROPERTY GetBreakProperty(wchar_t wch) {
+BreakProperty GetBreakProperty(wchar_t wch) {
   uint16_t prop = GetExtendedUnicodeProperties(wch);
   uint16_t result = (prop & kBreakTypeBitMask) >> kBreakTypeBitPos;
-  DCHECK(result <= static_cast<uint16_t>(FX_BREAKPROPERTY::kTB));
-  return static_cast<FX_BREAKPROPERTY>(result);
+  DCHECK_LE(result, static_cast<uint16_t>(BreakProperty::kTB));
+  return static_cast<BreakProperty>(result);
 }
 
 }  // namespace pdfium::unicode

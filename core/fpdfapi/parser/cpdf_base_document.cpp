@@ -43,8 +43,8 @@ bool ComputeStreamSha256(IFX_SeekableReadStream* stream,
     return false;
   }
 
-  CRYPT_sha2_context context;
-  CRYPT_SHA256Start(&context);
+  CryptSha2Context context;
+  CryptSha256Start(&context);
   std::array<uint8_t, 8192> buffer = {};
   FX_FILESIZE offset = 0;
   while (offset < size) {
@@ -54,11 +54,11 @@ bool ComputeStreamSha256(IFX_SeekableReadStream* stream,
                                    offset)) {
       return false;
     }
-    CRYPT_SHA256Update(&context, pdfium::span(buffer).first(read_size));
+    CryptSha256Update(&context, pdfium::span(buffer).first(read_size));
     offset += read_size;
   }
 
-  CRYPT_SHA256Finish(&context, *digest);
+  CryptSha256Finish(&context, *digest);
   return true;
 }
 

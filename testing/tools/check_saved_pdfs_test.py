@@ -66,6 +66,16 @@ class SavedPdfCheckerTest(unittest.TestCase):
         with self.assertRaises((InvalidSavedPdf, pikepdf.PdfError)):
             self.check(data[:start] + b''.join(lines))
 
+    def test_full_rewrite_with_more_than_one_subsection_fails(self):
+        # The same entries, as subsections 0-2 and 3: legal for a lenient
+        # reader, but not the one subsection a file without updates has.
+        data, start = fixture()
+        lines = data[start:].splitlines(keepends=True)
+        lines[1] = b'0 3\n'
+        lines.insert(5, b'3 1\n')
+        with self.assertRaisesRegex(InvalidSavedPdf, 'one subsection'):
+            self.check(data[:start] + b''.join(lines))
+
     def test_custom_trailer_roots_are_followed(self):
         # This object is ordinary application data, not an encryption dictionary.
         data = fixture(custom_root=True)[0].replace(b'/Filter/Standard', b'/Filter/Custom  ')

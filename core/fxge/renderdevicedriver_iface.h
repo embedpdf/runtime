@@ -17,7 +17,6 @@
 #include "core/fxcrt/span.h"
 #include "core/fxge/dib/fx_dib.h"
 
-class CFX_AggImageRenderer;
 class CFX_DIBBase;
 class CFX_DIBitmap;
 class CFX_Font;
@@ -26,10 +25,10 @@ class CFX_Matrix;
 class CFX_Path;
 class CPDF_ShadingPattern;
 class PauseIndicatorIface;
-class TextCharPos;
 struct CFX_FillRenderOptions;
 struct CFX_TextRenderOptions;
 struct FX_RECT;
+struct TextCharPos;
 
 enum class DeviceType : bool {
   kDisplay,
@@ -48,20 +47,43 @@ class RenderDeviceDriverIface {
 #endif
   };
 
+  // Context for continuation when not rendering in a single shot.
+  class Continuation {
+   public:
+    virtual ~Continuation() {}
+  };
+
   struct StartResult {
-    StartResult(Result result,
-                std::unique_ptr<CFX_AggImageRenderer> agg_image_renderer);
+    StartResult(Result result, std::unique_ptr<Continuation> continuation);
     ~StartResult();
 
     const Result result;
-    std::unique_ptr<CFX_AggImageRenderer> agg_image_renderer;
+    std::unique_ptr<Continuation> continuation;
   };
 
   virtual ~RenderDeviceDriverIface();
 
   virtual DeviceType GetDeviceType() const = 0;
-  virtual int GetDeviceCaps(int caps_id) const = 0;
+  virtual bool RenderCapGetBits() const;
+  virtual bool RenderCapAlphaImage() const;
+  virtual bool RenderCapBlendMode() const;
+  virtual bool RenderCapSoftClip() const;
+  virtual bool RenderCapAlphaOutput() const;
+  virtual bool RenderCapByteMaskOutput() const;
+#if defined(PDF_USE_SKIA)
+  virtual bool RenderCapFillStrokePath() const;
+  virtual bool RenderCapShading() const;
+  virtual bool RenderCapPremultipliedAlpha() const;
+#endif
+  virtual int GetPixelWidth() const = 0;
+  virtual int GetPixelHeight() const = 0;
+  virtual int GetBitsPerPixel() const = 0;
+#if BUILDFLAG(IS_WIN)
+  virtual int GetHorzSize() const;
+  virtual int GetVertSize() const;
+#endif
 
+  virtual void Clear(uint32_t color) = 0;
   virtual void SaveState() = 0;
   virtual void RestoreState(bool bKeepSaved) = 0;
 
@@ -77,6 +99,7 @@ class RenderDeviceDriverIface {
                         const CFX_GraphStateData* pGraphState,
                         uint32_t fill_color,
                         uint32_t stroke_color,
+                        bool group_knockout,
                         const CFX_FillRenderOptions& fill_options) = 0;
   virtual bool FillRect(const FX_RECT& rect, uint32_t fill_color);
   virtual bool DrawCosmeticLine(const CFX_PointF& ptMoveTo,
@@ -109,7 +132,7 @@ class RenderDeviceDriverIface {
                                   const CFX_Matrix& matrix,
                                   const FXDIB_ResampleOptions& options,
                                   BlendMode blend_type) = 0;
-  virtual bool ContinueDIBits(CFX_AggImageRenderer* handle,
+  virtual bool ContinueDIBits(Continuation* continuation,
                               PauseIndicatorIface* pPause);
   virtual bool DrawDeviceText(pdfium::span<const TextCharPos> pCharPos,
                               CFX_Font* font,
@@ -118,6 +141,7 @@ class RenderDeviceDriverIface {
                               uint32_t color,
                               const CFX_TextRenderOptions& options);
   virtual int GetDriverType() const;
+
 #if defined(PDF_USE_SKIA)
   virtual bool DrawShading(const CPDF_ShadingPattern& pattern,
                            const CFX_Matrix& matrix,
@@ -129,7 +153,6 @@ class RenderDeviceDriverIface {
                                int top,
                                float alpha,
                                BlendMode blend_type);
-  virtual void SetGroupKnockout(bool group_knockout);
 
   // For `CFX_SkiaDeviceDriver` only:
   // Syncs the current rendering result from the internal buffer to the output

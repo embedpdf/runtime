@@ -7,8 +7,10 @@
 #ifndef CORE_FXGE_FX_FONT_H_
 #define CORE_FXGE_FX_FONT_H_
 
+#include <stddef.h>
 #include <stdint.h>
 
+#include <optional>
 #include <vector>
 
 #include "core/fxcrt/bytestring.h"
@@ -49,9 +51,20 @@ enum FontWeight {
 
 }  // namespace pdfium
 
+// Indicates that font properties (style, weight, ...) come from an external
+// source rather than the font file itself.
+constexpr uint32_t kFontUseExternAttr = 0x80000;
+
 struct CharCodeAndIndex {
   uint32_t char_code;
   uint32_t glyph_index;
+
+  bool operator==(const CharCodeAndIndex&) const = default;
+};
+
+struct FontTableLocation {
+  uint32_t offset;
+  uint32_t size;
 };
 
 enum class FontAntiAliasingMode : int {
@@ -60,13 +73,47 @@ enum class FontAntiAliasingMode : int {
   kLcd,
 };
 
-/* Other font flags */
-#define FXFONT_USEEXTERNATTR 0x80000
+// OpenType / TrueType platform IDs (used across 'cmap' and 'name' tables).
+// Conforms to OpenType specification, with platform 7 as FreeType's Adobe
+// convention.
+constexpr uint16_t kPlatformAppleUnicode = 0;
+constexpr uint16_t kPlatformMac = 1;
+constexpr uint16_t kPlatformIso = 2;
+constexpr uint16_t kPlatformWindows = 3;
+constexpr uint16_t kPlatformCustom = 4;
+constexpr uint16_t kPlatformAdobe = 7;
 
-// These numbers come from the OpenType name table specification.
-constexpr uint16_t kNamePlatformAppleUnicode = 0;
-constexpr uint16_t kNamePlatformMac = 1;
-constexpr uint16_t kNamePlatformWindows = 3;
+// OpenType / TrueType encoding IDs for Apple Unicode (kPlatformAppleUnicode).
+constexpr uint16_t kAppleUnicodeEncodingUnicode2_0 = 3;
+
+// OpenType / TrueType encoding IDs for Macintosh (kPlatformMac).
+constexpr uint16_t kMacEncodingRoman = 0;
+
+// OpenType / TrueType encoding IDs for ISO (kPlatformIso).
+constexpr uint16_t kIsoEncoding10646 = 1;
+constexpr uint16_t kIsoEncoding8859_1 = 2;
+
+// OpenType / TrueType encoding IDs for Windows (kPlatformWindows).
+constexpr uint16_t kWindowsEncodingSymbol = 0;
+constexpr uint16_t kWindowsEncodingUnicode = 1;
+constexpr uint16_t kWindowsEncodingSjis = 2;
+constexpr uint16_t kWindowsEncodingPrc = 3;
+constexpr uint16_t kWindowsEncodingGb2312 = kWindowsEncodingPrc;
+constexpr uint16_t kWindowsEncodingBig5 = 4;
+constexpr uint16_t kWindowsEncodingWansung = 5;
+constexpr uint16_t kWindowsEncodingJohab = 6;
+constexpr uint16_t kWindowsEncodingUcs4 = 10;
+
+// Encoding IDs for Adobe platform (kPlatformAdobe, FreeType Type 1 / CFF
+// convention).
+constexpr uint16_t kAdobeEncodingStandard = 0;
+constexpr uint16_t kAdobeEncodingExpert = 1;
+constexpr uint16_t kAdobeEncodingCustom = 2;
+constexpr uint16_t kAdobeEncodingLatin1 = 3;
+
+// The length of the font subset prefix, as defined in ISO 32000-1:2008 spec,
+// section 9.6.4 "Font Subsets".
+constexpr size_t kSubsettedFontPrefixLength = 6;
 
 class TextGlyphPos;
 
@@ -75,6 +122,12 @@ FX_RECT GetGlyphsBBox(const std::vector<TextGlyphPos>& glyphs,
 
 ByteString GetNameFromTT(pdfium::span<const uint8_t> name_table, uint32_t name);
 uint32_t GetTTCIndex(pdfium::span<const uint8_t> font_data, size_t font_offset);
+uint32_t GetCodePageRangeFromOS2(pdfium::span<const uint8_t> os2_table);
+uint16_t GetGlyphCountFromMaxp(pdfium::span<const uint8_t> maxp_table);
+
+std::optional<FontTableLocation> FindFontTableLocation(
+    pdfium::span<const uint8_t> table_dir,
+    uint32_t tag);
 
 inline bool FontStyleIsForceBold(uint32_t style) {
   return !!(style & pdfium::kFontStyleForceBold);
@@ -119,5 +172,13 @@ ByteString AdobeNameFromUnicode(wchar_t unicode);
 // If the computed result is excessively large and does not fit in an int,
 // NormalizeFontMetric() handles that with `saturated_cast()`.
 int NormalizeFontMetric(int64_t value, uint16_t upem);
+
+// Removes the "XXXXXX+" prefix from a subsetted font name if present. The
+// prefix must be 6 uppercase ASCII letters followed by a '+'.
+void MaybeRemoveSubsettedFontPrefix(ByteString& font_name);
+
+// Returns true if the font data starts with the "OTTO" tag, indicating an
+// OpenType font with CFF data.
+bool IsOpenTypeCFF(pdfium::span<const uint8_t> data);
 
 #endif  // CORE_FXGE_FX_FONT_H_

@@ -10,6 +10,7 @@
 #include <utility>
 
 #include "core/fxcrt/check.h"
+#include "core/fxcrt/check_op.h"
 #include "core/fxcrt/containers/adapters.h"
 #include "core/fxcrt/css/cfx_csscolorvalue.h"
 #include "core/fxcrt/css/cfx_csscomputedstyle.h"
@@ -27,7 +28,7 @@ CFX_CSSStyleSelector::CFX_CSSStyleSelector() = default;
 CFX_CSSStyleSelector::~CFX_CSSStyleSelector() = default;
 
 void CFX_CSSStyleSelector::SetDefaultFontSize(float fFontSize) {
-  DCHECK(fFontSize > 0);
+  DCHECK_GT(fFontSize, 0);
   default_font_size_ = fFontSize;
 }
 
@@ -155,7 +156,6 @@ void CFX_CSSStyleSelector::AppendInlineStyle(CFX_CSSDeclaration* pDecl,
   auto pSyntax = std::make_unique<CFX_CSSSyntaxParser>(style.AsStringView());
   pSyntax->SetParseOnlyDeclarations();
 
-  int32_t iLen2 = 0;
   const CFX_CSSData::Property* property = nullptr;
   WideString wsName;
   while (true) {
@@ -167,12 +167,12 @@ void CFX_CSSStyleSelector::AppendInlineStyle(CFX_CSSDeclaration* pDecl,
         wsName = WideString(strValue);
       }
     } else if (eStatus == CFX_CSSSyntaxParser::Status::kPropertyValue) {
-      if (property || iLen2 > 0) {
+      if (property || !wsName.IsEmpty()) {
         WideStringView strValue = pSyntax->GetCurrentString();
         if (!strValue.IsEmpty()) {
           if (property) {
             pDecl->AddProperty(property, strValue);
-          } else if (iLen2 > 0) {
+          } else {
             pDecl->AddProperty(wsName, WideString(strValue));
           }
         }

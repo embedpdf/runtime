@@ -39,7 +39,6 @@ class CPDF_Creator final : public CPDF_WriteContext {
     kNoOriginal = (1 << 1),
     kRemoveSecurityDeprecated = 3,
     kRemoveSecurity = (1 << 2),
-    // TODO(crbug.com/42270430): Implement font subsetting.
     kSubsetNewFonts = (1 << 3),
     // EmbedPDF(layer-save): only the new revision, for a layer's delta.
     kIncrementalAppendOnly = (1 << 4),
@@ -136,6 +135,10 @@ class CPDF_Creator final : public CPDF_WriteContext {
   // EmbedPDF(save-traversal): a full save's walk from the trailer's roots;
   // replaces WriteOldIndirectObject() and WriteOldObjs().
   bool WriteFullDocument();
+  // EmbedPDF(save-traversal): the objects that aren't in use in the loaded
+  // file, in order: the ones upstream's InitNewObjNumOffsets() lists for a
+  // full save.
+  std::vector<uint32_t> NewObjectNumbers() const;
   bool WriteNewObjs();
   bool WriteIndirectObj(uint32_t objnum, const CPDF_Object* pObj);
   // EmbedPDF(layer-save): refuses an offset an entry can't hold.
@@ -175,6 +178,7 @@ class CPDF_Creator final : public CPDF_WriteContext {
   bool security_changed_ = false;
   bool is_incremental_ = false;
   bool is_original_ = false;
+  bool subset_new_fonts_ = false;
   // EmbedPDF(layer-save): the append-only mode, and why a save failed.
   bool is_incremental_append_only_ = false;
   FailureReason failure_reason_ = FailureReason::kNone;

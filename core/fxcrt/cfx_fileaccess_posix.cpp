@@ -14,6 +14,7 @@
 
 #include "core/fxcrt/fx_stream.h"
 #include "core/fxcrt/numerics/safe_conversions.h"
+#include "core/fxcrt/span_io.h"
 
 #ifndef O_BINARY
 #define O_BINARY 0
@@ -34,13 +35,12 @@ CFX_FileAccess_Posix::~CFX_FileAccess_Posix() {
   Close();
 }
 
-bool CFX_FileAccess_Posix::Open(ByteStringView fileName) {
+bool CFX_FileAccess_Posix::Open(const ByteString& file_name) {
   if (fd_ > -1) {
     return false;
   }
 
-  // TODO(tsepez): check usage of c_str() below.
-  fd_ = open(fileName.unterminated_c_str(), O_BINARY | O_LARGEFILE | O_RDONLY);
+  fd_ = open(file_name.c_str(), O_BINARY | O_LARGEFILE | O_RDONLY);
   return fd_ > -1;
 }
 
@@ -76,17 +76,11 @@ FX_FILESIZE CFX_FileAccess_Posix::SetPosition(FX_FILESIZE pos) {
 }
 
 size_t CFX_FileAccess_Posix::Read(pdfium::span<uint8_t> buffer) {
-  if (fd_ < 0) {
-    return 0;
-  }
-  return read(fd_, buffer.data(), buffer.size());
+  return fd_ >= 0 ? fxcrt::spanread(buffer, fd_).size() : 0;
 }
 
-size_t CFX_FileAccess_Posix::Write(pdfium::span<const uint8_t> buffer) {
-  if (fd_ < 0) {
-    return 0;
-  }
-  return write(fd_, buffer.data(), buffer.size());
+bool CFX_FileAccess_Posix::Write(pdfium::span<const uint8_t> buffer) {
+  return fd_ >= 0 && fxcrt::spanwrite(buffer, fd_) == buffer.size();
 }
 
 size_t CFX_FileAccess_Posix::ReadPos(pdfium::span<uint8_t> buffer,

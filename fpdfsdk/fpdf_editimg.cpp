@@ -31,7 +31,8 @@
 #include "core/fxcrt/data_vector.h"
 #include "core/fxcrt/notreached.h"
 #include "core/fxcrt/stl_util.h"
-#include "core/fxge/cfx_defaultrenderdevice.h"
+#include "core/fxcrt/to_underlying.h"
+#include "core/fxge/cfx_renderdevice.h"
 #include "core/fxge/dib/cfx_dibitmap.h"
 #include "fpdfsdk/cpdfsdk_customaccess.h"
 #include "fpdfsdk/cpdfsdk_helpers.h"
@@ -41,37 +42,37 @@ namespace {
 
 // These checks ensure the consistency of colorspace values across core/ and
 // public/.
-static_assert(static_cast<int>(CPDF_ColorSpace::Family::kDeviceGray) ==
+static_assert(fxcrt::to_underlying(CPDF_ColorSpace::Family::kDeviceGray) ==
                   FPDF_COLORSPACE_DEVICEGRAY,
               "kDeviceGray value mismatch");
-static_assert(static_cast<int>(CPDF_ColorSpace::Family::kDeviceRGB) ==
+static_assert(fxcrt::to_underlying(CPDF_ColorSpace::Family::kDeviceRGB) ==
                   FPDF_COLORSPACE_DEVICERGB,
               "kDeviceRGB value mismatch");
-static_assert(static_cast<int>(CPDF_ColorSpace::Family::kDeviceCMYK) ==
+static_assert(fxcrt::to_underlying(CPDF_ColorSpace::Family::kDeviceCMYK) ==
                   FPDF_COLORSPACE_DEVICECMYK,
               "kDeviceCMYK value mismatch");
-static_assert(static_cast<int>(CPDF_ColorSpace::Family::kCalGray) ==
+static_assert(fxcrt::to_underlying(CPDF_ColorSpace::Family::kCalGray) ==
                   FPDF_COLORSPACE_CALGRAY,
               "kCalGray value mismatch");
-static_assert(static_cast<int>(CPDF_ColorSpace::Family::kCalRGB) ==
+static_assert(fxcrt::to_underlying(CPDF_ColorSpace::Family::kCalRGB) ==
                   FPDF_COLORSPACE_CALRGB,
               "kCalRGB value mismatch");
-static_assert(static_cast<int>(CPDF_ColorSpace::Family::kLab) ==
+static_assert(fxcrt::to_underlying(CPDF_ColorSpace::Family::kLab) ==
                   FPDF_COLORSPACE_LAB,
               "kLab value mismatch");
-static_assert(static_cast<int>(CPDF_ColorSpace::Family::kICCBased) ==
+static_assert(fxcrt::to_underlying(CPDF_ColorSpace::Family::kICCBased) ==
                   FPDF_COLORSPACE_ICCBASED,
               "kICCBased value mismatch");
-static_assert(static_cast<int>(CPDF_ColorSpace::Family::kSeparation) ==
+static_assert(fxcrt::to_underlying(CPDF_ColorSpace::Family::kSeparation) ==
                   FPDF_COLORSPACE_SEPARATION,
               "kSeparation value mismatch");
-static_assert(static_cast<int>(CPDF_ColorSpace::Family::kDeviceN) ==
+static_assert(fxcrt::to_underlying(CPDF_ColorSpace::Family::kDeviceN) ==
                   FPDF_COLORSPACE_DEVICEN,
               "kDeviceN value mismatch");
-static_assert(static_cast<int>(CPDF_ColorSpace::Family::kIndexed) ==
+static_assert(fxcrt::to_underlying(CPDF_ColorSpace::Family::kIndexed) ==
                   FPDF_COLORSPACE_INDEXED,
               "kIndexed value mismatch");
-static_assert(static_cast<int>(CPDF_ColorSpace::Family::kPattern) ==
+static_assert(fxcrt::to_underlying(CPDF_ColorSpace::Family::kPattern) ==
                   FPDF_COLORSPACE_PATTERN,
               "kPattern value mismatch");
 
@@ -332,9 +333,12 @@ FPDFImageObj_GetRenderedBitmap(FPDF_DOCUMENT document,
       optional_page ? optional_page->GetMutablePageResources() : nullptr;
   CPDF_RenderContext context(doc, std::move(page_resources),
                              /*pPageCache=*/nullptr);
-  CFX_DefaultRenderDevice device;
-  device.Attach(result_bitmap);
-  CPDF_RenderStatus status(&context, &device);
+  std::unique_ptr<CFX_RenderDevice> device =
+      CFX_RenderDevice::CreateForBitmap(result_bitmap);
+  if (!device) {
+    return nullptr;
+  }
+  CPDF_RenderStatus status(&context, device.get());
   CPDF_ImageRenderer renderer(&status);
 
   // Need to first flip the image, as expected by |renderer|.

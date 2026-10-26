@@ -39,7 +39,7 @@ void CFWL_Barcode::DrawWidget(CFGAS_GEGraphics* pGraphics,
     return;
   }
 
-  if ((properties_.states_ & FWL_STATE_WGT_Focused) == 0) {
+  if (!(properties_.states_ & WidgetState::kFocused)) {
     GenerateBarcodeImageCache();
     if (!barcode_engine_ || status_ != Status::kEncodeSuccess) {
       return;
@@ -201,7 +201,7 @@ void CFWL_Barcode::CreateBarcodeEngine() {
     return;
   }
 
-  barcode_engine_ = CFX_Barcode::Create(type_);
+  barcode_engine_ = std::make_unique<CFX_Barcode>(type_);
 }
 
 }  // namespace pdfium

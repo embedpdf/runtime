@@ -7,14 +7,18 @@
 
 #include <stdint.h>
 
+#include <concepts>
 #include <fstream>
 #include <map>
 #include <memory>
 #include <string>
 #include <string_view>
+#include <utility>
 #include <vector>
 
 #include "build/build_config.h"
+#include "core/fxcrt/bytestring.h"
+#include "core/fxcrt/check.h"
 #include "core/fxcrt/span.h"
 #include "core/fxcrt/unowned_ptr.h"
 #include "public/cpp/fpdf_scopers.h"
@@ -25,12 +29,16 @@
 #include "public/fpdfview.h"
 #include "testing/fake_file_access.h"
 #include "testing/gtest/include/gtest/gtest.h"
+#include "testing/utils/pixel_diff_util.h"
 
 class TestLoader;
 
 // The loading time of the CFGAS_FontMgr is linear in the number of times it is
 // loaded. So, if a test suite has a lot of tests that need a font manager they
 // can end up executing very, very slowly.
+
+// Helper macro for common equality assertions with a fixed tolerance of 0.001.
+#define EXPECT_NEAR_THREE_PLACES(a, b) EXPECT_NEAR((a), (b), 0.001)
 
 // This class is used to load a PDF document, and then run programatic
 // API tests against it.
@@ -88,13 +96,16 @@ class EmbedderTest : public ::testing::Test,
     virtual void DoURIActionWithKeyboardModifier(FPDF_FORMFILLINFO* info,
                                                  FPDF_BYTESTRING uri,
                                                  int modifiers) {}
+
+    // Equivalent to FPDF_FORMFILLINFO::FFI_ExecuteNamedAction().
+    virtual void ExecuteNamedAction(FPDF_BYTESTRING name) {}
   };
 
   class ScopedSavedDoc {
    public:
     ScopedSavedDoc();
     explicit ScopedSavedDoc(EmbedderTest* test);
-    ScopedSavedDoc(EmbedderTest* test, const char* password);
+    ScopedSavedDoc(EmbedderTest* test, const ByteString& password);
     ScopedSavedDoc(const ScopedSavedDoc&) = delete;
     ScopedSavedDoc& operator=(const ScopedSavedDoc&) = delete;
     ScopedSavedDoc(ScopedSavedDoc&&) noexcept;
@@ -153,8 +164,18 @@ class EmbedderTest : public ::testing::Test,
   void TearDown() override;
 
   Delegate* GetDelegate() { return delegate_; }
-  void SetDelegate(Delegate* delegate) {
-    delegate_ = delegate ? delegate : default_delegate_.get();
+
+  // Creates and installs a delegate owned by this fixture. The delegate stays
+  // alive until TearDown() closes the document and restores the default
+  // delegate. This method may only be called once per fixture.
+  template <std::derived_from<Delegate> T, typename... Args>
+  T& SetOwnedDelegate(Args&&... args) {
+    CHECK(!owned_delegate_);
+    auto delegate = std::make_unique<T>(std::forward<Args>(args)...);
+    T& result = *delegate;
+    owned_delegate_ = std::move(delegate);
+    delegate_ = owned_delegate_.get();
+    return result;
   }
 
   void SetFormFillInfoVersion(int form_fill_info_version) {
@@ -180,11 +201,11 @@ class EmbedderTest : public ::testing::Test,
   // Open the document specified by `filename`, and create its form fill
   // environment, or return false on failure. The `filename` is relative to
   // the test data directory where we store all the test files. `password` can
-  // be nullptr if the file is not password protected. If `javascript_opts`
-  // is kDisableJavascript, then the document will be given stubs in place
-  // of the real JS engine.
+  // be an empty string if the file is not password protected. If
+  // `javascript_opts` is kDisableJavascript, then the document will be given
+  // stubs in place of the real JS engine.
   virtual bool OpenDocumentWithOptions(const std::string& filename,
-                                       const char* password,
+                                       const ByteString& password,
                                        LinearizeOption linearize_option,
                                        JavaScriptOption javascript_option);
 
@@ -192,7 +213,7 @@ class EmbedderTest : public ::testing::Test,
   bool OpenDocument(const std::string& filename);
   bool OpenDocumentLinearized(const std::string& filename);
   bool OpenDocumentWithPassword(const std::string& filename,
-                                const char* password);
+                                const ByteString& password);
   bool OpenDocumentWithoutJavaScript(const std::string& filename);
 
   // Close the document from a previous OpenDocument() call. This happens
@@ -272,6 +293,32 @@ class EmbedderTest : public ::testing::Test,
   // Simplified form of RenderPageWithFlags() with no handle and no flags.
   static ScopedFPDFBitmap RenderPage(FPDF_PAGE page);
 
+  // RenderLoadedPageWithFlagsToDisplayList() with no flags.
+  std::string RenderLoadedPageToDisplayList(FPDF_PAGE page);
+
+  // Convert `page` loaded via LoadPage() into a display list string with the
+  // specified page rendering `flags`.
+  std::string RenderLoadedPageWithFlagsToDisplayList(FPDF_PAGE page, int flags);
+
+  // RenderSavedPageWithFlagsToDisplayList() with no flags.
+  std::string RenderSavedPageToDisplayList(FPDF_PAGE page);
+
+  // Convert `page` loaded via LoadSavedPage() into a display list string with
+  // the specified page rendering `flags`.
+  std::string RenderSavedPageWithFlagsToDisplayList(FPDF_PAGE page, int flags);
+
+  // Convert `page` into a display list string with the specified page rendering
+  // `flags`. The form handle associated with `page` should be passed in via
+  // `handle`. If `handle` is nullptr, then forms on the page will not be
+  // rendered.
+  static std::string RenderPageWithFlagsToDisplayList(FPDF_PAGE page,
+                                                      FPDF_FORMHANDLE handle,
+                                                      int flags);
+
+  // Simplified form of RenderPageWithFlagsToDisplayList() with no handle and no
+  // flags.
+  static std::string RenderPageToDisplayList(FPDF_PAGE page);
+
 #if BUILDFLAG(IS_WIN)
   // Convert `page` into EMF with the specified page rendering `flags`.
   static std::vector<uint8_t> RenderPageWithFlagsToEmf(FPDF_PAGE page,
@@ -287,7 +334,7 @@ class EmbedderTest : public ::testing::Test,
  protected:
   using PageNumberToHandleMap = std::map<int, FPDF_PAGE>;
 
-  bool OpenDocumentHelper(const char* password,
+  bool OpenDocumentHelper(const ByteString& password,
                           LinearizeOption linearize_option,
                           JavaScriptOption javascript_option,
                           FakeFileAccess* network_simulator,
@@ -329,18 +376,17 @@ class EmbedderTest : public ::testing::Test,
   //
   // This is similar to the behavior in testing/tools/pngdiffer.py.
   //
-  // `max_pixel_per_channel_delta` can optionally be set to tolerate minor pixel
-  // discrepancies. The default is exact matching.
+  // `options` can optionally be set to tolerate minor pixel discrepancies.
+  // The default is exact matching.
   static void CompareBitmapWithExpectationSuffix(
       FPDF_BITMAP bitmap,
       std::string_view expectation_png_name,
-      int max_pixel_per_channel_delta = 0);
+      const DiffOptions& options = kExactDiffOptions);
 
-  // Same as `CompareBitmapWithExpectationSuffix()`, but automatically
-  // applies platform-specific tolerance.
-  static void CompareBitmapWithFuzzyExpectationSuffix(
-      FPDF_BITMAP bitmap,
-      std::string_view expectation_png_name);
+  // Check `display_list` matches the expectation file named `expectation_name`
+  // under testing/resources/embedder_tests/.
+  static void CompareDisplayList(const std::string& display_list,
+                                 std::string_view expectation_name);
 
   void ClearString() { data_string_.clear(); }
   const std::string& GetString() const { return data_string_; }
@@ -352,13 +398,9 @@ class EmbedderTest : public ::testing::Test,
 
   // See comments in the respective non-Saved versions of these methods.
   ScopedSavedDoc OpenScopedSavedDocument();
-  ScopedSavedDoc OpenScopedSavedDocumentWithPassword(const char* password);
-  FPDF_DOCUMENT OpenSavedDocument();
-  FPDF_DOCUMENT OpenSavedDocumentWithPassword(const char* password);
-  void CloseSavedDocument();
+  ScopedSavedDoc OpenScopedSavedDocumentWithPassword(
+      const ByteString& password);
   ScopedSavedPage LoadScopedSavedPage(int page_index);
-  FPDF_PAGE LoadSavedPage(int page_index);
-  void CloseSavedPage(FPDF_PAGE page);
 
   // See comments for CompareBitmap() and CompareBitmapWithExpectationSuffix()
   // above.
@@ -366,15 +408,17 @@ class EmbedderTest : public ::testing::Test,
                             std::string_view expectation_png_name);
   void VerifySavedRenderingWithExpectationSuffix(
       FPDF_PAGE page,
-      std::string_view expectation_png_name);
-  void VerifySavedRenderingWithFuzzyExpectationSuffix(
-      FPDF_PAGE page,
-      std::string_view expectation_png_name);
+      std::string_view expectation_png_name,
+      const DiffOptions& options = kExactDiffOptions);
   void VerifySavedDocument(std::string_view expectation_png_name);
   void VerifySavedDocumentWithExpectationSuffix(
-      std::string_view expectation_png_name);
-  void VerifySavedDocumentWithFuzzyExpectationSuffix(
-      std::string_view expectation_png_name);
+      std::string_view expectation_png_name,
+      const DiffOptions& options = kExactDiffOptions);
+  void VerifySavedRenderingWithDisplayList(FPDF_PAGE page,
+                                           std::string_view expectation_name,
+                                           int flags = 0);
+  void VerifySavedDocumentWithDisplayList(std::string_view expectation_name,
+                                          int flags = 0);
 
   void SetWholeFileAvailable();
 
@@ -402,14 +446,35 @@ class EmbedderTest : public ::testing::Test,
   // Same as GetPageNumberForLoadedPage(), but with `saved_page_map_`.
   int GetPageNumberForSavedPage(FPDF_PAGE page) const;
 
+  // Helpers for opening saved documents. These are intended for internal use
+  // only. Callers should use the Scoped methods that manage lifetime
+  // automatically.
+  FPDF_DOCUMENT OpenSavedDocument();
+  FPDF_DOCUMENT OpenSavedDocumentWithPassword(const ByteString& password);
+
+  // Closes a document opened via OpenSavedDocument(). This must only be invoked
+  // in documents opened by the helpers above. This is intended for internal use
+  // in the destructor of the scoped methods.
+  void CloseSavedDocument();
+
+  // Helper for loading saved pages. Callers should use the Scoped methods that
+  // manage lifetime automatically.
+  FPDF_PAGE LoadSavedPage(int page_index);
+
+  // Closes a page loaded via LoadSavedPage(). This must only be invoked in
+  // pages loaded by the helper above.
+  void CloseSavedPage(FPDF_PAGE page);
+
   void UnloadPageCommon(FPDF_PAGE page, bool do_events);
   FPDF_PAGE LoadPageCommon(int page_index, bool do_events);
 
   ScopedFPDFBitmap VerifySavedRenderingCommon(FPDF_PAGE page);
   ScopedFPDFBitmap VerifySavedDocumentCommon();
 
+  // Keep `delegate_` after both possible pointees so it is destroyed first.
   std::unique_ptr<Delegate> default_delegate_;
-  Delegate* delegate_;
+  std::unique_ptr<Delegate> owned_delegate_;
+  UnownedPtr<Delegate> delegate_;
 
 #ifdef PDF_ENABLE_XFA
   int form_fill_info_version_ = 2;

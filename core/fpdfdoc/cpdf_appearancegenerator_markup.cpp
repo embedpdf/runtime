@@ -17,7 +17,7 @@
 #include <utility>
 
 #include "constants/annotation_common.h"
-#include "core/fpdfapi/edit/cpdf_contentstream_write_utils.h"
+#include "core/fxcrt/stream_write_utils.h"
 #include "core/fpdfapi/parser/cpdf_array.h"
 #include "core/fpdfapi/parser/cpdf_dictionary.h"
 #include "core/fpdfdoc/cpdf_annot.h"
@@ -153,7 +153,7 @@ bool GenerateHighlightAP(APGenerationTarget* target,
 
   app_stream << GetColorStringWithDefault(
       annot_dict->GetArrayFor(pdfium::annotation::kC).Get(),
-      CFX_Color(CFX_Color::Type::kRGB, 1, 1, 0), PaintOperation::kFill);
+      CFX_Color::MakeRGB(1, 1, 0), PaintOperation::kFill);
 
   RetainPtr<const CPDF_Array> quad_points_array =
       annot_dict->GetArrayFor("QuadPoints");
@@ -198,7 +198,7 @@ bool GenerateUnderlineAP(APGenerationTarget* target,
 
   app_stream << GetColorStringWithDefault(
       annot_dict->GetArrayFor(pdfium::annotation::kC).Get(),
-      CFX_Color(CFX_Color::Type::kRGB, 0, 0, 0), PaintOperation::kStroke);
+      CFX_Color::MakeRGB(0, 0, 0), PaintOperation::kStroke);
 
   RetainPtr<const CPDF_Array> quad_points_array =
       annot_dict->GetArrayFor("QuadPoints");
@@ -242,7 +242,7 @@ bool GenerateSquigglyAP(APGenerationTarget* target,
 
   app_stream << GetColorStringWithDefault(
       annot_dict->GetArrayFor(pdfium::annotation::kC).Get(),
-      CFX_Color(CFX_Color::Type::kRGB, 0, 0, 0), PaintOperation::kStroke);
+      CFX_Color::MakeRGB(0, 0, 0), PaintOperation::kStroke);
 
   RetainPtr<const CPDF_Array> quad_points_array =
       annot_dict->GetArrayFor("QuadPoints");
@@ -303,7 +303,7 @@ bool GenerateStrikeOutAP(APGenerationTarget* target,
 
   app_stream << GetColorStringWithDefault(
       annot_dict->GetArrayFor(pdfium::annotation::kC).Get(),
-      CFX_Color(CFX_Color::Type::kRGB, 0, 0, 0), PaintOperation::kStroke);
+      CFX_Color::MakeRGB(0, 0, 0), PaintOperation::kStroke);
 
   RetainPtr<const CPDF_Array> quad_points_array =
       annot_dict->GetArrayFor("QuadPoints");

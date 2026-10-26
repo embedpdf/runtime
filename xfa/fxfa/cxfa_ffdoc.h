@@ -113,10 +113,6 @@ class CXFA_FFDoc : public cppgc::GarbageCollected<CXFA_FFDoc> {
     virtual RetainPtr<IFX_SeekableReadStream> OpenLinkedFile(
         CXFA_FFDoc* hDoc,
         const WideString& wsLink) = 0;
-
-#ifdef PDF_XFA_ELEMENT_SUBMIT_ENABLED
-    virtual bool Submit(CXFA_FFDoc* hDoc, CXFA_Submit* submit) = 0;
-#endif  // PDF_XFA_ELEMENT_SUBMIT_ENABLED
   };
 
   CONSTRUCT_VIA_MAKE_GARBAGE_COLLECTED;
@@ -163,7 +159,7 @@ class CXFA_FFDoc : public cppgc::GarbageCollected<CXFA_FFDoc> {
 
   CXFA_FFDocView* CreateDocView();
   FormType GetFormType() const { return form_type_; }
-  cppgc::Heap* GetHeap() const { return heap_; }
+  FXGC_Heap* GetHeap() const { return heap_; }
   CXFA_Document* GetXFADoc() const { return document_; }
   CXFA_FFApp* GetApp() const { return app_; }
   CPDF_Document* GetPDFDoc() const { return pdfdoc_; }
@@ -183,12 +179,12 @@ class CXFA_FFDoc : public cppgc::GarbageCollected<CXFA_FFDoc> {
   CXFA_FFDoc(CXFA_FFApp* pApp,
              CallbackIface* pDocEnvironment,
              CPDF_Document* pPDFDoc,
-             cppgc::Heap* pHeap);
+             FXGC_Heap* pHeap);
   bool BuildDoc(CFX_XMLDocument* pXML);
 
   UnownedPtr<CallbackIface> const doc_environment_;
   UnownedPtr<CPDF_Document> const pdfdoc_;
-  UnownedPtr<cppgc::Heap> const heap_;
+  UnownedPtr<FXGC_Heap> const heap_;
   cppgc::Member<CXFA_FFApp> const app_;
   cppgc::Member<CXFA_FFNotify> notify_;
   cppgc::Member<CXFA_Document> document_;

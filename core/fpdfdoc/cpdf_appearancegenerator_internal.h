@@ -19,7 +19,7 @@
 #include <sstream>
 #include <vector>
 
-#include "core/fpdfapi/edit/cpdf_contentstream_write_utils.h"
+#include "core/fxcrt/stream_write_utils.h"
 #include "core/fpdfdoc/cpdf_annot.h"
 #include "core/fpdfdoc/cpdf_annotfontmap.h"
 #include "core/fpdfdoc/cpdf_appearancegenerator.h"
@@ -204,7 +204,7 @@ bool ValidateOrCreateFontResources(CPDF_Document* doc,
 ByteString GenerateEditAP(IPVT_FontMap* font_map,
                           CPVT_VariableText::Iterator* vt_iterator,
                           const CFX_PointF& offset,
-                          bool continuous,
+                          bool use_continuous_formatting,
                           uint16_t sub_word);
 CPDF_Annot::VerticalAlignment GetVerticalAlign(
     const CPDF_Dictionary* annot_dict);

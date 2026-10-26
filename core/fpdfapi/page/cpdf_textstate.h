@@ -59,8 +59,8 @@ class CPDF_TextState {
   float GetFontSize() const;
   void SetFontSize(float size);
 
-  pdfium::span<const float> GetMatrix() const;
-  pdfium::span<float> GetMutableMatrix();
+  pdfium::span<const float, 4> GetMatrix() const;
+  pdfium::span<float, 4> GetMutableMatrix();
 
   float GetCharSpace() const;
   void SetCharSpace(float sp);
@@ -73,8 +73,8 @@ class CPDF_TextState {
   TextRenderingMode GetTextMode() const;
   void SetTextMode(TextRenderingMode mode);
 
-  pdfium::span<const float> GetCTM() const;
-  pdfium::span<float> GetMutableCTM();
+  pdfium::span<const float, 4> GetCTM() const;
+  pdfium::span<float, 4> GetMutableCTM();
 
  private:
   class TextData final : public Retainable {

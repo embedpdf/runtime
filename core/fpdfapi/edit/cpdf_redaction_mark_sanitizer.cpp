@@ -256,7 +256,7 @@ void CPDF_RedactionMarkSanitizer::RemoveUnusedPageTreeProperties() {
   CPDF_Document* doc = holder_->GetDocument();
   for (int i = 0; i < doc->GetPageCount(); ++i) {
     auto page_dict = doc->GetPageDictionary(i);
-    if (!page_dict) {
+    if (!CPDF_Document::IsPageTreeLeaf(page_dict.Get())) {
       // Do not remove a shared definition if a sibling cannot be inspected.
       return;
     }

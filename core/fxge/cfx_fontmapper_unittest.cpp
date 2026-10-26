@@ -4,12 +4,13 @@
 
 #include "core/fxge/cfx_fontmapper.h"
 
+#include <algorithm>
 #include <memory>
-#include <numeric>
 #include <string>
 #include <utility>
 
 #include "core/fxcrt/fx_codepage.h"
+#include "core/fxcrt/unowned_ptr.h"
 #include "core/fxge/cfx_fontmgr.h"
 #include "core/fxge/cfx_gemodule.h"
 #include "core/fxge/cfx_substfont.h"
@@ -35,7 +36,7 @@ class MockSystemFontInfo : public SystemFontInfoIface {
   MOCK_METHOD(void, EnumFontList, (CFX_FontMapper*), (override));
   MOCK_METHOD(void*,
               MapFont,
-              (int, bool, FX_Charset, int, const ByteString&),
+              (CFX_FontMapper*, int, bool, FX_Charset, int, const ByteString&),
               (override));
   MOCK_METHOD(void*, GetFont, (const ByteString&), (override));
   MOCK_METHOD(size_t,
@@ -50,11 +51,23 @@ class MockSystemFontInfo : public SystemFontInfoIface {
 // Class that exposes private CFX_FontMapper methods.
 class TestFontMapper : public CFX_FontMapper {
  public:
-  TestFontMapper() : CFX_FontMapper(CFX_GEModule::Get()->GetFontMgr()) {}
+  TestFontMapper() = default;
 
   using CFX_FontMapper::GetCachedFace;
   using CFX_FontMapper::GetCachedTTCFace;
   using CFX_FontMapper::UseExternalSubst;
+};
+
+// EmbedPDF(fonts): for one test, standard fonts come from the system's fonts,
+// as upstream's tests expect; production draws them with the built-in faces.
+class ScopedStandardFontsFromSystem {
+ public:
+  ScopedStandardFontsFromSystem() {
+    CFX_FontMapper::SetStandardFontsFromSystemForTesting(true);
+  }
+  ~ScopedStandardFontsFromSystem() {
+    CFX_FontMapper::SetStandardFontsFromSystemForTesting(false);
+  }
 };
 
 class CFXFontMapperSystemFontInfoTest : public testing::Test {
@@ -82,28 +95,6 @@ class CFXFontMapperSystemFontInfoTest : public testing::Test {
 // Deliberately give this global variable external linkage.
 char g_maybe_changes = '\xff';
 
-TEST(CFXFontMapperTest, IsStandardFontName) {
-  EXPECT_TRUE(CFX_FontMapper::IsStandardFontName("Courier"));
-  EXPECT_TRUE(CFX_FontMapper::IsStandardFontName("Courier-Bold"));
-  EXPECT_TRUE(CFX_FontMapper::IsStandardFontName("Courier-BoldOblique"));
-  EXPECT_TRUE(CFX_FontMapper::IsStandardFontName("Courier-Oblique"));
-  EXPECT_TRUE(CFX_FontMapper::IsStandardFontName("Helvetica"));
-  EXPECT_TRUE(CFX_FontMapper::IsStandardFontName("Helvetica-Bold"));
-  EXPECT_TRUE(CFX_FontMapper::IsStandardFontName("Helvetica-BoldOblique"));
-  EXPECT_TRUE(CFX_FontMapper::IsStandardFontName("Helvetica-Oblique"));
-  EXPECT_TRUE(CFX_FontMapper::IsStandardFontName("Times-Roman"));
-  EXPECT_TRUE(CFX_FontMapper::IsStandardFontName("Times-Bold"));
-  EXPECT_TRUE(CFX_FontMapper::IsStandardFontName("Times-BoldItalic"));
-  EXPECT_TRUE(CFX_FontMapper::IsStandardFontName("Times-Italic"));
-  EXPECT_TRUE(CFX_FontMapper::IsStandardFontName("Symbol"));
-  EXPECT_TRUE(CFX_FontMapper::IsStandardFontName("ZapfDingbats"));
-
-  EXPECT_FALSE(CFX_FontMapper::IsStandardFontName("Courie"));
-  EXPECT_FALSE(CFX_FontMapper::IsStandardFontName("Courier-"));
-  EXPECT_FALSE(CFX_FontMapper::IsStandardFontName("Helvetica+Bold"));
-  EXPECT_FALSE(CFX_FontMapper::IsStandardFontName("YapfDingbats"));
-}
-
 TEST(CFXFontMapperTest, MakeTag) {
   EXPECT_EQ(0x61626364u, CFX_FontMapper::MakeTag('a', 'b', 'c', 'd'));
   EXPECT_EQ(0x00000000u, CFX_FontMapper::MakeTag('\0', '\0', '\0', '\0'));
@@ -118,7 +109,7 @@ TEST(CFXFontMapperTest, MakeTag) {
 
 TEST(CFXFontMapperTest, AddInstalledFontBasic) {
   const char kFontName[] = "dummy";
-  CFX_FontMapper font_mapper(nullptr);
+  CFX_FontMapper font_mapper;
   font_mapper.SetSystemFontInfo(std::make_unique<MockSystemFontInfo>());
 
   font_mapper.AddInstalledFont(kFontName, FX_Charset::kANSI);
@@ -133,9 +124,9 @@ TEST_F(CFXFontMapperSystemFontInfoTest, RawBytesForIndex) {
 
     InSequence s;
     EXPECT_CALL(system_font_info(), MapFont).WillOnce(Return(kFontHandle));
-    EXPECT_CALL(system_font_info(), GetFontData(kFontHandle, 0, _))
-        .WillOnce(Return(2));
-    EXPECT_CALL(system_font_info(), GetFontData(kFontHandle, 0, _))
+    EXPECT_CALL(system_font_info(),
+                GetFontData(kFontHandle, SystemFontInfoIface::kTableNone, _))
+        .WillOnce(Return(2))
         .WillOnce(DoAll(WithArg<2>([](pdfium::span<uint8_t> buffer) {
                           buffer[0] = '0';
                           buffer[1] = '1';
@@ -161,7 +152,8 @@ TEST_F(CFXFontMapperSystemFontInfoTest, RawBytesForIndexFailToGetDataSize) {
 
     InSequence s;
     EXPECT_CALL(system_font_info(), MapFont).WillOnce(Return(kFontHandle));
-    EXPECT_CALL(system_font_info(), GetFontData(kFontHandle, 0, _))
+    EXPECT_CALL(system_font_info(),
+                GetFontData(kFontHandle, SystemFontInfoIface::kTableNone, _))
         .WillOnce(Return(0));
     EXPECT_CALL(system_font_info(), DeleteFont(kFontHandle));
   }
@@ -176,9 +168,9 @@ TEST_F(CFXFontMapperSystemFontInfoTest, RawBytesForIndexFailToGetData) {
 
     InSequence s;
     EXPECT_CALL(system_font_info(), MapFont).WillOnce(Return(kFontHandle));
-    EXPECT_CALL(system_font_info(), GetFontData(kFontHandle, 0, _))
-        .WillOnce(Return(2));
-    EXPECT_CALL(system_font_info(), GetFontData(kFontHandle, 0, _))
+    EXPECT_CALL(system_font_info(),
+                GetFontData(kFontHandle, SystemFontInfoIface::kTableNone, _))
+        .WillOnce(Return(2))
         .WillOnce(Return(0));
     EXPECT_CALL(system_font_info(), DeleteFont(kFontHandle));
   }
@@ -194,20 +186,48 @@ TEST_F(CFXFontMapperSystemFontInfoTest, GetCachedTTCFaceFailToGetData) {
   static constexpr size_t kTtcSize = 1024;
   static constexpr size_t kDataSize = 2;
 
-  {
-    InSequence s;
-    EXPECT_CALL(system_font_info(), GetFontData(kFontHandle, kTableTTCF, _))
-        .WillOnce(DoAll(WithArg<2>([&](pdfium::span<uint8_t> buffer) {
-                          EXPECT_EQ(kTtcSize, buffer.size());
-                          std::iota(buffer.begin(), buffer.end(), 0);
-                        }),
-                        Return(kTtcSize)));
-    EXPECT_CALL(system_font_info(), GetFontData(kFontHandle, kTableTTCF, _))
-        .WillOnce(Return(0));
-  }
+  EXPECT_CALL(system_font_info(),
+              GetFontData(kFontHandle, SystemFontInfoIface::kTableTTCF, _))
+      .WillOnce(Return(0));
 
   EXPECT_FALSE(
       font_mapper().GetCachedTTCFace(kFontHandle, kTtcSize, kDataSize));
+}
+
+// Regression test for crbug.com/565837689 - should not crash.
+TEST_F(CFXFontMapperSystemFontInfoTest, GetCachedTTCFaceWithLargeTtc) {
+  void* const kFontHandle = reinterpret_cast<void*>(12345);
+  static constexpr size_t kTtcSize = 2048;
+  static constexpr size_t kDataSize = 2;
+
+  for (int i = 0; i < 2; ++i) {
+    // Iteration 1:
+    // GetCachedTTCFace() reads `kTtcSize` bytes of test data and inserts an
+    // entry into `ttc_face_map_`. CFX_Face::New() then fails on the test data,
+    // destroying the FontCacheEntry while leaving the key in `ttc_face_map_`
+    // with a null ObservedPtr.
+    // Iteration 2:
+    // GetCachedTTCFace() reads `kTtcSize` bytes of test data again, and
+    // GetTTCFontCacheEntry() looks up the key in the non-empty `ttc_face_map_`,
+    // forcing a key comparison on the checksum.
+    EXPECT_CALL(system_font_info(),
+                GetFontData(kFontHandle, SystemFontInfoIface::kTableTTCF, _))
+        .WillOnce([](void*, uint32_t, pdfium::span<uint8_t> buffer) {
+          EXPECT_EQ(kTtcSize, buffer.size());
+          std::ranges::fill(buffer, 0);
+          return kTtcSize;
+        });
+
+    // Iteration 1:
+    // Inserts the checksum into `ttc_face_map_` without comparing keys because
+    // the map is empty.
+    // Iteration 2:
+    // Looks up the checksum in the non-empty `ttc_face_map_`, forcing a key
+    // comparison on the checksum.
+    EXPECT_FALSE(
+        font_mapper().GetCachedTTCFace(kFontHandle, kTtcSize, kDataSize));
+    testing::Mock::VerifyAndClearExpectations(&system_font_info());
+  }
 }
 
 // Regression test for crbug.com/1372234 - should not crash.
@@ -218,7 +238,8 @@ TEST_F(CFXFontMapperSystemFontInfoTest, GetCachedFaceFailToGetData) {
   static constexpr bool kItalic = false;
   static constexpr size_t kDataSize = 2;
 
-  EXPECT_CALL(system_font_info(), GetFontData(kFontHandle, 0, _))
+  EXPECT_CALL(system_font_info(),
+              GetFontData(kFontHandle, SystemFontInfoIface::kTableNone, _))
       .WillOnce(Return(0));
 
   EXPECT_FALSE(font_mapper().GetCachedFace(kFontHandle, kSubstName, kWeight,
@@ -238,14 +259,15 @@ TEST_F(CFXFontMapperSystemFontInfoTest, SetSubstFontNameWhenGetFaceNameFails) {
     InSequence s;
     EXPECT_CALL(system_font_info(), GetFaceName(kFontHandle, _))
         .WillOnce(Return(false));
-    EXPECT_CALL(system_font_info(), GetFontData(kFontHandle, kTableTTCF, _))
+    EXPECT_CALL(system_font_info(),
+                GetFontData(kFontHandle, SystemFontInfoIface::kTableTTCF, _))
         .WillOnce(Return(0));
-    EXPECT_CALL(system_font_info(), GetFontData(kFontHandle, 0, _))
+    EXPECT_CALL(system_font_info(),
+                GetFontData(kFontHandle, SystemFontInfoIface::kTableNone, _))
         .WillOnce(DoAll(WithArg<2>([&](pdfium::span<uint8_t> buffer) {
-                          EXPECT_EQ(0u, buffer.size());
+                          EXPECT_TRUE(buffer.empty());
                         }),
-                        Return(font_data.size())));
-    EXPECT_CALL(system_font_info(), GetFontData(kFontHandle, 0, _))
+                        Return(font_data.size())))
         .WillOnce(DoAll(WithArg<2>([&](pdfium::span<uint8_t> buffer) {
                           ASSERT_EQ(font_data.size(), buffer.size());
                           fxcrt::spancpy(buffer, pdfium::span(font_data));
@@ -264,22 +286,82 @@ TEST_F(CFXFontMapperSystemFontInfoTest, SetSubstFontNameWhenGetFaceNameFails) {
   EXPECT_TRUE(font_mapper().UseExternalSubst(kFontHandle, kSubstName, kWeight,
                                              kItalic, kItalicAngle, kCharset,
                                              &subst_font));
-  EXPECT_EQ("Noto Sans SC Regular", subst_font.family_);
+  EXPECT_EQ("Noto Sans SC Regular", subst_font.GetFamily());
+}
+
+TEST_F(CFXFontMapperSystemFontInfoTest,
+       FindSubstFaceForRegularStandardFontWithBoldWeight) {
+  ScopedStandardFontsFromSystem from_system;
+  std::string font_path = PathService::GetThirdPartyFilePath(
+      "NotoSansCJK/NotoSansSC-Regular.subset.otf");
+  ASSERT_FALSE(font_path.empty());
+  const std::vector<uint8_t> font_data = GetFileContents(font_path.c_str());
+  ASSERT_FALSE(font_data.empty());
+
+  void* const kFontHandle = reinterpret_cast<void*>(12345);
+
+  {
+    static constexpr char kExpectedFamily[] = "Helvetica-Oblique";
+    // TODO(crbug.com/500640684): Should be 400.
+    static constexpr int kExpectedWeight = 700;
+    static constexpr auto kExpectedCharset = FX_Charset::kANSI;
+    static constexpr int kExpectedPitchFamily = 0;
+
+    InSequence s;
+    EXPECT_CALL(system_font_info(), EnumFontList(&font_mapper()));
+    EXPECT_CALL(system_font_info(),
+                MapFont(&font_mapper(), kExpectedWeight, /*bItalic=*/true,
+                        kExpectedCharset, kExpectedPitchFamily,
+                        ByteString(kExpectedFamily)))
+        .WillOnce(Return(kFontHandle));
+    EXPECT_CALL(system_font_info(), GetFaceName(kFontHandle, _))
+        .WillOnce(Return(false));
+    EXPECT_CALL(system_font_info(),
+                GetFontData(kFontHandle, SystemFontInfoIface::kTableTTCF, _))
+        .WillOnce(Return(0));
+    EXPECT_CALL(system_font_info(),
+                GetFontData(kFontHandle, SystemFontInfoIface::kTableNone, _))
+        .WillOnce(DoAll(WithArg<2>([&](pdfium::span<uint8_t> buffer) {
+                          EXPECT_TRUE(buffer.empty());
+                        }),
+                        Return(font_data.size())))
+        .WillOnce(DoAll(WithArg<2>([&](pdfium::span<uint8_t> buffer) {
+                          ASSERT_EQ(font_data.size(), buffer.size());
+                          fxcrt::spancpy(buffer, pdfium::span(font_data));
+                        }),
+                        Return(font_data.size())));
+    EXPECT_CALL(system_font_info(), DeleteFont(kFontHandle));
+  }
+
+  static constexpr char kFaceName[] = "Arial-ItalicMT";
+  static constexpr int kBoldWeight = 700;
+  static constexpr int kItalicAngle = 0;
+  static constexpr auto kCodePage = FX_CodePage::kDefANSI;
+
+  CFX_SubstFont subst_font;
+  RetainPtr<CFX_Face> face = font_mapper().FindSubstFace(
+      kFaceName,
+      /*is_truetype=*/true,
+      /*flags=*/kFontUseExternAttr,
+      /*weight=*/kBoldWeight,
+      /*italic_angle=*/kItalicAngle, kCodePage, &subst_font);
+  EXPECT_TRUE(face);
+  EXPECT_EQ("Noto Sans SC Regular", subst_font.GetFamily());
 }
 
 TEST(CFXFontMapperTest, LoadInstalledFontsWithEnumeration) {
-  CFX_FontMapper font_mapper(nullptr);
+  CFX_FontMapper font_mapper;
   auto system_font_info = std::make_unique<MockSystemFontInfo>();
   auto* mock_font_info = system_font_info.get();
   font_mapper.SetSystemFontInfo(std::move(system_font_info));
 
   // Default behavior: EnumFontList should be called
-  EXPECT_CALL(*mock_font_info, EnumFontList(&font_mapper)).Times(1);
+  EXPECT_CALL(*mock_font_info, EnumFontList(&font_mapper));
   font_mapper.LoadInstalledFonts();
 }
 
 TEST(CFXFontMapperTest, LoadInstalledFontsSkipEnumeration) {
-  CFX_FontMapper font_mapper(nullptr);
+  CFX_FontMapper font_mapper;
   auto system_font_info = std::make_unique<MockSystemFontInfo>();
   auto* mock_font_info = system_font_info.get();
   font_mapper.SetSystemFontInfo(std::move(system_font_info));
@@ -293,14 +375,14 @@ TEST(CFXFontMapperTest, LoadInstalledFontsSkipEnumeration) {
 }
 
 TEST(CFXFontMapperTest, LoadInstalledFontsCalledOnlyOnce) {
-  CFX_FontMapper font_mapper(nullptr);
+  CFX_FontMapper font_mapper;
   auto system_font_info = std::make_unique<MockSystemFontInfo>();
   auto* mock_font_info = system_font_info.get();
   font_mapper.SetSystemFontInfo(std::move(system_font_info));
 
   // EnumFontList should be called only once even if LoadInstalledFonts is
   // called multiple times
-  EXPECT_CALL(*mock_font_info, EnumFontList(&font_mapper)).Times(1);
+  EXPECT_CALL(*mock_font_info, EnumFontList(&font_mapper));
   font_mapper.LoadInstalledFonts();
   font_mapper.LoadInstalledFonts();
   font_mapper.LoadInstalledFonts();
@@ -314,21 +396,21 @@ TEST_F(CFXFontMapperSystemFontInfoTest, StandardFontUsesBuiltInFace) {
   struct Case {
     const char* name;
     bool is_truetype;
-    CFX_FontMapper::StandardFont face;
+    CFX_StandardFont::Index face;
   };
   static constexpr Case kCases[] = {
-      {"Helvetica", false, CFX_FontMapper::kHelvetica},
-      {"Arial", true, CFX_FontMapper::kHelvetica},
-      {"Times-Bold", false, CFX_FontMapper::kTimesBold},
-      {"Courier-Oblique", false, CFX_FontMapper::kCourierOblique},
+      {"Helvetica", false, CFX_StandardFont::kHelvetica},
+      {"Arial", true, CFX_StandardFont::kHelvetica},
+      {"Times-Bold", false, CFX_StandardFont::kTimesBold},
+      {"Courier-Oblique", false, CFX_StandardFont::kCourierOblique},
   };
   for (const Case& test_case : kCases) {
     CFX_SubstFont subst_font;
-    RetainPtr<CFX_Face> face = font_mapper().FindSubstFont(
+    RetainPtr<CFX_Face> face = font_mapper().FindSubstFace(
         test_case.name, test_case.is_truetype, /*flags=*/0, /*weight=*/0,
         /*italic_angle=*/0, FX_CodePage::kDefANSI, &subst_font);
     ASSERT_TRUE(face) << test_case.name;
-    EXPECT_EQ(CFX_FontMgr::GetStandardFont(test_case.face).data(),
+    EXPECT_EQ(CFX_StandardFont::GetFontData(test_case.face).data(),
               face->GetData().data())
         << test_case.name;
   }
@@ -339,7 +421,7 @@ TEST_F(CFXFontMapperSystemFontInfoTest, StandardFontUsesBuiltInFace) {
 TEST_F(CFXFontMapperSystemFontInfoTest, StandardFontInCjkCodePageAsksSystem) {
   EXPECT_CALL(system_font_info(), MapFont).WillOnce(Return(nullptr));
   CFX_SubstFont subst_font;
-  font_mapper().FindSubstFont("Helvetica", /*is_truetype=*/false,
+  font_mapper().FindSubstFace("Helvetica", /*is_truetype=*/false,
                               /*flags=*/0, /*weight=*/0, /*italic_angle=*/0,
                               FX_CodePage::kShiftJIS, &subst_font);
 }

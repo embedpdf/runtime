@@ -6,22 +6,29 @@ import("//build/config/freetype/freetype.gni")
 import("../../pdfium.gni")
 import("../../testing/test.gni")
 
+if (pdf_enable_fontations) {
+  import("//build/rust/rust_static_library.gni")
+}
+
+if (pdf_enable_fontations) {
+  config("skrifa_cxx_config") {
+    include_dirs = [
+      "//core/fxge/skrifa/src",
+      "$root_gen_dir/core/fxge/skrifa/src",
+    ]
+  }
+}
+
 source_set("fxge") {
   sources = [
-    "agg/cfx_agg_bitmapcomposer.cpp",
-    "agg/cfx_agg_bitmapcomposer.h",
-    "agg/cfx_agg_cliprgn.cpp",
-    "agg/cfx_agg_cliprgn.h",
-    "agg/cfx_agg_devicedriver.cpp",
-    "agg/cfx_agg_devicedriver.h",
-    "agg/cfx_agg_imagerenderer.cpp",
-    "agg/cfx_agg_imagerenderer.h",
     "calculate_pitch.cpp",
     "calculate_pitch.h",
+    "cfx_charmap_resolver.cpp",
+    "cfx_charmap_resolver.h",
     "cfx_color.cpp",
     "cfx_color.h",
-    "cfx_defaultrenderdevice.cpp",
-    "cfx_defaultrenderdevice.h",
+    "cfx_cttgsubtable.cpp",
+    "cfx_cttgsubtable.h",
     "cfx_drawutils.cpp",
     "cfx_drawutils.h",
     "cfx_face.cpp",
@@ -53,11 +60,11 @@ source_set("fxge") {
     "cfx_path.h",
     "cfx_renderdevice.cpp",
     "cfx_renderdevice.h",
+    "cfx_standardfont.cpp",
+    "cfx_standardfont.h",
     "cfx_substfont.cpp",
     "cfx_substfont.h",
     "cfx_textrenderoptions.h",
-    "cfx_unicodeencoding.cpp",
-    "cfx_unicodeencoding.h",
     "dib/blend.cpp",
     "dib/blend.h",
     "dib/cfx_bitmapstorer.cpp",
@@ -76,6 +83,8 @@ source_set("fxge") {
     "dib/cfx_scanlinecompositor.h",
     "dib/cstretchengine.cpp",
     "dib/cstretchengine.h",
+    "dib/cstretchengine_hwy.cpp",
+    "dib/cstretchengine_hwy.h",
     "dib/fx_dib.cpp",
     "dib/fx_dib.h",
     "dib/scanlinecomposer_iface.h",
@@ -96,12 +105,9 @@ source_set("fxge") {
     "fontdata/chromefontdata/FoxitSerifMM.cpp",
     "fontdata/chromefontdata/FoxitSymbol.cpp",
     "fontdata/chromefontdata/chromefontdata.h",
-    "freetype/fx_freetype.cpp",
-    "freetype/fx_freetype.h",
     "fx_font.cpp",
     "fx_font.h",
     "fx_fontencoding.h",
-    "render_defines.h",
     "renderdevicedriver_iface.cpp",
     "renderdevicedriver_iface.h",
     "systemfontinfo_iface.h",
@@ -115,55 +121,19 @@ source_set("fxge") {
     "../../:pdfium_strict_config",
     "../../:pdfium_noshorten_config",
   ]
-
+  public_deps = [ "../fxcrt" ]
   deps = [
-    "../../third_party:fx_agg",
     # EmbedPDF: CFX_FontRegistry instances variable fonts at registration
     # (HarfBuzz subset instancer) and records a SHA-256 source hash.
-    "../../third_party/harfbuzz-ng",
+    "../../third_party/harfbuzz",
     "../fdrm",
-    "../fxcrt",
+    "//third_party/abseil-cpp:absl",
+    "//third_party/highway:libhwy",
   ]
-
-  public_deps = []
   defines = []
-
-  if (is_component_build || use_system_freetype) {
-    # ft_adobe_glyph_list is not exported from the Freetype shared library so we
-    # need it defined in component builds and builds using system freetype.
-    defines += [ "DEFINE_PS_TABLES_DATA" ]
-  }
-
-  if (pdf_enable_xfa) {
-    sources += [
-      "cfx_unicodeencodingex.cpp",
-      "cfx_unicodeencodingex.h",
-    ]
-  }
-
-  if (pdf_use_skia) {
-    sources += [
-      "skia/cfx_dibbase_skia.cpp",
-      "skia/fx_skia_device.cpp",
-    ]
-    public_deps += [ "//skia" ]
-
-    if (pdf_skia_font_manager_target != "") {
-      defines += [ "PDF_USE_SKIA_CUSTOM_FONT_MANAGER" ]
-      deps += [ pdf_skia_font_manager_target ]
-    }
-  }
 
   if (is_android) {
     sources += [
-      "android/cfpf_skiadevicemodule.cpp",
-      "android/cfpf_skiadevicemodule.h",
-      "android/cfpf_skiafont.cpp",
-      "android/cfpf_skiafont.h",
-      "android/cfpf_skiafontmgr.cpp",
-      "android/cfpf_skiafontmgr.h",
-      "android/cfpf_skiapathfont.cpp",
-      "android/cfpf_skiapathfont.h",
       "android/cfx_androidfontinfo.cpp",
       "android/cfx_androidfontinfo.h",
       "android/fx_android_impl.cpp",
@@ -176,19 +146,17 @@ source_set("fxge") {
 
   if (is_mac) {
     sources += [
+      "apple/capple_platform.cpp",
+      "apple/capple_platform.h",
+      "apple/cquartz_2d.cpp",
+      "apple/cquartz_2d.h",
       "apple/fx_apple_impl.cpp",
-      "apple/fx_apple_platform.cpp",
-      "apple/fx_apple_platform.h",
-      "apple/fx_quartz_device.cpp",
-      "apple/fx_quartz_device.h",
     ]
     frameworks = [ "CoreGraphics.framework" ]
   }
 
   if (is_win) {
     sources += [
-      "cfx_windowsrenderdevice.cpp",
-      "cfx_windowsrenderdevice.h",
       "win32/cfx_psfonttracker.cpp",
       "win32/cfx_psfonttracker.h",
       "win32/cfx_psrenderer.cpp",
@@ -213,15 +181,129 @@ source_set("fxge") {
     configs -= [ "//build/config/win:lean_and_mean" ]
   }
 
+  if (pdf_enable_fontations) {
+    configs += [ ":skrifa_cxx_config" ]
+    deps += [
+      ":skrifa_cxx",
+      ":skrifa_cxx_cpp",
+      "//build/rust:cxx_cppdeps",
+    ]
+  }
+
+  if (pdf_enable_freetype) {
+    sources += [
+      "freetype/fx_freetype.cpp",
+      "freetype/fx_freetype.h",
+    ]
+    public_deps += [ "../../:freetype_common" ]
+  }
+
+  if (pdf_enable_freetype && (is_component_build || use_system_freetype)) {
+    # ft_adobe_glyph_list is not exported from the Freetype shared library so we
+    # need it defined in component builds and builds using system freetype.
+    defines += [ "DEFINE_PS_TABLES_DATA" ]
+  }
+
+  if (pdf_enable_xfa) {
+    sources += [
+      "cfx_cttnametable.cpp",
+      "cfx_cttnametable.h",
+    ]
+  }
+
+  if (pdf_use_agg) {
+    sources += [
+      "agg/cfx_agg_bitmapcomposer.cpp",
+      "agg/cfx_agg_bitmapcomposer.h",
+      "agg/cfx_agg_cliprgn.cpp",
+      "agg/cfx_agg_cliprgn.h",
+      "agg/cfx_agg_devicedriver.cpp",
+      "agg/cfx_agg_devicedriver.h",
+      "agg/cfx_agg_imagerenderer.cpp",
+      "agg/cfx_agg_imagerenderer.h",
+    ]
+    deps += [ "../../third_party:fx_agg" ]
+  }
+
+  if (pdf_use_libyuv) {
+    deps += [ "//third_party/libyuv" ]
+  }
+
+  if (pdf_use_skia) {
+    sources += [
+      "skia/cfx_dibbase_skia.cpp",
+      "skia/fx_skia_device.cpp",
+      "skia/fx_skia_device.h",
+    ]
+    public_deps += [ "//skia" ]
+
+    if (pdf_skia_font_manager_target != "") {
+      defines += [ "PDF_USE_SKIA_CUSTOM_FONT_MANAGER" ]
+      deps += [ pdf_skia_font_manager_target ]
+    }
+  }
+
   visibility = [ "../../*" ]
+}
+
+if (pdf_enable_fontations) {
+  rust_static_library("skrifa_cxx") {
+    crate_name = "skrifa_cxx"
+    allow_unsafe = true
+    crate_root = "skrifa/src/main.rs"
+    sources = [ crate_root ]
+    cxx_bindings = [ crate_root ]
+    features = [ "agl" ]
+    deps = [
+      "//build/rust:cxx_cppdeps",
+      "//third_party/rust/read_fonts/v0_43:lib",
+      "//third_party/rust/skrifa/v0_46:lib",
+    ]
+    configs += [ ":skrifa_cxx_config" ]
+  }
+
+  source_set("skrifa_cxx_cpp") {
+    sources = [
+      "skrifa/src/outlines.cpp",
+      "skrifa/src/outlines.h",
+    ]
+    deps = [
+      ":skrifa_cxx",
+      "//build/rust:cxx_cppdeps",
+    ]
+    configs -= [ "//build/config/compiler:chromium_code" ]
+    configs += [
+      "//build/config/compiler:no_chromium_code",
+      ":skrifa_cxx_config",
+    ]
+    visibility = [ ":*" ]
+  }
+}
+
+source_set("test_support") {
+  testonly = true
+  sources = [
+    "display_list_device_driver.cpp",
+    "display_list_device_driver.h",
+  ]
+  configs += [ "../../:pdfium_strict_config" ]
+  deps = [
+    ":fxge",
+    "../fxcrt",
+  ]
 }
 
 pdfium_unittest_source_set("unittests") {
   sources = [
-    "cfx_defaultrenderdevice_unittest.cpp",
+    "cfx_color_unittest.cpp",
+    "cfx_face_unittest.cpp",
     "cfx_folderfontinfo_unittest.cpp",
+    "cfx_font_unittest.cpp",
     "cfx_fontmapper_unittest.cpp",
     "cfx_path_unittest.cpp",
+    "cfx_renderdevice_unittest.cpp",
+    "cfx_standardfont_unittest.cpp",
+    "cfx_substfont_unittest.cpp",
     "dib/blend_unittest.cpp",
     "dib/cfx_cmyk_to_srgb_unittest.cpp",
     "dib/cfx_dibbase_unittest.cpp",
@@ -231,15 +313,41 @@ pdfium_unittest_source_set("unittests") {
     "dib/fx_dib_unittest.cpp",
     "fx_font_unittest.cpp",
   ]
+  data = [ "../../third_party/NotoSansCJK/NotoSansSC-Regular.subset.otf" ]
   deps = [
     ":fxge",
+    ":test_support",
+    "../../testing:path_service",
+    "../../testing:test_support",
     "../fpdfapi/page",
     "../fpdfapi/parser",
+    "../fxcrt:test_support",
   ]
+  configs = []
   pdfium_root_dir = "../../"
+
+  # CFX_AndroidFontInfo contains cross-platform logic that can be tested on
+  # Linux without Android-specific APIs.
+  if (is_linux) {
+    sources += [
+      "android/cfx_androidfontinfo.cpp",
+      "android/cfx_androidfontinfo.h",
+      "android/cfx_androidfontinfo_unittest.cpp",
+    ]
+  }
 
   if (is_win) {
     sources += [ "win32/cfx_psrenderer_unittest.cpp" ]
+  }
+
+  if (pdf_enable_fontations) {
+    sources += [ "skrifa/fx_skrifa_unittest.cpp" ]
+    deps += [
+      ":skrifa_cxx",
+      ":skrifa_cxx_cpp",
+      "//build/rust:cxx_cppdeps",
+    ]
+    configs += [ ":skrifa_cxx_config" ]
   }
 }
 
@@ -256,14 +364,6 @@ pdfium_embeddertest_source_set("embeddertests") {
       "../fpdfapi/page",
       "../fpdfapi/render",
       "//skia",
-    ]
-  }
-
-  if (is_win) {
-    sources += [ "cfx_windowsrenderdevice_embeddertest.cpp" ]
-    deps += [
-      ":fxge",
-      "../fxcodec",
     ]
   }
 }

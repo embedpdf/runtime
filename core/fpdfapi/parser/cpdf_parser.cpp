@@ -166,8 +166,7 @@ CPDF_Parser::CPDF_Parser(ParsedObjectsHolder* holder)
     : objects_holder_(holder),
       cross_ref_table_(std::make_unique<CPDF_CrossRefTable>()) {
   if (!holder) {
-    owned_objects_holder_ = std::make_unique<ObjectsHolderStub>();
-    objects_holder_ = owned_objects_holder_.get();
+    objects_holder_ = std::make_unique<ObjectsHolderStub>();
   }
 }
 
@@ -697,30 +696,36 @@ bool CPDF_Parser::LoadCrossRefTable(FX_FILESIZE pos, bool skip) {
     return false;
   }
 
-  MergeCrossRefObjectsData(objects);
-  return true;
+  return MergeCrossRefObjectsData(objects);
 }
 
-void CPDF_Parser::MergeCrossRefObjectsData(
+bool CPDF_Parser::MergeCrossRefObjectsData(
     const std::vector<CrossRefObjData>& objects) {
   for (const auto& obj : objects) {
     switch (obj.info.type) {
       case ObjectType::kFree:
-        if (obj.info.gennum > 0) {
-          cross_ref_table_->SetFree(obj.obj_num, obj.info.gennum);
+        if (obj.info.gennum > 0 &&
+            !cross_ref_table_->SetFree(obj.obj_num, obj.info.gennum)) {
+          return false;
         }
         break;
       case ObjectType::kNormal:
-        cross_ref_table_->AddNormal(obj.obj_num, obj.info.gennum,
-                                    obj.info.is_object_stream_flag,
-                                    obj.info.pos);
+        if (!cross_ref_table_->AddNormal(obj.obj_num, obj.info.gennum,
+                                         obj.info.is_object_stream_flag,
+                                         obj.info.pos)) {
+          return false;
+        }
         break;
       case ObjectType::kCompressed:
-        cross_ref_table_->AddCompressed(obj.obj_num, obj.info.archive.obj_num,
-                                        obj.info.archive.obj_index);
+        if (!cross_ref_table_->AddCompressed(obj.obj_num,
+                                             obj.info.archive.obj_num,
+                                             obj.info.archive.obj_index)) {
+          return false;
+        }
         break;
     }
   }
+  return true;
 }
 
 bool CPDF_Parser::FindAllCrossReferenceTablesAndStream(
@@ -837,18 +842,15 @@ bool CPDF_Parser::RebuildCrossRef() {
                 pStream->GetObjNum()));
       }
 
-      if (obj_num <= kMaxObjectNumber) {
-        cross_ref_table->AddNormal(obj_num, gen_num, /*is_object_stream=*/false,
-                                   obj_pos);
+      if (cross_ref_table->AddNormal(obj_num, gen_num,
+                                     /*is_object_stream=*/false, obj_pos)) {
         const auto object_stream =
             CPDF_ObjectStream::Create(std::move(pStream));
         if (object_stream) {
           const auto& object_info = object_stream->object_info();
           for (size_t i = 0; i < object_info.size(); ++i) {
             const auto& info = object_info[i];
-            if (info.obj_num <= kMaxObjectNumber) {
-              cross_ref_table->AddCompressed(info.obj_num, obj_num, i);
-            }
+            cross_ref_table->AddCompressed(info.obj_num, obj_num, i);
           }
         }
       }
@@ -1075,7 +1077,7 @@ uint32_t CPDF_Parser::GetTrailerObjectNumber() const {
 RetainPtr<CPDF_Dictionary> CPDF_Parser::GetCombinedTrailer() const {
   return cross_ref_table_->trailer()
              ? ToDictionary(cross_ref_table_->trailer()->Clone())
-             : RetainPtr<CPDF_Dictionary>();
+             : nullptr;
 }
 
 uint32_t CPDF_Parser::GetInfoObjNum() const {
@@ -1097,7 +1099,7 @@ uint32_t CPDF_Parser::GetRootObjNum() const {
 // EmbedPDF(save-traversal): a save parses from the loaded bytes without
 // filling the document's caches.
 RetainPtr<CPDF_Object> CPDF_Parser::ParseIndirectObject(uint32_t objnum) {
-  return ParseIndirectObjectInternal(objnum, objects_holder_, nullptr);
+  return ParseIndirectObjectInternal(objnum, objects_holder_.Get(), nullptr);
 }
 
 RetainPtr<CPDF_Object> CPDF_Parser::ParseIndirectObjectForSave(
@@ -1229,7 +1231,7 @@ const CPDF_ObjectStream* CPDF_Parser::GetObjectStream(uint32_t object_number) {
 // document's caches stay untouched.
 RetainPtr<CPDF_Object> CPDF_Parser::ParseIndirectObjectAt(FX_FILESIZE pos,
                                                           uint32_t objnum) {
-  return ParseIndirectObjectAtWithHolder(pos, objnum, objects_holder_);
+  return ParseIndirectObjectAtWithHolder(pos, objnum, objects_holder_.Get());
 }
 
 RetainPtr<CPDF_Object> CPDF_Parser::ParseIndirectObjectAtWithHolder(
@@ -1297,7 +1299,7 @@ RetainPtr<CPDF_Dictionary> CPDF_Parser::LoadTrailer() {
     return nullptr;
   }
 
-  return ToDictionary(syntax_->GetObjectBody(objects_holder_));
+  return ToDictionary(syntax_->GetObjectBody(objects_holder_.Get()));
 }
 
 uint32_t CPDF_Parser::GetPermissions(bool get_owner_perms) const {
@@ -1443,8 +1445,7 @@ CPDF_Parser::Error CPDF_Parser::LoadLinearizedMainXRefTable() {
     return SUCCESS;
   }
 
-  const AutoRestorer<uint32_t> save_metadata_objnum(&metadata_objnum_);
-  metadata_objnum_ = 0;
+  AutoRestorer<uint32_t> save_metadata_objnum(&metadata_objnum_, 0);
   object_stream_map_.clear();
 
   if (!LoadLinearizedAllCrossRefTable(main_xref_offset) &&

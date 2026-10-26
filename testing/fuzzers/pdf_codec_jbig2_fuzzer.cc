@@ -4,9 +4,9 @@
 
 #include <stdint.h>
 
-#include "core/fxcodec/jbig2/JBig2_Context.h"
-#include "core/fxcodec/jbig2/JBig2_DocumentContext.h"
+#include "core/fxcodec/jbig2/jbig2_context.h"
 #include "core/fxcodec/jbig2/jbig2_decoder.h"
+#include "core/fxcodec/jbig2/jbig2_document_context.h"
 #include "core/fxcrt/compiler_specific.h"
 #include "core/fxcrt/fx_safe_types.h"
 #include "core/fxcrt/span.h"
@@ -23,7 +23,7 @@ extern "C" int LLVMFuzzerTestOneInput(const uint8_t* data, size_t size) {
   // SAFETY: trusted arguments from fuzzer.
   auto span = UNSAFE_BUFFERS(pdfium::span(data, size));
   uint32_t width = GetInteger(data);
-  uint32_t height = GetInteger(data + 4);
+  uint32_t height = GetInteger(UNSAFE_TODO(data + 4));
   span = span.subspan(kParameterSize);
 
   static constexpr uint32_t kMemLimit = 512000000;   // 512 MB

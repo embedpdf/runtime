@@ -23,6 +23,8 @@
 #include "fxbarcode/qrcode/BC_QRCoderBitVector.h"
 
 #include "core/fxcrt/check.h"
+#include "core/fxcrt/check_op.h"
+#include "core/fxcrt/fx_ceil_div.h"
 #include "core/fxcrt/fx_system.h"
 
 CBC_QRCoderBitVector::CBC_QRCoderBitVector() = default;
@@ -36,7 +38,7 @@ int32_t CBC_QRCoderBitVector::At(size_t index) const {
 }
 
 size_t CBC_QRCoderBitVector::sizeInBytes() const {
-  return (size_in_bits_ + 7) >> 3;
+  return fxcrt::CeilDiv(size_in_bits_, 8);
 }
 
 size_t CBC_QRCoderBitVector::Size() const {
@@ -55,8 +57,8 @@ void CBC_QRCoderBitVector::AppendBit(int32_t bit) {
 }
 
 void CBC_QRCoderBitVector::AppendBits(int32_t value, int32_t numBits) {
-  DCHECK(numBits > 0);
-  DCHECK(numBits <= 32);
+  DCHECK_GT(numBits, 0);
+  DCHECK_LE(numBits, 32);
 
   int32_t numBitsLeft = numBits;
   while (numBitsLeft > 0) {

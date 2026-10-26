@@ -26,7 +26,7 @@ CXFA_LayoutProcessor* CXFA_LayoutProcessor::FromDocument(
   return static_cast<CXFA_LayoutProcessor*>(pXFADoc->GetLayoutProcessor());
 }
 
-CXFA_LayoutProcessor::CXFA_LayoutProcessor(cppgc::Heap* pHeap) : heap_(pHeap) {}
+CXFA_LayoutProcessor::CXFA_LayoutProcessor(FXGC_Heap* pHeap) : heap_(pHeap) {}
 
 CXFA_LayoutProcessor::~CXFA_LayoutProcessor() = default;
 
@@ -105,7 +105,9 @@ int32_t CXFA_LayoutProcessor::DoLayout() {
       pLayoutItem->s_pos_ = CFX_PointF(fPosX, fPosY);
     }
 
-    view_layout_processor_->SubmitContentItem(pLayoutItem, eStatus);
+    if (!view_layout_processor_->SubmitContentItem(pLayoutItem, eStatus)) {
+      return -1;
+    }
   } while (eStatus != CXFA_ContentLayoutProcessor::Result::kDone);
 
   if (eStatus == CXFA_ContentLayoutProcessor::Result::kDone) {

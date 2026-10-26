@@ -11,7 +11,7 @@
 
 #include <memory>
 
-#include "core/fxge/cfx_windowsrenderdevice.h"
+#include "core/fxge/cfx_gemodule.h"
 #include "core/fxge/renderdevicedriver_iface.h"
 #include "core/fxge/win32/cfx_psrenderer.h"
 
@@ -28,7 +28,12 @@ class CPSPrinterDriver final : public RenderDeviceDriverIface {
  private:
   // RenderDeviceDriverIface:
   DeviceType GetDeviceType() const override;
-  int GetDeviceCaps(int caps_id) const override;
+  int GetPixelWidth() const override;
+  int GetPixelHeight() const override;
+  int GetBitsPerPixel() const override;
+  int GetHorzSize() const override;
+  int GetVertSize() const override;
+  void Clear(uint32_t color) override;
   void SaveState() override;
   void RestoreState(bool bKeepSaved) override;
   bool SetClip_PathFill(const CFX_Path& paath,
@@ -42,6 +47,7 @@ class CPSPrinterDriver final : public RenderDeviceDriverIface {
                 const CFX_GraphStateData* pGraphState,
                 uint32_t fill_color,
                 uint32_t stroke_color,
+                bool group_knockout,
                 const CFX_FillRenderOptions& fill_options) override;
   FX_RECT GetClipBox() const override;
   bool SetDIBits(RetainPtr<const CFX_DIBBase> bitmap,

@@ -34,7 +34,9 @@ All commands run from the fork's root.
    new globals, build changes and the API diff.
 3. **Branch and merge.** Never rebase.
    ```bash
-   git switch -c embedpdf/sync/<target> embedpdf/main
+   # --no-track: a branch made from origin/embedpdf/main would otherwise track
+   # it, and a plain push or an editor's "Sync" would go to embedpdf/main.
+   git switch --no-track -c embedpdf/sync/<target> origin/embedpdf/main
    git config rerere.enabled true
    git merge --no-ff <target>
    ```
@@ -72,6 +74,26 @@ All commands run from the fork's root.
    - After building, run `unapply-patches.sh <target>` and remove
      `BUILD.gn.orig`, so only the merge is committed.
 7. **Open a PR into `embedpdf/main`** with the report.
+
+## Release gates
+
+`release-libpdfium.yml` runs these before anything is published, on every run:
+
+- **Upstream freshness** (`check-upstream-freshness.py`): lists the upstream
+  commits the ref misses, likely security fixes marked. With `release` on it
+  fails when the oldest one landed more than 2 days ago. The release notes carry
+  the list, and the manifest the upstream commit the release is based on.
+- **Fork tags** (`check-fork-tags.py --strict`).
+- **Layer mode** on the Linux test build (`run_layer_mode.py`).
+- **Writable globals** on the linux-x64 library (`check-globals.py`).
+- **ThreadSanitizer soak** (`pdfium-tsan-thread-soak.yml`).
+
+**The override.** When a sync can't land before a release, set
+`upstream_gate_override_reason`. The release then publishes with a warning, and
+its notes give the reason and every upstream commit it misses. Every likely
+security fix it holds back must be cherry-picked into the release first, with
+`git cherry-pick -x` (the gate checks for the `cherry picked from commit` line).
+The next release tries the full sync again.
 
 ## Never silently
 

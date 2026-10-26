@@ -102,7 +102,51 @@ TEST_F(CPDFPageContentGeneratorTest, ProcessRect) {
                                        CFX_Path::Point::Type::kLine);
   buf.str("");
   TestProcessPath(&generator, &buf, pPathObj.get());
-  EXPECT_EQ("q 0 0 5.1999998 3.78 re n Q\n", ByteString(buf));
+  EXPECT_EQ("q 0 0 5.2 3.78 re n Q\n", ByteString(buf));
+
+  // A rectangle with a duplicate second point, so its third point is not the
+  // opposite corner.
+  pPathObj = std::make_unique<CPDF_PathObject>();
+  pPathObj->path().AppendPoint(CFX_PointF(0, 0), CFX_Path::Point::Type::kMove);
+  pPathObj->path().AppendPoint(CFX_PointF(0, 0), CFX_Path::Point::Type::kLine);
+  pPathObj->path().AppendPoint(CFX_PointF(2, 0), CFX_Path::Point::Type::kLine);
+  pPathObj->path().AppendPoint(CFX_PointF(2, 1), CFX_Path::Point::Type::kLine);
+  pPathObj->path().AppendPoint(CFX_PointF(0, 1), CFX_Path::Point::Type::kLine);
+  pPathObj->path().AppendPoint(CFX_PointF(0, 0), CFX_Path::Point::Type::kLine);
+  buf.str("");
+  TestProcessPath(&generator, &buf, pPathObj.get());
+  EXPECT_EQ("q 0 0 2 1 re n Q\n", ByteString(buf));
+
+  // A rectangle with an extra point in the middle of its first edge, so its
+  // third point is not the opposite corner either.
+  pPathObj = std::make_unique<CPDF_PathObject>();
+  pPathObj->path().AppendPoint(CFX_PointF(0, 0), CFX_Path::Point::Type::kMove);
+  pPathObj->path().AppendPoint(CFX_PointF(50, 0), CFX_Path::Point::Type::kLine);
+  pPathObj->path().AppendPoint(CFX_PointF(100, 0),
+                               CFX_Path::Point::Type::kLine);
+  pPathObj->path().AppendPoint(CFX_PointF(100, 100),
+                               CFX_Path::Point::Type::kLine);
+  pPathObj->path().AppendPoint(CFX_PointF(0, 100),
+                               CFX_Path::Point::Type::kLine);
+  pPathObj->path().AppendPointAndClose(CFX_PointF(0, 0),
+                                       CFX_Path::Point::Type::kLine);
+  buf.str("");
+  TestProcessPath(&generator, &buf, pPathObj.get());
+  EXPECT_EQ("q 0 0 100 100 re n Q\n", ByteString(buf));
+
+  // Same as above, but closed without repeating the first point.
+  pPathObj = std::make_unique<CPDF_PathObject>();
+  pPathObj->path().AppendPoint(CFX_PointF(0, 0), CFX_Path::Point::Type::kMove);
+  pPathObj->path().AppendPoint(CFX_PointF(50, 0), CFX_Path::Point::Type::kLine);
+  pPathObj->path().AppendPoint(CFX_PointF(100, 0),
+                               CFX_Path::Point::Type::kLine);
+  pPathObj->path().AppendPoint(CFX_PointF(100, 100),
+                               CFX_Path::Point::Type::kLine);
+  pPathObj->path().AppendPointAndClose(CFX_PointF(0, 100),
+                                       CFX_Path::Point::Type::kLine);
+  buf.str("");
+  TestProcessPath(&generator, &buf, pPathObj.get());
+  EXPECT_EQ("q 0 0 100 100 re n Q\n", ByteString(buf));
 }
 
 TEST_F(CPDFPageContentGeneratorTest, Bug937) {
@@ -129,11 +173,11 @@ TEST_F(CPDFPageContentGeneratorTest, Bug937) {
     fxcrt::ostringstream buf;
     TestProcessPath(&generator, &buf, pPathObj.get());
     EXPECT_EQ(
-        "q .00000000000000000000099999997 .69999999 .34999999 rg "
-        ".00000000000000000000099999997 .69999999 .34999999 RG "
-        "200000000000000000000 w 1 0 0 1 .00000000000000000000099999997 "
-        "200000000000000 cm .00000000000000000000099999997 "
-        ".00000000000000000000099999997 100 100 re f Q\n",
+        "q .000000000000000000001 .7 .35 rg "
+        ".000000000000000000001 .7 .35 RG "
+        "200000000000000000000 w 1 0 0 1 .000000000000000000001 "
+        "200000000000000 cm .000000000000000000001 "
+        ".000000000000000000001 100 100 re f Q\n",
         ByteString(buf));
   }
 
@@ -165,11 +209,11 @@ TEST_F(CPDFPageContentGeneratorTest, Bug937) {
 
     TestProcessPath(&generator, &buf, pPathObj.get());
     EXPECT_EQ(
-        "q .00000000000000000000099999997 .69999999 .34999999 rg "
-        ".00000000000000000000099999997 .69999999 .34999999 RG 2 w 1 0 0 1 432 "
-        "499999990000000 cm .00000000000000000000099999997 4.6700001 m "
-        ".00000000000000000000099999997 100000000000000 l "
-        ".000000000000099999998 3.1500001 3.5699999 2.98 53.400002 "
+        "q .000000000000000000001 .7 .35 rg "
+        ".000000000000000000001 .7 .35 RG 2 w 1 0 0 1 432 "
+        "500000000000000 cm .000000000000000000001 4.67 m "
+        ".000000000000000000001 100000000000000 l "
+        ".0000000000001 3.15 3.57 2.98 53.4 "
         "5000000000000000000 c h f Q\n",
         ByteString(buf));
   }
@@ -205,9 +249,9 @@ TEST_F(CPDFPageContentGeneratorTest, ProcessPath) {
   fxcrt::ostringstream buf;
   TestProcessPath(&generator, &buf, pPathObj.get());
   EXPECT_EQ(
-      "q 3.102 4.6700001 m 5.4499998 .28999999 l 4.2399998 "
-      "3.1500001 4.6500001 2.98 3.4560001 .23999999 c 10.6000004 11.149999"
-      "6 l 11 12.5 l 11.46 12.6700001 11.8400002 12.96 12 13.6400003 c h f"
+      "q 3.102 4.67 m 5.45 .29 l 4.24 "
+      "3.15 4.65 2.98 3.456 .24 c 10.6 "
+      "11.15 l 11 12.5 l 11.46 12.67 11.84 12.96 12 13.64 c h f"
       " Q\n",
       ByteString(buf));
 }
@@ -242,8 +286,7 @@ TEST_F(CPDFPageContentGeneratorTest, ProcessGraphics) {
   ByteString path_string(buf);
 
   // Color RGB values used are integers divided by 255.
-  const ByteStringView kExpectedStringStart =
-      "q .5 .69999999 .34999999 rg 1 .89999998 0 RG /";
+  const ByteStringView kExpectedStringStart = "q .5 .7 .35 rg 1 .9 0 RG /";
   const ByteStringView kExpectedStringEnd = " gs 1 2 m 3 4 l 5 6 l h B Q\n";
   const size_t kExpectedStringMinLength =
       kExpectedStringStart.GetLength() + kExpectedStringEnd.GetLength();
@@ -266,7 +309,7 @@ TEST_F(CPDFPageContentGeneratorTest, ProcessGraphics) {
   buf.str("");
   TestProcessPath(&generator, &buf, pPathObj.get());
   const ByteStringView kExpectedStringStart2 =
-      "q .5 .69999999 .34999999 rg 1 .89999998 0 RG 10.5 w /";
+      "q .5 .7 .35 rg 1 .9 0 RG 10.5 w /";
   ByteString path_string2(buf);
   EXPECT_EQ(kExpectedStringStart2,
             path_string2.First(kExpectedStringStart2.GetLength()));
@@ -317,7 +360,7 @@ TEST_F(CPDFPageContentGeneratorTest, ProcessStandardText) {
   ByteString font_name = GetResourceNameBeforeOperator(text_string, " 10 Tf ");
 
   std::string expected =
-      "q .5 .69999999 .34999999 rg 1 .89999998 0 RG /";
+      "q .5 .7 .35 rg 1 .9 0 RG /";
   expected += gs_name.c_str();
   expected +=
       " gs 1 0 0 1 100 100 cm BT 1 0 0 1 0 0 Tm /";
@@ -451,7 +494,33 @@ TEST_F(CPDFPageContentGeneratorTest, ProcessFormWithPath) {
   fxcrt::ostringstream process_buf;
   ASSERT_TRUE(generator.ProcessPageObjects(&process_buf));
   EXPECT_EQ(
-      "q 3.102 4.6700001 m 5.4500012 .28999999 l 4.2399998 3.14"
-      "99999 4.6500001 2.98 3.4560001 .23999999 c 3.102 4.6700001 l h f Q\n",
+      "q 3.102 4.67 m 5.4500012 .29 l 4.24 3.1499999 "
+      "4.65 2.98 3.456 .24 c 3.102 4.67 l h f Q\n",
       ByteString(process_buf));
+}
+
+TEST_F(CPDFPageContentGeneratorTest, ProcessContentMarksWithProperties) {
+  auto doc = std::make_unique<CPDF_TestDocument>();
+  doc->CreateNewDoc();
+
+  RetainPtr<CPDF_Dictionary> page_dict(doc->CreateNewPage(0));
+  auto test_page = pdfium::MakeRetain<CPDF_Page>(doc.get(), page_dict);
+
+  auto path_obj = std::make_unique<CPDF_PathObject>();
+  path_obj->set_filltype(CFX_FillRenderOptions::FillType::kWinding);
+  path_obj->path().AppendRect(0, 0, 10, 10);
+  path_obj->SetDirty(true);
+
+  auto marks_dict = pdfium::MakeRetain<CPDF_Dictionary>();
+  path_obj->GetContentMarks()->AddMarkWithPropertiesHolder(
+      "M1", marks_dict, "Property Name With Space");
+
+  test_page->AppendPageObject(std::move(path_obj));
+
+  CPDF_PageContentGenerator generator(test_page.Get());
+  fxcrt::ostringstream buf;
+  EXPECT_TRUE(generator.ProcessPageObjects(&buf));
+  ByteString content(buf);
+
+  EXPECT_TRUE(content.Contains("/M1 /Property#20Name#20With#20Space BDC"));
 }

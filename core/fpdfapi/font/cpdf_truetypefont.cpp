@@ -38,17 +38,9 @@ bool IsWinAnsiOrMacRomanEncoding(FontEncoding encoding) {
 
 CPDF_TrueTypeFont::CPDF_TrueTypeFont(CPDF_Document* document,
                                      RetainPtr<CPDF_Dictionary> font_dict)
-    : CPDF_SimpleFont(document, std::move(font_dict)) {}
+    : CPDF_FaceBasedSimpleFont(document, std::move(font_dict)) {}
 
 CPDF_TrueTypeFont::~CPDF_TrueTypeFont() = default;
-
-bool CPDF_TrueTypeFont::IsTrueTypeFont() const {
-  return true;
-}
-
-const CPDF_TrueTypeFont* CPDF_TrueTypeFont::AsTrueTypeFont() const {
-  return this;
-}
 
 CPDF_TrueTypeFont* CPDF_TrueTypeFont::AsTrueTypeFont() {
   return this;
@@ -113,13 +105,14 @@ void CPDF_TrueTypeFont::LoadGlyphMap() {
 
       WideString wsUnicode = UnicodeFromCharCode(charcode);
       if (!wsUnicode.IsEmpty()) {
-        glyph_index_[charcode] = face->GetCharIndex(wsUnicode[0]);
-        encoding_.SetUnicode(charcode, wsUnicode[0]);
+        wchar_t front_char = wsUnicode.Front();
+        glyph_index_[charcode] = face->GetCharIndex(front_char);
+        encoding_.SetUnicode(charcode, front_char);
       }
     }
     return;
   }
-  if (UseTTCharmap(face, CFX_Face::kWindowsSymbolCmapId)) {
+  if (UseTTCharmap(face, CFX_Face::kWindowsSymbolCharMapIdPair)) {
     for (uint32_t charcode = 0; charcode < 256; charcode++) {
       glyph_index_[charcode] = GetGlyphIndexForMSSymbol(face, charcode);
     }
@@ -132,7 +125,7 @@ void CPDF_TrueTypeFont::LoadGlyphMap() {
             encoding_.SetUnicode(charcode, UnicodeFromAdobeName(name));
           }
         }
-      } else if (UseTTCharmap(face, CFX_Face::kMacRomanCmapId)) {
+      } else if (UseTTCharmap(face, CFX_Face::kMacRomanCharMapIdPair)) {
         for (uint32_t charcode = 0; charcode < 256; charcode++) {
           encoding_.SetUnicode(charcode,
                                UnicodeFromAppleRomanCharCode(charcode));
@@ -141,7 +134,7 @@ void CPDF_TrueTypeFont::LoadGlyphMap() {
       return;
     }
   }
-  if (UseTTCharmap(face, CFX_Face::kMacRomanCmapId)) {
+  if (UseTTCharmap(face, CFX_Face::kMacRomanCharMapIdPair)) {
     for (uint32_t charcode = 0; charcode < 256; charcode++) {
       glyph_index_[charcode] = face->GetCharIndex(charcode);
       encoding_.SetUnicode(charcode, UnicodeFromAppleRomanCharCode(charcode));
@@ -192,17 +185,17 @@ CPDF_TrueTypeFont::CharmapType CPDF_TrueTypeFont::DetermineCharmapType() const {
   }
 
   if (FontStyleIsNonSymbolic(flags_)) {
-    if (UseTTCharmap(font_.GetFace(), CFX_Face::kMacRomanCmapId)) {
+    if (UseTTCharmap(font_.GetFace(), CFX_Face::kMacRomanCharMapIdPair)) {
       return CharmapType::kMacRoman;
     }
-    if (UseTTCharmap(font_.GetFace(), CFX_Face::kWindowsSymbolCmapId)) {
+    if (UseTTCharmap(font_.GetFace(), CFX_Face::kWindowsSymbolCharMapIdPair)) {
       return CharmapType::kMSSymbol;
     }
   } else {
-    if (UseTTCharmap(font_.GetFace(), CFX_Face::kWindowsSymbolCmapId)) {
+    if (UseTTCharmap(font_.GetFace(), CFX_Face::kWindowsSymbolCharMapIdPair)) {
       return CharmapType::kMSSymbol;
     }
-    if (UseTTCharmap(font_.GetFace(), CFX_Face::kMacRomanCmapId)) {
+    if (UseTTCharmap(font_.GetFace(), CFX_Face::kMacRomanCharMapIdPair)) {
       return CharmapType::kMacRoman;
     }
   }
@@ -225,11 +218,11 @@ FontEncoding CPDF_TrueTypeFont::DetermineEncoding() const {
   bool support_win = false;
   bool support_mac = false;
   for (size_t i = 0; i < num_charmaps; i++) {
-    int platform_id = face->GetCharMapPlatformIdByIndex(i);
-    if (platform_id == kNamePlatformAppleUnicode ||
-        platform_id == kNamePlatformWindows) {
+    uint16_t platform_id = face->GetCharMapPlatformIdByIndex(i);
+    if (platform_id == kPlatformAppleUnicode ||
+        platform_id == kPlatformWindows) {
       support_win = true;
-    } else if (platform_id == kNamePlatformMac) {
+    } else if (platform_id == kPlatformMac) {
       support_mac = true;
     }
     if (support_win && support_mac) {

@@ -139,11 +139,11 @@ bool IsSimpleScript(hb_script_t script) {
 // ---- Break opportunities
 // ------------------------------------------------------
 
-FX_BREAKPROPERTY BreakClassOf(wchar_t ch) {
+BreakProperty BreakClassOf(wchar_t ch) {
   if (static_cast<uint32_t>(ch) > 0xFFFF) {
     const uint32_t cp = static_cast<uint32_t>(ch);
-    return (cp >= 0x1F000 && cp <= 0x1FAFF) ? FX_BREAKPROPERTY::kID
-                                            : FX_BREAKPROPERTY::kAL;
+    return (cp >= 0x1F000 && cp <= 0x1FAFF) ? BreakProperty::kID
+                                            : BreakProperty::kAL;
   }
   return pdfium::unicode::GetBreakProperty(ch);
 }
@@ -238,13 +238,13 @@ std::vector<bool> CPDF_RichTextLayout::BreakOpportunities(
   const std::vector<bool> grapheme_starts = GraphemeStarts(text);
 
   // Classes, with marks and joiners attached to their base (UAX #14 LB9).
-  std::vector<FX_BREAKPROPERTY> classes(length);
+  std::vector<BreakProperty> classes(length);
   for (size_t i = 0; i < length; ++i) {
-    FX_BREAKPROPERTY cls = BreakClassOf(text[i]);
+    BreakProperty cls = BreakClassOf(text[i]);
     if (i > 0 && !grapheme_starts[i]) {
       cls = classes[i - 1];
-    } else if (cls == FX_BREAKPROPERTY::kCM || cls == FX_BREAKPROPERTY::kZW) {
-      cls = i > 0 ? classes[i - 1] : FX_BREAKPROPERTY::kAL;
+    } else if (cls == BreakProperty::kCM || cls == BreakProperty::kZW) {
+      cls = i > 0 ? classes[i - 1] : BreakProperty::kAL;
     }
     classes[i] = cls;
   }
@@ -264,23 +264,23 @@ std::vector<bool> CPDF_RichTextLayout::BreakOpportunities(
       opportunities[i] = spaces;  // leading spaces: after them, yes
       continue;
     }
-    const FX_BREAKPROPERTY before = classes[j - 1];
-    if (before == FX_BREAKPROPERTY::kZW) {
+    const BreakProperty before = classes[j - 1];
+    if (before == BreakProperty::kZW) {
       opportunities[i] = true;  // LB8
       continue;
     }
-    switch (GetLineBreakTypeFromPair(before, classes[i])) {
-      case FX_LINEBREAKTYPE::kDIRECT_BRK:
+    switch (pdfium::GetLineBreakTypeFromPair(before, classes[i])) {
+      case pdfium::LineBreakType::kDirectBreak:
         opportunities[i] = true;
         break;
-      case FX_LINEBREAKTYPE::kINDIRECT_BRK:
-      case FX_LINEBREAKTYPE::kCOM_INDIRECT_BRK:
-      case FX_LINEBREAKTYPE::kHANGUL_SPACE_BRK:
-      case FX_LINEBREAKTYPE::kUNKNOWN:
+      case pdfium::LineBreakType::kIndirectBreak:
+      case pdfium::LineBreakType::kCommonIndirectBreak:
+      case pdfium::LineBreakType::kHangulSpaceBreak:
+      case pdfium::LineBreakType::kUnknown:
         opportunities[i] = spaces;
         break;
-      case FX_LINEBREAKTYPE::kPROHIBITED_BRK:
-      case FX_LINEBREAKTYPE::kCOM_PROHIBITED_BRK:
+      case pdfium::LineBreakType::kProhibitedBreak:
+      case pdfium::LineBreakType::kCommonProhibitedBreak:
         opportunities[i] = false;
         break;
     }
@@ -359,7 +359,7 @@ struct CPDF_RichTextLayout::Impl {
         glyph.gid = code;
         glyph.cluster = pdfium::checked_cast<uint32_t>(i);
         const int width =
-            face.pdf_font && code ? face.pdf_font->GetCharWidthF(code) : 0;
+            face.pdf_font && code ? face.pdf_font->GetCharWidth(code) : 0;
         glyph.x_advance = (width * size / 1000.0f + letter_spacing) * scale_x;
         item->glyphs.push_back(glyph);
       }

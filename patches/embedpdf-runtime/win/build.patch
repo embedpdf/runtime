@@ -11,3 +11,43 @@ index 7dbd8a17e..361f74f85 100644
        depsformat = "msvc"
        outputs = [ "$object_subdir/{{source_name_part}}.res" ]
        description = "RC {{output}}"
+diff --git a/vs_toolchain.py b/vs_toolchain.py
+--- a/vs_toolchain.py
++++ b/vs_toolchain.py
+@@ -60,7 +60,8 @@
+ #   Make sure any version numbers in the documentation match the code.
+ #
+ TOOLCHAIN_HASH = '3bfcb536c8'
+-SDK_VERSION = '10.0.28000.0'
++# EmbedPDF: CI builds with the runner's own Visual Studio and Windows SDK.
++SDK_VERSION = os.environ.get('EMBEDPDF_WIN_SDK_VERSION', '10.0.28000.0')
+ 
+ # Visual Studio versions are listed in descending order of priority.
+ # The first version is assumed by this script to be the one that is packaged,
+diff --git a/toolchain/win/setup_toolchain.py b/toolchain/win/setup_toolchain.py
+--- a/toolchain/win/setup_toolchain.py
++++ b/toolchain/win/setup_toolchain.py
+@@ -22,7 +22,8 @@
+ import gn_helpers
+ 
+ SCRIPT_DIR = os.path.dirname(__file__)
+-SDK_VERSION = '10.0.28000.0'
++# EmbedPDF: CI builds with the runner's own Visual Studio and Windows SDK.
++SDK_VERSION = os.environ.get('EMBEDPDF_WIN_SDK_VERSION', '10.0.28000.0')
+ MSVC_DIR = re.compile('^.*/VC/Tools/MSVC/[^/]+/include$')
+ WINDOWS_KITS_DIR = re.compile(r'^(.*/Windows Kits/\d+/Include/[^/]+)/.*')
+ 
+diff --git a/config/win/BUILD.gn b/config/win/BUILD.gn
+--- a/config/win/BUILD.gn
++++ b/config/win/BUILD.gn
+@@ -305,7 +305,9 @@
+ # manually override this config for their compiles.
+ config("winver") {
+   defines = [
+-    "NTDDI_VERSION=NTDDI_WIN11_BR",
++    # EmbedPDF: NTDDI_WIN11_BR needs SDK 10.0.28000, which CI runners lack; target
++    # the version older SDKs know too (what S6's build/ targeted).
++    "NTDDI_VERSION=NTDDI_WIN11_GE",
+ 
+     # We can't say `=_WIN32_WINNT_WIN10` here because some files do
+     # `#if WINVER < 0x0600` without including windows.h before,

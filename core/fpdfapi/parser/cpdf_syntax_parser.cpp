@@ -84,37 +84,27 @@ class ReadableSubStream final : public IFX_SeekableReadStream {
 
 // static
 // EmbedPDF(thread-confined-globals): each thread parses with its own depth.
-EPDF_TLS int CPDF_SyntaxParser::s_CurrentRecursionDepth = 0;
-
-// static
-std::unique_ptr<CPDF_SyntaxParser> CPDF_SyntaxParser::CreateForTesting(
-    RetainPtr<IFX_SeekableReadStream> pFileAccess,
-    FX_FILESIZE HeaderOffset) {
-  return std::make_unique<CPDF_SyntaxParser>(
-      pdfium::MakeRetain<CPDF_ReadValidator>(std::move(pFileAccess), nullptr),
-      HeaderOffset);
-}
+EPDF_TLS uint32_t CPDF_SyntaxParser::s_CurrentRecursionDepth = 0;
 
 CPDF_SyntaxParser::CPDF_SyntaxParser(
-    RetainPtr<IFX_SeekableReadStream> pFileAccess)
+    RetainPtr<IFX_SeekableReadStream> file_access)
     : CPDF_SyntaxParser(
-          pdfium::MakeRetain<CPDF_ReadValidator>(std::move(pFileAccess),
+          pdfium::MakeRetain<CPDF_ReadValidator>(std::move(file_access),
                                                  nullptr),
-          0) {}
+          /*header_offset_=*/0) {}
 
 CPDF_SyntaxParser::CPDF_SyntaxParser(RetainPtr<CPDF_ReadValidator> validator,
-                                     FX_FILESIZE HeaderOffset)
+                                     FX_FILESIZE header_offset)
     : file_access_(std::move(validator)),
-      header_offset_(HeaderOffset),
+      header_offset_(header_offset),
       file_len_(file_access_->GetSize()) {
-  DCHECK(header_offset_ <= file_len_);
+  DCHECK_LE(header_offset_, file_len_);
 }
 
 CPDF_SyntaxParser::~CPDF_SyntaxParser() = default;
 
 bool CPDF_SyntaxParser::GetCharAt(FX_FILESIZE pos, uint8_t& ch) {
-  AutoRestorer<FX_FILESIZE> save_pos(&pos_);
-  pos_ = pos;
+  AutoRestorer<FX_FILESIZE> save_pos(&pos_, pos);
   return GetNextChar(ch);
 }
 
@@ -552,7 +542,7 @@ RetainPtr<CPDF_Object> CPDF_SyntaxParser::GetObjectBody(
 RetainPtr<CPDF_Object> CPDF_SyntaxParser::GetObjectBodyInternal(
     CPDF_IndirectObjectHolder* pObjList,
     ParseType parse_type) {
-  AutoRestorer<int> depth_restorer(&s_CurrentRecursionDepth);
+  AutoRestorer<uint32_t> depth_restorer(&s_CurrentRecursionDepth);
   if (++s_CurrentRecursionDepth > kParserMaxRecursionDepth) {
     return nullptr;
   }
@@ -594,10 +584,10 @@ RetainPtr<CPDF_Object> CPDF_SyntaxParser::GetObjectBodyInternal(
   }
 
   if (word == "(") {
-    return pdfium::MakeRetain<CPDF_String>(pool_, ReadString());
+    return pdfium::MakeRetain<CPDF_String>(ReadString());
   }
   if (word == "<") {
-    return pdfium::MakeRetain<CPDF_String>(pool_, ReadHexString(),
+    return pdfium::MakeRetain<CPDF_String>(ReadHexString(),
                                            CPDF_String::DataType::kIsHex);
   }
   if (word == "[") {
@@ -613,7 +603,7 @@ RetainPtr<CPDF_Object> CPDF_SyntaxParser::GetObjectBodyInternal(
                ? std::move(pArray)
                : nullptr;
   }
-  if (word[0] == '/') {
+  if (word.Front() == '/') {
     auto word_span = pdfium::span(word_buffer_).first(word_size_);
     return pdfium::MakeRetain<CPDF_Name>(
         pool_, PDF_NameDecode(ByteStringView(word_span).Substr(1)));
@@ -637,7 +627,7 @@ RetainPtr<CPDF_Object> CPDF_SyntaxParser::GetObjectBodyInternal(
         pos_ = SavedPos;
         break;
       }
-      if (inner_word[0] != '/') {
+      if (inner_word.Front() != '/') {
         continue;
       }
 
@@ -873,8 +863,9 @@ RetainPtr<CPDF_Stream> CPDF_SyntaxParser::ReadStream(
     // changing object lifetimes by handing `substream` to `stream`, make a
     // copy of the data here.
     auto data = FixedSizeDataVector<uint8_t>::Uninit(substream->GetSize());
-    bool did_read = substream->ReadBlockAtOffset(data.span(), 0);
-    CHECK(did_read);
+    if (!substream->ReadBlockAtOffset(data.span(), 0)) {
+      return nullptr;
+    }
     auto data_as_stream =
         pdfium::MakeRetain<CFX_ReadOnlyFixedSizeDataVectorStream>(
             std::move(data));

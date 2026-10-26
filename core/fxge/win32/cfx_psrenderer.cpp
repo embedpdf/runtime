@@ -17,6 +17,7 @@
 #include "core/fxcrt/bytestring.h"
 #include "core/fxcrt/check_op.h"
 #include "core/fxcrt/compiler_specific.h"
+#include "core/fxcrt/fx_ceil_div.h"
 #include "core/fxcrt/fx_extension.h"
 #include "core/fxcrt/fx_memcpy_wrappers.h"
 #include "core/fxcrt/fx_memory.h"
@@ -95,8 +96,7 @@ ByteString GenerateType42FontDictionary(const ByteString& psname,
   CHECK_GT(glyphs_per_descendant_font, 0u);
 
   const size_t descendant_font_count =
-      (num_glyphs + glyphs_per_descendant_font - 1) /
-      glyphs_per_descendant_font;
+      fxcrt::CeilDiv(num_glyphs, glyphs_per_descendant_font);
 
   fxcrt::ostringstream output;
   for (size_t i = 0; i < descendant_font_count; ++i) {
@@ -184,13 +184,11 @@ ByteString GenerateType42FontData(const CFX_Font* font) {
     return ByteString();
   }
 
-  ByteString output = "%%BeginResource: font ";
-  output += psname;
-  output += "\n";
-  output += sfnt_data.value();
-  output += GenerateType42FontDictionary(psname, font->GetRawBBox().value(),
-                                         num_glyphs, kGlyphsPerDescendantFont);
-  return output;
+  ByteString font_dict = GenerateType42FontDictionary(
+      psname, font->GetRawBBox().value(), num_glyphs, kGlyphsPerDescendantFont);
+  return ByteString({"%%BeginResource: font ", psname.AsStringView(), '\n',
+                     sfnt_data.value().AsStringView(),
+                     font_dict.AsStringView()});
 }
 
 }  // namespace
@@ -620,8 +618,16 @@ bool CFX_PSRenderer::DrawDIBits(RetainPtr<const CFX_DIBBase> bitmap,
         encoder_iface_->pJpegEncodeFunc(bitmap, &output_buf, &output_size)) {
       filter = "/DCTDecode filter ";
     } else {
-      int src_pitch = width * bytes_per_pixel;
-      output_size = height * src_pitch;
+      FX_SAFE_UINT32 safe_pitch = bytes_per_pixel;
+      safe_pitch *= width;
+      FX_SAFE_UINT32 safe_output_size = safe_pitch;
+      safe_output_size *= height;
+      if (!safe_output_size.IsValid()) {
+        WriteString("\nQ\n");
+        return false;
+      }
+      uint32_t src_pitch = safe_pitch.ValueOrDie();
+      output_size = safe_output_size.ValueOrDie();
       output_buf = FX_Alloc(uint8_t, output_size);
       for (int row = 0; row < height; row++) {
         const uint8_t* src_scan = bitmap->GetScanline(row).data();

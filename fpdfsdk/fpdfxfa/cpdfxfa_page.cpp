@@ -13,6 +13,7 @@
 #include "core/fpdfapi/page/cpdf_pageimagecache.h"
 #include "core/fpdfapi/parser/cpdf_document.h"
 #include "core/fxcrt/check.h"
+#include "core/fxcrt/check_op.h"
 #include "fpdfsdk/cpdfsdk_pageview.h"
 #include "fpdfsdk/fpdfxfa/cpdfxfa_context.h"
 #include "fpdfsdk/fpdfxfa/cpdfxfa_widget.h"
@@ -78,7 +79,7 @@ CXFA_FFWidget::IteratorIface* GCedWidgetIteratorForAnnot(
 CPDFXFA_Page::CPDFXFA_Page(CPDF_Document* document, int page_index)
     : document_(document), page_index_(page_index) {
   DCHECK(document_->GetExtension());
-  DCHECK(page_index_ >= 0);
+  DCHECK_GE(page_index_, 0);
 }
 
 CPDFXFA_Page::~CPDFXFA_Page() = default;
@@ -103,7 +104,9 @@ bool CPDFXFA_Page::LoadPDFPage() {
   }
 
   if (!pdfpage_ || pdfpage_->GetDict() != dict) {
-    LoadPDFPageFromDict(std::move(dict));
+    if (!LoadPDFPageFromDict(std::move(dict))) {
+      return false;
+    }
   }
 
   return true;
@@ -127,11 +130,16 @@ bool CPDFXFA_Page::LoadPage() {
   }
 }
 
-void CPDFXFA_Page::LoadPDFPageFromDict(RetainPtr<CPDF_Dictionary> pPageDict) {
-  DCHECK(pPageDict);
-  pdfpage_ = pdfium::MakeRetain<CPDF_Page>(GetDocument(), std::move(pPageDict));
+bool CPDFXFA_Page::LoadPDFPageFromDict(RetainPtr<CPDF_Dictionary> page_dict) {
+  CHECK(page_dict);
+  if (!CPDF_Page::IsValidPageDictLoose(page_dict)) {
+    return false;
+  }
+
+  pdfpage_ = pdfium::MakeRetain<CPDF_Page>(GetDocument(), std::move(page_dict));
   pdfpage_->AddPageImageCache();
   pdfpage_->ParseContent();
+  return true;
 }
 
 float CPDFXFA_Page::GetPageWidth() const {
@@ -327,6 +335,7 @@ void CPDFXFA_Page::DrawFocusAnnot(CFX_RenderDevice* pDevice,
       xfaView, Mask<XFA_WidgetStatus>{XFA_WidgetStatus::kVisible,
                                       XFA_WidgetStatus::kViewable});
 
+  ObservedPtr<CPDFSDK_Annot> pObservedAnnot(pAnnot);
   while (true) {
     CXFA_FFWidget* pWidget = pWidgetIterator.MoveToNext();
     if (!pWidget) {
@@ -341,7 +350,7 @@ void CPDFXFA_Page::DrawFocusAnnot(CFX_RenderDevice* pDevice,
     }
   }
 
-  CPDFXFA_Widget* pXFAWidget = ToXFAWidget(pAnnot);
+  CPDFXFA_Widget* pXFAWidget = ToXFAWidget(pObservedAnnot.Get());
   if (!pXFAWidget) {
     return;
   }

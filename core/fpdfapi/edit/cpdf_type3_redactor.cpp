@@ -208,12 +208,9 @@ void ContentUses::AddText(const CPDF_TextObject* text,
   if (!context) {
     context = holder->GetResources();
   }
-  std::set<uint32_t>& codes = fonts_[{font, std::move(context)}];
-  for (uint32_t code : text->GetCharCodes()) {
-    if (code != CPDF_Font::kInvalidCharCode) {
-      codes.insert(code);
-    }
-  }
+  const std::vector<uint32_t>& text_codes = text->GetCharCodes();
+  fonts_[{font, std::move(context)}].insert(text_codes.begin(),
+                                            text_codes.end());
 }
 
 std::vector<ContentUses::Content> ContentUses::AddDrawnContent(
@@ -535,12 +532,8 @@ void Type3Subsetter::AddCodes(const CPDF_TextObject* text,
   if (!font || !font->IsType3Font()) {
     return;
   }
-  std::set<uint32_t>& font_codes = codes[font.Get()];
-  for (uint32_t code : text->GetCharCodes()) {
-    if (code != CPDF_Font::kInvalidCharCode) {
-      font_codes.insert(code);
-    }
-  }
+  const std::vector<uint32_t>& text_codes = text->GetCharCodes();
+  codes[font.Get()].insert(text_codes.begin(), text_codes.end());
 }
 
 bool Type3Subsetter::SubsetHolder(CPDF_PageObjectHolder* holder) {

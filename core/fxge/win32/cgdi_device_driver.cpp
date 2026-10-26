@@ -11,6 +11,7 @@
 
 #include <algorithm>
 #include <array>
+#include <memory>
 #include <vector>
 
 #include "core/fxcrt/check.h"
@@ -20,16 +21,21 @@
 #include "core/fxcrt/fx_string.h"
 #include "core/fxcrt/notreached.h"
 #include "core/fxcrt/numerics/safe_conversions.h"
-#include "core/fxge/agg/cfx_agg_devicedriver.h"
-#include "core/fxge/cfx_defaultrenderdevice.h"
 #include "core/fxge/cfx_fillrenderoptions.h"
+#include "core/fxge/cfx_gemodule.h"
 #include "core/fxge/cfx_graphstatedata.h"
 #include "core/fxge/cfx_path.h"
 #include "core/fxge/dib/cfx_dibbase.h"
 #include "core/fxge/dib/cfx_dibitmap.h"
-#include "core/fxge/render_defines.h"
+#include "core/fxge/win32/cgdi_display_driver.h"
+#include "core/fxge/win32/cgdi_printer_driver.h"
+#include "core/fxge/win32/cps_printer_driver.h"
+#include "core/fxge/win32/ctext_only_printer_driver.h"
 #include "core/fxge/win32/cwin32_platform.h"
+
+#if defined(PDF_USE_AGG)
 #include "third_party/agg23/agg_clip_liang_barsky.h"
+#endif
 
 namespace {
 
@@ -107,8 +113,8 @@ HBRUSH CreateBrush(uint32_t argb) {
   return CreateSolidBrush(ArgbToColorRef(argb));
 }
 
-void SetPathToDC(HDC hDC, const CFX_Path& path, const CFX_Matrix* pMatrix) {
-  BeginPath(hDC);
+void SetPathToDC(HDC hdc, const CFX_Path& path, const CFX_Matrix* pMatrix) {
+  BeginPath(hdc);
 
   pdfium::span<const CFX_Path::Point> points = path.GetPoints();
   for (size_t i = 0; i < points.size(); ++i) {
@@ -120,13 +126,13 @@ void SetPathToDC(HDC hDC, const CFX_Path& path, const CFX_Matrix* pMatrix) {
     CFX_Point screen(FXSYS_roundf(pos.x), FXSYS_roundf(pos.y));
     CFX_Path::Point::Type point_type = points[i].type_;
     if (point_type == CFX_Path::Point::Type::kMove) {
-      MoveToEx(hDC, screen.x, screen.y, nullptr);
+      MoveToEx(hdc, screen.x, screen.y, nullptr);
     } else if (point_type == CFX_Path::Point::Type::kLine) {
       if (points[i].point_ == points[i - 1].point_) {
         screen.x++;
       }
 
-      LineTo(hDC, screen.x, screen.y);
+      LineTo(hdc, screen.x, screen.y);
     } else if (point_type == CFX_Path::Point::Type::kBezier) {
       POINT lppt[3];
       lppt[0].x = screen.x;
@@ -147,14 +153,14 @@ void SetPathToDC(HDC hDC, const CFX_Path& path, const CFX_Matrix* pMatrix) {
 
       lppt[2].x = FXSYS_roundf(pos.x);
       lppt[2].y = FXSYS_roundf(pos.y);
-      PolyBezierTo(hDC, lppt, 3);
+      PolyBezierTo(hdc, lppt, 3);
       i += 2;
     }
     if (points[i].close_figure_) {
-      CloseFigure(hDC);
+      CloseFigure(hdc);
     }
   }
-  EndPath(hDC);
+  EndPath(hdc);
 }
 
 FixedSizeDataVector<uint8_t> GetBitmapInfoHeader(
@@ -336,21 +342,53 @@ unsigned LineClip(float w,
                   float* x,
                   float* y) {
 #if defined(PDF_USE_SKIA)
-  if (CFX_DefaultRenderDevice::UseSkiaRenderer()) {
+  if (CFX_GEModule::IsSkiaRenderer()) {
     // TODO(caryclark) temporary replacement of antigrain in line function to
     // permit removing antigrain altogether
     rect_base rect = {0.0f, 0.0f, w, h};
     return clip_liang_barsky(x1, y1, x2, y2, rect, x, y);
   }
 #endif
+#if defined(PDF_USE_AGG)
   pdfium::agg::rect_base<float> rect(0.0f, 0.0f, w, h);
   return pdfium::agg::clip_liang_barsky<float>(x1, y1, x2, y2, rect, x, y);
+#else
+  NOTREACHED();
+#endif
 }
 
 }  // namespace
 
-CGdiDeviceDriver::CGdiDeviceDriver(HDC hDC, DeviceType device_type)
-    : dc_handle_(hDC), device_type_(device_type) {
+// static
+std::unique_ptr<RenderDeviceDriverIface> CGdiDeviceDriver::CreateDriver(
+    HDC hdc,
+    CFX_PSFontTracker* ps_font_tracker) {
+  int device_type = ::GetDeviceCaps(hdc, TECHNOLOGY);
+  int obj_type = ::GetObjectType(hdc);
+  const bool use_printer =
+      device_type == DT_RASPRINTER || device_type == DT_PLOTTER ||
+      device_type == DT_CHARSTREAM || obj_type == OBJ_ENHMETADC;
+
+  if (!use_printer) {
+    return std::make_unique<CGdiDisplayDriver>(hdc);
+  }
+
+  WindowsPrintMode print_mode = CFX_GEModule::Get()->GetPrintMode();
+  if (print_mode == WindowsPrintMode::kEmf ||
+      print_mode == WindowsPrintMode::kEmfImageMasks) {
+    return std::make_unique<CGdiPrinterDriver>(hdc);
+  }
+
+  if (print_mode == WindowsPrintMode::kTextOnly) {
+    return std::make_unique<CTextOnlyPrinterDriver>(hdc);
+  }
+
+  return std::make_unique<CPSPrinterDriver>(
+      hdc, print_mode, ps_font_tracker, CFX_GEModule::Get()->GetEncoderIface());
+}
+
+CGdiDeviceDriver::CGdiDeviceDriver(HDC hdc, DeviceType device_type)
+    : dc_handle_(hdc), device_type_(device_type) {
   SetStretchBltMode(dc_handle_, HALFTONE);
   DWORD obj_type = GetObjectType(dc_handle_);
   metafile_dctype_ = obj_type == OBJ_ENHMETADC || obj_type == OBJ_ENHMETAFILE;
@@ -369,11 +407,7 @@ CGdiDeviceDriver::CGdiDeviceDriver(HDC hDC, DeviceType device_type)
     width_ = ::GetDeviceCaps(dc_handle_, HORZRES);
     height_ = ::GetDeviceCaps(dc_handle_, VERTRES);
   }
-  if (device_type_ == DeviceType::kDisplay) {
-    render_caps_ = FXRC_GET_BITS;
-  } else {
-    render_caps_ = 0;
-  }
+  render_cap_get_bits_ = device_type_ == DeviceType::kDisplay;
 }
 
 CGdiDeviceDriver::~CGdiDeviceDriver() = default;
@@ -382,20 +416,27 @@ DeviceType CGdiDeviceDriver::GetDeviceType() const {
   return device_type_;
 }
 
-int CGdiDeviceDriver::GetDeviceCaps(int caps_id) const {
-  switch (caps_id) {
-    case FXDC_PIXEL_WIDTH:
-      return width_;
-    case FXDC_PIXEL_HEIGHT:
-      return height_;
-    case FXDC_BITS_PIXEL:
-      return bits_per_pixel_;
-    case FXDC_RENDER_CAPS:
-      return render_caps_;
-    default:
-      NOTREACHED();
-  }
+bool CGdiDeviceDriver::RenderCapGetBits() const {
+  return render_cap_get_bits_;
 }
+
+bool CGdiDeviceDriver::RenderCapAlphaImage() const {
+  return render_cap_alpha_image_;
+}
+
+int CGdiDeviceDriver::GetPixelWidth() const {
+  return width_;
+}
+
+int CGdiDeviceDriver::GetPixelHeight() const {
+  return height_;
+}
+
+int CGdiDeviceDriver::GetBitsPerPixel() const {
+  return bits_per_pixel_;
+}
+
+void CGdiDeviceDriver::Clear(uint32_t color) {}
 
 void CGdiDeviceDriver::SaveState() {
   SaveDC(dc_handle_);
@@ -615,6 +656,7 @@ bool CGdiDeviceDriver::DrawPath(const CFX_Path& path,
                                 const CFX_GraphStateData* pGraphState,
                                 uint32_t fill_color,
                                 uint32_t stroke_color,
+                                bool group_knockout,
                                 const CFX_FillRenderOptions& fill_options) {
   auto* pPlatform =
       static_cast<CWin32Platform*>(CFX_GEModule::Get()->GetPlatform());

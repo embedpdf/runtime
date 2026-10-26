@@ -22,6 +22,7 @@
 #include "core/fxcrt/check.h"
 #include "core/fxcrt/check_op.h"
 #include "core/fxcrt/containers/contains.h"
+#include "core/fxcrt/containers/to_vector.h"
 #include "core/fxcrt/data_vector.h"
 #include "core/fxcrt/fx_codepage.h"
 #include "core/fxcrt/fx_extension.h"
@@ -34,9 +35,10 @@
 #include "core/fxcrt/xml/cfx_xmltext.h"
 #include "core/fxge/dib/cfx_dibitmap.h"
 #include "core/fxge/fx_font.h"
+#include "fxjs/fxv8.h"
 #include "fxjs/gc/container_trace.h"
 #include "fxjs/xfa/cfxjse_engine.h"
-#include "fxjs/xfa/cfxjse_value.h"
+#include "fxjs/xfa/cfxjse_isolatetracker.h"
 #include "fxjs/xfa/cjx_node.h"
 #include "xfa/fde/cfde_textout.h"
 #include "xfa/fgas/crt/cfgas_decimal.h"
@@ -449,31 +451,18 @@ FXCODEC_IMAGE_TYPE XFA_GetImageType(const WideString& wsType) {
   if (wsContentType.EqualsASCIINoCase("image/jpg")) {
     return FXCODEC_IMAGE_JPG;
   }
-
-#ifdef PDF_ENABLE_XFA_BMP
   if (wsContentType.EqualsASCIINoCase("image/bmp")) {
     return FXCODEC_IMAGE_BMP;
   }
-#endif  // PDF_ENABLE_XFA_BMP
-
-#ifdef PDF_ENABLE_XFA_GIF
   if (wsContentType.EqualsASCIINoCase("image/gif")) {
     return FXCODEC_IMAGE_GIF;
   }
-#endif  // PDF_ENABLE_XFA_GIF
-
-#ifdef PDF_ENABLE_XFA_PNG
   if (wsContentType.EqualsASCIINoCase("image/png")) {
     return FXCODEC_IMAGE_PNG;
   }
-#endif  // PDF_ENABLE_XFA_PNG
-
-#ifdef PDF_ENABLE_XFA_TIFF
   if (wsContentType.EqualsASCII("image/tif")) {
     return FXCODEC_IMAGE_TIFF;
   }
-#endif  // PDF_ENABLE_XFA_TIFF
-
   return FXCODEC_IMAGE_UNKNOWN;
 }
 
@@ -549,7 +538,7 @@ bool SplitDateTime(const WideString& wsDateTime,
       return false;
     }
   }
-  wsTime = wsDateTime.Last(wsDateTime.GetLength() - nSplitIndex.value() - 1);
+  wsTime = wsDateTime.Substr(nSplitIndex.value() + 1);
   if (!wsTime.IsEmpty()) {
     if (!std::any_of(wsTime.begin(), wsTime.end(),
                      [](wchar_t c) { return FXSYS_IsDecimalDigit(c); })) {
@@ -664,7 +653,7 @@ WideString FormatNumStr(const WideString& wsValue, LocaleIface* pLocale) {
   WideString wsSrcNum = wsValue;
   WideString wsGroupSymbol = pLocale->GetGroupingSymbol();
   bool bNeg = false;
-  if (wsSrcNum[0] == '-') {
+  if (wsSrcNum.Front() == '-') {
     bNeg = true;
     wsSrcNum.Delete(0, 1);
   }
@@ -685,7 +674,7 @@ WideString FormatNumStr(const WideString& wsValue, LocaleIface* pLocale) {
   }
   if (dot_index < wsSrcNum.GetLength()) {
     wsOutput += pLocale->GetDecimalSymbol();
-    wsOutput += wsSrcNum.Last(wsSrcNum.GetLength() - dot_index - 1);
+    wsOutput += wsSrcNum.Substr(dot_index + 1);
   }
   if (bNeg) {
     return pLocale->GetMinusSymbol() + wsOutput;
@@ -1371,7 +1360,7 @@ CXFA_Node* CXFA_Node::GetBindData() {
 }
 
 std::vector<CXFA_Node*> CXFA_Node::GetBindItemsCopy() const {
-  return std::vector<CXFA_Node*>(binding_nodes_.begin(), binding_nodes_.end());
+  return pdfium::ToVector<CXFA_Node*>(binding_nodes_);
 }
 
 void CXFA_Node::AddBindItem(CXFA_Node* pFormNode) {
@@ -1606,10 +1595,9 @@ WideString CXFA_Node::GetNameExpression() {
   WideString wsName = GetNameExpressionSinglePath(this);
   CXFA_Node* parent = GetParent();
   while (parent) {
-    WideString wsParent = GetNameExpressionSinglePath(parent);
-    wsParent += L".";
-    wsParent += wsName;
-    wsName = std::move(wsParent);
+    WideString parent_path = GetNameExpressionSinglePath(parent);
+    wsName =
+        WideString({parent_path.AsStringView(), L'.', wsName.AsStringView()});
     parent = parent->GetParent();
   }
   return wsName;
@@ -1894,8 +1882,8 @@ CXFA_Node* CXFA_Node::GetInstanceMgrOfSubform() {
         WideString wsName = JSObject()->GetCData(XFA_Attribute::Name);
         WideString wsInstName =
             pNode->JSObject()->GetCData(XFA_Attribute::Name);
-        if (wsInstName.GetLength() > 0 && wsInstName[0] == '_' &&
-            wsInstName.Last(wsInstName.GetLength() - 1) == wsName) {
+        if (wsInstName.GetLength() > 0 && wsInstName.Front() == '_' &&
+            wsInstName.Substr(1) == wsName) {
           pInstanceMgr = pNode;
         }
         break;
@@ -1987,8 +1975,8 @@ CXFA_Node* CXFA_Node::GetItemIfExists(int32_t index) {
     if (iCount == 0) {
       WideString wsName = pNode->JSObject()->GetCData(XFA_Attribute::Name);
       WideString wsInstName = JSObject()->GetCData(XFA_Attribute::Name);
-      if (wsInstName.GetLength() < 1 || wsInstName[0] != '_' ||
-          wsInstName.Last(wsInstName.GetLength() - 1) != wsName) {
+      if (wsInstName.GetLength() < 1 || wsInstName.Front() != '_' ||
+          wsInstName.Substr(1) != wsName) {
         return nullptr;
       }
       dwNameHash = pNode->GetNameHash();
@@ -2021,8 +2009,8 @@ int32_t CXFA_Node::GetCount() {
     if (iCount == 0) {
       WideString wsName = pNode->JSObject()->GetCData(XFA_Attribute::Name);
       WideString wsInstName = JSObject()->GetCData(XFA_Attribute::Name);
-      if (wsInstName.GetLength() < 1 || wsInstName[0] != '_' ||
-          wsInstName.Last(wsInstName.GetLength() - 1) != wsName) {
+      if (wsInstName.GetLength() < 1 || wsInstName.Front() != '_' ||
+          wsInstName.Substr(1) != wsName) {
         return iCount;
       }
       dwNameHash = pNode->GetNameHash();
@@ -2612,18 +2600,7 @@ XFA_EventError CXFA_Node::ProcessEventInternal(CXFA_FFDocView* pDocView,
     case XFA_Element::SignData:
       break;
     case XFA_Element::Submit: {
-// TODO(crbug.com/867485): Submit is disabled for now. Fix it and reenable this
-// code.
-#ifdef PDF_XFA_ELEMENT_SUBMIT_ENABLED
-      CXFA_Submit* submit = event->GetSubmitIfExists();
-      if (!submit) {
-        return XFA_EventError::kNotExist;
-      }
-      return pDocView->GetDoc()->GetDocEnvironment()->Submit(pDocView->GetDoc(),
-                                                             submit);
-#else
       return XFA_EventError::kDisabled;
-#endif  // PDF_XFA_ELEMENT_SUBMIT_ENABLED
     }
     default:
       break;
@@ -2816,9 +2793,10 @@ XFA_EventError CXFA_Node::ProcessNullTestValidate(CXFA_FFDocView* pDocView,
 
       if (wsNullMsg.IsEmpty()) {
         wsCaptionName = GetValidateCaptionName(bVersionFlag);
-        wsNullMsg = wsCaptionName +
-                    L" cannot be blank. To ignore validations for " +
-                    wsCaptionName + L", click Ignore.";
+        wsNullMsg =
+            WideString({wsCaptionName.AsStringView(),
+                        L" cannot be blank. To ignore validations for ",
+                        wsCaptionName.AsStringView(), L", click Ignore."});
       }
       if (pAppProvider->MsgBox(wsNullMsg, wsTitle,
                                static_cast<uint32_t>(AlertIcon::kWarning),
@@ -2906,15 +2884,16 @@ WideString CXFA_Node::GetValidateCaptionName(bool bVersionFlag) {
 WideString CXFA_Node::GetValidateMessage(bool bError, bool bVersionFlag) {
   WideString wsCaptionName = GetValidateCaptionName(bVersionFlag);
   if (bVersionFlag) {
-    return wsCaptionName + L" validation failed";
+    return WideString({wsCaptionName.AsStringView(), L" validation failed"});
   }
-  WideString result =
-      L"The value you entered for " + wsCaptionName + L" is invalid.";
   if (!bError) {
-    result +=
-        L" To ignore validations for " + wsCaptionName + L", click Ignore.";
+    return WideString({L"The value you entered for ",
+                       wsCaptionName.AsStringView(),
+                       L" is invalid. To ignore validations for ",
+                       wsCaptionName.AsStringView(), L", click Ignore."});
   }
-  return result;
+  return WideString({L"The value you entered for ",
+                     wsCaptionName.AsStringView(), L" is invalid."});
 }
 
 XFA_EventError CXFA_Node::ExecuteScript(CXFA_FFDocView* pDocView,
@@ -2970,14 +2949,19 @@ CXFA_Node::BoolScriptResult CXFA_Node::ExecuteBoolScript(
   }
 
   XFA_EventError iRet = XFA_EventError::kError;
+  v8::Isolate* isolate = context->GetIsolate();
+  CFXJSE_ScopeUtil_IsolateHandleRootContext scope(isolate);
+  v8::Local<v8::Value> value =
+      v8::Local<v8::Value>::New(isolate, exec_result.value);
+
   if (exec_result.status) {
     iRet = XFA_EventError::kSuccess;
     if (pEventParam->type_ == XFA_EVENT_Calculate ||
         pEventParam->type_ == XFA_EVENT_InitCalculate) {
-      if (!exec_result.value->IsUndefined(context->GetIsolate())) {
-        if (!exec_result.value->IsNull(context->GetIsolate())) {
+      if (!value.IsEmpty() && !fxv8::IsUndefined(value)) {
+        if (!fxv8::IsNull(value)) {
           pEventParam->result_ =
-              exec_result.value->ToWideString(context->GetIsolate());
+              fxv8::ReentrantToWideStringHelper(isolate, value);
         }
 
         iRet = XFA_EventError::kSuccess;
@@ -3006,8 +2990,8 @@ CXFA_Node::BoolScriptResult CXFA_Node::ExecuteBoolScript(
   }
   context->SetNodesOfRunScript(nullptr);
 
-  return {iRet, exec_result.value->IsBoolean(context->GetIsolate()) &&
-                    exec_result.value->ToBoolean(context->GetIsolate())};
+  return {iRet, !value.IsEmpty() && fxv8::IsBoolean(value) &&
+                    fxv8::ReentrantToBooleanHelper(isolate, value)};
 }
 
 std::pair<XFA_FFWidgetType, CXFA_Ui*>
@@ -4131,8 +4115,9 @@ bool CXFA_Node::LoadCaption(CXFA_FFDoc* doc) {
 }
 
 CXFA_TextLayout* CXFA_Node::GetCaptionTextLayout() {
-  return layout_data_ ? layout_data_->AsFieldLayoutData()->cap_text_layout_
-                      : nullptr;
+  return layout_data_ && layout_data_->AsFieldLayoutData()
+             ? layout_data_->AsFieldLayoutData()->cap_text_layout_
+             : nullptr;
 }
 
 CXFA_TextLayout* CXFA_Node::GetTextLayout() {
@@ -5287,7 +5272,7 @@ WideString CXFA_Node::NormalizeNumStr(const WideString& wsValue) {
     wsOutput.TrimBack(L"0");
     wsOutput.TrimBack(L".");
   }
-  if (wsOutput.IsEmpty() || wsOutput[0] == '.') {
+  if (wsOutput.IsEmpty() || wsOutput.Front() == '.') {
     wsOutput.InsertAtFront('0');
   }
 

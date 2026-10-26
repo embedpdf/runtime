@@ -24,9 +24,10 @@
 
 #include "core/fxcrt/check_op.h"
 #include "core/fxcrt/fixed_size_data_vector.h"
+#include "core/fxcrt/fx_ceil_div.h"
 
 CBC_CommonBitMatrix::CBC_CommonBitMatrix(size_t width, size_t height)
-    : height_(height), row_size_((width + 31) >> 5) {
+    : height_(height), row_size_(fxcrt::CeilDiv(width, 32)) {
   static constexpr int32_t kMaxBits = 1024 * 1024 * 1024;  // 1 Gb.
   CHECK_LT(row_size_, kMaxBits / height_);
   bits_ = FixedSizeDataVector<uint32_t>::Zeroed(row_size_ * height_);
@@ -36,10 +37,13 @@ CBC_CommonBitMatrix::~CBC_CommonBitMatrix() = default;
 
 bool CBC_CommonBitMatrix::Get(size_t x, size_t y) const {
   size_t offset = y * row_size_ + (x >> 5);
-  return ((bits_.span()[offset] >> (x & 0x1f)) & 1) != 0;
+  return offset < bits_.span().size() &&
+         ((bits_.span()[offset] >> (x & 0x1f)) & 1) != 0;
 }
 
 void CBC_CommonBitMatrix::Set(size_t x, size_t y) {
   size_t offset = y * row_size_ + (x >> 5);
-  bits_.span()[offset] |= 1u << (x & 0x1f);
+  if (offset < bits_.span().size()) {
+    bits_.span()[offset] |= 1u << (x & 0x1f);
+  }
 }

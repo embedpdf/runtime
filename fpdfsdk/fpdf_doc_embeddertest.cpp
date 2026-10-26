@@ -13,7 +13,7 @@
 #include "core/fpdfapi/parser/cpdf_reference.h"
 #include "core/fxcrt/bytestring.h"
 #include "core/fxcrt/fx_safe_types.h"
-#include "core/fxge/cfx_defaultrenderdevice.h"
+#include "core/fxge/cfx_renderdevice.h"
 #include "fpdfsdk/cpdfsdk_helpers.h"
 #include "public/cpp/fpdf_scopers.h"
 #include "public/epdf_doc.h"
@@ -661,6 +661,94 @@ TEST_F(FPDFDocEmbedderTest, FindBookmarks) {
   EXPECT_FALSE(FPDFBookmark_Find(document(), bad_title.get()));
 }
 
+TEST_F(FPDFDocEmbedderTest, FindBookmarksWithColor) {
+  ASSERT_TRUE(OpenDocument("bookmarks_color.pdf"));
+
+  float red = 100;
+  float green = 100;
+  float blue = 100;
+
+  ScopedFPDFWideString title = GetFPDFWideString(L"No Color Array");
+  FPDF_BOOKMARK bookmark = FPDFBookmark_Find(document(), title.get());
+  ASSERT_TRUE(bookmark);
+  EXPECT_FALSE(FPDFBookmark_GetColor(bookmark, &red, &green, &blue));
+  EXPECT_FLOAT_EQ(red, 100);
+  EXPECT_FLOAT_EQ(green, 100);
+  EXPECT_FLOAT_EQ(blue, 100);
+
+  title = GetFPDFWideString(L"Color Is Not An Array");
+  bookmark = FPDFBookmark_Find(document(), title.get());
+  ASSERT_TRUE(bookmark);
+  EXPECT_FALSE(FPDFBookmark_GetColor(bookmark, &red, &green, &blue));
+  EXPECT_FLOAT_EQ(red, 100);
+  EXPECT_FLOAT_EQ(green, 100);
+  EXPECT_FLOAT_EQ(blue, 100);
+
+  title = GetFPDFWideString(L"Color Array Has The Wrong Number Of Elements");
+  bookmark = FPDFBookmark_Find(document(), title.get());
+  ASSERT_TRUE(bookmark);
+  EXPECT_FALSE(FPDFBookmark_GetColor(bookmark, &red, &green, &blue));
+  EXPECT_FLOAT_EQ(red, 100);
+  EXPECT_FLOAT_EQ(green, 100);
+  EXPECT_FLOAT_EQ(blue, 100);
+
+  title = GetFPDFWideString(L"Color Array Has Entries Greater Than 1");
+  bookmark = FPDFBookmark_Find(document(), title.get());
+  ASSERT_TRUE(bookmark);
+  EXPECT_FALSE(FPDFBookmark_GetColor(bookmark, &red, &green, &blue));
+  EXPECT_FLOAT_EQ(red, 100);
+  EXPECT_FLOAT_EQ(green, 100);
+  EXPECT_FLOAT_EQ(blue, 100);
+
+  title = GetFPDFWideString(L"Color Array Has Entries Less Than 0");
+  bookmark = FPDFBookmark_Find(document(), title.get());
+  ASSERT_TRUE(bookmark);
+  EXPECT_FALSE(FPDFBookmark_GetColor(bookmark, &red, &green, &blue));
+  EXPECT_FLOAT_EQ(red, 100);
+  EXPECT_FLOAT_EQ(green, 100);
+  EXPECT_FLOAT_EQ(blue, 100);
+
+  title = GetFPDFWideString(L"Valid Color Array");
+  bookmark = FPDFBookmark_Find(document(), title.get());
+  ASSERT_TRUE(bookmark);
+  EXPECT_TRUE(FPDFBookmark_GetColor(bookmark, &red, &green, &blue));
+  EXPECT_FLOAT_EQ(red, 0.1);
+  EXPECT_FLOAT_EQ(green, 0.2);
+  EXPECT_FLOAT_EQ(blue, 0.3);
+}
+
+TEST_F(FPDFDocEmbedderTest, BookmarkStyle) {
+  ASSERT_TRUE(OpenDocument("bookmarks_style.pdf"));
+
+  ScopedFPDFWideString title = GetFPDFWideString(L"No Style");
+  FPDF_BOOKMARK bookmark = FPDFBookmark_Find(document(), title.get());
+  ASSERT_TRUE(bookmark);
+  EXPECT_EQ(0, FPDFBookmark_GetStyle(bookmark));
+
+  title = GetFPDFWideString(L"Style Is Not An Int");
+  bookmark = FPDFBookmark_Find(document(), title.get());
+  ASSERT_TRUE(bookmark);
+  EXPECT_EQ(0, FPDFBookmark_GetStyle(bookmark));
+
+  title = GetFPDFWideString(L"Style Is 15");
+  bookmark = FPDFBookmark_Find(document(), title.get());
+  ASSERT_TRUE(bookmark);
+  // Value is passed on to the caller as is.
+  EXPECT_EQ(15, FPDFBookmark_GetStyle(bookmark));
+
+  title = GetFPDFWideString(L"Style is Normal");
+  bookmark = FPDFBookmark_Find(document(), title.get());
+  ASSERT_TRUE(bookmark);
+  // 0 = 00 in binary, no styling.
+  EXPECT_EQ(0, FPDFBookmark_GetStyle(bookmark));
+
+  title = GetFPDFWideString(L"Style is Bold and Italic");
+  bookmark = FPDFBookmark_Find(document(), title.get());
+  ASSERT_TRUE(bookmark);
+  // 3 = 11 in binary, bold and italic.
+  EXPECT_EQ(3, FPDFBookmark_GetStyle(bookmark));
+}
+
 // Check circular bookmarks will not cause infinite loop.
 TEST_F(FPDFDocEmbedderTest, FindBookmarksBug420) {
   // Open a file with circular bookmarks.
@@ -688,7 +776,7 @@ TEST_F(FPDFDocEmbedderTest, DeletePage) {
 }
 
 TEST_F(FPDFDocEmbedderTest, DeletePageAndRender) {
-  const std::array<const char*, 5> page_paths = {{
+  static constexpr std::array<const char*, 5> kPagePaths = {{
       "rectangles_multi_pages_1",
       "rectangles_multi_pages_2",
       "rectangles_multi_pages_3",
@@ -702,8 +790,8 @@ TEST_F(FPDFDocEmbedderTest, DeletePageAndRender) {
   for (int i = 0; i < 5; ++i) {
     ScopedPage page = LoadScopedPage(i);
     ASSERT_TRUE(page);
-    ScopedFPDFBitmap bitmap = RenderLoadedPage(page.get());
-    CompareBitmapWithExpectationSuffix(bitmap.get(), page_paths[i]);
+    CompareDisplayList(RenderLoadedPageToDisplayList(page.get()),
+                       kPagePaths[i]);
   }
 
   // Delete the first page and render again. (original page indices 1-4)
@@ -712,8 +800,8 @@ TEST_F(FPDFDocEmbedderTest, DeletePageAndRender) {
   for (int i = 0; i < 4; ++i) {
     ScopedPage page = LoadScopedPage(i);
     ASSERT_TRUE(page);
-    ScopedFPDFBitmap bitmap = RenderLoadedPage(page.get());
-    CompareBitmapWithExpectationSuffix(bitmap.get(), page_paths[i + 1]);
+    CompareDisplayList(RenderLoadedPageToDisplayList(page.get()),
+                       kPagePaths[i + 1]);
   }
 
   // Delete the last page and render again. (original page indices 1-3)
@@ -722,8 +810,8 @@ TEST_F(FPDFDocEmbedderTest, DeletePageAndRender) {
   for (int i = 0; i < 3; ++i) {
     ScopedPage page = LoadScopedPage(i);
     ASSERT_TRUE(page);
-    ScopedFPDFBitmap bitmap = RenderLoadedPage(page.get());
-    CompareBitmapWithExpectationSuffix(bitmap.get(), page_paths[i + 1]);
+    CompareDisplayList(RenderLoadedPageToDisplayList(page.get()),
+                       kPagePaths[i + 1]);
   }
 
   // Delete the middle page and render again. (original page indices 1, 3)
@@ -732,10 +820,9 @@ TEST_F(FPDFDocEmbedderTest, DeletePageAndRender) {
   for (int i = 0; i < 2; ++i) {
     ScopedPage page = LoadScopedPage(i);
     ASSERT_TRUE(page);
-    ScopedFPDFBitmap bitmap = RenderLoadedPage(page.get());
     int adjusted_index = i == 0 ? 1 : 3;
-    CompareBitmapWithExpectationSuffix(bitmap.get(),
-                                       page_paths[adjusted_index]);
+    CompareDisplayList(RenderLoadedPageToDisplayList(page.get()),
+                       kPagePaths[adjusted_index]);
   }
 }
 

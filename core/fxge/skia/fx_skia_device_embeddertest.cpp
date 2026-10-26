@@ -11,9 +11,9 @@
 #include "core/fpdfapi/page/cpdf_page.h"
 #include "core/fpdfapi/render/cpdf_pagerendercontext.h"
 #include "core/fxcrt/fx_codepage.h"
-#include "core/fxge/cfx_defaultrenderdevice.h"
 #include "core/fxge/cfx_fillrenderoptions.h"
 #include "core/fxge/cfx_font.h"
+#include "core/fxge/cfx_gemodule.h"
 #include "core/fxge/cfx_graphstatedata.h"
 #include "core/fxge/cfx_path.h"
 #include "core/fxge/cfx_renderdevice.h"
@@ -58,15 +58,16 @@ void EmptyTest(CFX_SkiaDeviceDriver* driver, const State&) {
 }
 
 void CommonTest(CFX_SkiaDeviceDriver* driver, const State& state) {
-  TextCharPos charPos[1];
-  charPos[0].origin_ = CFX_PointF(0, 1);
-  charPos[0].glyph_index_ = 0;
-  charPos[0].font_char_width_ = 4;
+  TextCharPos charPos = {
+      .origin_ = CFX_PointF(0, 1),
+      .glyph_index_ = 0,
+      .font_char_width_ = 4,
+  };
 
   CFX_Font font;
-  font.LoadSubst("Courier", /*bTrueType=*/true, /*flags=*/0,
-                 /*weight=*/400, /*italic_angle=*/0, FX_CodePage::kShiftJIS,
-                 /*bVertical=*/false);
+  font.LoadSubstFace("Courier", /*bTrueType=*/true, /*flags=*/0,
+                     /*weight=*/400, /*italic_angle=*/0, FX_CodePage::kShiftJIS,
+                     /*bVertical=*/false);
   float fontSize = 20;
   CFX_Path clipPath;
   CFX_Path clipPath2;
@@ -94,10 +95,11 @@ void CommonTest(CFX_SkiaDeviceDriver* driver, const State& state) {
   }
   if (state.graphic_ == State::Graphic::kPath) {
     driver->DrawPath(path1, &matrix, &graphState, 0xFF112233, 0,
+                     /*group_knockout=*/false,
                      CFX_FillRenderOptions::WindingOptions());
   } else if (state.graphic_ == State::Graphic::kText) {
-    driver->DrawDeviceText(charPos, &font, matrix, fontSize, 0xFF445566,
-                           kTextOptions);
+    driver->DrawDeviceText(pdfium::span_from_ref(charPos), &font, matrix,
+                           fontSize, 0xFF445566, kTextOptions);
   }
   if (state.save_ == State::Save::kYes) {
     driver->RestoreState(true);
@@ -120,10 +122,11 @@ void CommonTest(CFX_SkiaDeviceDriver* driver, const State& state) {
   }
   if (state.graphic_ == State::Graphic::kPath) {
     driver->DrawPath(path2, &matrix2, &graphState, 0xFF112233, 0,
+                     /*group_knockout=*/false,
                      CFX_FillRenderOptions::WindingOptions());
   } else if (state.graphic_ == State::Graphic::kText) {
-    driver->DrawDeviceText(charPos, &font, matrix2, fontSize, 0xFF445566,
-                           kTextOptions);
+    driver->DrawDeviceText(pdfium::span_from_ref(charPos), &font, matrix2,
+                           fontSize, 0xFF445566, kTextOptions);
   }
   if (state.save_ == State::Save::kYes) {
     driver->RestoreState(false);
@@ -161,7 +164,7 @@ void Harness(void (*Test)(CFX_SkiaDeviceDriver*, const State&),
   ASSERT_TRUE(
       FPDFBitmap_FillRect(bitmap.get(), 0, 0, kWidth, kHeight, 0x00000000));
   RetainPtr<CFX_DIBitmap> pBitmap(CFXDIBitmapFromFPDFBitmap(bitmap.get()));
-  auto driver = CFX_SkiaDeviceDriver::Create(pBitmap, false, nullptr, false);
+  auto driver = CFX_SkiaDeviceDriver::Create(pBitmap, false, nullptr);
   ASSERT_TRUE(driver);
   (*Test)(driver.get(), state);
   uint32_t pixel = pBitmap->GetPixelForTesting(0, 0);
@@ -182,8 +185,8 @@ void RenderPageToSkCanvas(FPDF_PAGE page,
   CPDF_Page::RenderContextClearer clearer(cpdf_page);
   cpdf_page->SetRenderContext(std::move(context));
 
-  auto default_device = std::make_unique<CFX_DefaultRenderDevice>();
-  CHECK(default_device->AttachCanvas(canvas));
+  auto default_device = CFX_RenderDevice::CreateForSkiaCanvas(canvas);
+  CHECK(default_device);
   unowned_context->device_ = std::move(default_device);
 
   CPDFSDK_RenderPageWithContext(unowned_context, cpdf_page, start_x, start_y,
@@ -212,14 +215,14 @@ using FxgeSkiaEmbedderTest = EmbedderTest;
 }  // namespace
 
 TEST(fxge, SkiaStateEmpty) {
-  if (!CFX_DefaultRenderDevice::UseSkiaRenderer()) {
+  if (!CFX_GEModule::IsSkiaRenderer()) {
     return;
   }
   Harness(&EmptyTest, {});
 }
 
 TEST(fxge, SkiaStatePath) {
-  if (!CFX_DefaultRenderDevice::UseSkiaRenderer()) {
+  if (!CFX_GEModule::IsSkiaRenderer()) {
     return;
   }
   Harness(&CommonTest, {State::Change::kNo, State::Save::kYes,
@@ -236,7 +239,7 @@ TEST(fxge, SkiaStatePath) {
 }
 
 TEST(fxge, SkiaStateText) {
-  if (!CFX_DefaultRenderDevice::UseSkiaRenderer()) {
+  if (!CFX_GEModule::IsSkiaRenderer()) {
     return;
   }
 
@@ -248,7 +251,7 @@ TEST(fxge, SkiaStateText) {
 }
 
 TEST(fxge, SkiaStateOOSClip) {
-  if (!CFX_DefaultRenderDevice::UseSkiaRenderer()) {
+  if (!CFX_GEModule::IsSkiaRenderer()) {
     return;
   }
   Harness(&OutOfSequenceClipTest, {});
@@ -264,7 +267,7 @@ TEST_F(FxgeSkiaEmbedderTest, RenderBigImageTwice) {
   static constexpr int kPageWidth = kImageWidth / kPageToImageFactor;
   static constexpr int kPageHeight = kImageHeight / kPageToImageFactor;
 
-  if (!CFX_DefaultRenderDevice::UseSkiaRenderer()) {
+  if (!CFX_GEModule::IsSkiaRenderer()) {
     GTEST_SKIP() << "Skia is not the default renderer";
   }
 

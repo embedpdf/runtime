@@ -11,6 +11,7 @@
 #include <optional>
 #include <utility>
 
+#include "constants/catalog.h"
 #include "core/fpdfapi/parser/cpdf_array.h"
 #include "core/fpdfapi/parser/cpdf_dictionary.h"
 #include "core/fpdfapi/parser/cpdf_linearized_header.h"
@@ -23,7 +24,7 @@
 #include "core/fpdfapi/parser/cpdf_stream.h"
 #include "core/fpdfapi/parser/cpdf_stream_acc.h"
 #include "core/fpdfapi/parser/fpdf_parser_utility.h"
-#include "core/fxcodec/jbig2/JBig2_DocumentContext.h"
+#include "core/fxcodec/jbig2/jbig2_document_context.h"
 #include "core/fxcrt/check.h"
 #include "core/fxcrt/check_op.h"
 #include "core/fxcrt/containers/contains.h"
@@ -64,15 +65,8 @@ NodeType GetNodeType(RetainPtr<CPDF_Dictionary> kid_dict) {
 // EmbedPDF(reads-dont-write): GetNodeType() for a const kid, so a page-tree
 // edit doesn't promote the base pages it only looks at.
 NodeType GetNodeTypeForTraversal(const CPDF_Dictionary* kid_dict) {
-  const ByteString kid_type_value = kid_dict->GetNameFor("Type");
-  if (kid_type_value == "Pages") {
-    return NodeType::kBranch;
-  }
-  if (kid_type_value == "Page") {
-    return NodeType::kLeaf;
-  }
-
-  return kid_dict->KeyExist("Kids") ? NodeType::kBranch : NodeType::kLeaf;
+  return CPDF_Document::IsPageTreeLeaf(kid_dict) ? NodeType::kLeaf
+                                                 : NodeType::kBranch;
 }
 
 // Returns a value in the range [0, `CPDF_Document::kPageMaxNum`), or nullopt on
@@ -248,6 +242,18 @@ bool CPDF_Document::IsValidPageObject(const CPDF_Object* obj) {
   return ValidateDictType(ToDictionary(obj), "Page");
 }
 
+// static
+bool CPDF_Document::IsPageTreeLeaf(const CPDF_Dictionary* dict) {
+  if (!dict) {
+    return false;
+  }
+  const ByteString type = dict->GetNameFor("Type");
+  if (type == "Page") {
+    return true;
+  }
+  return type != "Pages" && !dict->KeyExist("Kids");
+}
+
 // EmbedPDF(layer-seam): virtual; a layer answers with its base's parser and
 // its own /Root.
 CPDF_Parser* CPDF_Document::GetParser() const {
@@ -325,7 +331,7 @@ void CPDF_Document::LoadPages() {
 
   uint32_t first_page_num = linearized_header->GetFirstPageNo();
   uint32_t page_count = linearized_header->GetPageCount();
-  DCHECK(first_page_num < page_count);
+  DCHECK_LT(first_page_num, page_count);
   // EmbedPDF(layer-seam): a layer keeps its own page list.
   ResizePageList(page_count);
   SetPageObjNumAt(first_page_num, objnum);
@@ -338,11 +344,16 @@ RetainPtr<CPDF_Dictionary> CPDF_Document::TraversePDFPages(int iPage,
     return nullptr;
   }
 
-  RetainPtr<CPDF_Dictionary> pPages = tree_traversal_[level].first;
+  RetainPtr<CPDF_Dictionary> pPages = tree_traversal_[level].pages_dict;
   RetainPtr<CPDF_Array> pKidList = pPages->GetMutableArrayFor("Kids");
   if (!pKidList) {
     tree_traversal_.pop_back();
     if (*nPagesToGo != 1) {
+      return nullptr;
+    }
+    // EmbedPDF(reads-dont-write): upstream's check with the const node type;
+    // GetNodeType() would rewrite a wrong /Type while reading.
+    if (!IsPageTreeLeaf(pPages.Get())) {
       return nullptr;
     }
     // EmbedPDF(layer-seam): a layer keeps its own page list.
@@ -355,7 +366,8 @@ RetainPtr<CPDF_Dictionary> CPDF_Document::TraversePDFPages(int iPage,
     return nullptr;
   }
   RetainPtr<CPDF_Dictionary> page;
-  for (size_t i = tree_traversal_[level].second; i < pKidList->size(); i++) {
+  for (size_t i = tree_traversal_[level].child_index; i < pKidList->size();
+       i++) {
     if (*nPagesToGo == 0) {
       break;
     }
@@ -363,18 +375,18 @@ RetainPtr<CPDF_Dictionary> CPDF_Document::TraversePDFPages(int iPage,
     RetainPtr<CPDF_Dictionary> pKid = pKidList->GetMutableDictAt(i);
     if (!pKid) {
       (*nPagesToGo)--;
-      tree_traversal_[level].second++;
+      tree_traversal_[level].child_index++;
       continue;
     }
     if (pKid == pPages) {
-      tree_traversal_[level].second++;
+      tree_traversal_[level].child_index++;
       continue;
     }
     if (!pKid->KeyExist("Kids")) {
       // EmbedPDF(layer-seam): a layer keeps its own page list.
       SetPageObjNumAt(iPage - (*nPagesToGo) + 1, pKid->GetObjNum());
       (*nPagesToGo)--;
-      tree_traversal_[level].second++;
+      tree_traversal_[level].child_index++;
       if (*nPagesToGo == 0) {
         page = std::move(pKid);
         break;
@@ -382,14 +394,14 @@ RetainPtr<CPDF_Dictionary> CPDF_Document::TraversePDFPages(int iPage,
     } else {
       // If the vector has size level+1, the child is not in yet
       if (tree_traversal_.size() == level + 1) {
-        tree_traversal_.emplace_back(std::move(pKid), 0);
+        tree_traversal_.emplace_back(std::move(pKid));
       }
       // Now tree_traversal_[level+1] should exist and be equal to pKid.
       RetainPtr<CPDF_Dictionary> pPageKid =
           TraversePDFPages(iPage, nPagesToGo, level + 1);
       // Check if child was completely processed, i.e. it popped itself out
       if (tree_traversal_.size() == level + 1) {
-        tree_traversal_[level].second++;
+        tree_traversal_[level].child_index++;
       }
       // If child did not finish, no pages to go, or max level reached, end
       if (tree_traversal_.size() != level + 1 || *nPagesToGo == 0 ||
@@ -399,7 +411,7 @@ RetainPtr<CPDF_Dictionary> CPDF_Document::TraversePDFPages(int iPage,
       }
     }
   }
-  if (tree_traversal_[level].second == pKidList->size()) {
+  if (tree_traversal_[level].child_index == pKidList->size()) {
     tree_traversal_.pop_back();
   }
   return page;
@@ -457,7 +469,7 @@ CPDF_Parser::Error CPDF_Document::HandleLoadResult(CPDF_Parser::Error error) {
 
 RetainPtr<const CPDF_Dictionary> CPDF_Document::GetPagesDict() const {
   const CPDF_Dictionary* pRoot = GetRoot();
-  return pRoot ? pRoot->GetDictFor("Pages") : nullptr;
+  return pRoot ? pRoot->GetDictFor(pdfium::catalog::kPages) : nullptr;
 }
 
 RetainPtr<CPDF_Dictionary> CPDF_Document::GetMutablePagesDict() {
@@ -491,7 +503,7 @@ RetainPtr<const CPDF_Dictionary> CPDF_Document::GetPageDictionary(int iPage) {
 
   if (tree_traversal_.empty()) {
     ResetTraversal();
-    tree_traversal_.emplace_back(std::move(pPages), 0);
+    tree_traversal_.emplace_back(std::move(pPages));
   }
   int nPagesToGo = iPage - next_page_to_traverse_ + 1;
   RetainPtr<CPDF_Dictionary> pPage = TraversePDFPages(iPage, &nPagesToGo, 0);
@@ -695,7 +707,8 @@ void CPDF_Document::CreateNewDoc() {
   pPages->SetNewFor<CPDF_Name>("Type", "Pages");
   pPages->SetNewFor<CPDF_Number>("Count", 0);
   pPages->SetNewFor<CPDF_Array>("Kids");
-  root->SetNewFor<CPDF_Reference>("Pages", this, pPages->GetObjNum());
+  root->SetNewFor<CPDF_Reference>(pdfium::catalog::kPages, this,
+                                  pPages->GetObjNum());
   SetCachedInfoDict(NewIndirect<CPDF_Dictionary>());
 }
 
@@ -723,6 +736,15 @@ RetainPtr<CPDF_Dictionary> CPDF_Document::CreateNewPageAt(int iPage,
     return nullptr;
   }
   return dict;
+}
+
+// EmbedPDF(epdf-api): backs EPDFPage_ImportRaw().
+bool CPDF_Document::InsertExistingPage(int iPage,
+                                       RetainPtr<CPDF_Dictionary> page_dict) {
+  if (!page_dict || !page_dict->GetObjNum()) {
+    return false;
+  }
+  return InsertNewPage(iPage, std::move(page_dict));
 }
 
 bool CPDF_Document::InsertDeletePDFPage(
@@ -802,7 +824,8 @@ bool CPDF_Document::InsertNewPage(int iPage,
     return false;
   }
 
-  RetainPtr<CPDF_Dictionary> pPages = pRoot->GetMutableDictFor("Pages");
+  RetainPtr<CPDF_Dictionary> pPages =
+      pRoot->GetMutableDictFor(pdfium::catalog::kPages);
   if (!pPages) {
     return false;
   }
@@ -1124,6 +1147,17 @@ CPDF_Document::StockFontClearer::StockFontClearer(
 CPDF_Document::StockFontClearer::~StockFontClearer() {
   page_data_->ClearStockFont();
 }
+
+CPDF_Document::PageTreeData::PageTreeData(RetainPtr<CPDF_Dictionary> dict)
+    : pages_dict(std::move(dict)) {}
+
+CPDF_Document::PageTreeData::PageTreeData(PageTreeData&& that) noexcept =
+    default;
+
+CPDF_Document::PageTreeData& CPDF_Document::PageTreeData::operator=(
+    PageTreeData&& that) noexcept = default;
+
+CPDF_Document::PageTreeData::~PageTreeData() = default;
 
 CPDF_Document::PageDataIface::PageDataIface() = default;
 

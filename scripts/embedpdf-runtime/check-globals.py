@@ -51,8 +51,9 @@ SHARED_SECTIONS = ('.data', '.bss', '*COM*', '__DATA,__data', '__DATA,__bss',
 THREAD_LOCAL_SECTIONS = ('.tdata', '.tbss', '__DATA,__thread_vars')
 
 # `<address> <flags> O <section> [<size>] [.hidden] <name>`; ELF has the size.
-SYMBOL = re.compile(r'^[0-9a-f]+\s.*?\sO\s+(\S+)\s+(?:[0-9a-f]{8,}\s+)?'
-                    r'(?:\.hidden\s+)?(.+)$')
+# ELF thread-local symbols (STT_TLS) have no `O` flag: `<address> l .tbss ...`.
+SYMBOL = re.compile(r'^[0-9a-f]+\s.*?\s(?:O\s+(\S+)|(\.tbss|\.tdata))\s+'
+                    r'(?:[0-9a-f]{8,}\s+)?(?:\.hidden\s+)?(.+)$')
 
 
 def normalize(name, macho):
@@ -76,7 +77,10 @@ def read_symbols(library):
     m = SYMBOL.match(line)
     if not m:
       continue
-    section, name = m.group(1), normalize(m.group(2).strip(), macho)
+    section = m.group(1) or m.group(2)
+    name = normalize(m.group(3).strip(), macho)
+    if name == section:  # the section's own symbol
+      continue
     if section in SHARED_SECTIONS:
       shared.add(name)
     elif section in THREAD_LOCAL_SECTIONS:

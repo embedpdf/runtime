@@ -28,10 +28,22 @@ source_set("fpdfsdk") {
     "epdf_form.cpp",
     # EmbedPDF: layer-safe selective page and annotation flattening.
     "epdf_flatten.cpp",
+    # EmbedPDF: copies objects across documents and in-memory stores.
+    "epdf_object_copier.cpp",
+    "epdf_object_copier.h",
     "epdf_layer.cpp",
+    # EmbedPDF: destination, named destination and action creators
+    # (public/epdf_doc.h).
+    "epdf_doc.cpp",
+    # EmbedPDF: the document outline's writers (public/epdf_outline.h) and
+    # the mechanics its captures share.
     "epdf_outline.cpp",
-    # EmbedPDF: the catalog's /Names /Pages and /Templates name trees.
+    "epdf_outline_helpers.cpp",
+    "epdf_outline_helpers.h",
+    # EmbedPDF: the catalog's /Names /Pages and /Templates name trees, and
+    # the lookups page captures share.
     "epdf_named_pages.cpp",
+    "epdf_named_pages_helpers.h",
     # EmbedPDF: digests (EPDF_DigestBuffer) and the hasher signatures share.
     "epdf_digest.cpp",
     "epdf_hasher.h",
@@ -125,25 +137,26 @@ source_set("fpdfsdk") {
     "../:pdfium_strict_config",
     "../:pdfium_noshorten_config",
   ]
-  deps = [
-    "//third_party:png",
+  public_deps = [
     "../:pdfium_public_headers",
+    "../core/fpdfapi/page",
+    "../core/fpdfapi/parser",
+    "../core/fpdfdoc",
+    "../core/fxcrt",
+    "../core/fxge",
+    "formfiller",
+    "pwl",
+  ]
+  deps = [
     "../constants",
     "../core/fdrm",
     "../core/fpdfapi/edit",
-    "../core/fpdfapi/edit:contentstream_write_utils",
     "../core/fpdfapi/font",
-    "../core/fpdfapi/page",
-    "../core/fpdfapi/parser",
     "../core/fpdfapi/render",
-    "../core/fpdfdoc",
     "../core/fpdftext",
     "../core/fxcodec",
-    "../core/fxcrt",
-    "../core/fxge",
     "../fxjs",
-    "formfiller",
-    "pwl",
+    "//third_party:png",
   ]
   allow_circular_includes_from = [
     "../fxjs",
@@ -160,6 +173,29 @@ source_set("fpdfsdk") {
     ]
     allow_circular_includes_from += [ "fpdfxfa" ]
   }
+}
+
+source_set("test_support") {
+  testonly = true
+  sources = [
+    "display_list_renderer.cpp",
+    "display_list_renderer.h",
+  ]
+  configs += [
+    "../:pdfium_strict_config",
+    "../:pdfium_noshorten_config",
+  ]
+  deps = [
+    ":fpdfsdk",
+    "../:pdfium_public_headers",
+    "../core/fpdfapi/page",
+    "../core/fpdfapi/parser",
+    "../core/fpdfapi/render",
+    "../core/fxcrt",
+    "../core/fxge",
+    "../core/fxge:test_support",
+  ]
+  visibility = [ "../*" ]
 }
 
 pdfium_unittest_source_set("unittests") {
@@ -179,6 +215,7 @@ pdfium_unittest_source_set("unittests") {
     "../core/fpdfapi/parser:unit_test_support",
     "../core/fpdfapi/render",
     "../core/fpdfdoc",
+    "../testing:test_support",
   ]
   pdfium_root_dir = "../"
 }
@@ -217,6 +254,8 @@ pdfium_embeddertest_source_set("embeddertests") {
     # EmbedPDF: covers appearance states and modes, widgets in page renders,
     # and the check box and radio button symbols.
     "epdf_appearance_state_embeddertest.cpp",
+    # EmbedPDF: covers the document outline's writers and captures.
+    "epdf_outline_embeddertest.cpp",
     # EmbedPDF: covers layer transactions (EPDFLayer_BeginTransaction).
     "epdf_transaction_embeddertest.cpp",
     # EmbedPDF: covers annotation identity: handle lifetimes, promotion and
@@ -274,6 +313,11 @@ pdfium_embeddertest_source_set("embeddertests") {
     "epdf_c_api_test.h",
     "fpdf_view_embeddertest.cpp",
   ]
+  data = [
+    "../third_party/NotoSansBengali2/NotoSansBengali-Regular.subset.ttf",
+    "../third_party/NotoSansBengali3/NotoSansBengali-Regular.subset.ttf",
+    "../third_party/NotoSansCJK/NotoSansSC-Regular.subset.otf",
+  ]
   deps = [
     ":fpdfsdk",
     "../constants",
@@ -282,6 +326,8 @@ pdfium_embeddertest_source_set("embeddertests") {
     "../core/fpdfapi/parser",
     "../core/fxcrt:test_support",
     "../core/fxge",
+    "../testing:path_service",
+    "../testing:test_support",
   ]
   pdfium_root_dir = "../"
 

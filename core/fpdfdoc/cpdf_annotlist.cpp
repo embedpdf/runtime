@@ -12,6 +12,7 @@
 
 #include "constants/annotation_common.h"
 #include "constants/annotation_flags.h"
+#include "constants/catalog.h"
 #include "constants/form_fields.h"
 #include "core/fpdfapi/page/cpdf_occontext.h"
 #include "core/fpdfapi/page/cpdf_page.h"
@@ -116,15 +117,8 @@ std::unique_ptr<CPDF_Annot> CreatePopupAnnot(CPDF_Document* document,
   pAnnotDict->SetRectFor(pdfium::annotation::kRect, popupRect);
   pAnnotDict->SetNewFor<CPDF_Number>(pdfium::annotation::kF, 0);
 
-  // EmbedPDF(reads-dont-write): a closed popup gets its appearance only when
-  // drawn.
-  // The popup is closed, so it is drawn only once opened, and drawing
-  // generates its appearance. Generating it here would build one, with a font
-  // and two new objects in the document, for every popup of every list, and
-  // rendering a page builds a list each time.
-  auto pPopupAnnot = std::make_unique<CPDF_Annot>(
-      std::move(pAnnotDict), document,
-      CPDF_Annot::MissingAppearance::kGenerateWhenDrawn);
+  auto pPopupAnnot =
+      std::make_unique<CPDF_Annot>(std::move(pAnnotDict), document);
   pAnnot->SetPopupAnnot(pPopupAnnot.get());
   return pPopupAnnot;
 }
@@ -214,6 +208,12 @@ void CPDF_AnnotList::DisplayPass(CPDF_RenderContext* context,
 
     uint32_t annot_flags = pAnnot->GetFlags();
     if (annot_flags & pdfium::annotation_flags::kHidden) {
+      continue;
+    }
+
+    // EmbedPDF(bug-fix): an unknown type with the Invisible flag isn't drawn;
+    // upstream drew it.
+    if (CPDF_Annot::IsHiddenByInvisibleFlag(pAnnot->GetAnnotDict())) {
       continue;
     }
 

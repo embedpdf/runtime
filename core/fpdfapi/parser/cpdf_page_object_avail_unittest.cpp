@@ -21,26 +21,16 @@
 
 namespace {
 
-class TestReadValidator final : public CPDF_ReadValidator {
- public:
-  CONSTRUCT_VIA_MAKE_RETAIN;
-
-  void SimulateReadError() { ReadBlockAtOffset({}, 0); }
-
- private:
-  TestReadValidator()
-      : CPDF_ReadValidator(pdfium::MakeRetain<InvalidSeekableReadStream>(100),
-                           nullptr) {}
-  ~TestReadValidator() override = default;
-};
-
 class TestHolder final : public CPDF_IndirectObjectHolder {
  public:
   enum class ObjectState {
     Unavailable,
     Available,
   };
-  TestHolder() : validator_(pdfium::MakeRetain<TestReadValidator>()) {}
+  TestHolder()
+      : validator_(pdfium::MakeRetain<CPDF_ReadValidator>(
+            pdfium::MakeRetain<InvalidSeekableReadStream>(100),
+            nullptr)) {}
   ~TestHolder() override = default;
 
   // CPDF_IndirectObjectHolder overrides:
@@ -52,7 +42,8 @@ class TestHolder final : public CPDF_IndirectObjectHolder {
 
     ObjectData& obj_data = it->second;
     if (obj_data.state == ObjectState::Unavailable) {
-      validator_->SimulateReadError();
+      // Simulate an error via a read from an InvalidSeekableReadStream.
+      validator_->ReadBlockAtOffset({}, 0);
       return nullptr;
     }
     return obj_data.object;
@@ -91,7 +82,7 @@ class TestHolder final : public CPDF_IndirectObjectHolder {
     ObjectState state = ObjectState::Unavailable;
   };
   std::map<uint32_t, ObjectData> objects_data_;
-  RetainPtr<TestReadValidator> validator_;
+  RetainPtr<CPDF_ReadValidator> validator_;
 };
 
 }  // namespace
@@ -114,8 +105,7 @@ TEST(PageObjectAvailTest, ExcludePages) {
   holder.GetTestObject(3)->GetMutableDict()->SetNewFor<CPDF_Reference>(
       "OtherPageData", &holder, 4);
   // Add unavailable object related to other page.
-  holder.AddObject(4,
-                   pdfium::MakeRetain<CPDF_String>(nullptr, "Other page data"),
+  holder.AddObject(4, pdfium::MakeRetain<CPDF_String>("Other page data"),
                    TestHolder::ObjectState::Unavailable);
 
   CPDF_PageObjectAvail avail(holder.GetValidator(), &holder, 1);

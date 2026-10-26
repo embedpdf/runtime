@@ -28,7 +28,11 @@ class CPDF_Dictionary;
 class CPDF_Document;
 class CPDF_Stream;
 struct CPDF_RichTextDocument;
+
+namespace fxge {
 enum class BlendMode;
+}  // namespace fxge
+using fxge::BlendMode;
 
 class CPDF_AppearanceGenerator {
  public:

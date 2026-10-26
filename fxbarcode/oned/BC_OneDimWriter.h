@@ -24,7 +24,7 @@ class CFX_Font;
 class CFX_Matrix;
 class CFX_Path;
 class CFX_RenderDevice;
-class TextCharPos;
+struct TextCharPos;
 
 class CBC_OneDimWriter : public CBC_Writer {
  public:
@@ -67,12 +67,12 @@ class CBC_OneDimWriter : public CBC_Writer {
                        float locX,
                        float locY,
                        int32_t barWidth);
-  void CalcTextInfo(const ByteString& text,
-                    pdfium::span<TextCharPos> charPos,
-                    CFX_Font* cFont,
-                    float geWidth,
-                    int32_t fontSize,
-                    float& charsLen);
+  // Returns the total char width.
+  float CalcTextInfo(const ByteString& text,
+                     pdfium::span<TextCharPos> charPos,
+                     CFX_Font* cFont,
+                     float geWidth,
+                     int32_t fontSize);
   pdfium::span<uint8_t> AppendPattern(pdfium::span<uint8_t> target,
                                       pdfium::span<const uint8_t> pattern,
                                       bool startColor);

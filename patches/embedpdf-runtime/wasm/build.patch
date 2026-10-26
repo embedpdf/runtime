@@ -2,11 +2,12 @@ diff --git a/config/BUILDCONFIG.gn b/config/BUILDCONFIG.gn
 index 147226d..92ef627 100644
 --- a/config/BUILDCONFIG.gn
 +++ b/config/BUILDCONFIG.gn
-@@ -287,10 +287,7 @@ if (target_os == "android") {
+@@ -286,11 +286,7 @@ if (target_os == "android") {
  } else if (target_os == "zos") {
    _default_toolchain = "//build/toolchain/zos:$target_cpu"
  } else if (target_os == "emscripten") {
--  # Because it's too hard to remove all targets from //BUILD.gn that do not work with it.
+-  # Because it's too hard to remove all targets from //BUILD.gn that do not work
+-  # with it.
 -  assert(
 -      false,
 -      "emscripten is not a supported target_os. It is available only as secondary toolchain.")
@@ -18,7 +19,7 @@ diff --git a/config/compiler/BUILD.gn b/config/compiler/BUILD.gn
 index 5103543..6bf11a8 100644
 --- a/config/compiler/BUILD.gn
 +++ b/config/compiler/BUILD.gn
-@@ -309,6 +309,8 @@ config("compiler") {
+@@ -355,6 +355,8 @@ config("compiler") {
      configs += [ "//build/config/aix:compiler" ]
    } else if (current_os == "zos") {
      configs += [ "//build/config/zos:compiler" ]
@@ -27,7 +28,7 @@ index 5103543..6bf11a8 100644
    }
  
    configs += [
-@@ -398,2 +400,2 @@ config("compiler") {
+@@ -460,2 +462,2 @@ config("compiler") {
 -        if (current_os != "aix") {
 +        if (current_os != "aix" && current_os != "emscripten") {
            # Not available on aix.

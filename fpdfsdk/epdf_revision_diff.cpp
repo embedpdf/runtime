@@ -249,8 +249,8 @@ ByteString HexOf(pdfium::span<const uint8_t> bytes) {
 std::optional<ByteString> StreamSignature(const CPDF_Stream* stream) {
   static constexpr size_t kChunk = 64 * 1024;
   const size_t size = stream->GetRawSize();
-  CRYPT_sha2_context context;
-  CRYPT_SHA256Start(&context);
+  CryptSha2Context context;
+  CryptSha256Start(&context);
   if (size > 0) {
     DataVector<uint8_t> buffer(std::min(kChunk, size));
     for (size_t offset = 0; offset < size;) {
@@ -259,12 +259,12 @@ std::optional<ByteString> StreamSignature(const CPDF_Stream* stream) {
       if (!stream->ReadRawBlock(chunk, static_cast<FX_FILESIZE>(offset))) {
         return std::nullopt;
       }
-      CRYPT_SHA256Update(&context, chunk);
+      CryptSha256Update(&context, chunk);
       offset += count;
     }
   }
   std::array<uint8_t, 32> digest;
-  CRYPT_SHA256Finish(&context, digest);
+  CryptSha256Finish(&context, digest);
   return ByteString::Format("stream(%u,", static_cast<unsigned>(size)) +
          HexOf(digest) + ")";
 }

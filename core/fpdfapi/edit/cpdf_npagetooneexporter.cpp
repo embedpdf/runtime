@@ -12,7 +12,6 @@
 #include <utility>
 
 #include "constants/page_object.h"
-#include "core/fpdfapi/edit/cpdf_contentstream_write_utils.h"
 #include "core/fpdfapi/page/cpdf_page.h"
 #include "core/fpdfapi/parser/cpdf_array.h"
 #include "core/fpdfapi/parser/cpdf_dictionary.h"
@@ -23,10 +22,11 @@
 #include "core/fpdfapi/parser/cpdf_reference.h"
 #include "core/fpdfapi/parser/cpdf_stream.h"
 #include "core/fpdfapi/parser/cpdf_stream_acc.h"
-#include "core/fxcrt/check.h"
+#include "core/fxcrt/check_op.h"
 #include "core/fxcrt/fx_safe_types.h"
 #include "core/fxcrt/fx_string_wrappers.h"
 #include "core/fxcrt/span.h"
+#include "core/fxcrt/stream_write_utils.h"
 
 namespace {
 
@@ -76,10 +76,10 @@ NupState::NupState(const CFX_SizeF& pagesize,
       pages_on_x_axis_(pages_on_x_axis),
       pages_on_y_axis_(pages_on_y_axis),
       pages_per_sheet_(pages_on_x_axis * pages_on_y_axis) {
-  DCHECK(pages_on_x_axis_ > 0);
-  DCHECK(pages_on_y_axis_ > 0);
-  DCHECK(dest_page_size_.width > 0);
-  DCHECK(dest_page_size_.height > 0);
+  DCHECK_GT(pages_on_x_axis_, 0);
+  DCHECK_GT(pages_on_y_axis_, 0);
+  DCHECK_GT(dest_page_size_.width, 0);
+  DCHECK_GT(dest_page_size_.height, 0);
 
   sub_page_size_.width = dest_page_size_.width / pages_on_x_axis_;
   sub_page_size_.height = dest_page_size_.height / pages_on_y_axis_;

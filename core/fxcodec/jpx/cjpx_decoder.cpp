@@ -16,6 +16,7 @@
 
 #include "core/fxcodec/jpx/jpx_decode_utils.h"
 #include "core/fxcrt/check_op.h"
+#include "core/fxcrt/fx_ceil_div.h"
 #include "core/fxcrt/fx_safe_types.h"
 #include "core/fxcrt/numerics/safe_conversions.h"
 #include "core/fxcrt/ptr_util.h"
@@ -25,7 +26,7 @@
 #if defined(USE_SYSTEM_LIBOPENJPEG2)
 #include <stdlib.h>
 #else
-#include "third_party/libopenjpeg/opj_malloc.h"
+#include "third_party/libopenjpeg/src/opj_malloc.h"
 #endif
 
 namespace fxcodec {
@@ -96,9 +97,9 @@ void sycc_to_rgb(int offset,
                  int* out_b) {
   cb -= offset;
   cr -= offset;
-  *out_r = std::clamp(y + static_cast<int>(1.402 * cr), 0, upb);
-  *out_g = std::clamp(y - static_cast<int>(0.344 * cb + 0.714 * cr), 0, upb);
-  *out_b = std::clamp(y + static_cast<int>(1.772 * cb), 0, upb);
+  *out_r = std::clamp(y + static_cast<int>(1.402f * cr), 0, upb);
+  *out_g = std::clamp(y - static_cast<int>(0.344f * cb + 0.714f * cr), 0, upb);
+  *out_b = std::clamp(y + static_cast<int>(1.772f * cb), 0, upb);
 }
 
 pdfium::span<opj_image_comp_t> components_span(opj_image_t* img) {
@@ -155,7 +156,7 @@ void sycc444_to_rgb(opj_image_t* img) {
 
 bool sycc420_422_size_is_valid(pdfium::span<opj_image_comp_t> components) {
   return components[0].w != std::numeric_limits<OPJ_UINT32>::max() &&
-         (components[0].w + 1) / 2 == components[1].w &&
+         fxcrt::CeilDiv(components[0].w, 2) == components[1].w &&
          components[1].w == components[2].w &&
          components[1].h == components[2].h;
 }
@@ -163,7 +164,7 @@ bool sycc420_422_size_is_valid(pdfium::span<opj_image_comp_t> components) {
 bool sycc420_size_is_valid(pdfium::span<opj_image_comp_t> components) {
   return sycc420_422_size_is_valid(components) &&
          components[0].h != std::numeric_limits<OPJ_UINT32>::max() &&
-         (components[0].h + 1) / 2 == components[1].h;
+         fxcrt::CeilDiv(components[0].h, 2) == components[1].h;
 }
 
 bool sycc420_must_extend_cbcr(OPJ_UINT32 y, OPJ_UINT32 cbcr) {

@@ -14,6 +14,7 @@
 #include <vector>
 
 #include "build/build_config.h"
+#include "constants/catalog.h"
 #include "constants/page_object.h"
 #include "core/fpdfapi/page/cpdf_annotcontext.h"
 #include "core/fpdfapi/page/cpdf_contentparser.h"
@@ -44,6 +45,7 @@
 #include "core/fpdfdoc/cpdf_annot_rotation.h"
 #include "core/fpdfdoc/cpdf_nametree.h"
 #include "core/fpdfdoc/cpdf_viewerpreferences.h"
+#include "core/fxcodec/fx_codec.h"
 #include "core/fxcrt/cfx_fileaccess_stream.h"
 #include "core/fxcrt/cfx_read_only_span_stream.h"
 #include "core/fxcrt/cfx_timer.h"
@@ -60,7 +62,6 @@
 #include "core/fxcrt/span.h"
 #include "core/fxcrt/stl_util.h"
 #include "core/fxcrt/unowned_ptr.h"
-#include "core/fxge/cfx_defaultrenderdevice.h"
 #include "core/fxge/cfx_fontregistry.h"
 #include "core/fxge/cfx_gemodule.h"
 #include "core/fxge/cfx_glyphcache.h"
@@ -77,6 +78,10 @@
 #include "public/epdf_view.h"
 #include "public/fpdf_formfill.h"
 
+#if defined(PDF_ENABLE_BROTLI)
+#include "core/fxcodec/brotli/brotli_decoder.h"
+#endif
+
 #ifdef PDF_ENABLE_V8
 #include "fxjs/cfx_v8_array_buffer_allocator.h"
 #endif
@@ -88,7 +93,7 @@
 
 #if BUILDFLAG(IS_WIN)
 #include "core/fpdfapi/render/cpdf_progressiverenderer.h"
-#include "core/fpdfapi/render/cpdf_windowsrenderdevice.h"
+#include "core/fxge/win32/cgdi_device_driver.h"
 #include "public/fpdf_edit.h"
 
 #if defined(PDF_USE_SKIA)
@@ -118,9 +123,9 @@ static_assert(
 
 #if defined(PDF_USE_SKIA)
 // These checks are here because core/ and public/ cannot depend on each other.
-static_assert(static_cast<int>(CFX_DefaultRenderDevice::RendererType::kAgg) ==
+static_assert(static_cast<int>(CFX_GEModule::RendererType::kAgg) ==
               FPDF_RENDERERTYPE_AGG);
-static_assert(static_cast<int>(CFX_DefaultRenderDevice::RendererType::kSkia) ==
+static_assert(static_cast<int>(CFX_GEModule::RendererType::kSkia) ==
               FPDF_RENDERERTYPE_SKIA);
 #endif  // defined(PDF_USE_SKIA)
 
@@ -131,41 +136,14 @@ namespace {
 // race.
 EPDF_TLS bool g_bLibraryInitialized = false;
 
-void SetRendererType(FPDF_RENDERER_TYPE public_type) {
-  // Internal definition of renderer types must stay updated with respect to
-  // the public definition, such that all public definitions can be mapped to
-  // an internal definition in `CFX_DefaultRenderDevice`. A public definition
-  // value might not be meaningful for a particular build configuration, which
-  // would mean use of that value is an error for that build.
-
-  // AGG is always present in a build. `FPDF_RENDERERTYPE_SKIA` is valid to use
-  // only if it is included in the build.
-#if defined(PDF_USE_SKIA)
-  // This build configuration has the option for runtime renderer selection.
-  CHECK(public_type == FPDF_RENDERERTYPE_AGG ||
-        public_type == FPDF_RENDERERTYPE_SKIA);
-  CFX_DefaultRenderDevice::SetRendererType(
-      static_cast<CFX_DefaultRenderDevice::RendererType>(public_type));
-#else
-  // AGG-only builds should always use `FPDF_RENDERERTYPE_AGG`.
-  CHECK_EQ(public_type, FPDF_RENDERERTYPE_AGG);
-#endif
-}
-
-void ResetRendererType() {
-#if defined(PDF_USE_SKIA)
-  CFX_DefaultRenderDevice::SetRendererType(
-      CFX_DefaultRenderDevice::kDefaultRenderer);
-#endif
-}
-
 RetainPtr<const CPDF_Object> GetXFAEntryFromDocument(const CPDF_Document* doc) {
   const CPDF_Dictionary* root = doc->GetRoot();
   if (!root) {
     return nullptr;
   }
 
-  RetainPtr<const CPDF_Dictionary> acro_form = root->GetDictFor("AcroForm");
+  RetainPtr<const CPDF_Dictionary> acro_form =
+      root->GetDictFor(pdfium::catalog::kAcroForm);
   return acro_form ? acro_form->GetObjectFor("XFA") : nullptr;
 }
 
@@ -246,15 +224,65 @@ FPDF_InitLibraryWithConfig(const FPDF_LIBRARY_CONFIG* config) {
   if (g_bLibraryInitialized) {
     return;
   }
-
-  FX_InitializeMemoryAllocators();
   CFX_Timer::InitializeGlobals();
-  CFX_GEModule::Create(config ? config->m_pUserFontPaths : nullptr);
-  pdfium::InitializePageModule();
 
+  CFX_GEModule::RendererType renderer_type =
+      CFX_GEModule::RendererType::kDefault;
+  if (config && config->version >= 4) {
 #if defined(PDF_USE_SKIA)
-  CFX_GlyphCache::InitializeGlobals();
+    CHECK(config->m_RendererType == FPDF_RENDERERTYPE_AGG ||
+          config->m_RendererType == FPDF_RENDERERTYPE_SKIA);
+    renderer_type =
+        static_cast<CFX_GEModule::RendererType>(config->m_RendererType);
+#else
+    // AGG-only builds should always use `FPDF_RENDERERTYPE_AGG`.
+    CHECK_EQ(config->m_RendererType, FPDF_RENDERERTYPE_AGG);
 #endif
+  }
+
+#if defined(PDF_ENABLE_FONTATIONS) && defined(PDF_ENABLE_FREETYPE)
+  CFX_FontMgr::FontBackend backend = CFX_FontMgr::FontBackend::kFreeType;
+  if (config && config->version >= 5) {
+    CHECK(config->m_FontLibraryType == FPDF_FONTBACKENDTYPE_FREETYPE ||
+          config->m_FontLibraryType == FPDF_FONTBACKENDTYPE_FONTATIONS);
+    if (config->m_FontLibraryType == FPDF_FONTBACKENDTYPE_FONTATIONS) {
+      backend = CFX_FontMgr::FontBackend::kFontations;
+    }
+  }
+#elif defined(PDF_ENABLE_FONTATIONS)
+  CFX_FontMgr::FontBackend backend = CFX_FontMgr::FontBackend::kFontations;
+  if (config && config->version >= 5) {
+    CHECK_EQ(config->m_FontLibraryType, FPDF_FONTBACKENDTYPE_FONTATIONS);
+  }
+#elif defined(PDF_ENABLE_FREETYPE)
+  CFX_FontMgr::FontBackend backend = CFX_FontMgr::FontBackend::kFreeType;
+  if (config && config->version >= 5) {
+    CHECK_EQ(config->m_FontLibraryType, FPDF_FONTBACKENDTYPE_FREETYPE);
+  }
+#else
+#error "Neither FreeType nor Fontations enabled"
+#endif
+#if defined(PDF_ENABLE_BROTLI)
+  BrotliDecoder::SetBrotliEnabled(config && config->version >= 6 &&
+                                  config->m_BrotliEnabled);
+#endif
+
+  std::optional<pdfium::span<const char* const>> user_font_paths_opt;
+  if (config && config->m_pUserFontPaths) {
+    size_t count = 0;
+    // SAFETY: `m_pUserFontPaths` is a null-pointer-terminated array per
+    // public API contract.
+    UNSAFE_BUFFERS({
+      while (config->m_pUserFontPaths[count]) {
+        ++count;
+      }
+      user_font_paths_opt = pdfium::span(config->m_pUserFontPaths, count);
+    });
+  }
+  CFX_GEModule::Create(user_font_paths_opt, renderer_type, backend);
+
+  fxcodec::RegisterEncoders();
+  pdfium::InitializePageModule();
 
 #ifdef PDF_ENABLE_XFA
   CPDFXFA_ModuleInit();
@@ -262,12 +290,13 @@ FPDF_InitLibraryWithConfig(const FPDF_LIBRARY_CONFIG* config) {
 
   if (config && config->version >= 2) {
     void* platform = config->version >= 3 ? config->m_pPlatform : nullptr;
-    IJS_Runtime::Initialize(config->m_v8EmbedderSlot, config->m_pIsolate,
-                            platform);
-
-    if (config->version >= 4) {
-      SetRendererType(config->m_RendererType);
+    const bool isolate_per_document =
+        config->version >= 7 && config->m_IsolatePerDocument;
+    if (isolate_per_document) {
+      CHECK(!config->m_pIsolate);
     }
+    IJS_Runtime::Initialize(config->m_v8EmbedderSlot, config->m_pIsolate,
+                            platform, isolate_per_document);
   }
   g_bLibraryInitialized = true;
 }
@@ -278,17 +307,11 @@ FPDF_EXPORT void FPDF_CALLCONV FPDF_DestroyLibrary() {
   }
 
   // Note: we teardown/destroy things in reverse order.
-  ResetRendererType();
-
   IJS_Runtime::Destroy();
 
 #ifdef PDF_ENABLE_XFA
   CPDFXFA_ModuleDestroy();
 #endif  // PDF_ENABLE_XFA
-
-#if defined(PDF_USE_SKIA)
-  CFX_GlyphCache::DestroyGlobals();
-#endif
 
   // EmbedPDF(fonts, per-thread-init): registered runtime fonts are
   // global/TLS-backed PDFium state, so tear them down with the rest of the
@@ -297,7 +320,6 @@ FPDF_EXPORT void FPDF_CALLCONV FPDF_DestroyLibrary() {
   pdfium::DestroyPageModule();
   CFX_GEModule::Destroy();
   CFX_Timer::DestroyGlobals();
-  FX_DestroyMemoryAllocators();
 
   g_bLibraryInitialized = false;
 }
@@ -314,7 +336,7 @@ FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV FPDF_SetPrintMode(int mode) {
     return FALSE;
   }
 
-  g_pdfium_print_mode = static_cast<WindowsPrintMode>(mode);
+  CFX_GEModule::SetPrintMode(static_cast<WindowsPrintMode>(mode));
   return TRUE;
 }
 #endif  // BUILDFLAG(IS_WIN)
@@ -338,7 +360,8 @@ FPDF_EXPORT int FPDF_CALLCONV FPDF_GetFormType(FPDF_DOCUMENT document) {
     return FORMTYPE_NONE;
   }
 
-  RetainPtr<const CPDF_Dictionary> pAcroForm = pRoot->GetDictFor("AcroForm");
+  RetainPtr<const CPDF_Dictionary> pAcroForm =
+      pRoot->GetDictFor(pdfium::catalog::kAcroForm);
   if (!pAcroForm) {
     return FORMTYPE_NONE;
   }
@@ -421,7 +444,7 @@ FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV FPDF_GetFileVersion(FPDF_DOCUMENT doc,
 
   const CPDF_Dictionary* root_dict = document->GetRoot();
   if (root_dict) {
-    ByteString version = root_dict->GetNameFor("Version");
+    ByteString version = root_dict->GetNameFor(pdfium::catalog::kVersion);
     if (!version.IsEmpty()) {
       // Check for valid PDF version format "X.Y"
       const bool has_valid_length = version.GetLength() == 3;
@@ -751,7 +774,7 @@ RetainPtr<CPDF_Page> NewPage(CPDF_Document* doc, int page_index) {
       doc->GetPageDictionary(page_index);
   RetainPtr<CPDF_Dictionary> dict =
       pdfium::WrapRetain(const_cast<CPDF_Dictionary*>(const_dict.Get()));
-  if (!dict) {
+  if (!CPDF_Document::IsPageTreeLeaf(dict.Get())) {
     return nullptr;
   }
 
@@ -1093,7 +1116,7 @@ void RenderBitmap(CFX_RenderDevice* device,
 
   dest->Clear(0xffffffff);
   dest->CompositeBitmap(0, 0, size_x_bm, size_y_bm, std::move(source), 0, 0,
-                        BlendMode::kNormal, nullptr, false);
+                        BlendMode::kNormal);
 
   if (device->GetDeviceType() == DeviceType::kPrinter) {
     device->StretchDIBits(std::move(dest), mask_area.left, mask_area.top,
@@ -1131,15 +1154,18 @@ FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV FPDF_RenderPage(HDC dc,
   // individually is inefficient and unlikely to significantly improve spool
   // size.
   const bool bEnableImageMasks =
-      g_pdfium_print_mode == WindowsPrintMode::kEmfImageMasks;
+      CFX_GEModule::GetPrintMode() == WindowsPrintMode::kEmfImageMasks;
   const bool bNewBitmap = pPage->BackgroundAlphaNeeded() ||
                           (pPage->HasImageMask() && !bEnableImageMasks) ||
                           pPage->GetMaskBoundingBoxes().size() > 100;
   const bool bHasMask = pPage->HasImageMask() && !bNewBitmap;
   auto* render_data = CPDF_DocRenderData::FromDocument(pPage->GetDocument());
   if (!bNewBitmap && !bHasMask) {
-    context->device_ = std::make_unique<CPDF_WindowsRenderDevice>(
-        dc, render_data->GetPSFontTracker());
+    context->device_ = CFX_RenderDevice::CreateWithDriver(
+        CGdiDeviceDriver::CreateDriver(dc, render_data->GetPSFontTracker()));
+    if (!context->device_) {
+      return false;
+    }
     CPDFSDK_RenderPageWithContext(context, pPage, start_x, start_y, size_x,
                                   size_y, rotate, flags,
                                   /*color_scheme=*/nullptr,
@@ -1151,13 +1177,16 @@ FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV FPDF_RenderPage(HDC dc,
   if (!pBitmap->Create(size_x, size_y, FXDIB_Format::kBgra)) {
     return false;
   }
-  if (!CFX_DefaultRenderDevice::UseSkiaRenderer()) {
+#if defined(PDF_USE_SKIA)
+  if (!CFX_GEModule::IsSkiaRenderer()) {
     // Not needed by Skia. Call it for AGG to preserve pre-existing behavior.
     pBitmap->Clear(0x00ffffff);
   }
-
-  auto device = std::make_unique<CFX_DefaultRenderDevice>();
-  device->Attach(pBitmap);
+#endif
+  auto device = CFX_RenderDevice::CreateForBitmap(pBitmap);
+  if (!device) {
+    return false;
+  }
   context->device_ = std::move(device);
   if (bHasMask) {
     context->options_ = std::make_unique<CPDF_RenderOptions>();
@@ -1170,22 +1199,27 @@ FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV FPDF_RenderPage(HDC dc,
                                 /*pause=*/nullptr);
 
   if (!bHasMask) {
-    CPDF_WindowsRenderDevice win_dc(dc, render_data->GetPSFontTracker());
+    std::unique_ptr<CFX_RenderDevice> win_dc =
+        CFX_RenderDevice::CreateWithDriver(CGdiDeviceDriver::CreateDriver(
+            dc, render_data->GetPSFontTracker()));
+    if (!win_dc) {
+      return false;
+    }
     bool bitsStretched = false;
-    if (win_dc.GetDeviceType() == DeviceType::kPrinter) {
+    if (win_dc->GetDeviceType() == DeviceType::kPrinter) {
       auto dest_bitmap = pdfium::MakeRetain<CFX_DIBitmap>();
       if (dest_bitmap->Create(size_x, size_y, FXDIB_Format::kBgrx)) {
         std::ranges::fill(dest_bitmap->GetWritableBuffer().first(
                               pBitmap->GetPitch() * size_y),
                           -1);
         dest_bitmap->CompositeBitmap(0, 0, size_x, size_y, pBitmap, 0, 0,
-                                     BlendMode::kNormal, nullptr, false);
-        win_dc.StretchDIBits(std::move(dest_bitmap), 0, 0, size_x, size_y);
+                                     BlendMode::kNormal);
+        win_dc->StretchDIBits(std::move(dest_bitmap), 0, 0, size_x, size_y);
         bitsStretched = true;
       }
     }
     if (!bitsStretched) {
-      win_dc.SetDIBits(std::move(pBitmap), 0, 0);
+      win_dc->SetDIBits(std::move(pBitmap), 0, 0);
     }
     return true;
   }
@@ -1207,8 +1241,11 @@ FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV FPDF_RenderPage(HDC dc,
   owned_context = std::make_unique<CPDF_PageRenderContext>();
   context = owned_context.get();
   pPage->SetRenderContext(std::move(owned_context));
-  context->device_ = std::make_unique<CPDF_WindowsRenderDevice>(
-      dc, render_data->GetPSFontTracker());
+  context->device_ = CFX_RenderDevice::CreateWithDriver(
+      CGdiDeviceDriver::CreateDriver(dc, render_data->GetPSFontTracker()));
+  if (!context->device_) {
+    return false;
+  }
   context->options_ = std::make_unique<CPDF_RenderOptions>();
   context->options_->GetOptions().bBreakForMasks = true;
 
@@ -1261,9 +1298,12 @@ FPDF_EXPORT void FPDF_CALLCONV FPDF_RenderPageBitmap(FPDF_BITMAP bitmap,
 #if defined(PDF_USE_SKIA)
   CFX_DIBitmap::ScopedPremultiplier scoped_premultiplier(pBitmap);
 #endif
-  auto device = std::make_unique<CFX_DefaultRenderDevice>();
-  device->AttachWithRgbByteOrder(std::move(pBitmap),
-                                 !!(flags & FPDF_REVERSE_BYTE_ORDER));
+  auto device = CFX_RenderDevice::CreateForBitmap(
+      std::move(pBitmap), /*backdrop_bitmap=*/nullptr,
+      !!(flags & FPDF_REVERSE_BYTE_ORDER));
+  if (!device) {
+    return;
+  }
   context->device_ = std::move(device);
 
   CPDFSDK_RenderPageWithContext(context, pPage, start_x, start_y, size_x,
@@ -1299,9 +1339,12 @@ FPDF_RenderPageBitmapWithMatrix(FPDF_BITMAP bitmap,
 #if defined(PDF_USE_SKIA)
   CFX_DIBitmap::ScopedPremultiplier scoped_premultiplier(pBitmap);
 #endif
-  auto device = std::make_unique<CFX_DefaultRenderDevice>();
-  device->AttachWithRgbByteOrder(std::move(pBitmap),
-                                 !!(flags & FPDF_REVERSE_BYTE_ORDER));
+  auto device = CFX_RenderDevice::CreateForBitmap(
+      std::move(pBitmap), /*backdrop_bitmap=*/nullptr,
+      !!(flags & FPDF_REVERSE_BYTE_ORDER));
+  if (!device) {
+    return;
+  }
   context->device_ = std::move(device);
 
   CFX_FloatRect clipping_rect;
@@ -1379,9 +1422,12 @@ EPDF_RenderAnnotBitmap(FPDF_BITMAP bitmap,
   CFX_DIBitmap::ScopedPremultiplier scoped(pBitmap);
 #endif
 
-  auto device = std::make_unique<CFX_DefaultRenderDevice>();
-  device->AttachWithRgbByteOrder(std::move(pBitmap),
-                                 !!(flags & FPDF_REVERSE_BYTE_ORDER));
+  auto device = CFX_RenderDevice::CreateForBitmap(
+      std::move(pBitmap), /*backdrop_bitmap=*/nullptr,
+      !!(flags & FPDF_REVERSE_BYTE_ORDER));
+  if (!device) {
+    return false;
+  }
 
   //   CTM = DisplayMatrix * userMatrix * Translate(bbox.left, bbox.bottom)
   CFX_Matrix ctm = pPage->GetDisplayMatrix();
@@ -1490,9 +1536,12 @@ EPDF_RenderAnnotBitmapUnrotated(FPDF_BITMAP bitmap,
   CFX_DIBitmap::ScopedPremultiplier scoped(pBitmap);
 #endif
 
-  auto device = std::make_unique<CFX_DefaultRenderDevice>();
-  device->AttachWithRgbByteOrder(std::move(pBitmap),
-                                 !!(flags & FPDF_REVERSE_BYTE_ORDER));
+  auto device = CFX_RenderDevice::CreateForBitmap(
+      std::move(pBitmap), /*backdrop_bitmap=*/nullptr,
+      !!(flags & FPDF_REVERSE_BYTE_ORDER));
+  if (!device) {
+    return false;
+  }
 
   // Render the AP form with our custom matrix (no AP Matrix distortion).
   CPDF_RenderContext context(pDoc,
@@ -1549,8 +1598,8 @@ FPDF_EXPORT void FPDF_CALLCONV FPDF_RenderPageSkia(FPDF_SKIA_CANVAS canvas,
   CPDF_Page::RenderContextClearer clearer(cpdf_page);
   cpdf_page->SetRenderContext(std::move(owned_context));
 
-  auto device = std::make_unique<CFX_DefaultRenderDevice>();
-  if (!device->AttachCanvas(*sk_canvas)) {
+  auto device = CFX_RenderDevice::CreateForSkiaCanvas(*sk_canvas);
+  if (!device) {
     return;
   }
   context->device_ = std::move(device);
@@ -1706,8 +1755,8 @@ FPDF_EXPORT int FPDF_CALLCONV FPDFBitmap_GetFormat(FPDF_BITMAP bitmap) {
       return FPDFBitmap_BGRA;
 #if defined(PDF_USE_SKIA)
     case FXDIB_Format::kBgraPremul:
-      return CFX_DefaultRenderDevice::UseSkiaRenderer() ? FPDFBitmap_BGRA_Premul
-                                                        : FPDFBitmap_Unknown;
+      return CFX_GEModule::IsSkiaRenderer() ? FPDFBitmap_BGRA_Premul
+                                            : FPDFBitmap_Unknown;
 #endif
     default:
       return FPDFBitmap_Unknown;
@@ -1744,21 +1793,24 @@ FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV FPDFBitmap_FillRect(FPDF_BITMAP bitmap,
     color |= 0xFF000000;
   }
 
-  // Let CFX_DefaultRenderDevice handle the 8-bit case.
+  // Let CFX_RenderDevice handle the 8-bit case.
   const int bpp = pBitmap->GetBPP();
   if (bpp == 8) {
-    CFX_DefaultRenderDevice device;
-    device.Attach(std::move(pBitmap));
-    return device.FillRect(fill_rect, static_cast<uint32_t>(color));
+    std::unique_ptr<CFX_RenderDevice> device =
+        CFX_RenderDevice::CreateForBitmap(std::move(pBitmap));
+    if (!device) {
+      return false;
+    }
+    return device->FillRect(fill_rect, static_cast<uint32_t>(color));
   }
 
-  // Handle filling 24/32-bit bitmaps directly without CFX_DefaultRenderDevice.
-  // When CFX_DefaultRenderDevice is using Skia, this avoids extra work to
+  // Handle filling 24/32-bit bitmaps directly without CFX_RenderDevice.
+  // When CFX_RenderDevice is using Skia, this avoids extra work to
   // change `pBitmap` to be premultiplied and back, or extra work to change
   // `pBitmap` to 32 BPP and back.
   fill_rect.Intersect(FX_RECT(0, 0, pBitmap->GetWidth(), pBitmap->GetHeight()));
   if (fill_rect.IsEmpty()) {
-    // CFX_DefaultRenderDevice treats this as success. Match that.
+    // CFX_RenderDevice treats this as success. Match that.
     return true;
   }
 
@@ -1849,7 +1901,7 @@ FPDF_GetPageSizeByIndexF(FPDF_DOCUMENT document,
       doc->GetPageDictionary(page_index);
   RetainPtr<CPDF_Dictionary> dict =
       pdfium::WrapRetain(const_cast<CPDF_Dictionary*>(const_dict.Get()));
-  if (!dict) {
+  if (!CPDF_Document::IsPageTreeLeaf(dict.Get())) {
     return false;
   }
 
@@ -2196,7 +2248,8 @@ FPDF_CountNamedDests(FPDF_DOCUMENT document) {
   // EmbedPDF(reads-dont-write): read the name tree without mutable getters.
   auto name_tree = CPDF_NameTree::CreateForReading(doc, "Dests");
   FX_SAFE_UINT32 count = name_tree ? name_tree->GetCount() : 0;
-  RetainPtr<const CPDF_Dictionary> pOldStyleDests = pRoot->GetDictFor("Dests");
+  RetainPtr<const CPDF_Dictionary> pOldStyleDests =
+      pRoot->GetDictFor(pdfium::catalog::kDests);
   if (pOldStyleDests) {
     count += pOldStyleDests->size();
   }
@@ -2232,11 +2285,7 @@ FPDF_EXPORT const char* FPDF_CALLCONV FPDF_GetRecommendedV8Flags() {
 }
 
 FPDF_EXPORT void* FPDF_CALLCONV FPDF_GetArrayBufferAllocatorSharedInstance() {
-  // Deliberately leaked. This allocator is used outside of the library
-  // initialization / destruction lifecycle, and the caller does not take
-  // ownership of the object. Thus there is no existing way to delete this.
-  static auto* s_allocator = new CFX_V8ArrayBufferAllocator();
-  return s_allocator;
+  return CFX_V8ArrayBufferAllocator::GetSharedInstance();
 }
 #endif  // PDF_ENABLE_V8
 
@@ -2328,7 +2377,8 @@ FPDF_EXPORT FPDF_DEST FPDF_CALLCONV FPDF_GetNamedDest(FPDF_DOCUMENT document,
   if (static_cast<size_t>(index) >= name_tree_count) {
     // If |index| is out of bounds, then try to retrieve the Nth old style named
     // destination. Where N is 0-indexed, with N = index - name_tree_count.
-    RetainPtr<const CPDF_Dictionary> pDest = pRoot->GetDictFor("Dests");
+    RetainPtr<const CPDF_Dictionary> pDest =
+        pRoot->GetDictFor(pdfium::catalog::kDests);
     if (!pDest) {
       return nullptr;
     }
@@ -2344,9 +2394,9 @@ FPDF_EXPORT FPDF_DEST FPDF_CALLCONV FPDF_GetNamedDest(FPDF_DOCUMENT document,
     ByteStringView bsName;
     CPDF_DictionaryLocker locker(pDest);
     for (const auto& it : locker) {
-      bsName = it.first.AsStringView();
-      pDestObj = it.second;
       if (i == index) {
+        bsName = it.first.AsStringView();
+        pDestObj = it.second->GetDirect();
         break;
       }
       i++;

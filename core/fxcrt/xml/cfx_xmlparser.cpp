@@ -85,8 +85,8 @@ CFX_XMLParser::~CFX_XMLParser() = default;
 
 std::unique_ptr<CFX_XMLDocument> CFX_XMLParser::Parse() {
   auto doc = std::make_unique<CFX_XMLDocument>();
-  AutoRestorer<UnownedPtr<CFX_XMLNode>> restorer(&current_node_);
-  current_node_ = doc->GetRoot();
+  AutoRestorer<UnownedPtr<CFX_XMLNode>> restorer(&current_node_,
+                                                 doc->GetRoot());
   if (!DoSyntaxParse(doc.get())) {
     return nullptr;
   }
@@ -501,7 +501,7 @@ void CFX_XMLParser::ProcessTextChar(wchar_t character) {
 
     size_t iLen = csEntity.GetLength();
     if (iLen > 0) {
-      if (csEntity[0] == L'#') {
+      if (csEntity.Front() == L'#') {
         uint32_t ch = 0;
         if (iLen > 1 && csEntity[1] == L'x') {
           for (size_t i = 2; i < iLen; i++) {

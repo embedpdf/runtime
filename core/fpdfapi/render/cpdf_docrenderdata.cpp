@@ -55,12 +55,6 @@ RetainPtr<CPDF_Type3Cache> CPDF_DocRenderData::GetCachedType3(
     return pdfium::WrapRetain(it->second.Get());
   }
 
-  // EmbedPDF(layer-seam): an unpromoted base font uses the base's cache.
-  if (fallback_ && font->GetFontDictObjNum() != 0 &&
-      !GetDocument()->IsObjectPromoted(font->GetFontDictObjNum())) {
-    return fallback_->GetCachedType3(font);
-  }
-
   auto cache = pdfium::MakeRetain<CPDF_Type3Cache>(font);
   type3_face_map_[font].Reset(cache.Get());
   return cache;
@@ -127,8 +121,8 @@ RetainPtr<CPDF_TransferFunc> CPDF_DocRenderData::CreateTransferFunc(
     }
 
     for (uint32_t i = 0; i < 3; ++i) {
-      pFuncs[2 - i] = CPDF_Function::Load(pArray->GetDirectObjectAt(i));
-      if (!pFuncs[2 - i]) {
+      pFuncs[i] = CPDF_Function::Load(pArray->GetDirectObjectAt(i));
+      if (!pFuncs[i]) {
         return nullptr;
       }
     }
@@ -161,7 +155,7 @@ RetainPtr<CPDF_TransferFunc> CPDF_DocRenderData::CreateTransferFunc(
           continue;
         }
         pFuncs[i]->Call(pdfium::span_from_ref(input), output);
-        size_t o = FXSYS_roundf(output[0] * 255);
+        uint8_t o = std::clamp(FXSYS_roundf(output[0] * 255.0f), 0, 255);
         if (o != v) {
           bIdentity = false;
         }
@@ -174,7 +168,7 @@ RetainPtr<CPDF_TransferFunc> CPDF_DocRenderData::CreateTransferFunc(
       if (pFuncs[0]->OutputCount() <= kMaxOutputs) {
         pFuncs[0]->Call(pdfium::span_from_ref(input), output);
       }
-      size_t o = FXSYS_roundf(output[0] * 255);
+      uint8_t o = std::clamp(FXSYS_roundf(output[0] * 255.0f), 0, 255);
       if (o != v) {
         bIdentity = false;
       }

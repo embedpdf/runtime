@@ -15,11 +15,11 @@
 #include "core/fxcrt/retain_ptr.h"
 #include "core/fxcrt/unowned_ptr.h"
 #include "core/fxge/dib/fx_dib.h"
+#include "core/fxge/renderdevicedriver_iface.h"
 
-class CFX_AggImageRenderer;
 class CFX_DIBBase;
 class CFX_DIBitmap;
-class CFX_DefaultRenderDevice;
+class CFX_RenderDevice;
 class CPDF_ImageLoader;
 class CPDF_ImageObject;
 class CPDF_Pattern;
@@ -77,7 +77,7 @@ class CPDF_ImageRenderer {
   CFX_Matrix GetDrawMatrix(const FX_RECT& rect) const;
   // Returns the mask, or nullptr if the mask could not be created.
   RetainPtr<const CFX_DIBitmap> CalculateDrawImage(
-      CFX_DefaultRenderDevice& bitmap_device,
+      CFX_RenderDevice* bitmap_device,
       RetainPtr<CFX_DIBBase> pDIBBase,
       const CFX_Matrix& mtNewMatrix,
       const FX_RECT& rect) const;
@@ -99,7 +99,7 @@ class CPDF_ImageRenderer {
 #if BUILDFLAG(IS_WIN)
   std::unique_ptr<CFX_ImageTransformer> transformer_;
 #endif
-  std::unique_ptr<CFX_AggImageRenderer> device_handle_;
+  std::unique_ptr<RenderDeviceDriverIface::Continuation> continuation_;
   Mode mode_ = Mode::kNone;
   float alpha_ = 0.0f;
   BlendMode blend_type_ = BlendMode::kNormal;

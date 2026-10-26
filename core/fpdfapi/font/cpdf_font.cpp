@@ -32,8 +32,8 @@
 #include "core/fxcrt/fx_safe_types.h"
 #include "core/fxcrt/numerics/safe_conversions.h"
 #include "core/fxcrt/stl_util.h"
-#include "core/fxge/cfx_fontmapper.h"
 #include "core/fxge/cfx_fontregistry.h"
+#include "core/fxge/cfx_standardfont.h"
 #include "core/fxge/cfx_substfont.h"
 #include "core/fxge/fx_font.h"
 #include "core/fxge/fx_fontencoding.h"
@@ -62,31 +62,7 @@ CPDF_Font::~CPDF_Font() {
   }
 }
 
-bool CPDF_Font::IsType1Font() const {
-  return false;
-}
-
-bool CPDF_Font::IsTrueTypeFont() const {
-  return false;
-}
-
-bool CPDF_Font::IsType3Font() const {
-  return false;
-}
-
-bool CPDF_Font::IsCIDFont() const {
-  return false;
-}
-
-const CPDF_Type1Font* CPDF_Font::AsType1Font() const {
-  return nullptr;
-}
-
 CPDF_Type1Font* CPDF_Font::AsType1Font() {
-  return nullptr;
-}
-
-const CPDF_TrueTypeFont* CPDF_Font::AsTrueTypeFont() const {
   return nullptr;
 }
 
@@ -94,15 +70,7 @@ CPDF_TrueTypeFont* CPDF_Font::AsTrueTypeFont() {
   return nullptr;
 }
 
-const CPDF_Type3Font* CPDF_Font::AsType3Font() const {
-  return nullptr;
-}
-
 CPDF_Type3Font* CPDF_Font::AsType3Font() {
-  return nullptr;
-}
-
-const CPDF_CIDFont* CPDF_Font::AsCIDFont() const {
   return nullptr;
 }
 
@@ -170,6 +138,14 @@ void CPDF_Font::LoadFontDescriptor(const CPDF_Dictionary* font_desc) {
     stem_v_ = font_desc->GetIntegerFor("StemV");
     bExistStemV = true;
   }
+  bool has_valid_font_weight = false;
+  if (font_desc->KeyExist("FontWeight")) {
+    int font_weight = font_desc->GetIntegerFor("FontWeight");
+    has_valid_font_weight = font_weight > 0;
+    if (has_valid_font_weight) {
+      font_weight_ = font_weight;
+    }
+  }
   bool bExistAscent = false;
   if (font_desc->KeyExist("Ascent")) {
     ascent_ = font_desc->GetIntegerFor("Ascent");
@@ -185,8 +161,8 @@ void CPDF_Font::LoadFontDescriptor(const CPDF_Dictionary* font_desc) {
     bExistCapHeight = true;
   }
   if (bExistItalicAngle && bExistAscent && bExistCapHeight && bExistDescent &&
-      bExistStemV) {
-    flags_ |= FXFONT_USEEXTERNATTR;
+      (bExistStemV || has_valid_font_weight)) {
+    flags_ |= kFontUseExternAttr;
   }
   if (descent_ > 10) {
     descent_ = -descent_;
@@ -216,7 +192,8 @@ void CPDF_Font::LoadFontDescriptor(const CPDF_Dictionary* font_desc) {
     return;
   }
 
-  if (!font_.LoadEmbedded(font_file_->GetSpan(), IsVertWriting(), key)) {
+  if (!font_.LoadFaceZeroFromSpan(font_file_->GetSpan(), IsVertWriting(),
+                                  key)) {
     document_->MaybePurgeFontFileStreamAcc(std::move(font_file_));
   }
 }
@@ -262,6 +239,32 @@ void CPDF_Font::CheckFontMetrics() {
   }
 }
 
+bool CPDF_Font::ShouldApplyGlyphSpacingHeuristic(
+    const CFX_Font* current_font,
+    bool is_vertical_writing) const {
+  if (is_vertical_writing || IsEmbedded() || !HasFontWidths()) {
+    return false;
+  }
+
+  // Skip if we loaded a standard alternate font.
+  // example: Helvetica -> Arial
+  ByteString base_font_name = GetBaseFontName();
+  base_font_name.MakeLower();
+
+  std::optional<CFX_StandardFont::Index> base_font_index =
+      CFX_StandardFont::GetStandardFontIndex(base_font_name);
+  if (base_font_index.has_value()) {
+    return false;
+  }
+
+  CFX_SubstFont* subst_font = current_font->GetSubstFont();
+  if (subst_font->IsBuiltInGenericFont()) {
+    return false;
+  }
+
+  return !subst_font->IsActualFontLoaded(base_font_name);
+}
+
 void CPDF_Font::LoadUnicodeMap() const {
   to_unicode_loaded_ = true;
   RetainPtr<const CPDF_Stream> pStream = font_dict_->GetStreamFor("ToUnicode");
@@ -276,7 +279,7 @@ int CPDF_Font::GetStringWidth(ByteStringView pString) {
   size_t offset = 0;
   int width = 0;
   while (offset < pString.GetLength()) {
-    width += GetCharWidthF(GetNextChar(pString, &offset));
+    width += GetCharWidth(GetNextChar(pString, &offset));
   }
   return width;
 }
@@ -285,11 +288,12 @@ int CPDF_Font::GetStringWidth(ByteStringView pString) {
 RetainPtr<CPDF_Font> CPDF_Font::GetStockFont(CPDF_Document* doc,
                                              ByteStringView name) {
   ByteString fontname(name);
-  std::optional<CFX_FontMapper::StandardFont> font_id =
-      CFX_FontMapper::GetStandardFontName(&fontname);
+  std::optional<CFX_StandardFont::Index> font_id =
+      CFX_StandardFont::GetStandardFontIndex(fontname);
   if (!font_id.has_value()) {
     return nullptr;
   }
+  fontname = CFX_StandardFont::GetCanonicalFontName(font_id.value());
 
   auto* font_globals = CPDF_FontGlobals::GetInstance();
   RetainPtr<CPDF_Font> font = font_globals->Find(doc, font_id.value());
@@ -363,12 +367,147 @@ bool CPDF_Font::IsStandardFont() const {
   return AsType1Font()->IsBase14Font();
 }
 
+bool CPDF_Font::ShouldUseFont(uint32_t glyph_id, bool has_to_unicode) const {
+  // Check for invalid glyph ID.
+  if (glyph_id == static_cast<uint32_t>(-1)) {
+    return false;
+  }
+  if (IsEmbedded()) {
+    return true;
+  }
+  if (!IsTrueTypeFont()) {
+    return true;
+  }
+
+  // For non-embedded TrueType fonts, a glyph ID of 0 may be invalid.
+  //
+  // When a "ToUnicode" entry exists in the font dictionary, it indicates
+  // a "ToUnicode" mapping file is used to convert from CIDs (which
+  // begins at decimal 0) to Unicode code. (See ToUnicode Mapping File
+  // Tutorial - Adobe
+  // https://www.adobe.com/content/dam/acom/en/devnet/acrobat/pdfs/5411.ToUnicode.pdf
+  // and
+  // https://www.freetype.org/freetype2/docs/tutorial/step1.html#section-6)
+  return glyph_id != 0 || has_to_unicode;
+}
+
+std::vector<TextCharPos> CPDF_Font::GetCharPosList(
+    pdfium::span<const uint32_t> char_codes,
+    pdfium::span<const float> char_pos,
+    float font_size) {
+  std::vector<TextCharPos> results;
+  results.reserve(char_codes.size());
+
+  CPDF_CIDFont* cid_font = AsCIDFont();
+  bool is_vertical_writing = cid_font && cid_font->IsVertWriting();
+  bool has_to_unicode = !!GetFontDict()->GetStreamFor("ToUnicode");
+  for (size_t i = 0; i < char_codes.size(); ++i) {
+    uint32_t char_code = char_codes[i];
+    if (char_code == static_cast<uint32_t>(-1)) {
+      continue;
+    }
+
+    bool is_vertical_glyph = false;
+    results.emplace_back();
+    TextCharPos& text_char_pos = results.back();
+    if (cid_font) {
+      text_char_pos.is_cid_font_ = true;
+    }
+    WideString unicode = UnicodeFromCharCode(char_code);
+    text_char_pos.unicode_ = !unicode.IsEmpty() ? unicode.Front() : char_code;
+    text_char_pos.glyph_index_ =
+        GlyphFromCharCode(char_code, &is_vertical_glyph);
+    uint32_t glyph_id = text_char_pos.glyph_index_;
+#if BUILDFLAG(IS_APPLE)
+    text_char_pos.ext_gid_ = GlyphFromCharCodeExt(char_code);
+    glyph_id = text_char_pos.ext_gid_ != static_cast<uint32_t>(-1)
+                   ? text_char_pos.ext_gid_
+                   : text_char_pos.glyph_index_;
+#endif
+    CFX_Font* current_font;
+    if (ShouldUseFont(glyph_id, has_to_unicode)) {
+      current_font = GetFont();
+      text_char_pos.fallback_font_position_ = -1;
+    } else {
+      int32_t fallback_position = FallbackFontFromCharcode(char_code);
+      current_font = GetFontFallback(fallback_position);
+      text_char_pos.fallback_font_position_ = fallback_position;
+      text_char_pos.glyph_index_ =
+          FallbackGlyphFromCharcode(fallback_position, char_code);
+#if BUILDFLAG(IS_APPLE)
+      text_char_pos.ext_gid_ = text_char_pos.glyph_index_;
+#endif
+    }
+
+    if (!IsEmbedded() && !IsCIDFont()) {
+      text_char_pos.font_char_width_ = GetCharWidth(char_code);
+    } else {
+      text_char_pos.font_char_width_ = 0;
+    }
+
+    text_char_pos.origin_ = CFX_PointF(char_pos[i], 0);
+    text_char_pos.glyph_adjust_ = false;
+
+    float scaling_factor = 1.0f;
+    if (ShouldApplyGlyphSpacingHeuristic(current_font, is_vertical_writing)) {
+      int pdf_glyph_width = GetCharWidth(char_code);
+      int font_glyph_width =
+          current_font->GetGlyphWidth(text_char_pos.glyph_index_);
+      if (font_glyph_width && pdf_glyph_width > font_glyph_width + 1) {
+        // Move the initial x position by half of the excess (transformed to
+        // text space coordinates).
+        text_char_pos.origin_.x +=
+            (pdf_glyph_width - font_glyph_width) * font_size / 2000.0f;
+      } else if (pdf_glyph_width && font_glyph_width &&
+                 pdf_glyph_width < font_glyph_width) {
+        scaling_factor = static_cast<float>(pdf_glyph_width) / font_glyph_width;
+        text_char_pos.adjust_matrix_[0] = scaling_factor;
+        text_char_pos.adjust_matrix_[1] = 0.0f;
+        text_char_pos.adjust_matrix_[2] = 0.0f;
+        text_char_pos.adjust_matrix_[3] = 1.0f;
+        text_char_pos.glyph_adjust_ = true;
+      }
+    }
+    if (!cid_font) {
+      continue;
+    }
+
+    uint16_t cid = cid_font->CIDFromCharCode(char_code);
+    if (is_vertical_writing) {
+      text_char_pos.origin_ = CFX_PointF(0, text_char_pos.origin_.x);
+
+      CFX_Point16 vertical_origin = cid_font->GetVertOrigin(cid);
+      text_char_pos.origin_.x -= font_size * vertical_origin.x / 1000;
+      text_char_pos.origin_.y -= font_size * vertical_origin.y / 1000;
+    }
+
+    const CIDTransform* cid_transform = cid_font->GetCIDTransform(cid);
+    if (cid_transform && !is_vertical_glyph) {
+      text_char_pos.adjust_matrix_[0] =
+          cid_font->CIDTransformToFloat(cid_transform->a) * scaling_factor;
+      text_char_pos.adjust_matrix_[1] =
+          cid_font->CIDTransformToFloat(cid_transform->b) * scaling_factor;
+      text_char_pos.adjust_matrix_[2] =
+          cid_font->CIDTransformToFloat(cid_transform->c);
+      text_char_pos.adjust_matrix_[3] =
+          cid_font->CIDTransformToFloat(cid_transform->d);
+      text_char_pos.origin_.x +=
+          cid_font->CIDTransformToFloat(cid_transform->e) * font_size;
+      text_char_pos.origin_.y +=
+          cid_font->CIDTransformToFloat(cid_transform->f) * font_size;
+      text_char_pos.glyph_adjust_ = true;
+    }
+  }
+
+  return results;
+}
+
 std::optional<FX_Charset> CPDF_Font::GetSubstFontCharset() const {
-  CFX_SubstFont* font = font_.GetSubstFont();
+  const CFX_SubstFont* font = font_.GetSubstFont();
   if (!font) {
     return std::nullopt;
   }
-  return font->charset_;
+  return font->GetCharset();
 }
 
 // static
@@ -426,9 +565,9 @@ uint32_t CPDF_Font::FallbackFontFromCharcode(uint32_t charcode) {
 
   if (font_fallbacks_.empty()) {
     auto fallback_font = std::make_unique<CFX_Font>();
-    fallback_font->LoadSubst("Arial", IsTrueTypeFont(), flags_, weight,
-                             italic_angle_, FX_CodePage::kDefANSI,
-                             IsVertWriting());
+    fallback_font->LoadSubstFace("Arial", IsTrueTypeFont(), flags_, weight,
+                                 italic_angle_, FX_CodePage::kDefANSI,
+                                 IsVertWriting());
     font_fallbacks_.push_back(std::move(fallback_font));
   }
   return 0;
@@ -440,8 +579,8 @@ int CPDF_Font::FallbackGlyphFromCharcode(int fallbackFont, uint32_t charcode) {
   }
 
   WideString str = UnicodeFromCharCode(charcode);
-  uint32_t unicode = !str.IsEmpty() ? str[0] : charcode;
-  int glyph = font_fallbacks_[fallbackFont]->GetFace()->GetCharIndex(unicode);
+  uint32_t unicode = !str.IsEmpty() ? str.Front() : charcode;
+  int glyph = font_fallbacks_[fallbackFont]->GetCharIndex(unicode);
   if (glyph == 0) {
     return -1;
   }
@@ -461,12 +600,13 @@ bool CPDF_Font::UseTTCharmapUnicode(const RetainPtr<CFX_Face>& face) {
   bool charmap_unicode_found = false;
   bool charmap_mssymbol_found = false;
   for (size_t i = 0; i < face->GetCharMapCount(); i++) {
-    const CFX_Face::CharMapId charmap_id = face->GetCharMapIdByIndex(i);
-    if (charmap_id == CFX_Face::kWindowsUnicodeCmapId) {
+    const CFX_Face::CharMapIdPair charmap_id_pair =
+        face->GetCharMapIdPairByIndex(i);
+    if (charmap_id_pair == CFX_Face::kWindowsUnicodeCharMapIdPair) {
       face->SetCharMapByIndex(i);
       return true;
     }
-    if (charmap_id == CFX_Face::kWindowsSymbolCmapId) {
+    if (charmap_id_pair == CFX_Face::kWindowsSymbolCharMapIdPair) {
       charmap_mssymbol_found = true;
       continue;
     }
@@ -485,9 +625,9 @@ bool CPDF_Font::UseTTCharmapUnicode(const RetainPtr<CFX_Face>& face) {
 
 // static
 bool CPDF_Font::UseTTCharmap(const RetainPtr<CFX_Face>& face,
-                             const CFX_Face::CharMapId& cmap_id) {
+                             const CFX_Face::CharMapIdPair& charmap_id_pair) {
   for (size_t i = 0; i < face->GetCharMapCount(); i++) {
-    if (face->GetCharMapIdByIndex(i) == cmap_id) {
+    if (face->GetCharMapIdPairByIndex(i) == charmap_id_pair) {
       face->SetCharMapByIndex(i);
       return true;
     }
@@ -496,6 +636,9 @@ bool CPDF_Font::UseTTCharmap(const RetainPtr<CFX_Face>& face,
 }
 
 std::optional<int> CPDF_Font::GetFontWeight() const {
+  if (font_weight_.has_value()) {
+    return font_weight_.value();
+  }
   FX_SAFE_INT32 safe_stem_v(stem_v_);
   if (stem_v_ < 140) {
     safe_stem_v *= 5;

@@ -370,7 +370,7 @@ bool CPDF_RichTextWriter::Prepare(CPDF_Document* doc,
   const CPDF_Dictionary* root = doc->GetRoot();
   RetainPtr<const CPDF_Dictionary> acroform =
       root ? root->GetDictFor("AcroForm") : nullptr;
-  CFX_Color da_color(CFX_Color::Type::kRGB, 0, 0, 0);
+  CFX_Color da_color = CFX_Color::MakeRGB(0, 0, 0);
   {
     CPDF_DefaultAppearance da(annot_dict, acroform.Get());
     std::optional<CFX_Color> existing = da.GetColor();

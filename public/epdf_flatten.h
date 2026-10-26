@@ -12,7 +12,8 @@ extern "C" {
 #endif  // __cplusplus
 
 // EmbedPDF's additions to public/fpdf_flatten.h: flattening a page or its
-// annotations, and exporting annotations as a document.
+// annotations, exporting annotations as a document, and copying pages as they
+// draw (a print copy).
 
 // Per-annotation outcome of EPDFPage_FlattenAnnotations().
 // Painted into the page content and removed from /Annots.
@@ -29,8 +30,11 @@ extern "C" {
 // promoted before any mutation.
 //
 // Only annotations whose normal appearance was successfully added to page
-// content are removed. Hidden, usage-ineligible, popup, malformed, and
-// appearance-less annotations remain in /Annots. Flattened widgets are also
+// content are removed. Hidden, usage-ineligible, popup and malformed
+// annotations remain in /Annots, and so does one without a stored appearance
+// that the renderer doesn't draw from memory either. One the renderer draws
+// from memory is painted with that appearance, written into the document
+// with its fonts. Flattened widgets are also
 // detached from the AcroForm field tree; a separate logical field remains as
 // an unplaced field.
 //
@@ -98,6 +102,43 @@ FPDF_EXPORT FPDF_DOCUMENT FPDF_CALLCONV
 EPDFPage_ExportAnnotationsAsDocument(FPDF_PAGE page,
                                      FPDF_ANNOTATION* annots,
                                      int annot_count);
+
+// Which annotations EPDFDoc_ExportPagesFlattened() paints into the pages.
+// Every annotation that is not a form field: markup, links, stamps, ...
+#define EPDF_EXPORT_FLATTENED_ANNOTATIONS 0x1
+// Form field widgets, as filled.
+#define EPDF_EXPORT_FLATTENED_FORM_FIELDS 0x2
+
+// Experimental EmbedPDF Extension API.
+// Copy pages of |document| into a NEW document, each page as it draws for
+// |usage|: with FLAT_PRINT, a print copy.
+//
+// The annotations |flags| chooses that draw for |usage| are painted into the
+// page content, with the plan and placement of EPDFPage_Flatten(). Flattening
+// paints what the renderer draws, so an annotation without a stored
+// appearance is painted with the one the renderer builds in memory, from the
+// source document's form defaults and fonts.
+//
+// Nothing interactive is copied: no /Annots, no page actions (/AA), no
+// article beads, and none of the catalog (outline, form, document scripts).
+// Optional content keeps the state it has for |usage|: the copy's default
+// configuration turns off the groups that are off. The source is untouched.
+//
+//   document     - the source document.
+//   page_indices - the pages to copy, by index, in the copy's order.
+//   length       - number of entries; > 0.
+//   usage        - exactly one of the |FLAT_*| values.
+//   flags        - EPDF_EXPORT_FLATTENED_* bits; 0 copies the page content
+//                  alone.
+//
+// Returns a new document (the caller closes it with FPDF_CloseDocument()),
+// or NULL for invalid arguments or a copy that failed.
+FPDF_EXPORT FPDF_DOCUMENT FPDF_CALLCONV
+EPDFDoc_ExportPagesFlattened(FPDF_DOCUMENT document,
+                             const int* page_indices,
+                             unsigned long length,
+                             int usage,
+                             int flags);
 
 #ifdef __cplusplus
 }  // extern "C"

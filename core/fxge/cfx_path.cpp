@@ -22,6 +22,10 @@ bool IsRectPreTransform(const std::vector<CFX_Path::Point>& points) {
     return false;
   }
 
+  if (points.size() == 4 && !points[3].close_figure_) {
+    return false;
+  }
+
   if (points.size() == 5 && points[0].point_ != points[4].point_) {
     return false;
   }
@@ -68,44 +72,84 @@ CFX_FloatRect CreateRectFromPoints(const CFX_PointF& p1, const CFX_PointF& p2) {
 }
 
 bool PathPointsNeedNormalization(const std::vector<CFX_Path::Point>& points) {
-  return points.size() > 5;
+  return points.size() > 5 ||
+         (points.size() == 5 && points[0].point_ != points[4].point_);
+}
+
+// Returns whether `point` lies strictly between `prev` and `next` on a
+// horizontal or vertical line, so dropping it does not change the path shape.
+bool IsBetweenOnAxisAlignedLine(const CFX_PointF& prev,
+                                const CFX_PointF& point,
+                                const CFX_PointF& next) {
+  if (prev.y == point.y && point.y == next.y) {
+    return (prev.x < point.x && point.x < next.x) ||
+           (prev.x > point.x && point.x > next.x);
+  }
+  if (prev.x == point.x && point.x == next.x) {
+    return (prev.y < point.y && point.y < next.y) ||
+           (prev.y > point.y && point.y > next.y);
+  }
+  return false;
 }
 
 std::vector<CFX_Path::Point> GetNormalizedPoints(
     const std::vector<CFX_Path::Point>& points) {
   DCHECK(PathPointsNeedNormalization(points));
 
-  if (points[0].point_ != points.back().point_) {
+  const size_t expected_size = points[0].point_ == points.back().point_ ? 5 : 4;
+  if (expected_size == 4 && !points.back().close_figure_) {
     return {};
   }
 
   std::vector<CFX_Path::Point> normalized;
-  normalized.reserve(6);
+  normalized.reserve(expected_size);
   normalized.push_back(points[0]);
   for (auto it = points.begin() + 1; it != points.end(); ++it) {
-    // Exactly 5 points left. Stop normalizing and take what is left.
-    if (normalized.size() + std::distance(it, points.end()) == 5) {
+    // Exactly `expected_size` points left. Stop normalizing and take what is
+    // left.
+    if (normalized.size() + std::distance(it, points.end()) == expected_size) {
       std::copy(it, points.end(), std::back_inserter(normalized));
       break;
     }
 
-    // If the line does not move, skip this point.
     const auto& point = *it;
-    if (point.type_ == CFX_Path::Point::Type::kLine && !point.close_figure_ &&
-        !normalized.back().close_figure_ &&
-        point.point_ == normalized.back().point_) {
-      continue;
+    if (point.type_ == CFX_Path::Point::Type::kLine &&
+        !normalized.back().close_figure_) {
+      const auto next = std::next(it);
+      if (!point.close_figure_) {
+        // If the line does not move, skip this point.
+        if (point.point_ == normalized.back().point_) {
+          continue;
+        }
+
+        // If the line continues straight on along the same edge, skip this
+        // point. Some PDF generators emit a rectangle with an extra vertex in
+        // the middle of an edge.
+        if (next != points.end() &&
+            next->type_ == CFX_Path::Point::Type::kLine &&
+            IsBetweenOnAxisAlignedLine(normalized.back().point_, point.point_,
+                                       next->point_)) {
+          continue;
+        }
+      } else if (next == points.end()) {
+        if (point.point_ == normalized.back().point_ ||
+            IsBetweenOnAxisAlignedLine(normalized.back().point_, point.point_,
+                                       points[0].point_)) {
+          normalized.back().close_figure_ = true;
+          continue;
+        }
+      }
+    }
+
+    // Too many points. Not considered as a rectangle.
+    if (normalized.size() >= expected_size) {
+      return {};
     }
 
     normalized.push_back(point);
-
-    // Too many points. Not considered as a rectangle.
-    if (normalized.size() > 5) {
-      return {};
-    }
   }
 
-  DCHECK_EQ(5u, normalized.size());
+  DCHECK_EQ(expected_size, normalized.size());
   return normalized;
 }
 
@@ -430,6 +474,23 @@ bool CFX_Path::IsRect() const {
     return IsRectImpl(GetNormalizedPoints(points_));
   }
   return IsRectImpl(points_);
+}
+
+std::optional<CFX_PointF> CFX_Path::GetRectOppositeCorner() const {
+  bool do_normalize = PathPointsNeedNormalization(points_);
+  std::vector<Point> normalized;
+  if (do_normalize) {
+    normalized = GetNormalizedPoints(points_);
+  }
+  const std::vector<Point>& path_points = do_normalize ? normalized : points_;
+
+  if (!IsRectImpl(path_points)) {
+    return std::nullopt;
+  }
+
+  // GetNormalizedPoints() keeps the first point, so this is also the opposite
+  // corner of `points_[0]`.
+  return path_points[2].point_;
 }
 
 std::optional<CFX_FloatRect> CFX_Path::GetRect(const CFX_Matrix* matrix) const {

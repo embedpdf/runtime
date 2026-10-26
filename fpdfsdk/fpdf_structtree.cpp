@@ -112,6 +112,20 @@ FPDF_StructElement_GetActualText(FPDF_STRUCTELEMENT struct_element,
 }
 
 FPDF_EXPORT unsigned long FPDF_CALLCONV
+FPDF_StructElement_GetExpansion(FPDF_STRUCTELEMENT struct_element,
+                                void* buffer,
+                                unsigned long buflen) {
+  CPDF_StructElement* elem =
+      CPDFStructElementFromFPDFStructElement(struct_element);
+  if (!elem) {
+    return 0;
+  }
+  // SAFETY: required from caller.
+  return UNSAFE_BUFFERS(
+      WideStringToBuffer(elem->GetExpansion(), buffer, buflen));
+}
+
+FPDF_EXPORT unsigned long FPDF_CALLCONV
 FPDF_StructElement_GetID(FPDF_STRUCTELEMENT struct_element,
                          void* buffer,
                          unsigned long buflen) {
@@ -245,6 +259,21 @@ FPDF_StructElement_GetMarkedContentID(FPDF_STRUCTELEMENT struct_element) {
   }
   RetainPtr<const CPDF_Object> p = elem->GetK();
   return p && p->IsNumber() ? p->GetInteger() : -1;
+}
+
+FPDF_EXPORT unsigned long FPDF_CALLCONV
+FPDF_StructElement_GetRawType(FPDF_STRUCTELEMENT struct_element,
+                              FPDF_WCHAR* buffer,
+                              size_t buflen) {
+  CPDF_StructElement* elem =
+      CPDFStructElementFromFPDFStructElement(struct_element);
+  if (!elem) {
+    return 0;
+  }
+  // SAFETY: required from caller.
+  return UNSAFE_BUFFERS(WideStringToBuffer(
+      WideString::FromUTF8(elem->GetRawType().AsStringView()), buffer,
+      pdfium::checked_cast<unsigned long>(buflen)));
 }
 
 FPDF_EXPORT unsigned long FPDF_CALLCONV

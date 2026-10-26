@@ -22,6 +22,12 @@ case "$TARGET" in
     GN_TARGET_OS="emscripten"
     GN_TARGET_CPU="wasm"
     EXTRA_ARGS=$'\nis_clang=false\nuse_custom_libcxx=false'
+    # build/ reads the macOS SDK whenever the host is a Mac (gn_logs.gni), but
+    # PDFium's build_overrides/build.gni decides use_system_xcode only for mac
+    # and iOS targets.
+    if [[ "$(uname -s)" == "Darwin" ]]; then
+      EXTRA_ARGS+=$'\nuse_system_xcode=true'
+    fi
     ;;
   darwin-arm64)
     GN_TARGET_OS="mac"
@@ -52,7 +58,10 @@ case "$TARGET" in
   linuxmusl-arm64)
     GN_TARGET_OS="linux"
     GN_TARGET_CPU="arm64"
-    EXTRA_ARGS=$'\nis_musl=true\nis_clang=false\nuse_sysroot=false\nuse_custom_libcxx=false\nuse_custom_libcxx_for_host=false\nuse_glib=false'
+    # No libyuv: its arm64 sources use dot-product, SVE2 and SME instructions,
+    # and the musl GCC toolchain's assembler rejects them. PDFium keeps its own
+    # loops for pdf_use_libyuv=false.
+    EXTRA_ARGS=$'\nis_musl=true\nis_clang=false\nuse_sysroot=false\nuse_custom_libcxx=false\nuse_custom_libcxx_for_host=false\nuse_glib=false\npdf_use_libyuv=false'
     ;;
   win32-x64)
     GN_TARGET_OS="win"

@@ -7,6 +7,7 @@
 #include <memory>
 #include <utility>
 
+#include "constants/catalog.h"
 #include "core/fpdfapi/page/test_with_page_module.h"
 #include "core/fpdfapi/parser/cpdf_array.h"
 #include "core/fpdfapi/parser/cpdf_boolean.h"
@@ -90,7 +91,7 @@ class CPDF_TestDocumentForPages final : public CPDF_TestDocument {
         CreatePageTreeNode(std::move(allPages), this, kNumTestPages);
 
     SetRootForTesting(NewIndirect<CPDF_Dictionary>());
-    GetMutableRoot()->SetNewFor<CPDF_Reference>("Pages", this,
+    GetMutableRoot()->SetNewFor<CPDF_Reference>(pdfium::catalog::kPages, this,
                                                 pagesDict->GetObjNum());
     ResizePageListForTesting(kNumTestPages);
   }
@@ -116,7 +117,7 @@ class CPDF_TestDocumentWithPageWithoutPageNum final : public CPDF_TestDocument {
     RetainPtr<CPDF_Dictionary> pagesDict =
         CreatePageTreeNode(std::move(allPages), this, 3);
     SetRootForTesting(NewIndirect<CPDF_Dictionary>());
-    GetMutableRoot()->SetNewFor<CPDF_Reference>("Pages", this,
+    GetMutableRoot()->SetNewFor<CPDF_Reference>(pdfium::catalog::kPages, this,
                                                 pagesDict->GetObjNum());
     ResizePageListForTesting(3);
   }
@@ -141,7 +142,7 @@ class CPDF_TestDocPagesWithoutKids final : public CPDF_TestDocument {
     pagesDict->SetNewFor<CPDF_Number>("Count", 3);
     ResizePageListForTesting(10);
     SetRootForTesting(NewIndirect<CPDF_Dictionary>());
-    GetMutableRoot()->SetNewFor<CPDF_Reference>("Pages", this,
+    GetMutableRoot()->SetNewFor<CPDF_Reference>(pdfium::catalog::kPages, this,
                                                 pagesDict->GetObjNum());
   }
 };
@@ -299,11 +300,10 @@ TEST_F(DocumentTest, CountGreaterThanPageTree) {
 TEST_F(DocumentTest, PagesWithoutKids) {
   // Set up a document with Pages dict without kids, and Count = 3
   auto doc = std::make_unique<CPDF_TestDocPagesWithoutKids>();
-  EXPECT_TRUE(doc->GetPageDictionary(0));
-  // Test GetPage does not fetch pages out of range
-  for (int i = 1; i < 5; i++) {
+  // Since there are no Page nodes in the Page Tree, GetPageDictionary() will
+  // never return non-null.
+  for (int i = 0; i < 5; i++) {
     EXPECT_FALSE(doc->GetPageDictionary(i));
   }
-
-  EXPECT_TRUE(doc->GetPageDictionary(0));
+  EXPECT_FALSE(doc->GetPageDictionary(0));
 }

@@ -948,7 +948,8 @@ TEST_F(EPDFMeasureEmbedderTest, CaptionAppearanceGolden) {
   }
   auto bitmap = RenderPageWithFlags(page.get(), nullptr, FPDF_ANNOT);
   ASSERT_TRUE(bitmap);
-  CompareBitmapWithFuzzyExpectationSuffix(bitmap.get(), "measure_captions");
+  CompareBitmapWithExpectationSuffix(bitmap.get(), "measure_captions",
+                                     kFuzzyDiffOptions);
 }
 
 TEST_F(EPDFMeasureEmbedderTest,
@@ -959,7 +960,7 @@ TEST_F(EPDFMeasureEmbedderTest,
   } fonts;
   auto bytes =
       GetFileContents(PathService::GetThirdPartyFilePath(
-                          "harfbuzz-ng/src/perf/fonts/Roboto-Regular.ttf")
+                          "harfbuzz/src/perf/fonts/Roboto-Regular.ttf")
                           .c_str());
   ASSERT_FALSE(bytes.empty());
   auto id = EPDFFont_RegisterMemFont64("Roboto", 400, false, bytes.data(),

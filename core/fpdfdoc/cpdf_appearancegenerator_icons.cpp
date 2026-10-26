@@ -15,7 +15,7 @@
 
 #include "constants/annotation_common.h"
 #include "constants/form_fields.h"
-#include "core/fpdfapi/edit/cpdf_contentstream_write_utils.h"
+#include "core/fxcrt/stream_write_utils.h"
 #include "core/fpdfapi/font/cpdf_font.h"
 #include "core/fpdfapi/page/cpdf_docpagedata.h"
 #include "core/fpdfapi/parser/cpdf_array.h"
@@ -78,8 +78,8 @@ ByteString GetPopupContentsString(CPDF_Document* doc,
     return ByteString();
   }
 
-  ByteString color = GenerateColorAP(CFX_Color(CFX_Color::Type::kRGB, 0, 0, 0),
-                                     PaintOperation::kFill);
+  ByteString color =
+      GenerateColorAP(CFX_Color::MakeRGB(0, 0, 0), PaintOperation::kFill);
 
   return ByteString{"BT\n", color.AsStringView(), content.AsStringView(),
                     "ET\n", "Q\n"};
@@ -234,7 +234,7 @@ ByteString GenerateTextSymbolAP(const CFX_FloatRect& rect,
   fxcrt::ostringstream app_stream;
 
   // Read fill color from /C array; default to yellow.
-  CFX_Color fill_color(CFX_Color::Type::kRGB, 1, 1, 0);
+  CFX_Color fill_color = CFX_Color::MakeRGB(1, 1, 0);
   RetainPtr<const CPDF_Array> color_array =
       annot_dict.GetArrayFor(pdfium::annotation::kC);
   if (color_array) {
@@ -245,9 +245,8 @@ ByteString GenerateTextSymbolAP(const CFX_FloatRect& rect,
   // getContrastStrokeColor).
   float luminance = 0.299f * fill_color.fColor1 + 0.587f * fill_color.fColor2 +
                     0.114f * fill_color.fColor3;
-  CFX_Color stroke_color = luminance < 0.45f
-                               ? CFX_Color(CFX_Color::Type::kRGB, 1, 1, 1)
-                               : CFX_Color(CFX_Color::Type::kRGB, 0, 0, 0);
+  CFX_Color stroke_color = luminance < 0.45f ? CFX_Color::MakeRGB(1, 1, 1)
+                                             : CFX_Color::MakeRGB(0, 0, 0);
 
   // /Name picks the glyph. Absent or foreign names mean Note, the
   // ISO 32000 default icon for text annotations.
@@ -351,7 +350,7 @@ ByteString GenerateFileAttachmentSymbolAP(const CFX_FloatRect& rect,
 
   // Read fill color from /C array; default to yellow (the note-icon
   // default in GenerateTextSymbolAP).
-  CFX_Color fill_color(CFX_Color::Type::kRGB, 1, 1, 0);
+  CFX_Color fill_color = CFX_Color::MakeRGB(1, 1, 0);
   RetainPtr<const CPDF_Array> color_array =
       annot_dict.GetArrayFor(pdfium::annotation::kC);
   if (color_array) {
@@ -361,9 +360,8 @@ ByteString GenerateFileAttachmentSymbolAP(const CFX_FloatRect& rect,
   // Same luminance-based contrast stroke as GenerateTextSymbolAP.
   float luminance = 0.299f * fill_color.fColor1 + 0.587f * fill_color.fColor2 +
                     0.114f * fill_color.fColor3;
-  CFX_Color stroke_color = luminance < 0.45f
-                               ? CFX_Color(CFX_Color::Type::kRGB, 1, 1, 1)
-                               : CFX_Color(CFX_Color::Type::kRGB, 0, 0, 0);
+  CFX_Color stroke_color = luminance < 0.45f ? CFX_Color::MakeRGB(1, 1, 1)
+                                             : CFX_Color::MakeRGB(0, 0, 0);
 
   // /Name picks the glyph. Absent or foreign names mean PushPin, the
   // ISO 32000 default icon for file attachment annotations.
@@ -515,9 +513,9 @@ bool GeneratePopupAP(CPDF_Document* doc,
   fxcrt::ostringstream app_stream;
   app_stream << "/" << kGSDictName << " gs\n";
 
-  app_stream << GenerateColorAP(CFX_Color(CFX_Color::Type::kRGB, 1, 1, 0),
+  app_stream << GenerateColorAP(CFX_Color::MakeRGB(1, 1, 0),
                                 PaintOperation::kFill);
-  app_stream << GenerateColorAP(CFX_Color(CFX_Color::Type::kRGB, 0, 0, 0),
+  app_stream << GenerateColorAP(CFX_Color::MakeRGB(0, 0, 0),
                                 PaintOperation::kStroke);
 
   const float border_width = 1;
@@ -570,7 +568,7 @@ bool GenerateLinkAP(APGenerationTarget* target,
   // Set stroke color from /C array (default: blue for links)
   app_stream << GetColorStringWithDefault(
       annot_dict->GetArrayFor(pdfium::annotation::kC).Get(),
-      CFX_Color(CFX_Color::Type::kRGB, 0, 0, 1),  // Default: blue
+      CFX_Color::MakeRGB(0, 0, 1),  // Default: blue
       PaintOperation::kStroke);
 
   app_stream << border_width << " w ";
@@ -619,10 +617,10 @@ bool GenerateCaretAP(APGenerationTarget* target,
 
   app_stream << GetColorStringWithDefault(
       annot_dict->GetArrayFor(pdfium::annotation::kC).Get(),
-      CFX_Color(CFX_Color::Type::kRGB, 0, 0, 0), PaintOperation::kStroke);
+      CFX_Color::MakeRGB(0, 0, 0), PaintOperation::kStroke);
   app_stream << GetColorStringWithDefault(
       annot_dict->GetArrayFor(pdfium::annotation::kC).Get(),
-      CFX_Color(CFX_Color::Type::kRGB, 0, 0, 0), PaintOperation::kFill);
+      CFX_Color::MakeRGB(0, 0, 0), PaintOperation::kFill);
 
   // A caret anchored to rotated text carries the box-family /EMBD_Metadata
   // rotation pair: draw in the UNROTATED box and let the AP form matrix turn

@@ -15,13 +15,17 @@ FPDFFormFill*.* Drives the form-fill environment.
 CPDFSDKBAAnnotTest.* Drives the form-fill environment.
 CPDFSDKAnnotIteratorTest.* Drives the form-fill environment.
 FPDFAnnotEmbedderTest.FocusableAnnotSubtypes Drives the form-fill environment.
+FPDFAnnotEmbedderTest.FocusableAnnotRendering Drives the form-fill environment.
 FPDFProgressiveRenderEmbedderTest.RenderFormWithColorScheme Drives the form-fill environment.
+FPDFProgressiveRenderEmbedderTest.RenderFormsWithPause Drives the form-fill environment.
 FPDFAnnotEmbedderTest.GetFontSize* Needs the form-fill page view (FPDF_FORMHANDLE APIs).
 FPDFAnnotEmbedderTest.GetFontColor Needs the form-fill page view (FPDF_FORMHANDLE APIs).
 FPDFAnnotEmbedderTest.IsChecked* Needs the form-fill page view (FPDF_FORMHANDLE APIs).
 FPDFAnnotEmbedderTest.GetFormFieldExportValue* Needs the form-fill page view (FPDF_FORMHANDLE APIs).
-FPDFFlattenEmbedderTest.Bug890322 Pixel test of a form; layer mode doesn't draw with FPDF_FFLDraw.
-FPDFFlattenEmbedderTest.Bug896366 Pixel test of a form; layer mode doesn't draw with FPDF_FFLDraw.
+FPDFFlattenEmbedderTest.Bug861842 Draws a form; layer mode doesn't draw the form-fill layer.
+FPDFFlattenEmbedderTest.Bug889099 Draws a form; layer mode doesn't draw the form-fill layer.
+FPDFFlattenEmbedderTest.Bug890322 Draws a form; layer mode doesn't draw the form-fill layer.
+FPDFFlattenEmbedderTest.Bug896366 Draws a form; layer mode doesn't draw the form-fill layer.
 
 # --- Upstream write APIs the engine doesn't call; they write in place, past
 # the layer's copy-up door. Make one layer-safe before the engine uses it.
@@ -29,11 +33,11 @@ FPDFAnnotEmbedderTest.SetFormFieldFlags FPDFAnnot_SetFormFieldFlags writes the f
 FPDFEditEmbedderTest.TransformAnnot FPDFPage_TransformAnnots writes /Rect in place.
 FPDFTransformEmbedderTest.TransFormWithClipWithPatterns FPDFPage_TransFormWithClip writes pattern matrices in place.
 EPDFAttachmentEmbedderTest.SetNameKeepsTheRestOfTheFileSpec A base attachment must be opened for write first; the engine only describes attachments it added or opened with EPDFAnnot_GetFileAttachmentForWrite.
+FPDFAttachmentEmbedderTest.WriteAttachmentDescription A base attachment must be opened for write first; the engine only describes attachments it added or opened with EPDFAnnot_GetFileAttachmentForWrite.
 
 # --- Layer behaviour by design.
 FPDFDocEmbedderTest.DeletePageAndSaveWithBookmarks A layer save appends: the base's bytes, deleted page included, stay in the file.
 FPDFDocEmbedderTest.DeletePageAndSaveWithCustomObject A layer save appends: the base's bytes, deleted page included, stay in the file.
-FPDFFlattenEmbedderTest.FlatWithBadFont A layer save appends: the base's bytes stay in the file.
 FPDFCatalogTest.SetLanguageExistingDocument The test holds the catalog pointer across a write; copy-up puts the new value in a new object (rule overlay-epoch).
 CPDFParserEmbedderTest.Bug828049 A layer's page lookup fails closed on a broken page tree instead of upstream's mutating repair (rule reads-dont-write); the page doesn't load.
 FPDFTextEmbedderTest.Bug782596 A layer's page lookup fails closed on a broken page tree instead of upstream's mutating repair (rule reads-dont-write); the page doesn't load.

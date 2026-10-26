@@ -16,6 +16,7 @@
 #include "core/fxcrt/stl_util.h"
 #include "core/fxcrt/xml/cfx_xmldocument.h"
 #include "core/fxcrt/xml/cfx_xmlelement.h"
+#include "fxjs/cjs_runtime.h"
 #include "fxjs/gc/container_trace.h"
 #include "fxjs/xfa/cfxjse_engine.h"
 #include "fxjs/xfa/cfxjse_resolveprocessor.h"
@@ -1344,7 +1345,7 @@ void UpdateDataRelation(CXFA_Node* pDataNode, CXFA_Node* pDataDescriptionNode) {
 }  // namespace
 
 CXFA_Document::CXFA_Document(CXFA_FFNotify* notify,
-                             cppgc::Heap* heap,
+                             FXGC_Heap* heap,
                              LayoutProcessorIface* pLayout)
     : heap_(heap),
       notify_(notify),
@@ -1528,13 +1529,14 @@ CXFA_LocaleMgr* CXFA_Document::GetLocaleMgr() {
   return locale_mgr_;
 }
 
-cppgc::Heap* CXFA_Document::GetHeap() const {
+FXGC_Heap* CXFA_Document::GetHeap() const {
   return heap_;
 }
 
 CFXJSE_Engine* CXFA_Document::InitScriptContext(CJS_Runtime* fxjs_runtime) {
   DCHECK(!script_context_);
-  script_context_ = std::make_unique<CFXJSE_Engine>(this, fxjs_runtime);
+  script_context_ =
+      std::make_unique<CFXJSE_Engine>(this, fxjs_runtime->GetIsolate());
   return script_context_.get();
 }
 
@@ -1710,8 +1712,7 @@ void CXFA_Document::ParseUse(const WideString& wsUseVal,
   if (wsUseVal.IsEmpty()) {
     return;
   }
-
-  if (wsUseVal[0] == '#') {
+  if (wsUseVal.Front() == '#') {
     wsID = wsUseVal.AsStringView().Substr(1);
     return;
   }

@@ -27,7 +27,7 @@
 
 #if defined(PDF_USE_SKIA)
 #include "core/fxcrt/data_vector.h"
-#include "core/fxge/cfx_defaultrenderdevice.h"
+#include "core/fxge/cfx_gemodule.h"
 #include "third_party/skia/include/core/SkImage.h"   // nogncheck
 #include "third_party/skia/include/core/SkRefCnt.h"  // nogncheck
 #endif
@@ -57,8 +57,7 @@ class CachedImage final : public CFX_DIBBase {
     SetPitch(image_->GetPitch());
 
     if (image_->HasPalette()) {
-      pdfium::span<const uint32_t> palette = image_->GetPaletteSpan();
-      palette_ = DataVector<uint32_t>(palette.begin(), palette.end());
+      palette_ = ToDataVector(image_->GetPaletteSpan());
     }
   }
 
@@ -102,7 +101,7 @@ class CachedImage final : public CFX_DIBBase {
 RetainPtr<CFX_DIBBase> MakeCachedImage(RetainPtr<CFX_DIBBase> image,
                                        bool realize_hint) {
 #if defined(PDF_USE_SKIA)
-  if (CFX_DefaultRenderDevice::UseSkiaRenderer()) {
+  if (CFX_GEModule::IsSkiaRenderer()) {
     // Ignore `realize_hint`, as `RealizeSkImage()` doesn't benefit from it.
     return pdfium::MakeRetain<CachedImage>(std::move(image));
   }
@@ -167,6 +166,11 @@ void CPDF_PageImageCache::ClearImageCacheEntry(const CPDF_Stream* pStream) {
   image_cache_.erase(it);
 }
 
+// EmbedPDF(bug-fix): see the header.
+bool CPDF_PageImageCache::Accepts(const CPDF_Image& image) const {
+  return page_->GetDocument() == image.GetDocument();
+}
+
 bool CPDF_PageImageCache::StartGetCachedBitmap(
     RetainPtr<CPDF_Image> pImage,
     const CPDF_Dictionary* pFormResources,
@@ -176,7 +180,8 @@ bool CPDF_PageImageCache::StartGetCachedBitmap(
     bool bLoadMask,
     const CFX_Size& max_size_required) {
   // A cross-document image may have come from the embedder.
-  if (page_->GetDocument() != pImage->GetDocument()) {
+  // EmbedPDF(bug-fix): the rule lives in Accepts(); the loader asks it first.
+  if (!Accepts(*pImage)) {
     return false;
   }
 
@@ -349,8 +354,9 @@ bool CPDF_PageImageCache::Entry::Continue(
 }
 
 // EmbedPDF(decoded-image-store): decide whether the store keeps this decode:
-// it must fit, and a JPX decode must skip the levels its key asked for. A huge
-// image the store keeps is decoded in full; the bitmap holds the same rows.
+// it must fit, and a JPX or DCT decode must skip the levels its key asked for.
+// A huge image the store keeps is decoded in full; the bitmap holds the same
+// rows.
 void CPDF_PageImageCache::Entry::ContinueGetCachedBitmap(
     CPDF_PageImageCache* pPageImageCache) {
   const CPDF_DIB* dib = cur_bitmap_.AsRaw<CPDF_DIB>();
@@ -360,11 +366,11 @@ void CPDF_PageImageCache::Entry::ContinueGetCachedBitmap(
 
   std::optional<CPDF_DecodedImageStore::Key> store_key =
       std::exchange(store_key_, std::nullopt);
-  std::optional<uint8_t> jpx_levels;
-  if (dib->IsJpxImage()) {
-    jpx_levels = dib->resolution_levels_to_skip();
+  std::optional<uint8_t> levels_skipped;
+  if (dib->SkipsResolutionLevels()) {
+    levels_skipped = dib->resolution_levels_to_skip();
     // Keep only what a request with the key's levels would decode.
-    if (jpx_levels.value() != store_levels_) {
+    if (levels_skipped.value() != store_levels_) {
       store_key.reset();
     }
   }
@@ -406,7 +412,8 @@ void CPDF_PageImageCache::Entry::ContinueGetCachedBitmap(
     kept.bitmap = cached_bitmap_;
     kept.mask = cached_mask_;
     kept.matte_color = matte_color_;
-    CPDF_DecodedImageStore::Get()->Insert(store_key.value(), kept, jpx_levels);
+    CPDF_DecodedImageStore::Get()->Insert(store_key.value(), kept,
+                                          levels_skipped);
   }
 }
 

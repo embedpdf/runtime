@@ -9,42 +9,69 @@
 #include "core/fxcrt/check.h"
 #include "core/fxcrt/epdf_tls.h"
 #include "core/fxge/cfx_folderfontinfo.h"
-#include "core/fxge/cfx_fontmgr.h"
 
 namespace {
 
 // EmbedPDF(thread-confined-globals): each worker thread owns its own
 // CFX_GEModule (FreeType FT_Library + font/glyph caches), created and
 // destroyed on that thread.
-EPDF_TLS CFX_GEModule* g_pGEModule = nullptr;
+EPDF_TLS CFX_GEModule* g_GEModule = nullptr;
+
+#if BUILDFLAG(IS_WIN)
+WindowsPrintMode g_print_mode = WindowsPrintMode::kEmf;
+#endif
 
 }  // namespace
 
-CFX_GEModule::CFX_GEModule(const char** pUserFontPaths)
-    : platform_(PlatformIface::Create()),
-      font_mgr_(std::make_unique<CFX_FontMgr>()),
-      user_font_paths_(pUserFontPaths) {}
-
-CFX_GEModule::~CFX_GEModule() = default;
+#if BUILDFLAG(IS_WIN)
+// static
+void CFX_GEModule::SetPrintMode(WindowsPrintMode mode) {
+  g_print_mode = mode;
+}
 
 // static
-void CFX_GEModule::Create(const char** pUserFontPaths) {
-  DCHECK(!g_pGEModule);
-  g_pGEModule = new CFX_GEModule(pUserFontPaths);
-  g_pGEModule->platform_->Init();
-  g_pGEModule->GetFontMgr()->GetBuiltinMapper()->SetSystemFontInfo(
-      g_pGEModule->platform_->CreateDefaultSystemFontInfo());
+WindowsPrintMode CFX_GEModule::GetPrintMode() {
+  return g_print_mode;
+}
+#endif
+
+// static
+void CFX_GEModule::Create(
+    std::optional<pdfium::span<const char* const>> user_font_paths,
+    RendererType renderer_type,
+    CFX_FontMgr::FontBackend font_backend) {
+  DCHECK(!g_GEModule);
+  g_GEModule = new CFX_GEModule(user_font_paths, renderer_type, font_backend);
+  g_GEModule->platform_->Init();
+  g_GEModule->font_mgr_->GetBuiltinMapper()->SetSystemFontInfo(
+      g_GEModule->platform_->CreateDefaultSystemFontInfo());
 }
 
 // static
 void CFX_GEModule::Destroy() {
-  DCHECK(g_pGEModule);
-  delete g_pGEModule;
-  g_pGEModule = nullptr;
+  DCHECK(g_GEModule);
+  g_GEModule->platform_->Terminate();
+  delete g_GEModule;
+  g_GEModule = nullptr;
 }
 
 // static
 CFX_GEModule* CFX_GEModule::Get() {
-  DCHECK(g_pGEModule);
-  return g_pGEModule;
+  DCHECK(g_GEModule);
+  return g_GEModule;
 }
+
+CFX_GEModule::CFX_GEModule(
+    std::optional<pdfium::span<const char* const>> user_font_paths,
+    RendererType renderer_type,
+    CFX_FontMgr::FontBackend font_backend)
+    : renderer_type_(renderer_type),
+#if defined(PDF_ENABLE_FONTATIONS)
+      font_backend_(font_backend),
+#endif
+      platform_(PlatformIface::Create()),
+      font_mgr_(std::make_unique<CFX_FontMgr>(font_backend)),
+      user_font_paths_(user_font_paths) {
+}
+
+CFX_GEModule::~CFX_GEModule() = default;

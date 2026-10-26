@@ -38,9 +38,9 @@ if (pdf_enable_fontations) {
     cxx_bindings = [ skia_fontations_bridge_root ]
     deps = [
       ":path_bridge",
-      "//third_party/rust/font_types/v0_11:lib",
-      "//third_party/rust/read_fonts/v0_37:lib",
-      "//third_party/rust/skrifa/v0_40:lib",
+      "//third_party/rust/font_types/v0_12:lib",
+      "//third_party/rust/read_fonts/v0_43:lib",
+      "//third_party/rust/skrifa/v0_46:lib",
     ]
     configs -= [ "//build/config/compiler:chromium_code" ]
     configs += [
@@ -50,7 +50,7 @@ if (pdf_enable_fontations) {
   }
 }
 
-if (pdf_enable_rust_png) {
+if (pdf_enable_rust_bmp || pdf_enable_rust_png) {
   # TODO(https://crbug.com/448663461): Deduplicate `rust_png_ffi` and
   # `rust_png_ffi_cpp` target definitions (the exact same target definitions
   # are present in Chromium's //skia/BUILD.gn` and here in PDFium's
@@ -86,33 +86,65 @@ if (pdf_enable_rust_png) {
     check_includes = false
   }
 
-  rust_static_library("rust_png_ffi") {
-    visibility = [ ":*" ]
-    allow_unsafe = true  # For FFI
-    crate_root = skia_codec_rust_png_ffi_crate_root
-    sources = skia_codec_rust_png_ffi_rs_srcs
-    cxx_bindings = skia_codec_rust_png_ffi_cxx_bridge_srcs
-    public_deps = [ ":rust_png_ffi_cpp" ]
-    deps = [
-      ":rust_common_ffi",
-      "//third_party/rust/png/v0_18:lib",
-    ]
-    edition = "2021"
-    configs -= [ "//build/config/compiler:chromium_code" ]
-    configs += [
-      ":skia_config",
-      "//build/config/compiler:no_chromium_code",
-    ]
+  if (pdf_enable_rust_bmp) {
+    rust_static_library("rust_bmp_ffi") {
+      visibility = [ ":*" ]
+      allow_unsafe = true  # For FFI
+      crate_root = skia_codec_rust_bmp_ffi_crate_root
+      sources = skia_codec_rust_bmp_ffi_rs_srcs
+      cxx_bindings = skia_codec_rust_bmp_ffi_cxx_bridge_srcs
+      public_deps = [ ":rust_bmp_ffi_cpp" ]
+      deps = [
+        ":rust_common_ffi",
+        "//third_party/rust/image/v0_25:lib",
+      ]
+      edition = "2021"
+      configs -= [ "//build/config/compiler:chromium_code" ]
+      configs += [
+        ":skia_config",
+        "//build/config/compiler:no_chromium_code",
+      ]
+    }
+
+    source_set("rust_bmp_ffi_cpp") {
+      visibility = [ ":*" ]
+      configs -= [ "//build/config/compiler:chromium_code" ]
+      configs += [
+        ":skia_config",
+        "//build/config/compiler:no_chromium_code",
+      ]
+    }
   }
 
-  source_set("rust_png_ffi_cpp") {
-    visibility = [ ":*" ]
-    public = skia_codec_rust_png_ffi_cpp_hdrs
-    configs -= [ "//build/config/compiler:chromium_code" ]
-    configs += [
-      ":skia_config",
-      "//build/config/compiler:no_chromium_code",
-    ]
+  if (pdf_enable_rust_png) {
+    rust_static_library("rust_png_ffi") {
+      visibility = [ ":*" ]
+      allow_unsafe = true  # For FFI
+      crate_root = skia_codec_rust_png_ffi_crate_root
+      sources = skia_codec_rust_png_ffi_rs_srcs
+      cxx_bindings = skia_codec_rust_png_ffi_cxx_bridge_srcs
+      public_deps = [ ":rust_png_ffi_cpp" ]
+      deps = [
+        ":rust_common_ffi",
+        "//third_party/rust/png/v0_18:lib",
+      ]
+      edition = "2021"
+      configs -= [ "//build/config/compiler:chromium_code" ]
+      configs += [
+        ":skia_config",
+        "//build/config/compiler:no_chromium_code",
+      ]
+    }
+
+    source_set("rust_png_ffi_cpp") {
+      visibility = [ ":*" ]
+      public = skia_codec_rust_png_ffi_cpp_hdrs
+      configs -= [ "//build/config/compiler:chromium_code" ]
+      configs += [
+        ":skia_config",
+        "//build/config/compiler:no_chromium_code",
+      ]
+    }
   }
 }
 
@@ -125,9 +157,10 @@ config("skia_config") {
     "SK_DISABLE_LEGACY_INIT_DECODERS",
     "SK_DISABLE_LEGACY_PNG_WRITEBUFFER",
     "SK_DISABLE_LEGACY_XPS_FACTORIES",
+    "SK_ENABLE_LEGACY_SHADERCONTEXT",
   ]
 
-  if (is_win) {
+  if (pdf_enable_freetype && is_win) {
     defines += [ "SK_FREETYPE_MINIMUM_RUNTIME_VERSION=(((FREETYPE_MAJOR) * 0x01000000) | ((FREETYPE_MINOR) * 0x00010000) | ((FREETYPE_PATCH) * 0x00000100))" ]
   }
 
@@ -161,8 +194,12 @@ config("skia_config") {
     defines += [ "GR_GL_FUNCTION_TYPE=__stdcall" ]
   }
 
-  if (pdf_enable_fontations) {
+  if (pdf_enable_fontations || pdf_enable_rust_png) {
     include_dirs += [ "$root_gen_dir/third_party/skia" ]
+  }
+
+  if (pdf_enable_rust_bmp) {
+    defines += [ "SK_CODEC_DECODES_BMP_WITH_RUST" ]
   }
 
   if (pdf_enable_rust_png) {
@@ -183,10 +220,10 @@ config("skia_library_config") {
     "SKIA_IMPLEMENTATION=1",
   ]
 
-  if (use_blink && !use_system_freetype) {
+  if (pdf_enable_freetype && use_blink && !use_system_freetype) {
     defines += [ "SK_FREETYPE_MINIMUM_RUNTIME_VERSION=(((FREETYPE_MAJOR) * 0x01000000) | ((FREETYPE_MINOR) * 0x00010000) | ((FREETYPE_PATCH) * 0x00000100))" ]
   }
-  if (use_blink) {
+  if (pdf_enable_freetype && use_blink) {
     defines += [ "SK_TYPEFACE_FACTORY_FREETYPE" ]
   }
   if (is_win) {
@@ -270,28 +307,22 @@ static_library("redaction_pathops") {
   ]
 
   sources = [
-    "//third_party/skia/src/base/SkArenaAlloc.cpp",
-    "//third_party/skia/src/base/SkBezierCurves.cpp",
-    "//third_party/skia/src/base/SkBuffer.cpp",
-    "//third_party/skia/src/base/SkContainers.cpp",
-    "//third_party/skia/src/base/SkCubics.cpp",
-    "//third_party/skia/src/base/SkFloatingPoint.cpp",
-    "//third_party/skia/src/base/SkMalloc.cpp",
-    "//third_party/skia/src/base/SkQuads.cpp",
-    "//third_party/skia/src/base/SkSafeMath.cpp",
-    "//third_party/skia/src/base/SkSemaphore.cpp",
-    "//third_party/skia/src/base/SkTDArray.cpp",
-    "//third_party/skia/src/base/SkThreadID.cpp",
-    "//third_party/skia/src/base/SkUTF.cpp",
-    "//third_party/skia/src/base/SkUtils.cpp",
+    "//third_party/skia/src/core/SkArenaAlloc.cpp",
+    "//third_party/skia/src/core/SkBezierCurves.cpp",
+    "//third_party/skia/src/core/SkBuffer.cpp",
+    "//third_party/skia/src/core/SkContainers.cpp",
     "//third_party/skia/src/core/SkContourMeasure.cpp",
     "//third_party/skia/src/core/SkCpu.cpp",
     "//third_party/skia/src/core/SkCubicClipper.cpp",
+    "//third_party/skia/src/core/SkCubics.cpp",
     "//third_party/skia/src/core/SkEdgeClipper.cpp",
+    "//third_party/skia/src/core/SkFloatingPoint.cpp",
     "//third_party/skia/src/core/SkGeometry.cpp",
     "//third_party/skia/src/core/SkIDChangeListener.cpp",
     "//third_party/skia/src/core/SkLineClipper.cpp",
+    "//third_party/skia/src/core/SkLog.cpp",
     "//third_party/skia/src/core/SkM44.cpp",
+    "//third_party/skia/src/core/SkMalloc.cpp",
     "//third_party/skia/src/core/SkMatrix.cpp",
     "//third_party/skia/src/core/SkMatrixInvert.cpp",
     "//third_party/skia/src/core/SkOpts.cpp",
@@ -304,22 +335,38 @@ static_library("redaction_pathops") {
     "//third_party/skia/src/core/SkPathPriv.cpp",
     "//third_party/skia/src/core/SkPathRaw.cpp",
     "//third_party/skia/src/core/SkPathRawShapes.cpp",
-    "//third_party/skia/src/core/SkPath_pathdata.cpp",
     "//third_party/skia/src/core/SkPoint.cpp",
+    "//third_party/skia/src/core/SkQuads.cpp",
     "//third_party/skia/src/core/SkRRect.cpp",
     "//third_party/skia/src/core/SkRect.cpp",
+    "//third_party/skia/src/core/SkSafeMath.cpp",
+    "//third_party/skia/src/core/SkSemaphore.cpp",
     "//third_party/skia/src/core/SkString.cpp",
     "//third_party/skia/src/core/SkStringUtils.cpp",
     "//third_party/skia/src/core/SkStroke.cpp",
     "//third_party/skia/src/core/SkStrokeRec.cpp",
     "//third_party/skia/src/core/SkStrokerPriv.cpp",
+    "//third_party/skia/src/core/SkTDArray.cpp",
+    "//third_party/skia/src/core/SkThreadID.cpp",
+    "//third_party/skia/src/core/SkUTF.cpp",
+    "//third_party/skia/src/core/SkUtils.cpp",
     "//third_party/skia/src/ports/SkMemory_malloc.cpp",
     "//third_party/skia/src/utils/SkDashPath.cpp",
     "//third_party/skia/src/utils/SkDashPathPriv.h",
+    "//third_party/skia/src/utils/SkLogHandler.cpp",
     "config/SkPdfiumUserConfig.h",
     "ext/google_logging.cc",
   ]
   sources += skia_pathops_sources
+
+  # Skia's assertions log through SkLog(), which a platform port prints.
+  if (is_win) {
+    sources += [ "//third_party/skia/src/ports/SkLog_win.cpp" ]
+  } else if (is_android) {
+    sources += [ "//third_party/skia/src/ports/SkLog_android.cpp" ]
+  } else {
+    sources += [ "//third_party/skia/src/ports/SkLog_stdio.cpp" ]
+  }
 
   if (!is_debug) {
     configs -= [ "//build/config/compiler:default_optimization" ]
@@ -355,11 +402,20 @@ component("skia") {
   sources += skia_sksl_core_module_sources
   sources += skia_utils_private
   sources += skia_xps_sources
-  sources += skia_codec_decode_bmp
+
+  if (pdf_enable_rust_bmp) {
+    sources += skia_codec_rust_bmp
+    sources += skia_codec_rust_bmp_public
+    deps += [
+      ":rust_bmp_ffi",
+      ":rust_common_ffi",
+    ]
+  } else {
+    sources += skia_codec_decode_bmp
+  }
 
   sources += skia_ports_sources
   sources += [
-    "//third_party/skia/src/ports/SkImageGenerator_none.cpp",
     "//third_party/skia/src/sfnt/SkOTTable_name.cpp",
     "//third_party/skia/src/sfnt/SkOTUtils.cpp",
 
@@ -393,20 +449,11 @@ component("skia") {
     libs = [ "fontsub.lib" ]
   }
 
-  # need separate win section to handle chromes auto gn filter
-  # (build/config/BUILDCONFIG.gn)
-  if (is_win) {
-    sources -= [
-      #windows
-      "//third_party/skia/src/utils/win/SkWGL_win.cpp",
-    ]
-  }
-
   # Select Skia ports.
 
   # FreeType is needed everywhere (except on iOS), on Linux and Android as main
   # font backend, on Windows and Mac as fallback backend for Variations.
-  if (!is_ios) {
+  if (pdf_enable_freetype && !is_ios) {
     sources += skia_ports_freetype_sources
   }
 
@@ -429,13 +476,6 @@ component("skia") {
     ]
   }
 
-  if (is_linux || is_chromeos) {
-    sources += skia_ports_fci_sources
-    sources += skia_ports_fontmgr_custom_sources
-    sources += skia_ports_fontmgr_empty_sources
-    sources += skia_ports_typeface_proxy_sources
-  }
-
   if (is_android) {
     # Unlike Chromium, standalone PDFium on Linux and Chrome OS does not
     # require these files, since PDFium does not perform Android emulation.
@@ -443,14 +483,32 @@ component("skia") {
     sources += skia_ports_fontmgr_android_sources
   }
 
-  if (is_win || (is_apple && use_blink)) {
-    # Add the FreeType custom font manager as a fallback backend for variable fonts.
-    sources += skia_ports_fontmgr_custom_sources
-    sources += skia_ports_fontmgr_empty_sources
+  if (is_win) {
+    sources += [ "//third_party/skia/src/ports/SkLog_win.cpp" ]
+  } else if (is_android) {
+    sources += [ "//third_party/skia/src/ports/SkLog_android.cpp" ]
+  } else {
+    sources += [ "//third_party/skia/src/ports/SkLog_stdio.cpp" ]
+  }
+
+  if (pdf_enable_freetype) {
+    if (is_linux || is_chromeos) {
+      sources += skia_ports_fci_sources
+      sources += skia_ports_fontmgr_custom_sources
+      sources += skia_ports_fontmgr_empty_sources
+      sources += skia_ports_typeface_proxy_sources
+    }
+    if (is_win || (is_apple && use_blink)) {
+      # Add the FreeType custom font manager as a fallback backend for variable
+      # fonts.
+      sources += skia_ports_fontmgr_custom_sources
+      sources += skia_ports_fontmgr_empty_sources
+    }
   }
 
   if (pdf_enable_fontations) {
     sources += skia_ports_typeface_fontations_sources
+    sources += skia_ports_fontmgr_fontations_sources
 
     # Fontations Rust/C++ bridge interfaces.
     deps += [
@@ -478,15 +536,11 @@ component("skia") {
     ":skcms",
     ":skia_opts",
     "../third_party:zlib",
-    "//:freetype_common",
   ]
   public_deps = [ ":skia_core_and_effects" ]
 
   if (is_linux || is_chromeos) {
-    deps += [
-      "//third_party:fontconfig",
-      "//third_party/icu:icuuc",
-    ]
+    deps += [ "//third_party/icu:icuuc" ]
   }
 
   if (is_android) {
@@ -494,15 +548,21 @@ component("skia") {
       "//third_party/cpu_features:ndk_compat",
       "//third_party/expat",
     ]
-  }
-
-  if (is_android && !is_debug) {
-    configs -= [ "//build/config/compiler:default_optimization" ]
-    configs += [ "//build/config/compiler:optimize_max" ]
+    if (!is_debug) {
+      configs -= [ "//build/config/compiler:default_optimization" ]
+      configs += [ "//build/config/compiler:optimize_max" ]
+    }
   }
 
   if (is_ios) {
     frameworks += [ "ImageIO.framework" ]
+  }
+
+  if (pdf_enable_freetype) {
+    deps += [ "//:freetype_common" ]
+    if (is_linux || is_chromeos) {
+      deps += [ "//third_party:fontconfig" ]
+    }
   }
 
   if (skia_support_pdf) {
@@ -517,6 +577,7 @@ component("skia") {
   sources += skia_encode_png_base
   sources += skia_encode_public
   sources += skia_encode_srcs
+
   if (pdf_enable_rust_png) {
     sources += skia_codec_rust_png
     sources += skia_codec_rust_png_public
@@ -635,6 +696,7 @@ if (current_cpu == "x64") {
     }
     visibility = [ ":skcms" ]
   }
+
   skia_source_set("skcms_TransformSkx") {
     sources = skcms_TransformSkx
     if (!is_win) {
@@ -653,6 +715,7 @@ if (current_cpu == "x64") {
     sources = []
     visibility = [ ":skcms" ]
   }
+
   skia_source_set("skcms_TransformSkx") {
     sources = []
     visibility = [ ":skcms" ]

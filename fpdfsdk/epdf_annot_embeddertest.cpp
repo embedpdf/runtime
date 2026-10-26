@@ -122,7 +122,7 @@ std::vector<uint8_t> LoadNotoSansSCFontData() {
 
 std::vector<uint8_t> LoadAmiriFontData() {
   std::string font_path = PathService::GetThirdPartyFilePath(
-      "harfbuzz-ng/src/perf/fonts/Amiri-Regular.ttf");
+      "harfbuzz/src/perf/fonts/Amiri-Regular.ttf");
   if (font_path.empty()) {
     ADD_FAILURE() << "Failed to find Amiri test font";
     return {};
@@ -132,7 +132,7 @@ std::vector<uint8_t> LoadAmiriFontData() {
 
 std::vector<uint8_t> LoadRobotoVariableAbcFontData() {
   std::string font_path = PathService::GetThirdPartyFilePath(
-      "harfbuzz-ng/src/test/subset/data/fonts/Roboto-Variable.ABC.ttf");
+      "harfbuzz/src/test/subset/data/fonts/Roboto-Variable.ABC.ttf");
   if (font_path.empty()) {
     ADD_FAILURE() << "Failed to find Roboto-Variable.ABC test font";
     return {};
@@ -143,7 +143,7 @@ std::vector<uint8_t> LoadRobotoVariableAbcFontData() {
 std::vector<uint8_t> LoadCffLatinFontData() {
   // A small OpenType/CFF font (no CIDFont operators) with A, B, C.
   std::string font_path = PathService::GetThirdPartyFilePath(
-      "harfbuzz-ng/src/test/subset/data/fonts/gpos1_2_font.otf");
+      "harfbuzz/src/test/subset/data/fonts/gpos1_2_font.otf");
   if (font_path.empty()) {
     ADD_FAILURE() << "Failed to find gpos1_2_font.otf";
     return {};
@@ -153,7 +153,7 @@ std::vector<uint8_t> LoadCffLatinFontData() {
 
 std::vector<uint8_t> LoadRobotoFontData() {
   std::string font_path = PathService::GetThirdPartyFilePath(
-      "harfbuzz-ng/src/perf/fonts/Roboto-Regular.ttf");
+      "harfbuzz/src/perf/fonts/Roboto-Regular.ttf");
   if (font_path.empty()) {
     ADD_FAILURE() << "Failed to find Roboto test font";
     return {};
@@ -3041,7 +3041,7 @@ TEST_F(EPDFAnnotEmbedderTest, RegisteredLayoutFontAllocatesNoDocumentObject) {
     ASSERT_TRUE(layout.font);
     ASSERT_TRUE(layout.scratch);
     EXPECT_NE(0u, layout.font->CharCodeFromUnicode('A'));
-    EXPECT_GT(layout.font->GetCharWidthF(layout.font->CharCodeFromUnicode('A')),
+    EXPECT_GT(layout.font->GetCharWidth(layout.font->CharCodeFromUnicode('A')),
               0);
     EXPECT_EQ(0u, layout.font->GetFontDict()->GetObjNum());
   }
@@ -3163,8 +3163,8 @@ TEST_F(EPDFAnnotEmbedderTest, RegistrationRefusesUnsupportedProgramFormats) {
             CFX_FontRegistry::DetectProgramFormat(ttc));
   {
     CFX_Font font;  // the refusal is policy, not an unloadable file
-    EXPECT_TRUE(font.LoadEmbedded(ttc, /*force_vertical=*/false,
-                                  /*object_tag=*/0));
+    EXPECT_TRUE(font.LoadFaceZeroFromSpan(ttc, /*force_vertical=*/false,
+                                          /*object_tag=*/0));
   }
   EXPECT_EQ(0u, EPDFFont_RegisterMemFont64("Roboto TTC", 400, 0, ttc.data(),
                                            ttc.size()));
@@ -3421,7 +3421,7 @@ std::vector<PlacedChar> PlaceCharacters(FPDF_DOCUMENT doc,
         placed.push_back({ch, x, segment.y, segment.size});
       }
       const int width =
-          font ? font->GetCharWidthF(static_cast<uint8_t>(ch)) : 0;
+          font ? font->GetCharWidth(static_cast<uint8_t>(ch)) : 0;
       x += width * segment.size / 1000.0f;
     }
   }
@@ -5265,15 +5265,15 @@ TEST_F(EPDFAnnotEmbedderTest, ApplyRedactionRemovesTextInMiddleOfSentence) {
   ASSERT_TRUE(FPDFPage_GenerateContent(page.get()));
   ASSERT_TRUE(FPDF_SaveAsCopy(document(), this, 0));
 
-  ASSERT_TRUE(OpenSavedDocument());
-  FPDF_PAGE saved_page = LoadSavedPage(0);
+  ScopedSavedDoc saved_doc = OpenScopedSavedDocument();
+  ASSERT_TRUE(saved_doc);
+  ScopedSavedPage saved_page = LoadScopedSavedPage(0);
   ASSERT_TRUE(saved_page);
 
-  std::wstring after = ExtractPageText(saved_page);
-  ScopedFPDFBitmap after_bitmap = RenderSavedPage(saved_page);
+  std::wstring after = ExtractPageText(saved_page.get());
+  ScopedFPDFBitmap after_bitmap = RenderSavedPage(saved_page.get());
   ASSERT_TRUE(after_bitmap);
   const std::string after_hash = HashBitmap(after_bitmap.get());
-  CloseSavedPage(saved_page);
   EXPECT_NE(std::wstring::npos, after.find(L"hello"));
   EXPECT_EQ(std::wstring::npos, after.find(L"secret"));
   EXPECT_NE(std::wstring::npos, after.find(L"world"));
@@ -5331,12 +5331,13 @@ TEST_F(EPDFAnnotEmbedderTest,
   }
 
   ASSERT_TRUE(FPDF_SaveAsCopy(document(), this, 0));
-  ASSERT_TRUE(OpenSavedDocument());
-  FPDF_PAGE saved_page = LoadSavedPage(0);
+  ScopedSavedDoc saved_doc = OpenScopedSavedDocument();
+  ASSERT_TRUE(saved_doc);
+  ScopedSavedPage saved_page = LoadScopedSavedPage(0);
   ASSERT_TRUE(saved_page);
-  EXPECT_EQ(original_object_count + 2, FPDFPage_CountObjects(saved_page));
+  EXPECT_EQ(original_object_count + 2, FPDFPage_CountObjects(saved_page.get()));
   {
-    ScopedFPDFBitmap bitmap = RenderPageOnWhite(saved_page, 612, 792);
+    ScopedFPDFBitmap bitmap = RenderPageOnWhite(saved_page.get(), 612, 792);
     ASSERT_TRUE(bitmap);
     EXPECT_EQ(0xFF0000FFu, GetPixelColor(bitmap.get(), 150, 392));
     EXPECT_EQ(0xFFFF0000u, GetPixelColor(bitmap.get(), 150, 287));
@@ -5345,7 +5346,6 @@ TEST_F(EPDFAnnotEmbedderTest,
     EXPECT_EQ(0xFF0000FFu, GetPixelColor(bitmap.get(), 450, 392));
     EXPECT_EQ(0xFFFF0000u, GetPixelColor(bitmap.get(), 450, 287));
   }
-  CloseSavedPage(saved_page);
 }
 
 TEST_F(EPDFAnnotEmbedderTest,
@@ -5382,18 +5382,18 @@ TEST_F(EPDFAnnotEmbedderTest,
   }
 
   ASSERT_TRUE(FPDF_SaveAsCopy(document(), this, 0));
-  ASSERT_TRUE(OpenSavedDocument());
-  FPDF_PAGE saved_page = LoadSavedPage(0);
+  ScopedSavedDoc saved_doc = OpenScopedSavedDocument();
+  ASSERT_TRUE(saved_doc);
+  ScopedSavedPage saved_page = LoadScopedSavedPage(0);
   ASSERT_TRUE(saved_page);
-  EXPECT_EQ(original_object_count + 1, FPDFPage_CountObjects(saved_page));
+  EXPECT_EQ(original_object_count + 1, FPDFPage_CountObjects(saved_page.get()));
   {
-    ScopedFPDFBitmap bitmap = RenderPageOnWhite(saved_page, 612, 792);
+    ScopedFPDFBitmap bitmap = RenderPageOnWhite(saved_page.get(), 612, 792);
     ASSERT_TRUE(bitmap);
     EXPECT_EQ(0xFF0000FFu, GetPixelColor(bitmap.get(), 150, 392));
     EXPECT_EQ(0xFFFFFFFFu, GetPixelColor(bitmap.get(), 300, 392));
     EXPECT_EQ(0xFF0000FFu, GetPixelColor(bitmap.get(), 450, 392));
   }
-  CloseSavedPage(saved_page);
 }
 
 TEST_F(EPDFAnnotEmbedderTest,
@@ -5454,17 +5454,17 @@ TEST_F(EPDFAnnotEmbedderTest,
   }
 
   ASSERT_TRUE(FPDF_SaveAsCopy(document(), this, 0));
-  ASSERT_TRUE(OpenSavedDocument());
-  FPDF_PAGE saved_page = LoadSavedPage(1);
+  ScopedSavedDoc saved_doc = OpenScopedSavedDocument();
+  ASSERT_TRUE(saved_doc);
+  ScopedSavedPage saved_page = LoadScopedSavedPage(1);
   ASSERT_TRUE(saved_page);
   {
-    ScopedFPDFBitmap bitmap = RenderPageOnWhite(saved_page, 612, 792);
+    ScopedFPDFBitmap bitmap = RenderPageOnWhite(saved_page.get(), 612, 792);
     ASSERT_TRUE(bitmap);
     EXPECT_EQ(0xFF0000FFu, GetPixelColor(bitmap.get(), 180, 442));
     EXPECT_EQ(0xFFFFFFFFu, GetPixelColor(bitmap.get(), 150, 442));
     EXPECT_EQ(0xFF0000FFu, GetPixelColor(bitmap.get(), 350, 442));
   }
-  CloseSavedPage(saved_page);
 }
 
 TEST_F(EPDFAnnotEmbedderTest, RotatedCaretAppearanceCarriesTransform) {
@@ -5895,12 +5895,13 @@ TEST_F(EPDFAnnotEmbedderTest, EmbedSetRectPreservesRotatedAppearance) {
     ASSERT_TRUE(FPDF_SaveAsCopy(document(), this, 0));
   }
 
-  ASSERT_TRUE(OpenSavedDocument());
-  FPDF_PAGE saved_page = LoadSavedPage(0);
+  ScopedSavedDoc saved_doc = OpenScopedSavedDocument();
+  ASSERT_TRUE(saved_doc);
+  ScopedSavedPage saved_page = LoadScopedSavedPage(0);
   ASSERT_TRUE(saved_page);
   {
     ScopedFPDFAnnotation saved_annot(
-        FPDFPage_GetAnnot(saved_page, annot_index));
+        FPDFPage_GetAnnot(saved_page.get(), annot_index));
     ASSERT_TRUE(saved_annot);
 
     FS_RECTF saved_rect = {};
@@ -5924,7 +5925,6 @@ TEST_F(EPDFAnnotEmbedderTest, EmbedSetRectPreservesRotatedAppearance) {
     expect_rect(stream_dict->GetRectFor("BBox"), original_unrotated);
     expect_matrix(stream_dict->GetMatrixFor("Matrix"), original_matrix);
   }
-  CloseSavedPage(saved_page);
 }
 
 TEST_F(EPDFAnnotEmbedderTest, ApplyRedactionRotatedQuadSparesNeighbours) {
@@ -5998,11 +5998,11 @@ TEST_F(EPDFAnnotEmbedderTest, ApplyRedactionRotatedQuadSparesNeighbours) {
   ASSERT_TRUE(FPDFPage_GenerateContent(page.get()));
   ASSERT_TRUE(FPDF_SaveAsCopy(document(), this, 0));
 
-  ASSERT_TRUE(OpenSavedDocument());
-  FPDF_PAGE saved_page = LoadSavedPage(0);
+  ScopedSavedDoc saved_doc = OpenScopedSavedDocument();
+  ASSERT_TRUE(saved_doc);
+  ScopedSavedPage saved_page = LoadScopedSavedPage(0);
   ASSERT_TRUE(saved_page);
-  std::wstring after = ExtractPageText(saved_page);
-  CloseSavedPage(saved_page);
+  std::wstring after = ExtractPageText(saved_page.get());
   EXPECT_EQ(std::wstring::npos, after.find(L"SECRET"));
   EXPECT_NE(std::wstring::npos, after.find(L"KEEPME"));
 }
@@ -6024,11 +6024,11 @@ TEST_F(EPDFAnnotEmbedderTest, ApplyRedactionFallsBackToRectForNonFiniteQuad) {
 
   ASSERT_TRUE(FPDFPage_GenerateContent(page.get()));
   ASSERT_TRUE(FPDF_SaveAsCopy(document(), this, 0));
-  ASSERT_TRUE(OpenSavedDocument());
-  FPDF_PAGE saved_page = LoadSavedPage(0);
+  ScopedSavedDoc saved_doc = OpenScopedSavedDocument();
+  ASSERT_TRUE(saved_doc);
+  ScopedSavedPage saved_page = LoadScopedSavedPage(0);
   ASSERT_TRUE(saved_page);
-  const std::wstring after = ExtractPageText(saved_page);
-  CloseSavedPage(saved_page);
+  const std::wstring after = ExtractPageText(saved_page.get());
   EXPECT_NE(std::wstring::npos, after.find(L"hello"));
   EXPECT_EQ(std::wstring::npos, after.find(L"secret"));
   EXPECT_NE(std::wstring::npos, after.find(L"world"));
@@ -6128,11 +6128,11 @@ TEST_F(EPDFAnnotEmbedderTest, RedactInQuadsMultipleRegionsOnOneTextObject) {
   ASSERT_TRUE(FPDFPage_GenerateContent(page.get()));
   ASSERT_TRUE(FPDF_SaveAsCopy(document(), this, 0));
 
-  ASSERT_TRUE(OpenSavedDocument());
-  FPDF_PAGE saved_page = LoadSavedPage(0);
+  ScopedSavedDoc saved_doc = OpenScopedSavedDocument();
+  ASSERT_TRUE(saved_doc);
+  ScopedSavedPage saved_page = LoadScopedSavedPage(0);
   ASSERT_TRUE(saved_page);
-  const std::wstring after = ExtractPageText(saved_page);
-  CloseSavedPage(saved_page);
+  const std::wstring after = ExtractPageText(saved_page.get());
 
   EXPECT_EQ(std::wstring::npos, after.find(L"SECRET")) << after;
   EXPECT_EQ(std::wstring::npos, after.find(L"ECRET")) << after;
@@ -6177,11 +6177,11 @@ TEST_F(EPDFAnnotEmbedderTest, ApplyPageRedactionsTwoMarksOnOneTextObject) {
   ASSERT_TRUE(FPDFPage_GenerateContent(page.get()));
   ASSERT_TRUE(FPDF_SaveAsCopy(document(), this, 0));
 
-  ASSERT_TRUE(OpenSavedDocument());
-  FPDF_PAGE saved_page = LoadSavedPage(0);
+  ScopedSavedDoc saved_doc = OpenScopedSavedDocument();
+  ASSERT_TRUE(saved_doc);
+  ScopedSavedPage saved_page = LoadScopedSavedPage(0);
   ASSERT_TRUE(saved_page);
-  const std::wstring after = ExtractPageText(saved_page);
-  CloseSavedPage(saved_page);
+  const std::wstring after = ExtractPageText(saved_page.get());
 
   EXPECT_EQ(std::wstring::npos, after.find(L"SECRET")) << after;
   EXPECT_EQ(std::wstring::npos, after.find(L"ECRET")) << after;
@@ -6193,7 +6193,7 @@ TEST_F(EPDFAnnotEmbedderTest, ApplyPageRedactionsTwoMarksOnOneTextObject) {
 // was, including vertical CJK text, even though callers regenerate the page
 // content afterwards.
 TEST_F(EPDFAnnotEmbedderTest, RedactFarFromVerticalTextLeavesItInPlace) {
-  ASSERT_TRUE(OpenDocument("vertical_text.pdf"));
+  ASSERT_TRUE(OpenDocument("embedpdf_vertical_text.pdf"));
   ScopedPage page = LoadScopedPage(0);
   ASSERT_TRUE(page);
 
@@ -6219,21 +6219,21 @@ TEST_F(EPDFAnnotEmbedderTest, RedactFarFromVerticalTextLeavesItInPlace) {
   ASSERT_TRUE(FPDFPage_GenerateContent(page.get()));
   ASSERT_TRUE(FPDF_SaveAsCopy(document(), this, 0));
 
-  ASSERT_TRUE(OpenSavedDocument());
-  FPDF_PAGE saved_page = LoadSavedPage(0);
+  ScopedSavedDoc saved_doc = OpenScopedSavedDocument();
+  ASSERT_TRUE(saved_doc);
+  ScopedSavedPage saved_page = LoadScopedSavedPage(0);
   ASSERT_TRUE(saved_page);
-  EXPECT_EQ(before, ExtractPageText(saved_page));
+  EXPECT_EQ(before, ExtractPageText(saved_page.get()));
   double left_after = 0;
   double right_after = 0;
   double bottom_after = 0;
   double top_after = 0;
   {
-    ScopedFPDFTextPage text_page(FPDFText_LoadPage(saved_page));
+    ScopedFPDFTextPage text_page(FPDFText_LoadPage(saved_page.get()));
     ASSERT_TRUE(text_page);
     ASSERT_TRUE(FPDFText_GetCharBox(text_page.get(), 0, &left_after,
                                     &right_after, &bottom_after, &top_after));
   }
-  CloseSavedPage(saved_page);
   EXPECT_NEAR(left_before, left_after, 0.01);
   EXPECT_NEAR(right_before, right_after, 0.01);
   EXPECT_NEAR(bottom_before, bottom_after, 0.01);
@@ -6266,11 +6266,11 @@ TEST_F(EPDFAnnotEmbedderTest, RedactInQuadsRemovesTextInsideFormXObject) {
   ASSERT_TRUE(FPDFPage_GenerateContent(page.get()));
   ASSERT_TRUE(FPDF_SaveAsCopy(document(), this, 0));
 
-  ASSERT_TRUE(OpenSavedDocument());
-  FPDF_PAGE saved_page = LoadSavedPage(0);
+  ScopedSavedDoc saved_doc = OpenScopedSavedDocument();
+  ASSERT_TRUE(saved_doc);
+  ScopedSavedPage saved_page = LoadScopedSavedPage(0);
   ASSERT_TRUE(saved_page);
-  const std::wstring after = ExtractPageText(saved_page);
-  CloseSavedPage(saved_page);
+  const std::wstring after = ExtractPageText(saved_page.get());
 
   EXPECT_NE(std::wstring::npos, after.find(L"Hello,")) << after;
   EXPECT_NE(std::wstring::npos, after.find(L"Goodbye, world!")) << after;
@@ -6320,10 +6320,11 @@ TEST_F(EPDFAnnotEmbedderTest, RedactRemovesInvisibleOcrLayerText) {
   ASSERT_TRUE(FPDFPage_GenerateContent(page.get()));
   ASSERT_TRUE(FPDF_SaveAsCopy(document(), this, 0));
 
-  ASSERT_TRUE(OpenSavedDocument());
-  FPDF_PAGE saved_page = LoadSavedPage(0);
+  ScopedSavedDoc saved_doc = OpenScopedSavedDocument();
+  ASSERT_TRUE(saved_doc);
+  ScopedSavedPage saved_page = LoadScopedSavedPage(0);
   ASSERT_TRUE(saved_page);
-  const std::wstring after = ExtractPageText(saved_page);
+  const std::wstring after = ExtractPageText(saved_page.get());
   EXPECT_EQ(std::wstring::npos, after.find(L"SECRET")) << after;
   EXPECT_EQ(std::wstring::npos, after.find(L"ECRET")) << after;
   EXPECT_EQ(std::wstring::npos, after.find(L"DAT")) << after;
@@ -6331,7 +6332,7 @@ TEST_F(EPDFAnnotEmbedderTest, RedactRemovesInvisibleOcrLayerText) {
   const size_t surviving_a = after.find(L"A");
   ASSERT_NE(std::wstring::npos, surviving_a) << after;
   {
-    ScopedFPDFTextPage text_page(FPDFText_LoadPage(saved_page));
+    ScopedFPDFTextPage text_page(FPDFText_LoadPage(saved_page.get()));
     ASSERT_TRUE(text_page);
     double l = 0;
     double r = 0;
@@ -6341,14 +6342,13 @@ TEST_F(EPDFAnnotEmbedderTest, RedactRemovesInvisibleOcrLayerText) {
         text_page.get(), static_cast<int>(surviving_a), &l, &r, &b, &t));
     EXPECT_NEAR(a_left_before, l, 0.05);
   }
-  CloseSavedPage(saved_page);
 }
 
 // Vertical writing: removing the leading glyph must re-anchor the run along
 // the vertical axis (the writing axis), and removing glyphs in the middle
 // must keep the glyphs after the gap exactly in place.
 TEST_F(EPDFAnnotEmbedderTest, RedactVerticalTextLeadingGlyphKeepsRestInPlace) {
-  ASSERT_TRUE(OpenDocument("vertical_text.pdf"));
+  ASSERT_TRUE(OpenDocument("embedpdf_vertical_text.pdf"));
   ScopedPage page = LoadScopedPage(0);
   ASSERT_TRUE(page);
 
@@ -6372,14 +6372,15 @@ TEST_F(EPDFAnnotEmbedderTest, RedactVerticalTextLeadingGlyphKeepsRestInPlace) {
   ASSERT_TRUE(FPDFPage_GenerateContent(page.get()));
   ASSERT_TRUE(FPDF_SaveAsCopy(document(), this, 0));
 
-  ASSERT_TRUE(OpenSavedDocument());
-  FPDF_PAGE saved_page = LoadSavedPage(0);
+  ScopedSavedDoc saved_doc = OpenScopedSavedDocument();
+  ASSERT_TRUE(saved_doc);
+  ScopedSavedPage saved_page = LoadScopedSavedPage(0);
   ASSERT_TRUE(saved_page);
-  const std::wstring after = ExtractPageText(saved_page);
+  const std::wstring after = ExtractPageText(saved_page.get());
   EXPECT_EQ(std::wstring::npos, after.find(L"H")) << after;
   ASSERT_EQ(0u, after.find(L"ello")) << after;
   {
-    ScopedFPDFTextPage text_page(FPDFText_LoadPage(saved_page));
+    ScopedFPDFTextPage text_page(FPDFText_LoadPage(saved_page.get()));
     ASSERT_TRUE(text_page);
     double l = 0;
     double r = 0;
@@ -6391,11 +6392,10 @@ TEST_F(EPDFAnnotEmbedderTest, RedactVerticalTextLeadingGlyphKeepsRestInPlace) {
     EXPECT_NEAR(e_bottom, b, 0.05);
     EXPECT_NEAR(e_top, t, 0.05);
   }
-  CloseSavedPage(saved_page);
 }
 
 TEST_F(EPDFAnnotEmbedderTest, RedactVerticalTextMiddleGlyphsKeepsTailInPlace) {
-  ASSERT_TRUE(OpenDocument("vertical_text.pdf"));
+  ASSERT_TRUE(OpenDocument("embedpdf_vertical_text.pdf"));
   ScopedPage page = LoadScopedPage(0);
   ASSERT_TRUE(page);
 
@@ -6419,17 +6419,18 @@ TEST_F(EPDFAnnotEmbedderTest, RedactVerticalTextMiddleGlyphsKeepsTailInPlace) {
   ASSERT_TRUE(FPDFPage_GenerateContent(page.get()));
   ASSERT_TRUE(FPDF_SaveAsCopy(document(), this, 0));
 
-  ASSERT_TRUE(OpenSavedDocument());
-  FPDF_PAGE saved_page = LoadSavedPage(0);
+  ScopedSavedDoc saved_doc = OpenScopedSavedDocument();
+  ASSERT_TRUE(saved_doc);
+  ScopedSavedPage saved_page = LoadScopedSavedPage(0);
   ASSERT_TRUE(saved_page);
-  const std::wstring after = ExtractPageText(saved_page);
+  const std::wstring after = ExtractPageText(saved_page.get());
   EXPECT_EQ(std::wstring::npos, after.find(L"ll")) << after;
   ASSERT_EQ(0u, after.find(L"He")) << after;
   const size_t o_index = after.find(L"o");
   ASSERT_NE(std::wstring::npos, o_index) << after;
   EXPECT_LT(o_index, after.find(L"World")) << after;
   {
-    ScopedFPDFTextPage text_page(FPDFText_LoadPage(saved_page));
+    ScopedFPDFTextPage text_page(FPDFText_LoadPage(saved_page.get()));
     ASSERT_TRUE(text_page);
     double l = 0;
     double r = 0;
@@ -6442,7 +6443,6 @@ TEST_F(EPDFAnnotEmbedderTest, RedactVerticalTextMiddleGlyphsKeepsTailInPlace) {
     EXPECT_NEAR(o_bottom, b, 0.05);
     EXPECT_NEAR(o_top, t, 0.05);
   }
-  CloseSavedPage(saved_page);
 }
 
 // Text in a font whose glyphs have NO outlines at all (empty glyph boxes,
@@ -6465,18 +6465,18 @@ TEST_F(EPDFAnnotEmbedderTest, RedactRemovesTextWithEmptyGlyphBoxes) {
   ASSERT_TRUE(FPDFPage_GenerateContent(page.get()));
   ASSERT_TRUE(FPDF_SaveAsCopy(document(), this, 0));
 
-  ASSERT_TRUE(OpenSavedDocument());
-  FPDF_PAGE saved_page = LoadSavedPage(0);
+  ScopedSavedDoc saved_doc = OpenScopedSavedDocument();
+  ASSERT_TRUE(saved_doc);
+  ScopedSavedPage saved_page = LoadScopedSavedPage(0);
   ASSERT_TRUE(saved_page);
   int text_objects = 0;
-  const int count = FPDFPage_CountObjects(saved_page);
+  const int count = FPDFPage_CountObjects(saved_page.get());
   for (int i = 0; i < count; ++i) {
-    if (FPDFPageObj_GetType(FPDFPage_GetObject(saved_page, i)) ==
+    if (FPDFPageObj_GetType(FPDFPage_GetObject(saved_page.get(), i)) ==
         FPDF_PAGEOBJ_TEXT) {
       ++text_objects;
     }
   }
-  CloseSavedPage(saved_page);
   EXPECT_EQ(0, text_objects);
   EXPECT_EQ(std::string::npos, GetString().find("(SECRET)"));
 }
@@ -6822,15 +6822,15 @@ TEST_F(EPDFAnnotEmbedderTest, ApplyRedactionPreservesInheritedColorspaceResource
 
   // Round-trip: the saved file must still carry the /C1 resource.
   ASSERT_TRUE(FPDF_SaveAsCopy(document(), this, 0));
-  ASSERT_TRUE(OpenSavedDocument());
-  FPDF_PAGE saved_page = LoadSavedPage(0);
+  ScopedSavedDoc saved_doc = OpenScopedSavedDocument();
+  ASSERT_TRUE(saved_doc);
+  ScopedSavedPage saved_page = LoadScopedSavedPage(0);
   ASSERT_TRUE(saved_page);
   {
-    ScopedFPDFBitmap bmp = RenderPageOnWhite(saved_page, 200, 200);
+    ScopedFPDFBitmap bmp = RenderPageOnWhite(saved_page.get(), 200, 200);
     EXPECT_TRUE(is_reddish(GetPixelColor(bmp.get(), 100, 100)));
     EXPECT_EQ(0xFF000000u, GetPixelColor(bmp.get(), 15, 185));
   }
-  CloseSavedPage(saved_page);
 }
 
 TEST_F(EPDFAnnotEmbedderTest, ApplyRedactionOnNeverParsedPageRemovesText) {
@@ -6849,14 +6849,14 @@ TEST_F(EPDFAnnotEmbedderTest, ApplyRedactionOnNeverParsedPageRemovesText) {
   ASSERT_TRUE(FPDFPage_GenerateContent(page.get()));
   ASSERT_TRUE(FPDF_SaveAsCopy(document(), this, 0));
 
-  ASSERT_TRUE(OpenSavedDocument());
-  FPDF_PAGE saved_page = LoadSavedPage(0);
+  ScopedSavedDoc saved_doc = OpenScopedSavedDocument();
+  ASSERT_TRUE(saved_doc);
+  ScopedSavedPage saved_page = LoadScopedSavedPage(0);
   ASSERT_TRUE(saved_page);
-  std::wstring after = ExtractPageText(saved_page);
+  std::wstring after = ExtractPageText(saved_page.get());
   EXPECT_EQ(std::wstring::npos, after.find(L"secret"));
   EXPECT_NE(std::wstring::npos, after.find(L"hello"));
   EXPECT_NE(std::wstring::npos, after.find(L"world"));
-  CloseSavedPage(saved_page);
 }
 
 TEST_F(EPDFAnnotEmbedderTest, GenerateRedactAppearanceBakesLabelIntoOverlay) {

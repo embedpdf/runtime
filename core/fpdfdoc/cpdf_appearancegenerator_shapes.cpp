@@ -19,7 +19,7 @@
 #include <vector>
 
 #include "constants/annotation_common.h"
-#include "core/fpdfapi/edit/cpdf_contentstream_write_utils.h"
+#include "core/fxcrt/stream_write_utils.h"
 #include "core/fpdfapi/page/cpdf_docpagedata.h"
 #include "core/fpdfapi/parser/cpdf_array.h"
 #include "core/fpdfapi/parser/cpdf_dictionary.h"
@@ -363,8 +363,7 @@ bool GenerateDimensionLineAP(APGenerationTarget* target,
   ap << "/" << kGSDictName << " gs\n";
   auto color = annot->GetArrayFor("C");
   auto interior = annot->GetArrayFor("IC");
-  ap << GetColorStringWithDefault(color.Get(),
-                                  CFX_Color(CFX_Color::Type::kRGB, 0, 0, 0),
+  ap << GetColorStringWithDefault(color.Get(), CFX_Color::MakeRGB(0, 0, 0),
                                   PaintOperation::kStroke);
   if (interior && !interior->IsEmpty()) {
     ap << GetColorStringWithDefault(interior.Get(), {}, PaintOperation::kFill);
@@ -493,13 +492,13 @@ bool GenerateCircleAP(APGenerationTarget* target,
   app_stream << "/" << kGSDictName << " gs ";
 
   RetainPtr<const CPDF_Array> interior_color = annot_dict->GetArrayFor("IC");
-  app_stream << GetColorStringWithDefault(
-      interior_color.Get(), CFX_Color(CFX_Color::Type::kTransparent),
-      PaintOperation::kFill);
+  app_stream << GetColorStringWithDefault(interior_color.Get(),
+                                          CFX_Color::MakeTransparent(),
+                                          PaintOperation::kFill);
 
   app_stream << GetColorStringWithDefault(
       annot_dict->GetArrayFor(pdfium::annotation::kC).Get(),
-      CFX_Color(CFX_Color::Type::kRGB, 0, 0, 0), PaintOperation::kStroke);
+      CFX_Color::MakeRGB(0, 0, 0), PaintOperation::kStroke);
 
   float border_width = GetBorderWidth(annot_dict);
   bool is_stroke_rect = border_width > 0;
@@ -574,12 +573,12 @@ bool GeneratePolygonAP(APGenerationTarget* target,
 
   RetainPtr<const CPDF_Array> interior_color = annot_dict->GetArrayFor("IC");
   app << GetColorStringWithDefault(interior_color.Get(),
-                                   CFX_Color(CFX_Color::Type::kTransparent),
+                                   CFX_Color::MakeTransparent(),
                                    PaintOperation::kFill);
 
   app << GetColorStringWithDefault(
       annot_dict->GetArrayFor(pdfium::annotation::kC).Get(),
-      CFX_Color(CFX_Color::Type::kRGB, 0, 0, 0), PaintOperation::kStroke);
+      CFX_Color::MakeRGB(0, 0, 0), PaintOperation::kStroke);
 
   const float border_w = GetBorderWidth(annot_dict);
   const bool do_stroke = border_w > 0;
@@ -664,7 +663,7 @@ bool GenerateLineAP(APGenerationTarget* target,
   }
   ap << GetColorStringWithDefault(
       annot_dict->GetArrayFor(pdfium::annotation::kC).Get(),
-      CFX_Color(CFX_Color::Type::kRGB, 0, 0, 0), PaintOperation::kStroke);
+      CFX_Color::MakeRGB(0, 0, 0), PaintOperation::kStroke);
 
   const float border_w = GetBorderWidth(annot_dict);
   if (border_w > 0) {
@@ -711,7 +710,7 @@ bool GeneratePolyLineAP(APGenerationTarget* target,
   }
   ap << GetColorStringWithDefault(
       annot_dict->GetArrayFor(pdfium::annotation::kC).Get(),
-      CFX_Color(CFX_Color::Type::kRGB, 0, 0, 0), PaintOperation::kStroke);
+      CFX_Color::MakeRGB(0, 0, 0), PaintOperation::kStroke);
 
   const float border_w = GetBorderWidth(annot_dict);
   if (border_w > 0) {
@@ -764,7 +763,7 @@ bool GenerateInkAP(APGenerationTarget* target,
   app_stream << "/" << kGSDictName << " gs ";
   app_stream << GetColorStringWithDefault(
       annot_dict->GetArrayFor(pdfium::annotation::kC).Get(),
-      CFX_Color(CFX_Color::Type::kRGB, 0, 0, 0), PaintOperation::kStroke);
+      CFX_Color::MakeRGB(0, 0, 0), PaintOperation::kStroke);
 
   app_stream << border_width << " w ";
 
@@ -817,13 +816,13 @@ bool GenerateSquareAP(APGenerationTarget* target,
   app_stream << "/" << kGSDictName << " gs ";
 
   RetainPtr<const CPDF_Array> interior_color = annot_dict->GetArrayFor("IC");
-  app_stream << GetColorStringWithDefault(
-      interior_color.Get(), CFX_Color(CFX_Color::Type::kTransparent),
-      PaintOperation::kFill);
+  app_stream << GetColorStringWithDefault(interior_color.Get(),
+                                          CFX_Color::MakeTransparent(),
+                                          PaintOperation::kFill);
 
   app_stream << GetColorStringWithDefault(
       annot_dict->GetArrayFor(pdfium::annotation::kC).Get(),
-      CFX_Color(CFX_Color::Type::kRGB, 0, 0, 0), PaintOperation::kStroke);
+      CFX_Color::MakeRGB(0, 0, 0), PaintOperation::kStroke);
 
   float border_width = GetBorderWidth(annot_dict);
   const bool is_stroke_rect = border_width > 0;

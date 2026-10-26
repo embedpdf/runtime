@@ -12,7 +12,6 @@
 #include "core/fpdfapi/page/cpdf_pageobject.h"
 #include "core/fpdfapi/parser/cpdf_dictionary.h"
 #include "core/fpdfapi/render/cpdf_renderoptions.h"
-#include "core/fxge/cfx_defaultrenderdevice.h"
 #include "core/fxge/cfx_renderdevice.h"
 #include "core/fxge/dib/cfx_dibitmap.h"
 #include "core/fxge/dib/fx_dib.h"
@@ -23,39 +22,26 @@
 #include "core/fxcrt/notreached.h"
 #endif
 
-namespace {
-
-#if BUILDFLAG(IS_WIN)
-constexpr bool kScaleDeviceBuffer = true;
-#else
-constexpr bool kScaleDeviceBuffer = false;
-#endif
-
-}  // namespace
-
 // static
 CFX_Matrix CPDF_DeviceBuffer::CalculateMatrix(CFX_RenderDevice* pDevice,
                                               const FX_RECT& rect,
-                                              int max_dpi,
-                                              bool scale) {
+                                              int max_dpi) {
   CFX_Matrix matrix;
   matrix.Translate(-rect.left, -rect.top);
-  if (scale) {
-    int horz_size = pDevice->GetDeviceCaps(FXDC_HORZ_SIZE);
-    int vert_size = pDevice->GetDeviceCaps(FXDC_VERT_SIZE);
-    if (horz_size && vert_size && max_dpi) {
-      int dpih =
-          pDevice->GetDeviceCaps(FXDC_PIXEL_WIDTH) * 254 / (horz_size * 10);
-      int dpiv =
-          pDevice->GetDeviceCaps(FXDC_PIXEL_HEIGHT) * 254 / (vert_size * 10);
-      if (dpih > max_dpi) {
-        matrix.Scale(static_cast<float>(max_dpi) / dpih, 1.0f);
-      }
-      if (dpiv > max_dpi) {
-        matrix.Scale(1.0f, static_cast<float>(max_dpi) / dpiv);
-      }
+#if BUILDFLAG(IS_WIN)
+  int horz_size = pDevice->GetHorzSize();
+  int vert_size = pDevice->GetVertSize();
+  if (horz_size && vert_size && max_dpi) {
+    int dpih = pDevice->GetWidth() * 254 / (horz_size * 10);
+    int dpiv = pDevice->GetHeight() * 254 / (vert_size * 10);
+    if (dpih > max_dpi) {
+      matrix.Scale(static_cast<float>(max_dpi) / dpih, 1.0f);
+    }
+    if (dpiv > max_dpi) {
+      matrix.Scale(1.0f, static_cast<float>(max_dpi) / dpiv);
     }
   }
+#endif  // BUILDFLAG(IS_WIN)
   return matrix;
 }
 
@@ -71,7 +57,7 @@ CPDF_DeviceBuffer::CPDF_DeviceBuffer(CPDF_RenderContext* context,
       object_(pObj),
       bitmap_(pdfium::MakeRetain<CFX_DIBitmap>()),
       rect_(rect),
-      matrix_(CalculateMatrix(pDevice, rect, max_dpi, kScaleDeviceBuffer)) {
+      matrix_(CalculateMatrix(pDevice, rect, max_dpi)) {
 }
 
 CPDF_DeviceBuffer::~CPDF_DeviceBuffer() = default;
@@ -89,7 +75,7 @@ RetainPtr<CFX_DIBitmap> CPDF_DeviceBuffer::Initialize() {
 }
 
 void CPDF_DeviceBuffer::OutputToDevice() {
-  if (device_->GetDeviceCaps(FXDC_RENDER_CAPS) & FXRC_GET_BITS) {
+  if (device_->RenderCapGetBits()) {
     if (matrix_.a == 1.0f && matrix_.d == 1.0f) {
       device_->SetDIBits(bitmap_, rect_.left, rect_.top);
       return;
@@ -112,7 +98,7 @@ void CPDF_DeviceBuffer::OutputToDevice() {
   }
   context_->GetBackgroundToBitmap(buffer, object_, matrix_);
   buffer->CompositeBitmap(0, 0, buffer->GetWidth(), buffer->GetHeight(),
-                          bitmap_, 0, 0, BlendMode::kNormal, nullptr, false);
+                          bitmap_, 0, 0, BlendMode::kNormal);
   device_->StretchDIBits(std::move(buffer), rect_.left, rect_.top,
                          rect_.Width(), rect_.Height());
 #else

@@ -18,11 +18,15 @@
 #include "core/fpdfapi/parser/cpdf_read_only_graph_guard.h"
 #include "core/fpdfapi/parser/cpdf_string.h"
 #include "core/fpdfapi/parser/cpdf_test_document.h"
+#include "core/fpdfapi/render/cpdf_rendercontext.h"
 #include "core/fpdfdoc/cpdf_annot.h"
 #include "core/fxcrt/bytestring.h"
 #include "core/fxcrt/compiler_specific.h"
 #include "core/fxcrt/retain_ptr.h"
 #include "core/fxcrt/widestring.h"
+#include "core/fxge/cfx_renderdevice.h"
+#include "core/fxge/dib/cfx_dibitmap.h"
+#include "core/fxge/dib/fx_dib.h"
 #include "testing/gtest/include/gtest/gtest.h"
 
 namespace {
@@ -77,6 +81,10 @@ ByteString GetRawContents(const CPDF_Annot* annotation) {
 WideString GetDecodedContents(const CPDF_Annot* annotation) {
   return annotation->GetAnnotDict()->GetUnicodeTextFor(
       pdfium::annotation::kContents);
+}
+
+FX_ARGB GetCenterPixel(const CFX_DIBitmap* bitmap) {
+  return FXARGB_GetDIB(bitmap->GetScanline(100).subspan<400, 4>());
 }
 
 }  // namespace
@@ -154,3 +162,70 @@ TEST_F(CPDFAnnotListTest, ConstructionPreservesDirectAnnotations) {
   EXPECT_EQ(annotation.Get(), annots->GetObjectAt(0).Get());
   EXPECT_EQ(last_obj_num, document_->GetLastObjNum());
 }
+
+TEST_F(CPDFAnnotListTest, ClosedPopupAppearanceObjects) {
+  AddTextAnnotation("Regression comment");
+  {
+    CPDF_AnnotList list(page_);
+    ASSERT_EQ(2u, list.Count());
+    // EmbedPDF(reads-dont-write): the text annotation's appearance is drawn
+    // from memory, so building the list writes none.
+    EXPECT_FALSE(list.GetAt(0)->GetAnnotDict()->KeyExist("AP"));
+    EXPECT_FALSE(list.GetAt(1)->GetAnnotDict()->KeyExist("AP"));
+  }
+  const uint32_t object_count = document_->GetLastObjNum();
+  for (int i = 0; i < 30; ++i) {
+    CPDF_AnnotList list(page_);
+    EXPECT_FALSE(list.GetAt(1)->GetAnnotDict()->KeyExist("AP"));
+    EXPECT_EQ(object_count, document_->GetLastObjNum());
+  }
+}
+
+class CPDFPopupRenderTest : public CPDFAnnotListTest,
+                            public testing::WithParamInterface<bool> {
+ protected:
+  bool UseRenderContext() const { return GetParam(); }
+
+  bool DrawPopup(CPDF_Annot* popup, CFX_RenderDevice* device) {
+    device->Clear(0xffffffff);
+    const CFX_Matrix matrix;
+    if (!UseRenderContext()) {
+      return popup->DrawAppearance(page_.Get(), device, matrix,
+                                   CPDF_Annot::AppearanceMode::kNormal);
+    }
+    CPDF_RenderContext context(document_.get(), nullptr, nullptr);
+    const bool result = popup->DrawInContext(
+        page_.Get(), &context, matrix, CPDF_Annot::AppearanceMode::kNormal);
+    context.Render(device, nullptr, nullptr, nullptr);
+    return result;
+  }
+};
+
+TEST_P(CPDFPopupRenderTest, PopupRendering) {
+  AddTextAnnotation("Regression comment");
+  CPDF_AnnotList list(page_);
+  ASSERT_EQ(2u, list.Count());
+  CPDF_Annot* popup = list.GetAt(1);
+  ASSERT_EQ(CPDF_Annot::Subtype::POPUP, popup->GetSubtype());
+  EXPECT_FALSE(popup->GetAnnotDict()->KeyExist("AP"));
+  auto bitmap = pdfium::MakeRetain<CFX_DIBitmap>();
+  ASSERT_TRUE(bitmap->Create(256, 256, FXDIB_Format::kBgra));
+  auto device = CFX_RenderDevice::CreateForBitmap(bitmap);
+  ASSERT_TRUE(device);
+  EXPECT_FALSE(DrawPopup(popup, device.get()));
+  EXPECT_EQ(0xffffffffu, GetCenterPixel(bitmap.Get()));
+  popup->SetOpenState(true);
+  EXPECT_TRUE(DrawPopup(popup, device.get()));
+  EXPECT_EQ(0xffffff00u, GetCenterPixel(bitmap.Get()));
+  ASSERT_TRUE(popup->GetAnnotDict()->KeyExist("AP"));
+  const uint32_t object_count = document_->GetLastObjNum();
+  popup->SetOpenState(false);
+  EXPECT_FALSE(DrawPopup(popup, device.get()));
+  EXPECT_EQ(0xffffffffu, GetCenterPixel(bitmap.Get()));
+  popup->SetOpenState(true);
+  EXPECT_TRUE(DrawPopup(popup, device.get()));
+  EXPECT_EQ(0xffffff00u, GetCenterPixel(bitmap.Get()));
+  EXPECT_EQ(object_count, document_->GetLastObjNum());
+}
+
+INSTANTIATE_TEST_SUITE_P(All, CPDFPopupRenderTest, testing::Bool());

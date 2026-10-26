@@ -12,6 +12,7 @@
 #include <cstdlib>
 #include <functional>
 #include <memory>
+#include <optional>
 #include <string>
 #include <type_traits>
 #include <vector>
@@ -329,12 +330,17 @@ class EPDFContentRewriteEmbedderTest
     }
   }
 
-  // Saves the document in full and opens the saved copy.
+  // Saves the document in full and opens the saved copy, until
+  // CloseSaved().
   void SaveAndReopen() {
     ClearString();
     ASSERT_TRUE(FPDF_SaveAsCopy(doc_.get(), this, FPDF_NO_INCREMENTAL));
-    ASSERT_TRUE(OpenSavedDocument());
+    saved_.reset();
+    saved_.emplace(OpenScopedSavedDocument());
+    ASSERT_TRUE(*saved_);
   }
+
+  void CloseSaved() { saved_.reset(); }
 
   void ChangeAndSave(const std::function<void()>& change) {
     Change(change);
@@ -365,19 +371,21 @@ class EPDFContentRewriteEmbedderTest
       FPDF_BITMAP before,
       const std::vector<FS_RECTF>& areas,
       const std::function<void(FPDF_DOCUMENT, FPDF_PAGE)>& inspect = {}) {
-    FPDF_PAGE saved = LoadSavedPage(index);
-    ASSERT_TRUE(saved);
-    ScopedFPDFBitmap after = RenderAtPageSize(saved);
-    std::string where;
-    EXPECT_EQ(0, CountChangedPixelsOutside(before, after.get(), areas, &where))
-        << where;
-    EXPECT_EQ(0, CountInkInside(after.get(), areas));
-    EXPECT_EQ(L"", TextInside(saved, areas));
-    if (inspect) {
-      inspect(saved_document(), saved);
+    {
+      ScopedSavedPage saved = LoadScopedSavedPage(index);
+      ASSERT_TRUE(saved);
+      ScopedFPDFBitmap after = RenderAtPageSize(saved.get());
+      std::string where;
+      EXPECT_EQ(0,
+                CountChangedPixelsOutside(before, after.get(), areas, &where))
+          << where;
+      EXPECT_EQ(0, CountInkInside(after.get(), areas));
+      EXPECT_EQ(L"", TextInside(saved.get(), areas));
+      if (inspect) {
+        inspect(saved_document(), saved.get());
+      }
     }
-    CloseSavedPage(saved);
-    CloseSavedDocument();
+    CloseSaved();
   }
 
   // Redacts `areas_of(page)` on page `index` of the test file `name` in one
@@ -440,6 +448,8 @@ class EPDFContentRewriteEmbedderTest
   }
 
   ScopedFPDFDocument doc_;
+  // The saved copy SaveAndReopen() opened, until CloseSaved().
+  std::optional<ScopedSavedDoc> saved_;
 
  private:
   std::vector<uint8_t> bytes_;
@@ -468,9 +478,9 @@ TEST_P(EPDFContentRewriteEmbedderTest, KeepsEveryColorSpace) {
             << content;
         EXPECT_NE(std::string::npos, content.find("/CSsep CS 1 SCN"))
             << content;
-        EXPECT_NE(std::string::npos, content.find("/CSdn cs .30000001 1 scn"))
+        EXPECT_NE(std::string::npos, content.find("/CSdn cs .3 1 scn"))
             << content;
-        EXPECT_NE(std::string::npos, content.find("/CSpat cs 0 .60000002 0 /"))
+        EXPECT_NE(std::string::npos, content.find("/CSpat cs 0 .6 0 /"))
             << content;
       });
 }
@@ -517,13 +527,14 @@ TEST_P(EPDFContentRewriteEmbedderTest, EditingAnAppearanceKeepsItsSpotColor) {
     ASSERT_TRUE(FPDFAnnot_UpdateObject(stamp.get(), object));
   });
 
-  FPDF_PAGE saved = LoadSavedPage(kAppearanceInASpotColor);
-  ASSERT_TRUE(saved);
-  ScopedFPDFBitmap after = RenderAtPageSize(saved);
-  EXPECT_EQ(0xff0000u, PixelAt(after.get(), 250, 535));
-  EXPECT_EQ(0, CountChangedPixelsOutside(before.get(), after.get(), {bar}));
-  CloseSavedPage(saved);
-  CloseSavedDocument();
+  {
+    ScopedSavedPage saved = LoadScopedSavedPage(kAppearanceInASpotColor);
+    ASSERT_TRUE(saved);
+    ScopedFPDFBitmap after = RenderAtPageSize(saved.get());
+    EXPECT_EQ(0xff0000u, PixelAt(after.get(), 250, 535));
+    EXPECT_EQ(0, CountChangedPixelsOutside(before.get(), after.get(), {bar}));
+  }
+  CloseSaved();
 }
 
 // A form with a /Matrix: its objects carry the matrix, so the content written
@@ -574,14 +585,15 @@ TEST_P(EPDFContentRewriteEmbedderTest,
     ASSERT_TRUE(FPDFPage_GenerateContent(page.get()));
   });
 
-  FPDF_PAGE saved = LoadSavedPage(0);
-  ASSERT_TRUE(saved);
-  ScopedFPDFBitmap after = RenderAtPageSize(saved);
-  EXPECT_EQ(0xffffffu, PixelAt(after.get(), 150, 333));
-  EXPECT_EQ(0,
-            CountChangedPixelsOutside(before.get(), after.get(), {underline}));
-  CloseSavedPage(saved);
-  CloseSavedDocument();
+  {
+    ScopedSavedPage saved = LoadScopedSavedPage(0);
+    ASSERT_TRUE(saved);
+    ScopedFPDFBitmap after = RenderAtPageSize(saved.get());
+    EXPECT_EQ(0xffffffu, PixelAt(after.get(), 150, 333));
+    EXPECT_EQ(
+        0, CountChangedPixelsOutside(before.get(), after.get(), {underline}));
+  }
+  CloseSaved();
 }
 
 // A soft mask set under a transform is placed by it.
@@ -727,10 +739,10 @@ TEST_P(EPDFContentRewriteEmbedderTest, KeepsICCBasedDefaultsAndCMYKPatterns) {
       kICCBasedDefaultsAndCMYKPattern, [](FPDF_DOCUMENT saved, FPDF_PAGE) {
         const std::string content =
             PageContent(saved, kICCBasedDefaultsAndCMYKPattern);
-        EXPECT_NE(std::string::npos, content.find("/CSicc cs .2 .40000001"))
+        EXPECT_NE(std::string::npos, content.find("/CSicc cs .2 .4"))
             << content;
         EXPECT_NE(std::string::npos,
-                  content.find("/CSpatk cs 0 .60000002 1 0 /"))
+                  content.find("/CSpatk cs 0 .6 1 0 /"))
             << content;
         RetainPtr<const CPDF_Dictionary> spaces =
             CPDFDocumentFromFPDFDocument(saved)
@@ -862,7 +874,7 @@ TEST_P(EPDFContentRewriteEmbedderTest, AnInactiveFormKeepsNothingItBorrowed) {
   ASSERT_TRUE(resources);
   RetainPtr<const CPDF_Dictionary> spaces = resources->GetDictFor("ColorSpace");
   EXPECT_FALSE(spaces && spaces->KeyExist("CSsep"));
-  CloseSavedDocument();
+  CloseSaved();
 }
 
 // An appearance borrows the page's Type3 font. Its glyph draws /FmG from the

@@ -35,6 +35,31 @@ v8::LocalVector<v8::Value> ExpandKeywordParams(
 
 bool IsExpandedParamKnown(v8::Local<v8::Value> value);
 
+// Object definition IDs for FXJS classes.
+// The sequence matches the registration order in
+// CJS_Runtime::DefineJSObjects().
+inline constexpr uint32_t kJSBorderObjDefnID = 1;
+inline constexpr uint32_t kJSDisplayObjDefnID = 2;
+inline constexpr uint32_t kJSFontObjDefnID = 3;
+inline constexpr uint32_t kJSHighlightObjDefnID = 4;
+inline constexpr uint32_t kJSPositionObjDefnID = 5;
+inline constexpr uint32_t kJSScaleHowObjDefnID = 6;
+inline constexpr uint32_t kJSScaleWhenObjDefnID = 7;
+inline constexpr uint32_t kJSStyleObjDefnID = 8;
+inline constexpr uint32_t kJSZoomtypeObjDefnID = 9;
+inline constexpr uint32_t kJSAppObjDefnID = 10;
+inline constexpr uint32_t kJSColorObjDefnID = 11;
+inline constexpr uint32_t kJSConsoleObjDefnID = 12;
+inline constexpr uint32_t kJSDocumentObjDefnID = 13;
+inline constexpr uint32_t kJSEventObjDefnID = 14;
+inline constexpr uint32_t kJSFieldObjDefnID = 15;
+inline constexpr uint32_t kJSGlobalObjDefnID = 16;
+inline constexpr uint32_t kJSIconObjDefnID = 17;
+inline constexpr uint32_t kJSUtilObjDefnID = 18;
+inline constexpr uint32_t kJSTimerObjDefnID = 19;
+inline constexpr uint32_t kJSAnnotObjDefnID = 20;
+static_assert(kJSAnnotObjDefnID + 1 == kMaxFxObjDefinitions);
+
 // All JS classes have a name, an object defintion ID, and the ability to
 // register themselves with FXJS_V8. We never make a BASE class on its own
 // because it can't really do anything.
@@ -52,12 +77,12 @@ static void JSConstructor(CFXJS_Engine* pEngine, v8::Local<v8::Object> obj) {
 void JSDestructor(v8::Local<v8::Object> obj);
 
 template <class C>
-UnownedPtr<C> JSGetObject(v8::Isolate* isolate, v8::Local<v8::Object> obj) {
+UnownedPtr<C> JSGetObject(v8::Local<v8::Object> obj) {
   CFXJS_PerObjectData* pData = CFXJS_PerObjectData::GetFromObject(obj);
   if (!pData) {
     return nullptr;
   }
-  if (pData->GetObjDefnID() != C::GetObjDefnID()) {
+  if (pData->GetObjDefnID() != C::kObjDefnId) {
     return nullptr;
   }
   CFXJS_PerObjectData::Binding* pBinding = pData->GetBinding();
@@ -72,23 +97,20 @@ void JSPropGetter(const char* prop_name_string,
                   const char* class_name_string,
                   v8::Local<v8::Name> property,
                   const v8::PropertyCallbackInfo<v8::Value>& info) {
-  auto pObj = JSGetObject<C>(info.GetIsolate(), info.HolderV2());
+  auto pObj = JSGetObject<C>(info.Holder());
   if (!pObj) {
     return;
   }
-
   CJS_Runtime* pRuntime = pObj->GetRuntime();
   if (!pRuntime) {
     return;
   }
-
   CJS_Result result = (pObj.get()->*M)(pRuntime);
   if (result.HasError()) {
     pRuntime->Error(JSFormatErrorString(class_name_string, prop_name_string,
                                         result.Error()));
     return;
   }
-
   if (result.HasReturn()) {
     info.GetReturnValue().Set(result.Return());
   }
@@ -99,17 +121,15 @@ void JSPropSetter(const char* prop_name_string,
                   const char* class_name_string,
                   v8::Local<v8::Name> property,
                   v8::Local<v8::Value> value,
-                  const v8::PropertyCallbackInfo<void>& info) {
-  auto pObj = JSGetObject<C>(info.GetIsolate(), info.HolderV2());
+                  const v8::PropertyCallbackInfo<v8::Boolean>& info) {
+  auto pObj = JSGetObject<C>(info.Holder());
   if (!pObj) {
     return;
   }
-
   CJS_Runtime* pRuntime = pObj->GetRuntime();
   if (!pRuntime) {
     return;
   }
-
   CJS_Result result = (pObj.get()->*M)(pRuntime, value);
   if (result.HasError()) {
     pRuntime->Error(JSFormatErrorString(class_name_string, prop_name_string,
@@ -122,7 +142,7 @@ template <class C,
 void JSMethod(const char* method_name_string,
               const char* class_name_string,
               const v8::FunctionCallbackInfo<v8::Value>& info) {
-  auto pObj = JSGetObject<C>(info.GetIsolate(), info.This());
+  auto pObj = JSGetObject<C>(info.This());
   if (!pObj) {
     return;
   }
@@ -159,7 +179,7 @@ void JSMethod(const char* method_name_string,
   }                                                             \
   static void set_##prop_name##_static(                         \
       v8::Local<v8::Name> property, v8::Local<v8::Value> value, \
-      const v8::PropertyCallbackInfo<void>& info) {             \
+      const v8::PropertyCallbackInfo<v8::Boolean>& info) {      \
     JSPropSetter<class_name, &class_name::set_##prop_name>(     \
         #err_name, class_name::kName, property, value, info);   \
   }

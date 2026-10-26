@@ -390,7 +390,8 @@ EPDFText_GetCharGeometry(FPDF_TEXTPAGE text_page,
     result.flags |= EPDF_CHARGEO_SPACE;
   }
   if (charinfo.char_type() == CPDF_TextPage::CharType::kGenerated ||
-      charinfo.char_type() == CPDF_TextPage::CharType::kPiece) {
+      charinfo.char_type() == CPDF_TextPage::CharType::kPiece ||
+      charinfo.char_type() == CPDF_TextPage::CharType::kActualText) {
     result.flags |= EPDF_CHARGEO_SYNTHESIZED;
   }
   if (IsUpright(charinfo.matrix())) {

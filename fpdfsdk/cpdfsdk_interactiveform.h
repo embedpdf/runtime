@@ -43,7 +43,7 @@ class CPDFSDK_InteractiveForm final
                   std::vector<ObservedPtr<CPDFSDK_Widget>>* widgets) const;
 
   void AddMap(CPDF_FormControl* pControl, CPDFSDK_Widget* pWidget);
-  void RemoveMap(CPDF_FormControl* pControl);
+  void RemoveMap(CPDF_FormControl* control);
 
   void EnableCalculate(bool bEnabled);
   bool IsCalculateEnabled() const;
@@ -56,7 +56,6 @@ class CPDFSDK_InteractiveForm final
   void SynchronizeField(CPDF_FormField* pFormField);
 #endif  // PDF_ENABLE_XFA
 
-  bool OnKeyStrokeCommit(CPDF_FormField* pFormField, const WideString& csValue);
   bool OnValidate(CPDF_FormField* pFormField, const WideString& csValue);
   void OnCalculate(CPDF_FormField* pFormField);
   std::optional<WideString> OnFormat(CPDF_FormField* pFormField);

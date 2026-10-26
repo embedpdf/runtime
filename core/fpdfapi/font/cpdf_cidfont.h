@@ -21,14 +21,14 @@
 #include "core/fxcrt/retain_ptr.h"
 #include "core/fxcrt/unowned_ptr.h"
 
-enum CIDSet : uint8_t {
-  CIDSET_UNKNOWN,
-  CIDSET_GB1,
-  CIDSET_CNS1,
-  CIDSET_JAPAN1,
-  CIDSET_KOREA1,
-  CIDSET_UNICODE,
-  CIDSET_NUM_SETS
+enum class CIDSet : uint8_t {
+  kUnknown,
+  kGB1,
+  kCNS1,
+  kJapan1,
+  kKorea1,
+  kUnicode,
+  kNumSets
 };
 
 struct CIDTransform {
@@ -46,6 +46,8 @@ class CPDF_CID2UnicodeMap;
 class CPDF_CMap;
 class CPDF_StreamAcc;
 
+// CID-keyed fonts, mapping multi-byte characters to glyphs using CMaps.
+// See ISO 32000-1:2008, section 9.7.2
 class CPDF_CIDFont final : public CPDF_Font {
  public:
   CONSTRUCT_VIA_MAKE_RETAIN;
@@ -54,11 +56,9 @@ class CPDF_CIDFont final : public CPDF_Font {
   static float CIDTransformToFloat(uint8_t ch);
 
   // CPDF_Font:
-  bool IsCIDFont() const override;
-  const CPDF_CIDFont* AsCIDFont() const override;
   CPDF_CIDFont* AsCIDFont() override;
   int GlyphFromCharCode(uint32_t charcode, bool* pVertGlyph) override;
-  int GetCharWidthF(uint32_t charcode) override;
+  int GetCharWidth(uint32_t charcode) override;
   FX_RECT GetCharBBox(uint32_t charcode) override;
   uint32_t GetNextChar(ByteStringView pString, size_t* pOffset) const override;
   size_t CountChar(ByteStringView pString) const override;
@@ -86,7 +86,7 @@ class CPDF_CIDFont final : public CPDF_Font {
   void LoadGB2312();
   int GetGlyphIndex(uint32_t unicodeb, bool* pVertGlyph);
   int GetVerticalGlyph(int index, bool* pVertGlyph);
-  void LoadSubstFont();
+  void LoadSubstFace();
   wchar_t GetUnicodeFromCharCode(uint32_t charcode) const;
 
   RetainPtr<const CPDF_CMap> cmap_;
@@ -102,7 +102,7 @@ class CPDF_CIDFont final : public CPDF_Font {
   int GlyphIndexFromCffCid(uint16_t cid);
   bool ansi_widths_fixed_ = false;
   bool adobe_courier_std_ = false;
-  CIDSet charset_ = CIDSET_UNKNOWN;
+  CIDSet charset_ = CIDSet::kUnknown;
   int16_t default_width_ = 1000;
   int16_t default_vy_ = 880;
   int16_t default_w1_ = -1000;

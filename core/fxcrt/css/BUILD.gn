@@ -50,16 +50,16 @@ source_set("css") {
     "cfx_cssvaluelist.h",
     "cfx_cssvaluelistparser.cpp",
     "cfx_cssvaluelistparser.h",
+    "properties.inc",
+    "property_values.inc",
   ]
   configs += [
     "../../../:pdfium_strict_config",
     "../../../:pdfium_noshorten_config",
   ]
-  deps = [
-    "../",
-    "../../fxge",
-  ]
+
   visibility = [ "../../../*" ]
+  public_deps = [ "../../fxcrt" ]
 }
 
 pdfium_unittest_source_set("unittests") {

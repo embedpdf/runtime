@@ -10,50 +10,69 @@
 #include <memory>
 #include <vector>
 
+#include "core/fxcodec/fx_codec_def.h"
 #include "core/fxcodec/gif/cfx_gif.h"
-#include "core/fxcodec/gif/gif_decoder.h"
 #include "core/fxcodec/gif/lzw_decompressor.h"
 #include "core/fxcodec/progressive_decoder_context.h"
 #include "core/fxcrt/compiler_specific.h"
+#include "core/fxcrt/data_vector.h"
+#include "core/fxcrt/fx_coordinates.h"
 #include "core/fxcrt/retain_ptr.h"
 #include "core/fxcrt/span.h"
 #include "core/fxcrt/unowned_ptr.h"
 
 class CFX_CodecMemory;
+class CFX_DIBitmap;
 
 namespace fxcodec {
 
+class ProgressiveDecoderContextDelegate;
+
 class CFX_GifContext : public ProgressiveDecoderContext {
  public:
-  explicit CFX_GifContext(GifDecoder::Delegate* delegate);
+  explicit CFX_GifContext(ProgressiveDecoderContextDelegate* delegate);
   ~CFX_GifContext() override;
 
   void ReadScanline(int32_t row_num, pdfium::span<uint8_t> row_buf);
   bool GetRecordPosition(uint32_t cur_pos,
-                         int32_t left,
-                         int32_t top,
-                         int32_t width,
-                         int32_t height,
+                         int32_t sub_left,
+                         int32_t sub_top,
+                         int32_t sub_width,
                          pdfium::span<CFX_GifPalette> pal,
                          int32_t trans_index);
-  GifDecoder::Status ReadHeader();
-  GifDecoder::Status GetFrame();
-  GifDecoder::Status LoadFrame(size_t frame_num);
+  ProgressiveDecoderContext::Status ReadHeader(int* width, int* height);
+  ProgressiveDecoderContext::Status ReadHeader();
+  ProgressiveDecoderContext::Status GetFrame();
+  ProgressiveDecoderContext::Status LoadFrame(size_t frame_num);
+
+  // ProgressiveDecoderContext:
+  FX_FILESIZE GetAvailInput() const override;
+  void Input(RetainPtr<CFX_CodecMemory> codec_memory) override;
+  Status DecodeImage() override;
+
+  FXCODEC_STATUS StartDecode(RetainPtr<CFX_DIBitmap> bitmap);
+  FXCODEC_STATUS ContinueDecode();
+
   void SetInputBuffer(RetainPtr<CFX_CodecMemory> codec_memory);
-  uint32_t GetAvailInput() const;
   size_t GetFrameNum() const { return images_.size(); }
 
-  UnownedPtr<GifDecoder::Delegate> const delegate_;
+  UnownedPtr<ProgressiveDecoderContextDelegate> const delegate_;
+  RetainPtr<CFX_DIBitmap> bitmap_;
   std::vector<CFX_GifPalette> global_palette_;
   uint8_t global_palette_exp_ = 0;
   uint32_t img_row_offset_ = 0;
   uint32_t img_row_avail_size_ = 0;
-  int32_t decode_status_ = GIF_D_STATUS_SIG;
+  GifDecoderStatus decode_status_ = GifDecoderStatus::kSig;
   std::unique_ptr<CFX_GifGraphicControlExtension> graphic_control_extension_;
   std::vector<std::unique_ptr<CFX_GifImage>> images_;
   std::unique_ptr<LZWDecompressor> lzw_decompressor_;
   int width_ = 0;
   int height_ = 0;
+  int img_left_ = 0;
+  int img_top_ = 0;
+  int img_width_ = 0;
+  int trans_index_ = -1;
+  DataVector<uint8_t> scanline_buf_;
   uint8_t bc_index_ = 0;
   uint8_t global_sort_flag_ = 0;
   uint8_t global_color_resolution_ = 0;
@@ -61,15 +80,15 @@ class CFX_GifContext : public ProgressiveDecoderContext {
 
  protected:
   bool ReadAllOrNone(pdfium::span<uint8_t> dest);
-  GifDecoder::Status ReadGifSignature();
-  GifDecoder::Status ReadLogicalScreenDescriptor();
+  ProgressiveDecoderContext::Status ReadGifSignature();
+  ProgressiveDecoderContext::Status ReadLogicalScreenDescriptor();
 
   RetainPtr<CFX_CodecMemory> input_buffer_;
 
  private:
-  void SaveDecodingStatus(int32_t status);
-  GifDecoder::Status DecodeExtension();
-  GifDecoder::Status DecodeImageInfo();
+  void SaveDecodingStatus(GifDecoderStatus status);
+  ProgressiveDecoderContext::Status DecodeExtension();
+  ProgressiveDecoderContext::Status DecodeImageInfo();
   void DecodingFailureAtTailCleanup(CFX_GifImage* gif_image);
   bool ScanForTerminalMarker();
   uint8_t GetPaletteExp(CFX_GifImage* gif_image) const;

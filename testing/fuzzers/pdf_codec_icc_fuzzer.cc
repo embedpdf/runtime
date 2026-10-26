@@ -5,19 +5,22 @@
 #include <cstdint>
 
 #include "core/fxcodec/icc/icc_transform.h"
+#include "core/fxcrt/compiler_specific.h"
 #include "core/fxcrt/span.h"
 
 extern "C" int LLVMFuzzerTestOneInput(const uint8_t* data, size_t size) {
+  // SAFETY: required from fuzzer API.
   std::unique_ptr<fxcodec::IccTransform> transform =
-      fxcodec::IccTransform::CreateTransformSRGB(pdfium::span(data, size));
+      fxcodec::IccTransform::CreateTransformSRGB(
+          UNSAFE_BUFFERS(pdfium::span(data, size)));
   if (!transform) {
     return 0;
   }
 
   const float src[4] = {0.5f, 0.5f, 0.5f, 0.5f};
-  float dst[4];
+  float dst[3];
   transform->Translate(
       pdfium::span(src).first(static_cast<size_t>(transform->components())),
-      pdfium::span(dst));
+      dst);
   return 0;
 }

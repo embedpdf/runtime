@@ -60,9 +60,8 @@ class PDFObjectsTest : public testing::Test {
     auto number_int_obj = pdfium::MakeRetain<CPDF_Number>(1245);
     auto number_float_obj = pdfium::MakeRetain<CPDF_Number>(9.00345f);
     // String objects.
-    auto str_reg_obj =
-        pdfium::MakeRetain<CPDF_String>(nullptr, L"A simple test");
-    auto str_spec_obj = pdfium::MakeRetain<CPDF_String>(nullptr, L"\t\n");
+    auto str_reg_obj = pdfium::MakeRetain<CPDF_String>(L"A simple test");
+    auto str_spec_obj = pdfium::MakeRetain<CPDF_String>(L"\t\n");
     // Name object.
     auto name_obj = pdfium::MakeRetain<CPDF_Name>(nullptr, "space");
     // Array object.
@@ -209,8 +208,8 @@ class PDFObjectsTest : public testing::Test {
 
 TEST_F(PDFObjectsTest, GetString) {
   static constexpr auto direct_obj_results = std::to_array<const char*>(
-      {"false", "true", "1245", "9.0034504", "A simple test", "\t\n", "space",
-       "", "", "", ""});
+      {"false", "true", "1245", "9.00345", "A simple test", "\t\n", "space", "",
+       "", "", ""});
   // Check for direct objects.
   for (size_t i = 0; i < direct_objs_.size(); ++i) {
     EXPECT_EQ(direct_obj_results[i], direct_objs_[i]->GetString());
@@ -554,9 +553,8 @@ TEST(PDFArrayTest, GetTypeAt) {
     for (size_t i = 0; i < vals.size(); ++i) {
       arr->InsertNewAt<CPDF_Number>(i, vals[i]);
     }
-    static constexpr auto expected_str =
-        std::to_array<const char*>({"0", "0", "10", "10", ".034499999",
-                                    "897.34003", "-2.5", "-1", "-345", "0"});
+    static constexpr auto expected_str = std::to_array<const char*>(
+        {"0", "0", "10", "10", ".0345", "897.34", "-2.5", "-1", "-345", "0"});
     for (size_t i = 0; i < vals.size(); ++i) {
       TestArrayAccessors(arr.Get(), i,     // Array and index.
                          expected_str[i],  // String value.
@@ -731,8 +729,8 @@ TEST(PDFArrayTest, GetTypeAt) {
     arr->InsertNewAt<CPDF_Reference>(13, &object_holder,
                                      stream_val->GetObjNum());
     static constexpr auto expected_str = std::to_array<const char*>(
-        {"true", "false", "0", "-1234", "2345", ".050000001", "",
-         "It is a test!", "NAME", "test", "", "", "", ""});
+        {"true", "false", "0", "-1234", "2345", ".05", "", "It is a test!",
+         "NAME", "test", "", "", "", ""});
     static constexpr auto expected_int = std::to_array<const int>(
         {1, 0, 0, -1234, 2345, 0, 0, 0, 0, 0, 0, 0, 0, 0});
     static constexpr auto expected_float = std::to_array<const float>(
@@ -810,8 +808,7 @@ TEST(PDFArrayTest, AddReferenceAndGetObjectAt) {
   auto boolean_obj = pdfium::MakeRetain<CPDF_Boolean>(true);
   auto int_obj = pdfium::MakeRetain<CPDF_Number>(-1234);
   auto float_obj = pdfium::MakeRetain<CPDF_Number>(2345.089f);
-  auto str_obj =
-      pdfium::MakeRetain<CPDF_String>(nullptr, "Adsfdsf 343434 %&&*\n");
+  auto str_obj = pdfium::MakeRetain<CPDF_String>("Adsfdsf 343434 %&&*\n");
   auto name_obj = pdfium::MakeRetain<CPDF_Name>(nullptr, "Title:");
   auto null_obj = pdfium::MakeRetain<CPDF_Null>();
   auto indirect_objs = std::to_array<RetainPtr<CPDF_Object>>(

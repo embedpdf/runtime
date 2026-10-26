@@ -15,11 +15,11 @@
 #include <vector>
 
 #include "core/fpdfapi/parser/cpdf_object.h"
+#include "core/fxcrt/bytestring_pool.h"
 #include "core/fxcrt/check.h"
 #include "core/fxcrt/fx_coordinates.h"
 #include "core/fxcrt/fx_string.h"
 #include "core/fxcrt/retain_ptr.h"
-#include "core/fxcrt/string_pool_template.h"
 #include "core/fxcrt/weak_ptr.h"
 
 class CPDF_IndirectObjectHolder;
@@ -48,6 +48,7 @@ class CPDF_Dictionary final : public CPDF_Object {
 
   bool IsLocked() const { return !!lock_count_; }
 
+  bool IsEmpty() const { return map_.empty(); }
   size_t size() const { return map_.size(); }
   RetainPtr<const CPDF_Object> GetObjectFor(ByteStringView key) const;
   RetainPtr<CPDF_Object> GetMutableObjectFor(ByteStringView key);

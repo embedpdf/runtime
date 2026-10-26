@@ -12,6 +12,7 @@
 #include <vector>
 
 #include "build/build_config.h"
+#include "constants/catalog.h"
 #include "constants/form_fields.h"
 #include "constants/form_flags.h"
 #include "constants/stream_dict_common.h"
@@ -307,8 +308,8 @@ FX_Charset GetNativeCharSet() {
 
 RetainPtr<CPDF_Dictionary> InitDict(CPDF_Document* document) {
   auto form_dict = document->NewIndirect<CPDF_Dictionary>();
-  document->GetMutableRoot()->SetNewFor<CPDF_Reference>("AcroForm", document,
-                                                        form_dict->GetObjNum());
+  document->GetMutableRoot()->SetNewFor<CPDF_Reference>(
+      pdfium::catalog::kAcroForm, document, form_dict->GetObjNum());
 
   ByteString base_name;
   FX_Charset charset = GetNativeCharSet();
@@ -327,11 +328,10 @@ RetainPtr<CPDF_Dictionary> InitDict(CPDF_Document* document) {
       }
     }
   }
-  ByteString default_appearance;
-  if (font) {
-    default_appearance = "/" + PDF_NameEncode(base_name) + " 12 Tf ";
-  }
-  default_appearance += "0 g";
+  ByteString default_appearance =
+      font ? ByteString(
+                 {'/', PDF_NameEncode(base_name).AsStringView(), " 12 Tf 0 g"})
+           : ByteString("0 g");
   form_dict->SetNewFor<CPDF_String>("DA", std::move(default_appearance));
   return form_dict;
 }
@@ -429,11 +429,11 @@ class CFieldTree {
 
     size_t CountFields() const { return CountFieldsInternal(); }
 
-    void SetField(std::unique_ptr<CPDF_FormField> field) {
+    void SetField(RetainPtr<CPDF_FormField> field) {
       field_ = std::move(field);
     }
 
-    CPDF_FormField* GetField() const { return field_.get(); }
+    CPDF_FormField* GetField() const { return field_.Get(); }
     WideString GetShortName() const { return short_name_; }
     int GetLevel() const { return level_; }
 
@@ -441,7 +441,7 @@ class CFieldTree {
     CPDF_FormField* GetFieldInternal(size_t* pFieldsToGo) {
       if (field_) {
         if (*pFieldsToGo == 0) {
-          return field_.get();
+          return field_.Get();
         }
 
         --*pFieldsToGo;
@@ -469,15 +469,14 @@ class CFieldTree {
 
     std::vector<std::unique_ptr<Node>> children_;
     WideString short_name_;
-    std::unique_ptr<CPDF_FormField> field_;
+    RetainPtr<CPDF_FormField> field_;
     const int level_;
   };
 
   CFieldTree();
   ~CFieldTree();
 
-  bool SetField(const WideString& full_name,
-                std::unique_ptr<CPDF_FormField> field);
+  bool SetField(const WideString& full_name, RetainPtr<CPDF_FormField> field);
   CPDF_FormField* GetField(const WideString& full_name);
 
   Node* GetRoot() { return root_.get(); }
@@ -525,7 +524,7 @@ CFieldTree::Node* CFieldTree::Lookup(Node* pParent, WideStringView short_name) {
 }
 
 bool CFieldTree::SetField(const WideString& full_name,
-                          std::unique_ptr<CPDF_FormField> field) {
+                          RetainPtr<CPDF_FormField> field) {
   if (full_name.IsEmpty()) {
     return false;
   }
@@ -603,7 +602,8 @@ CPDF_InteractiveForm::CPDF_InteractiveForm(CPDF_Document* document)
   }
 
   // EmbedPDF(reads-dont-write): read without the mutable getter.
-  RetainPtr<const CPDF_Dictionary> form_dict = pRoot->GetDictFor("AcroForm");
+  RetainPtr<const CPDF_Dictionary> form_dict =
+      pRoot->GetDictFor(pdfium::catalog::kAcroForm);
   if (!form_dict) {
     return;
   }
@@ -643,7 +643,7 @@ RetainPtr<CPDF_Font> CPDF_InteractiveForm::AddNativeInteractiveFormFont(
   DCHECK(name_tag);
 
   RetainPtr<CPDF_Dictionary> form_dict =
-      document->GetMutableRoot()->GetMutableDictFor("AcroForm");
+      document->GetMutableRoot()->GetMutableDictFor(pdfium::catalog::kAcroForm);
   if (!form_dict) {
     form_dict = InitDict(document);
   }
@@ -1028,10 +1028,10 @@ void CPDF_InteractiveForm::AddTerminalField(
 
   CPDF_FormField* field = field_tree_->GetField(field_name);
   if (!field) {
-    auto new_field = std::make_unique<CPDF_FormField>(
+    auto new_field = pdfium::MakeRetain<CPDF_FormField>(
         this, pdfium::WrapRetain(
                   const_cast<CPDF_Dictionary*>(field_storage_dict.Get())));
-    field = new_field.get();
+    field = new_field.Get();
     if (!field_tree_->SetField(field_name, std::move(new_field))) {
       return;
     }
@@ -1116,13 +1116,8 @@ bool CPDF_InteractiveForm::CheckRequiredFields(
 std::unique_ptr<CFDF_Document> CPDF_InteractiveForm::ExportToFDF(
     const WideString& pdf_path,
     bool skip_empty_required) const {
-  std::vector<CPDF_FormField*> fields;
-  CFieldTree::Node* pRoot = field_tree_->GetRoot();
-  const size_t nCount = pRoot->CountFields();
-  for (size_t i = 0; i < nCount; ++i) {
-    fields.push_back(pRoot->GetFieldAtIndex(i));
-  }
-  return ExportToFDF(pdf_path, fields, true, skip_empty_required);
+  return ExportToFDF(pdf_path, /*fields=*/{}, /*bIncludeOrExclude=*/false,
+                     skip_empty_required);
 }
 
 // EmbedPDF(forms-model): exports can keep required fields that are empty.

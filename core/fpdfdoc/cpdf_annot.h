@@ -198,14 +198,13 @@ class CPDF_Annot {
                                           size_t nIndex);
   static size_t QuadPointCount(const CPDF_Array* pArray);
 
-  // EmbedPDF(reads-dont-write): a popup PDFium makes for a markup annotation
-  // gets its appearance only when drawn, so building the annotation list for
-  // a render writes none for the closed ones.
+  // EmbedPDF(reads-dont-write): an annotation made to answer a question about
+  // its drawing, such as where it draws, gets its appearance only when drawn,
+  // so asking writes nothing.
   // When an annotation without an appearance gets one generated.
   enum class MissingAppearance {
     kGenerateNow,
-    // Only once it is drawn: for annotations PDFium makes itself, such as the
-    // popup of a markup annotation, which is drawn only once opened.
+    // Only once it is drawn.
     kGenerateWhenDrawn,
   };
 
@@ -223,6 +222,13 @@ class CPDF_Annot {
 
   bool IsHidden() const;
 
+  // EmbedPDF(bug-fix): whether the Invisible flag leaves |annot_dict| undrawn.
+  // ISO 32000-2 12.5.3 limits the flag to a type that isn't a standard one,
+  // which no handler draws; on a standard annotation it means nothing. Upstream
+  // drew such an unknown annotation anyway, and its flatten skipped every
+  // annotation with the flag. The renderer and flatten both ask here.
+  static bool IsHiddenByInvisibleFlag(const CPDF_Dictionary* annot_dict);
+
   // EmbedPDF(annot-appearance): draw this state of an appearance subdictionary
   // (/AP /N /Yes), whatever /AS says. Only a stored state is drawn: a mode
   // whose entry is a single stream, a state the subdictionary lacks, or no
@@ -239,6 +245,13 @@ class CPDF_Annot {
   // appearance into the file).
   std::optional<CFX_FloatRect> GetDrawingRect(AppearanceMode mode);
 
+  // EmbedPDF(annot-appearance, reads-dont-write): what flattening paints for
+  // an annotation without a stored appearance.
+  // The normal appearance PDFium draws in memory when there is no stored one,
+  // built without writing anything. This object keeps it, and the fonts it
+  // uses, alive. Null when there is a stored appearance or nothing to draw.
+  RetainPtr<const CPDF_Stream> GetAppearanceDrawnInMemory();
+
   bool DrawAppearance(CPDF_Page* pPage,
                       CFX_RenderDevice* pDevice,
                       const CFX_Matrix& mtUser2Device,
@@ -249,7 +262,6 @@ class CPDF_Annot {
                      AppearanceMode mode);
 
   void ClearCachedAP();
-  void DrawBorder(CFX_RenderDevice* pDevice, const CFX_Matrix* pUser2Device);
   CPDF_Form* GetAPForm(CPDF_Page* pPage, AppearanceMode mode);
   void SetOpenState(bool bOpenState) { open_state_ = bOpenState; }
   void SetPopupAnnotOpenState(bool bOpenState);

@@ -10,7 +10,9 @@
 
 #include "constants/form_flags.h"
 #include "core/fpdfapi/page/cpdf_page.h"
+#include "core/fxcrt/cfx_bidi_resolver.h"
 #include "core/fxcrt/check.h"
+#include "core/fxcrt/observed_ptr.h"
 #include "core/fxge/cfx_renderdevice.h"
 #include "fpdfsdk/cpdfsdk_pageview.h"
 #include "fpdfsdk/cpdfsdk_widget.h"
@@ -288,7 +290,12 @@ void CFFL_FormField::SetFocusForAnnot(CPDFSDK_Widget* pWidget,
                                       Mask<FWL_EVENTFLAG> nFlag) {
   CPDFSDK_PageView* pPageView =
       form_filler_->GetOrCreatePageView(pWidget->GetPage());
+
+  ObservedPtr<CFFL_FormField> observed_this(this);
   CPWL_Wnd* pWnd = CreateOrUpdatePWLWindow(pPageView);
+  if (!observed_this) {
+    return;
+  }
   if (pWnd) {
     pWnd->SetFocus();
   }
@@ -303,7 +310,15 @@ void CFFL_FormField::KillFocusForAnnot(Mask<FWL_EVENTFLAG> nFlag) {
   }
 
   CPDFSDK_PageView* pPageView = form_filler_->GetPageView(widget_->GetPage());
-  if (!pPageView || !CommitData(pPageView, nFlag)) {
+  if (!pPageView) {
+    return;
+  }
+
+  ObservedPtr<CFFL_FormField> observed_this(this);
+  if (!CommitData(pPageView, nFlag)) {
+    return;
+  }
+  if (!observed_this) {
     return;
   }
   if (CPWL_Wnd* pWnd = GetPWLWindow(pPageView)) {
@@ -334,26 +349,28 @@ CPWL_Wnd::CreateParams CFFL_FormField::GetCreateParam() {
 
   cp.rcRectWnd = GetPDFAnnotRect();
 
-  uint32_t dwCreateFlags = PWS_BORDER | PWS_BACKGROUND | PWS_VISIBLE;
-  uint32_t dwFieldFlag = widget_->GetFieldFlags();
-  if (dwFieldFlag & pdfium::form_flags::kReadOnly) {
-    dwCreateFlags |= PWS_READONLY;
+  fxcrt::Mask<CPWL_Wnd::Styles> create_flag = {
+      CPWL_Wnd::Styles::kWindowBorder, CPWL_Wnd::Styles::kWindowBackground,
+      CPWL_Wnd::Styles::kWindowVisible};
+  uint32_t field_flag = widget_->GetFieldFlags();
+  if (field_flag & pdfium::form_flags::kReadOnly) {
+    create_flag |= CPWL_Wnd::Styles::kWindowReadOnly;
   }
 
   std::optional<FX_COLORREF> color = widget_->GetFillColor();
   if (color.has_value()) {
-    cp.sBackgroundColor = CFX_Color(color.value());
+    cp.sBackgroundColor = CFX_Color::FromColorRef(color.value());
   }
   color = widget_->GetBorderColor();
   if (color.has_value()) {
-    cp.sBorderColor = CFX_Color(color.value());
+    cp.sBorderColor = CFX_Color::FromColorRef(color.value());
   }
 
-  cp.sTextColor = CFX_Color(CFX_Color::Type::kGray, 0);
+  cp.sTextColor = CFX_Color::MakeGray(0.0f);
 
   color = widget_->GetTextColor();
   if (color.has_value()) {
-    cp.sTextColor = CFX_Color(color.value());
+    cp.sTextColor = CFX_Color::FromColorRef(color.value());
   }
 
   cp.fFontSize = widget_->GetFontSize();
@@ -373,10 +390,10 @@ CPWL_Wnd::CreateParams CFFL_FormField::GetCreateParam() {
   }
 
   if (cp.fFontSize <= 0) {
-    dwCreateFlags |= PWS_AUTOFONTSIZE;
+    create_flag |= CPWL_Wnd::Styles::kWindowAutoFontSize;
   }
 
-  cp.dwFlags = dwCreateFlags;
+  cp.dwFlags = create_flag;
   return cp;
 }
 
@@ -507,41 +524,40 @@ bool CFFL_FormField::CommitData(const CPDFSDK_PageView* pPageView,
     return true;
   }
 
-  ObservedPtr<CPDFSDK_Widget> pObserved(widget_);
-  if (!form_filler_->OnKeyStrokeCommit(pObserved, pPageView, nFlag)) {
-    if (!pObserved) {
-      return false;
-    }
+  ObservedPtr<CFFL_FormField> observed_this(this);
+  ObservedPtr<CPDFSDK_Widget> observed_widget(widget_);
+  const bool keystroke_committed =
+      form_filler_->OnKeyStrokeCommit(observed_widget, pPageView, nFlag);
+  if (!observed_widget || !observed_this) {
+    return false;
+  }
+  if (!keystroke_committed) {
     ResetPWLWindow(pPageView);
-    return true;
-  }
-  if (!pObserved) {
-    return false;
+    return observed_this.HasObservable();
   }
 
-  if (!form_filler_->OnValidate(pObserved, pPageView, nFlag)) {
-    if (!pObserved) {
-      return false;
-    }
+  const bool validated =
+      form_filler_->OnValidate(observed_widget, pPageView, nFlag);
+  if (!observed_widget || !observed_this) {
+    return false;
+  }
+  if (!validated) {
     ResetPWLWindow(pPageView);
-    return true;
+    return observed_this.HasObservable();
   }
-  if (!pObserved) {
+
+  SaveData(pPageView);  // May invoke JS to delete this widget.
+  if (!observed_widget || !observed_this) {
     return false;
   }
 
-  SaveData(pPageView);  // may invoking JS to delete this widget.
-  if (!pObserved) {
+  form_filler_->OnCalculate(observed_widget);
+  if (!observed_widget || !observed_this) {
     return false;
   }
 
-  form_filler_->OnCalculate(pObserved);
-  if (!pObserved) {
-    return false;
-  }
-
-  form_filler_->OnFormat(pObserved);
-  if (!pObserved) {
+  form_filler_->OnFormat(observed_widget);
+  if (!observed_widget || !observed_this) {
     return false;
   }
 
@@ -567,7 +583,7 @@ void CFFL_FormField::SetChangeMark() {
 void CFFL_FormField::GetActionData(const CPDFSDK_PageView* pPageView,
                                    CPDF_AAction::AActionType type,
                                    CFFL_FieldAction& fa) {
-  fa.sValue = widget_->GetValue();
+  fa.value = widget_->GetValue();
 }
 
 void CFFL_FormField::SetActionData(const CPDFSDK_PageView* pPageView,
@@ -578,6 +594,14 @@ void CFFL_FormField::SavePWLWindowState(const CPDFSDK_PageView* pPageView) {}
 
 void CFFL_FormField::RecreatePWLWindowFromSavedState(
     const CPDFSDK_PageView* pPageView) {}
+
+void CFFL_FormField::UpdatePWLWindowTextDirection() {
+  CFX_BidiResolver::ParagraphDirection direction = widget_->GetTextDirection();
+
+  for (const auto& [page_view, wnd] : maps_) {
+    wnd->SetTextDirection(direction);
+  }
+}
 
 CFFL_PerWindowData* CFFL_FormField::GetPerPWLWindowData(
     const CPDFSDK_PageView* pPageView) {

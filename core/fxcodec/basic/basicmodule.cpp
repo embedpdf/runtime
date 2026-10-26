@@ -11,8 +11,9 @@
 
 #include "core/fxcodec/scanlinedecoder.h"
 #include "core/fxcrt/byteorder.h"
-#include "core/fxcrt/check.h"
+#include "core/fxcrt/check_op.h"
 #include "core/fxcrt/data_vector.h"
+#include "core/fxcrt/fx_ceil_div.h"
 #include "core/fxcrt/fx_safe_types.h"
 #include "core/fxcrt/numerics/safe_conversions.h"
 #include "core/fxcrt/raw_span.h"
@@ -81,11 +82,9 @@ bool RLScanlineDecoder::CheckDestSize() {
       break;
     }
   }
-  if (((uint32_t)orig_width_ * comps_ * bpc_ * orig_height_ + 7) / 8 >
-      dest_size) {
-    return false;
-  }
-  return true;
+  FX_SAFE_UINT32 bytes = line_bytes_;
+  bytes *= orig_height_;
+  return bytes.IsValid() && bytes.ValueOrDie() <= dest_size;
 }
 
 bool RLScanlineDecoder::Create(pdfium::span<const uint8_t> src_buf,
@@ -102,15 +101,14 @@ bool RLScanlineDecoder::Create(pdfium::span<const uint8_t> src_buf,
   FX_SAFE_UINT32 pitch = width;
   pitch *= nComps;
   pitch *= bpc;
-  pitch += 31;
-  pitch /= 32;
+  pitch = fxcrt::CeilDiv(pitch, 32);
   pitch *= 4;
   if (!pitch.IsValid()) {
     return false;
   }
   pitch_ = pitch.ValueOrDie();
   // Overflow should already have been checked before this is called.
-  line_bytes_ = (static_cast<uint32_t>(width) * nComps * bpc + 7) / 8;
+  line_bytes_ = fxcrt::CeilDiv(static_cast<uint32_t>(width) * nComps * bpc, 8);
   scanline_.resize(pitch_);
   return CheckDestSize();
 }
@@ -148,7 +146,7 @@ pdfium::span<uint8_t> RLScanlineDecoder::GetNextLine() {
       fxcrt::Copy(src_buf_.subspan(src_offset_, copy_len),
                   scan_span.subspan(col_pos));
       col_pos += copy_len;
-      UpdateOperator((uint8_t)copy_len);
+      UpdateOperator(pdfium::checked_cast<uint8_t>(copy_len));
     } else if (operator_ > 128) {
       int fill = 0;
       if (src_offset_ < src_buf_.size()) {
@@ -161,7 +159,7 @@ pdfium::span<uint8_t> RLScanlineDecoder::GetNextLine() {
       }
       std::ranges::fill(scan_span.subspan(col_pos, duplicate_len), fill);
       col_pos += duplicate_len;
-      UpdateOperator((uint8_t)duplicate_len);
+      UpdateOperator(pdfium::checked_cast<uint8_t>(duplicate_len));
     } else {
       eod_ = true;
       break;
@@ -187,7 +185,7 @@ void RLScanlineDecoder::UpdateOperator(uint8_t used_bytes) {
     return;
   }
   if (operator_ < 128) {
-    DCHECK((uint32_t)operator_ + 1 >= used_bytes);
+    DCHECK_GE(operator_ + 1, used_bytes);
     if (used_bytes == operator_ + 1) {
       src_offset_ += used_bytes;
       GetNextOperator();
@@ -201,7 +199,7 @@ void RLScanlineDecoder::UpdateOperator(uint8_t used_bytes) {
     return;
   }
   uint8_t count = 257 - operator_;
-  DCHECK((uint32_t)count >= used_bytes);
+  DCHECK_GE(count, used_bytes);
   if (used_bytes == count) {
     src_offset_++;
     GetNextOperator();
@@ -244,8 +242,7 @@ DataVector<uint8_t> BasicModule::RunLengthEncode(
   // 4 output chars for every 3 input, plus up to 4 more for the 1-2 chars
   // rounded off plus the terminating character.
   FX_SAFE_SIZE_T estimated_size = src_span.size();
-  estimated_size += 2;
-  estimated_size /= 3;
+  estimated_size = fxcrt::CeilDiv(estimated_size, 3);
   estimated_size *= 4;
   estimated_size += 1;
   DataVector<uint8_t> result(estimated_size.ValueOrDie());
@@ -361,7 +358,7 @@ DataVector<uint8_t> BasicModule::A85Encode(
     uint32_t val = 0;
     int count = 0;
     while (pos < src_span.size()) {
-      val += (uint32_t)(src_span[pos]) << (8 * (3 - count));
+      val += static_cast<uint32_t>(src_span[pos]) << (8 * (3 - count));
       count++;
       pos++;
     }

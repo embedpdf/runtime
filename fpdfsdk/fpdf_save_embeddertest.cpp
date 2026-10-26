@@ -2,15 +2,21 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
+#include <algorithm>
 #include <array>
+#include <iterator>
 #include <string>
+#include <utility>
 #include <vector>
 
+#include "core/fxcrt/fx_coordinates.h"
 #include "core/fxcrt/fx_string.h"
+#include "core/fxcrt/span.h"
 #include "public/cpp/fpdf_scopers.h"
 #include "public/fpdf_edit.h"
 #include "public/fpdf_ppo.h"
 #include "public/fpdf_save.h"
+#include "public/fpdf_text.h"
 #include "public/fpdfview.h"
 #include "testing/embedder_test.h"
 #include "testing/embedder_test_constants.h"
@@ -20,6 +26,7 @@
 #include "testing/utils/file_util.h"
 #include "testing/utils/path_service.h"
 
+using testing::ElementsAreArray;
 using testing::HasSubstr;
 using testing::Not;
 using testing::StartsWith;
@@ -117,10 +124,11 @@ TEST_F(FPDFSaveEmbedderTest, Bug42271133) {
   ASSERT_TRUE(page);
 
   // Arbitrarily remove the first page object.
-  auto text_object = FPDFPage_GetObject(page.get(), 0);
-  ASSERT_TRUE(text_object);
-  ASSERT_TRUE(FPDFPage_RemoveObject(page.get(), text_object));
-  FPDFPageObj_Destroy(text_object);
+  {
+    ScopedFPDFPageObject text_object(FPDFPage_GetObject(page.get(), 0));
+    ASSERT_TRUE(text_object);
+    ASSERT_TRUE(FPDFPage_RemoveObject(page.get(), text_object.get()));
+  }
 
   // Regenerate dirty stream and save the document.
   ASSERT_TRUE(FPDFPage_GenerateContent(page.get()));
@@ -168,7 +176,10 @@ TEST_F(FPDFSaveEmbedderTest, SaveLinearizedDoc) {
   EXPECT_THAT(GetString(), HasSubstr("36 0 obj"));
   EXPECT_THAT(GetString(), Not(HasSubstr("37 0 obj")));
   EXPECT_THAT(GetString(), Not(HasSubstr("38 0 obj")));
-  EXPECT_EQ(7986u, GetString().size());
+  // EmbedPDF(complete-xref): one subsection; 26 and 28 (the linearization
+  // dictionary), which the save doesn't reach, are free entries in it.
+  EXPECT_THAT(GetString(), HasSubstr("xref\r\n0 37\r\n0000000026 65535 f\r\n"));
+  EXPECT_EQ(7912u, GetString().size());
 
   // Make sure new document renders the same as the old one.
   ScopedSavedDoc saved_document = OpenScopedSavedDocument();
@@ -213,9 +224,9 @@ TEST_F(FPDFSaveEmbedderTest, SaveXFADoc) {
   ASSERT_TRUE(OpenDocument("simple_xfa.pdf"));
   EXPECT_TRUE(FPDF_SaveAsCopy(document(), this, 0));
   EXPECT_THAT(GetString(), StartsWith("%PDF-1.7\r\n"));
-  ASSERT_TRUE(OpenSavedDocument());
+  ScopedSavedDoc saved_document = OpenScopedSavedDocument();
+  ASSERT_TRUE(saved_document);
   // TODO(tsepez): check for XFA forms in document
-  CloseSavedDocument();
 }
 #endif  // PDF_ENABLE_XFA
 
@@ -232,7 +243,7 @@ TEST_F(FPDFSaveEmbedderTest, Bug905142) {
   EXPECT_THAT(GetString(), HasSubstr("/Length 0"));
 }
 
-// Should not trigger a DCHECK() failure in CFX_FileBufferArchive.
+// Should not trigger a DCHECK() failure in FileBufferArchive.
 // Fails because the PDF is malformed.
 TEST_F(FPDFSaveEmbedderTest, Bug1328389) {
   ASSERT_TRUE(OpenDocument("bug_1328389.pdf"));
@@ -317,15 +328,27 @@ TEST_F(FPDFSaveEmbedderTest, IncrementalSaveWithModifications) {
 
 class FPDFSaveWithFontSubsetEmbedderTest : public FPDFSaveEmbedderTest {
  public:
-  static constexpr char kSaveNewTextFilename[] = "save_new_text";
+  static constexpr std::array<FPDF_WCHAR, 38> kExpectedSingleTextAdded = {
+      // "Hello, world!\r\n"
+      'H', 'e', 'l', 'l', 'o', ',', ' ', 'w', 'o', 'r', 'l', 'd', '!', '\r',
+      '\n',
+      // "Goodbye, world!\r\n"
+      'G', 'o', 'o', 'd', 'b', 'y', 'e', ',', ' ', 'w', 'o', 'r', 'l', 'd', '!',
+      '\r', '\n',
+      // "这是第一句。", where U+F906 is a compatibility ideograph for U+53E5.
+      // TODO(crbug.com/554790604): The CMap generated for the subset font maps
+      // the last two charcodes twice, so which unicode text extraction returns
+      // is decided by the tie-break rather than by the font. U+4E00 is the
+      // better answer of the two for the fourth character, U+53E5 for the
+      // fifth; no single tie-break rule produces both.
+      0x8FD9, 0x662F, 0x7B2C, 0x4E00, 0xF906, 0x3002};
+  static constexpr std::array<FPDF_WCHAR, 14> kExpectedSecondTextAdded = {
+      // "Hello again.", where the space is U+00A0 for the same reason as
+      // above: this font's generated CMap also maps that charcode twice.
+      '\r',   '\n', 'H', 'e', 'l', 'l', 'o',
+      0x00A0, 'a',  'g', 'a', 'i', 'n', '.'};
 
-  ScopedFPDFFont LoadTestFont() {
-    std::string font_path = PathService::GetThirdPartyFilePath(
-        "NotoSansCJK/NotoSansSC-Regular.subset.otf");
-    if (font_path.empty()) {
-      return nullptr;
-    }
-
+  ScopedFPDFFont LoadTestFont(const std::string& font_path) {
     std::vector<uint8_t> font_data = GetFileContents(font_path.c_str());
     if (font_data.empty()) {
       return nullptr;
@@ -336,21 +359,43 @@ class FPDFSaveWithFontSubsetEmbedderTest : public FPDFSaveEmbedderTest {
         /*cid=*/true));
   }
 
-  void InsertNewTextObject(const FPDF_PAGE& page) {
-    ScopedFPDFFont font = LoadTestFont();
-    ASSERT_TRUE(font);
-
+  void InsertNewTextObject(const FPDF_PAGE& page,
+                           FPDF_FONT font,
+                           FPDF_WIDESTRING text,
+                           const CFX_PointF& point) {
     FPDF_PAGEOBJECT text_obj =
-        FPDFPageObj_CreateTextObj(document(), font.get(), 24.0f);
+        FPDFPageObj_CreateTextObj(document(), font, 24.0f);
 
-    // `text` only contains a subset of the characters in the test font.
-    ScopedFPDFWideString text = GetFPDFWideString(L"这是第一句。");
-    ASSERT_TRUE(FPDFText_SetText(text_obj, text.get()));
+    ASSERT_TRUE(FPDFText_SetText(text_obj, text));
 
-    const FS_MATRIX matrix{1, 0, 0, 1, 10, 10};
+    const FS_MATRIX matrix{1.0f, 0.0f, 0.0f, 1.0f, point.x, point.y};
     ASSERT_TRUE(FPDFPageObj_TransformF(text_obj, &matrix));
     FPDFPage_InsertObject(page, text_obj);
     ASSERT_TRUE(FPDFPage_GenerateContent(page));
+  }
+
+  // `expected` must not include the NUL terminator.
+  void TestExtractedFont(pdfium::span<const FPDF_WCHAR> expected) {
+    ScopedSavedDoc saved_doc = OpenScopedSavedDocument();
+    ASSERT_TRUE(saved_doc);
+    ScopedSavedPage saved_page = LoadScopedSavedPage(0);
+    ASSERT_TRUE(saved_page);
+    ScopedFPDFTextPage text_page(FPDFText_LoadPage(saved_page.get()));
+    ASSERT_TRUE(text_page);
+
+    size_t expected_size = expected.size();
+    int actual_count = FPDFText_CountChars(text_page.get());
+    ASSERT_EQ(static_cast<int>(expected_size), actual_count);
+
+    // Includes the NUL terminator.
+    std::vector<FPDF_WCHAR> actual_buffer(actual_count + 1);
+    ASSERT_EQ(actual_count + 1,
+              FPDFText_GetText(text_page.get(), 0, actual_count,
+                               actual_buffer.data()));
+
+    EXPECT_THAT(pdfium::span(actual_buffer).first(expected_size),
+                ElementsAreArray(expected));
+    EXPECT_EQ(0, actual_buffer.back());
   }
 };
 
@@ -366,10 +411,16 @@ TEST_F(FPDFSaveWithFontSubsetEmbedderTest, SaveWithoutSubsetWithNewText) {
   ScopedPage page = LoadScopedPage(0);
   ASSERT_TRUE(page);
 
-  ASSERT_NO_FATAL_FAILURE(InsertNewTextObject(page.get()));
+  ScopedFPDFFont font = LoadTestFont(PathService::GetThirdPartyFilePath(
+      "NotoSansCJK/NotoSansSC-Regular.subset.otf"));
+  ASSERT_TRUE(font);
 
-  ScopedFPDFBitmap bitmap = RenderLoadedPage(page.get());
-  CompareBitmapWithExpectationSuffix(bitmap.get(), kSaveNewTextFilename);
+  ScopedFPDFWideString text = GetFPDFWideString(L"这是第一句。");
+  ASSERT_NO_FATAL_FAILURE(InsertNewTextObject(
+      page.get(), font.get(), text.get(), CFX_PointF(10.0f, 10.0f)));
+
+  CompareDisplayList(RenderLoadedPageToDisplayList(page.get()),
+                     "save_new_text");
 
   // Verify the file grew enough to include the new text's font data without
   // depending on exact PDF serialization byte counts.
@@ -379,7 +430,9 @@ TEST_F(FPDFSaveWithFontSubsetEmbedderTest, SaveWithoutSubsetWithNewText) {
   EXPECT_LT(GetString().size(), 10000u);
 
   // Verify the text is visible.
-  VerifySavedDocumentWithExpectationSuffix(kSaveNewTextFilename);
+  VerifySavedDocumentWithDisplayList("save_new_text");
+
+  TestExtractedFont(kExpectedSingleTextAdded);
 }
 
 TEST_F(FPDFSaveWithFontSubsetEmbedderTest, SaveWithSubsetWithNewText) {
@@ -387,19 +440,76 @@ TEST_F(FPDFSaveWithFontSubsetEmbedderTest, SaveWithSubsetWithNewText) {
   ScopedPage page = LoadScopedPage(0);
   ASSERT_TRUE(page);
 
-  ASSERT_NO_FATAL_FAILURE(InsertNewTextObject(page.get()));
+  ScopedFPDFFont font = LoadTestFont(PathService::GetThirdPartyFilePath(
+      "NotoSansCJK/NotoSansSC-Regular.subset.otf"));
+  ASSERT_TRUE(font);
 
-  ScopedFPDFBitmap bitmap = RenderLoadedPage(page.get());
-  CompareBitmapWithExpectationSuffix(bitmap.get(), kSaveNewTextFilename);
+  ScopedFPDFWideString text = GetFPDFWideString(L"这是第一句。");
+  ASSERT_NO_FATAL_FAILURE(InsertNewTextObject(
+      page.get(), font.get(), text.get(), CFX_PointF(10.0f, 10.0f)));
 
-  // Verify the file grew enough to include the new text's font data without
-  // depending on exact PDF serialization byte counts.
+  CompareDisplayList(RenderLoadedPageToDisplayList(page.get()),
+                     "save_new_text");
+
+  // Verify the file size increase is smaller when subsetting the new text's
+  // font, since text only contains a subset of the characters in the test font.
+  // EmbedPDF: compared with the same save without subsetting, not an exact
+  // byte count: our full save serializes differently, and this CID-keyed CFF
+  // font keeps its FontFile2 form (see CPDF_FontSubsetter).
+  EXPECT_TRUE(FPDF_SaveAsCopy(document(), this, 0));
+  const size_t whole_font_size = GetString().size();
+  ClearString();
   EXPECT_TRUE(FPDF_SaveAsCopy(document(), this, FPDF_SUBSET_NEW_FONTS));
   EXPECT_THAT(GetString(), StartsWith("%PDF-1.7\r\n"));
-  // TODO(crbug.com/476127152): File size increase should be smaller.
-  EXPECT_GT(GetString().size(), 805u);
-  EXPECT_LT(GetString().size(), 10000u);
+  EXPECT_LT(GetString().size(), whole_font_size);
 
   // Verify the text is visible.
-  VerifySavedDocumentWithExpectationSuffix(kSaveNewTextFilename);
+  VerifySavedDocumentWithDisplayList("save_new_text");
+
+  TestExtractedFont(kExpectedSingleTextAdded);
+}
+
+TEST_F(FPDFSaveWithFontSubsetEmbedderTest,
+       SaveWithSubsetMultipleFontsMultipleTexts) {
+  ASSERT_TRUE(OpenDocument("hello_world.pdf"));
+  ScopedPage page = LoadScopedPage(0);
+  ASSERT_TRUE(page);
+
+  ScopedFPDFFont font1 = LoadTestFont(PathService::GetThirdPartyFilePath(
+      "NotoSansCJK/NotoSansSC-Regular.subset.otf"));
+  ASSERT_TRUE(font1);
+
+  ScopedFPDFWideString text1 = GetFPDFWideString(L"这是第一句。");
+  ASSERT_NO_FATAL_FAILURE(InsertNewTextObject(
+      page.get(), font1.get(), text1.get(), CFX_PointF(10.0f, 10.0f)));
+
+  ScopedFPDFFont font2 = LoadTestFont(PathService::GetThirdPartyFilePath(
+      "test_fonts/test_fonts/Arimo-Regular.ttf"));
+  ASSERT_TRUE(font2);
+
+  ScopedFPDFWideString text2 = GetFPDFWideString(L"Hello again.");
+  ASSERT_NO_FATAL_FAILURE(InsertNewTextObject(
+      page.get(), font2.get(), text2.get(), CFX_PointF(10.0f, 150.0f)));
+
+  CompareDisplayList(RenderLoadedPageToDisplayList(page.get()),
+                     "save_multiple_fonts");
+
+  EXPECT_TRUE(FPDF_SaveAsCopy(document(), this, FPDF_SUBSET_NEW_FONTS));
+  EXPECT_THAT(GetString(), StartsWith("%PDF-1.7\r\n"));
+  // Subsetting reduces the file from ~259KB to ~12KB. Allow a tolerance of
+  // +/- 500 bytes to accommodate any potential internal changes.
+  EXPECT_NEAR(GetString().size(), 12000u, 500u);
+
+  // Verify the text is visible.
+  VerifySavedDocumentWithDisplayList("save_multiple_fonts");
+
+  std::vector<FPDF_WCHAR> expected_multiple_text_added;
+  expected_multiple_text_added.reserve(kExpectedSingleTextAdded.size() +
+                                       kExpectedSecondTextAdded.size());
+  std::ranges::copy(kExpectedSingleTextAdded,
+                    std::back_inserter(expected_multiple_text_added));
+  std::ranges::copy(kExpectedSecondTextAdded,
+                    std::back_inserter(expected_multiple_text_added));
+
+  TestExtractedFont(expected_multiple_text_added);
 }

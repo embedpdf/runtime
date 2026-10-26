@@ -32,6 +32,7 @@ class CPDF_ContentMarks {
   const CPDF_ContentMarkItem* GetItem(size_t index) const;
 
   void AddMark(ByteString name);
+  void AddExistingMark(RetainPtr<CPDF_ContentMarkItem> mark);
   void AddMarkWithDirectDict(ByteString name, RetainPtr<CPDF_Dictionary> dict);
   void AddMarkWithPropertiesHolder(const ByteString& name,
                                    RetainPtr<CPDF_Dictionary> dict,
@@ -51,12 +52,13 @@ class CPDF_ContentMarks {
 
     int GetMarkedContentID() const;
     void AddMark(ByteString name);
+    void AddExistingMark(RetainPtr<CPDF_ContentMarkItem> mark);
     void AddMarkWithDirectDict(ByteString name,
                                RetainPtr<CPDF_Dictionary> dict);
     void AddMarkWithPropertiesHolder(const ByteString& name,
                                      RetainPtr<CPDF_Dictionary> dict,
                                      const ByteString& property_name);
-    bool RemoveMark(CPDF_ContentMarkItem* pMarkItem);
+    bool RemoveMark(CPDF_ContentMarkItem* mark_item);
 
    private:
     MarkData();

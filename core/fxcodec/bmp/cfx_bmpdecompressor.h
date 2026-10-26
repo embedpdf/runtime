@@ -11,8 +11,8 @@
 
 #include <vector>
 
-#include "core/fxcodec/bmp/bmp_decoder.h"
 #include "core/fxcodec/bmp/fx_bmp.h"
+#include "core/fxcodec/progressive_decoder_context.h"
 #include "core/fxcrt/data_vector.h"
 #include "core/fxcrt/retain_ptr.h"
 #include "core/fxcrt/span.h"
@@ -30,8 +30,8 @@ class CFX_BmpDecompressor {
   explicit CFX_BmpDecompressor(const CFX_BmpContext* context);
   ~CFX_BmpDecompressor();
 
-  BmpDecoder::Status DecodeImage();
-  BmpDecoder::Status ReadHeader();
+  ProgressiveDecoderContext::Status DecodeImage();
+  ProgressiveDecoderContext::Status ReadHeader();
   void SetInputBuffer(RetainPtr<CFX_CodecMemory> codec_memory);
   FX_FILESIZE GetAvailInput() const;
 
@@ -39,7 +39,6 @@ class CFX_BmpDecompressor {
   uint32_t width() const { return width_; }
   uint32_t height() const { return height_; }
   int32_t components() const { return components_; }
-  bool img_tb_flag() const { return img_tb_flag_; }
   int32_t dpi_x() const { return dpi_x_; }
   int32_t dpi_y() const { return dpi_y_; }
 
@@ -54,16 +53,16 @@ class CFX_BmpDecompressor {
 
   enum class PalType : bool { kNew, kOld };
 
-  BmpDecoder::Status ReadBmpHeader();
-  BmpDecoder::Status ReadBmpHeaderIfh();
-  BmpDecoder::Status ReadBmpHeaderDimensions();
-  BmpDecoder::Status ReadBmpBitfields();
-  BmpDecoder::Status ReadBmpPalette();
+  ProgressiveDecoderContext::Status ReadBmpHeader();
+  ProgressiveDecoderContext::Status ReadBmpHeaderIfh();
+  ProgressiveDecoderContext::Status ReadBmpHeaderDimensions();
+  ProgressiveDecoderContext::Status ReadBmpBitfields();
+  ProgressiveDecoderContext::Status ReadBmpPalette();
   bool GetDataPosition(uint32_t cur_pos);
   void ReadNextScanline();
-  BmpDecoder::Status DecodeRGB();
-  BmpDecoder::Status DecodeRLE8();
-  BmpDecoder::Status DecodeRLE4();
+  ProgressiveDecoderContext::Status DecodeRGB();
+  ProgressiveDecoderContext::Status DecodeRLE8();
+  ProgressiveDecoderContext::Status DecodeRLE4();
   bool ReadAllOrNone(pdfium::span<uint8_t> buf);
   void SaveDecodingStatus(DecodeStatus status);
   bool ValidateColorIndex(uint8_t val) const;

@@ -12,6 +12,7 @@
 #include <utility>
 
 #include "core/fxcrt/check.h"
+#include "core/fxcrt/check_op.h"
 #include "core/fxcrt/compiler_specific.h"
 #include "core/fxcrt/css/cfx_csscomputedstyle.h"
 #include "core/fxcrt/css/cfx_cssstyleselector.h"
@@ -517,7 +518,7 @@ float CXFA_TextLayout::Layout(const CFX_SizeF& size) {
 }
 
 bool CXFA_TextLayout::LayoutInternal(size_t szBlockIndex) {
-  DCHECK(szBlockIndex < CountBlocks());
+  DCHECK_LT(szBlockIndex, CountBlocks());
 
   if (!loader_ || loader_->fWidth < 1) {
     return false;
@@ -757,19 +758,10 @@ void CXFA_TextLayout::LoadText(CXFA_Node* pNode,
   float fSpaceAbove = 0;
   if (para) {
     fSpaceAbove = para->GetSpaceAbove();
-    if (fSpaceAbove < 0.1f) {
+    if (fSpaceAbove >= 0.1f) {
+      *pLinePos += fSpaceAbove;
+    } else {
       fSpaceAbove = 0;
-    }
-
-    switch (para->GetVerticalAlign()) {
-      case XFA_AttributeValue::Top:
-      case XFA_AttributeValue::Middle:
-      case XFA_AttributeValue::Bottom: {
-        *pLinePos += fSpaceAbove;
-        break;
-      }
-      default:
-        NOTREACHED();
     }
   }
 

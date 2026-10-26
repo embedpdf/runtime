@@ -27,12 +27,15 @@ source_set("font") {
     "../../../:pdfium_noshorten_config",
     "../../:xfa_warnings",
   ]
+  public_deps = [
+    "../../../core/fxcrt",
+    "../../../core/fxge",
+  ]
   deps = [
+    "../../../constants",
     "../../../core/fpdfapi/font",
     "../../../core/fpdfapi/page",
     "../../../core/fpdfapi/parser",
-    "../../../core/fxcrt",
-    "../../../core/fxge",
   ]
   visibility = [ "../../../*" ]
 }
@@ -45,6 +48,7 @@ pdfium_unittest_source_set("unittests") {
   deps = [
     ":font",
     "../../../core/fxcrt",
+    "../../../core/fxge",
   ]
   pdfium_root_dir = "../../../"
 }

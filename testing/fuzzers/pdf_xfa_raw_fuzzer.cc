@@ -6,7 +6,9 @@
 
 #include <cctype>
 #include <string>
+#include <string_view>
 
+#include "core/fxcrt/compiler_specific.h"
 #include "public/fpdf_formfill.h"
 #include "testing/fuzzers/pdf_fuzzer_templates.h"
 #include "testing/fuzzers/pdfium_fuzzer_helper.h"
@@ -39,7 +41,8 @@ bool IsValidForFuzzing(const uint8_t* data, size_t size) {
   bool is_open = false;
   size_t tag_size = 0;
   for (size_t i = 0; i < size; i++) {
-    if (!std::isspace(ptr[i]) && !std::isprint(ptr[i])) {
+    if (!std::isspace(UNSAFE_TODO(ptr[i])) &&
+        !std::isprint(UNSAFE_TODO(ptr[i]))) {
       return false;
     }
 
@@ -51,17 +54,17 @@ bool IsValidForFuzzing(const uint8_t* data, size_t size) {
     // may play a role, or other tags, e.g. "Javascript" will end up triggering
     // large explorations of v8 code. The alternative we considered were
     // "<script"
-    if (i + 6 < size && memcmp(ptr + i, "script", 6) == 0) {
+    if (i + 6 < size && UNSAFE_TODO(memcmp(ptr + i, "script", 6)) == 0) {
       return false;
     }
 
-    if (ptr[i] == '<') {
+    if (UNSAFE_TODO(ptr[i]) == '<') {
       if (is_open) {
         return false;
       }
       is_open = true;
       tag_size = 0;
-    } else if (ptr[i] == '>') {
+    } else if (UNSAFE_TODO(ptr[i]) == '>') {
       if (!is_open || tag_size == 0) {
         return false;
       }
@@ -79,15 +82,27 @@ extern "C" int LLVMFuzzerTestOneInput(const uint8_t* data, size_t size) {
   if (!IsValidForFuzzing(data, size)) {
     return 0;
   }
-  std::string xfa_string = "<xdp xmlns=\"http://ns.adobe.com/xdp/\">";
-  xfa_string += std::string(reinterpret_cast<const char*>(data), size);
-  xfa_string += "</xdp>";
+  static constexpr std::string_view kPrefix =
+      "<xdp xmlns=\"http://ns.adobe.com/xdp/\">";
+  static constexpr std::string_view kSuffix = "</xdp>";
+  static constexpr std::string_view kTemplate = kSimplePdfTemplate;
+
+  std::string_view data_view(reinterpret_cast<const char*>(data), size);
+
+  std::string xfa_string;
+  xfa_string.reserve(kPrefix.size() + data_view.size() + kSuffix.size());
+  xfa_string.append(kPrefix);
+  xfa_string.append(data_view);
+  xfa_string.append(kSuffix);
 
   // Add 1 for newline before endstream.
   std::string xfa_stream_len = std::to_string(xfa_string.size() + 1);
 
   // Compose the fuzzer
-  std::string xfa_final_str = std::string(kSimplePdfTemplate);
+  std::string xfa_final_str;
+  xfa_final_str.reserve(
+      kTemplate.size() + xfa_stream_len.size() + xfa_string.size());
+  xfa_final_str = kTemplate;
   xfa_final_str.replace(xfa_final_str.find("$1"), 2, xfa_stream_len);
   xfa_final_str.replace(xfa_final_str.find("$2"), 2, xfa_string);
 

@@ -9,16 +9,16 @@
 EpdfHasher::EpdfHasher(int algorithm) : algorithm_(algorithm) {
   switch (algorithm_) {
     case EPDF_DIGEST_SHA1:
-      CRYPT_SHA1Start(&sha1_);
+      CryptSha1Start(&sha1_);
       break;
     case EPDF_DIGEST_SHA256:
-      CRYPT_SHA256Start(&sha2_);
+      CryptSha256Start(&sha2_);
       break;
     case EPDF_DIGEST_SHA384:
-      CRYPT_SHA384Start(&sha2_);
+      CryptSha384Start(&sha2_);
       break;
     case EPDF_DIGEST_SHA512:
-      CRYPT_SHA512Start(&sha2_);
+      CryptSha512Start(&sha2_);
       break;
   }
 }
@@ -42,16 +42,16 @@ std::optional<size_t> EpdfHasher::DigestSize(int algorithm) {
 void EpdfHasher::Update(pdfium::span<const uint8_t> data) {
   switch (algorithm_) {
     case EPDF_DIGEST_SHA1:
-      CRYPT_SHA1Update(&sha1_, data);
+      CryptSha1Update(&sha1_, data);
       break;
     case EPDF_DIGEST_SHA256:
-      CRYPT_SHA256Update(&sha2_, data);
+      CryptSha256Update(&sha2_, data);
       break;
     case EPDF_DIGEST_SHA384:
-      CRYPT_SHA384Update(&sha2_, data);
+      CryptSha384Update(&sha2_, data);
       break;
     case EPDF_DIGEST_SHA512:
-      CRYPT_SHA512Update(&sha2_, data);
+      CryptSha512Update(&sha2_, data);
       break;
   }
 }
@@ -59,16 +59,16 @@ void EpdfHasher::Update(pdfium::span<const uint8_t> data) {
 void EpdfHasher::Finish(pdfium::span<uint8_t> out) {
   switch (algorithm_) {
     case EPDF_DIGEST_SHA1:
-      CRYPT_SHA1Finish(&sha1_, out.first<20>());
+      CryptSha1Finish(&sha1_, out.first<20>());
       break;
     case EPDF_DIGEST_SHA256:
-      CRYPT_SHA256Finish(&sha2_, out.first<32>());
+      CryptSha256Finish(&sha2_, out.first<32>());
       break;
     case EPDF_DIGEST_SHA384:
-      CRYPT_SHA384Finish(&sha2_, out.first<48>());
+      CryptSha384Finish(&sha2_, out.first<48>());
       break;
     case EPDF_DIGEST_SHA512:
-      CRYPT_SHA512Finish(&sha2_, out.first<64>());
+      CryptSha512Finish(&sha2_, out.first<64>());
       break;
   }
 }

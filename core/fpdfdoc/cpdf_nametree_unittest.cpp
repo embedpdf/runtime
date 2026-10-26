@@ -3,6 +3,8 @@
 // found in the LICENSE file.
 
 #include "core/fpdfdoc/cpdf_nametree.h"
+
+#include "constants/catalog.h"
 #include "core/fpdfapi/parser/cpdf_array.h"
 #include "core/fpdfapi/parser/cpdf_dictionary.h"
 #include "core/fpdfapi/parser/cpdf_number.h"
@@ -41,10 +43,12 @@ void CheckLimitsArray(const CPDF_Dictionary* node,
   ASSERT_TRUE(node);
   RetainPtr<const CPDF_Array> limits = node->GetArrayFor("Limits");
   ASSERT_TRUE(limits);
-  EXPECT_EQ(2u, limits->size());
+
+  // Sorted, but not always truncated.
+  EXPECT_GE(limits->size(), 2u);
   RetainPtr<const CPDF_String> left = limits->GetStringAt(0);
-  ASSERT_TRUE(left);
   RetainPtr<const CPDF_String> right = limits->GetStringAt(1);
+  ASSERT_TRUE(left);
   ASSERT_TRUE(right);
   EXPECT_EQ(least, left->GetString());
   EXPECT_EQ(greatest, right->GetString());
@@ -105,7 +109,7 @@ void FillNameTreeDict(CPDF_Dictionary* pRootDict) {
 TEST(CPDFNameTreeTest, GetUnicodeNameWithBOM) {
   // Set up the root dictionary with a Names array.
   auto pRootDict = pdfium::MakeRetain<CPDF_Dictionary>();
-  auto pNames = pRootDict->SetNewFor<CPDF_Array>("Names");
+  auto pNames = pRootDict->SetNewFor<CPDF_Array>(pdfium::catalog::kNames);
 
   // Add the key "1" (with BOM) and value 100 into the array.
   static constexpr uint8_t kData[] = {0xFE, 0xFF, 0x00, 0x31};
@@ -126,34 +130,59 @@ TEST(CPDFNameTreeTest, GetUnicodeNameWithBOM) {
 }
 
 TEST(CPDFNameTreeTest, GetFromTreeWithLimitsArrayWith4Items) {
-  // After creating a name tree, mutate a /Limits array so it has excess
-  // elements.
   auto pRootDict = pdfium::MakeRetain<CPDF_Dictionary>();
   FillNameTreeDict(pRootDict.Get());
   RetainPtr<CPDF_Dictionary> pKid1 =
       pRootDict->GetMutableArrayFor("Kids")->GetMutableDictAt(0);
+
+  // GrandKid2 is an intermediate node.
+  RetainPtr<CPDF_Dictionary> pGrandKid2 =
+      pKid1->GetMutableArrayFor("Kids")->GetMutableDictAt(0);
+  RetainPtr<CPDF_Array> pGrandKid2Limits =
+      pGrandKid2->GetMutableArrayFor("Limits");
+  ASSERT_EQ(2u, pGrandKid2Limits->size());
+  pGrandKid2Limits->AppendNew<CPDF_Number>(5);
+  pGrandKid2Limits->AppendNew<CPDF_Number>(6);
+  ASSERT_EQ(4u, pGrandKid2Limits->size());
+
+  // GrandKid3 is a leaf node.
   RetainPtr<CPDF_Dictionary> pGrandKid3 =
       pKid1->GetMutableArrayFor("Kids")->GetMutableDictAt(1);
-  RetainPtr<CPDF_Array> pLimits = pGrandKid3->GetMutableArrayFor("Limits");
-  ASSERT_EQ(2u, pLimits->size());
-  pLimits->AppendNew<CPDF_Number>(5);
-  pLimits->AppendNew<CPDF_Number>(6);
-  ASSERT_EQ(4u, pLimits->size());
+  RetainPtr<CPDF_Array> pGrandKid3Limits =
+      pGrandKid3->GetMutableArrayFor("Limits");
+  ASSERT_EQ(2u, pGrandKid3Limits->size());
+  pGrandKid3Limits->AppendNew<CPDF_Number>(5);
+  pGrandKid3Limits->AppendNew<CPDF_Number>(6);
+  ASSERT_EQ(4u, pGrandKid3Limits->size());
+
   std::unique_ptr<CPDF_NameTree> name_tree =
       CPDF_NameTree::CreateForTesting(pRootDict.Get());
 
+  // 1. Lookup-only on leaf node: should NOT trim limits.
   RetainPtr<const CPDF_Number> pNumber =
       ToNumber(name_tree->LookupValue(L"9.txt"));
   ASSERT_TRUE(pNumber);
   EXPECT_EQ(999, pNumber->GetInteger());
-  CheckLimitsArray(pKid1.Get(), "1.txt", "9.txt");
-  CheckLimitsArray(pGrandKid3.Get(), "9.txt", "9.txt");
+  EXPECT_EQ(4u, pGrandKid3Limits->size());
+
+  // 2. Lookup-only on intermediate node: should NOT trim limits.
+  pNumber = ToNumber(name_tree->LookupValue(L"2.txt"));
+  ASSERT_TRUE(pNumber);
+  EXPECT_EQ(222, pNumber->GetInteger());
+  EXPECT_EQ(4u, pGrandKid2Limits->size());
+
+  // 3. Insertion: should trim traversed intermediate node limits to 2,
+  // and also leaf node limits to 2 (because it is visited during search).
+  EXPECT_TRUE(name_tree->AddValueAndName(pdfium::MakeRetain<CPDF_Number>(150),
+                                         L"1a.txt"));
+  EXPECT_EQ(2u, pGrandKid2Limits->size());
+  EXPECT_EQ(2u, pGrandKid3Limits->size());
 }
 
 TEST(CPDFNameTreeTest, AddIntoNames) {
   // Set up a name tree with a single Names array.
   auto pRootDict = pdfium::MakeRetain<CPDF_Dictionary>();
-  auto pNames = pRootDict->SetNewFor<CPDF_Array>("Names");
+  auto pNames = pRootDict->SetNewFor<CPDF_Array>(pdfium::catalog::kNames);
   AddNameKeyValue(pNames.Get(), "2.txt", 222);
   AddNameKeyValue(pNames.Get(), "7.txt", 777);
 
@@ -187,7 +216,7 @@ TEST(CPDFNameTreeTest, AddIntoNames) {
 TEST(CPDFNameTreeTest, AddIntoEmptyNames) {
   // Set up a name tree with an empty Names array.
   auto pRootDict = pdfium::MakeRetain<CPDF_Dictionary>();
-  auto pNames = pRootDict->SetNewFor<CPDF_Array>("Names");
+  auto pNames = pRootDict->SetNewFor<CPDF_Array>(pdfium::catalog::kNames);
 
   std::unique_ptr<CPDF_NameTree> name_tree =
       CPDF_NameTree::CreateForTesting(pRootDict.Get());
@@ -432,3 +461,27 @@ TEST(CPDFNameTreeTest, DanglingValueKeepsIndexAlignment) {
   EXPECT_EQ(L"3.txt", csName);
 }
 
+
+// EmbedPDF: a lookup reads a node's /Limits in order and writes nothing back;
+// through a layer, the tree is the frozen base (rule reads-dont-write).
+TEST(CPDFNameTreeTest, LookupLeavesLimitsAsTheyAre) {
+  auto pRootDict = pdfium::MakeRetain<CPDF_Dictionary>();
+  FillNameTreeDict(pRootDict.Get());
+  RetainPtr<CPDF_Dictionary> pKid1 =
+      pRootDict->GetMutableArrayFor("Kids")->GetMutableDictAt(0);
+  RetainPtr<CPDF_Array> pLimits = pKid1->GetMutableArrayFor("Limits");
+  // Reversed, with an extra entry.
+  pLimits->SetNewAt<CPDF_String>(0, "9.txt");
+  pLimits->SetNewAt<CPDF_String>(1, "1.txt");
+  pLimits->AppendNew<CPDF_Number>(5);
+  std::unique_ptr<CPDF_NameTree> name_tree =
+      CPDF_NameTree::CreateForTesting(pRootDict.Get());
+
+  RetainPtr<const CPDF_Number> pNumber =
+      ToNumber(name_tree->LookupValue(L"9.txt"));
+  ASSERT_TRUE(pNumber);
+  EXPECT_EQ(999, pNumber->GetInteger());
+  ASSERT_EQ(3u, pLimits->size());
+  EXPECT_EQ("9.txt", pLimits->GetByteStringAt(0));
+  EXPECT_EQ("1.txt", pLimits->GetByteStringAt(1));
+}

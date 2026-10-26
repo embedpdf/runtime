@@ -12,10 +12,12 @@
 #include <algorithm>
 #include <array>
 #include <deque>
+#include <map>
 #include <set>
 #include <utility>
 #include <vector>
 
+#include "core/fpdfapi/edit/cpdf_fontsubsetter.h"
 #include "core/fpdfapi/edit/cpdf_save_object_reader.h"
 #include "core/fpdfapi/edit/cpdf_save_trailer.h"
 #include "core/fpdfapi/parser/cpdf_array.h"
@@ -35,6 +37,7 @@
 #include "core/fpdfapi/parser/cpdf_string.h"
 #include "core/fpdfapi/parser/fpdf_parser_utility.h"
 #include "core/fxcrt/check.h"
+#include "core/fxcrt/check_op.h"
 #include "core/fxcrt/containers/contains.h"
 #include "core/fxcrt/fixed_size_data_vector.h"
 #include "core/fxcrt/fx_extension.h"
@@ -63,10 +66,10 @@ constexpr Mask<CPDF_Creator::CreateFlags> kConflictingFlags{
 // EmbedPDF(layer-save): the largest offset a cross-reference entry can hold.
 constexpr FX_FILESIZE kMaxFourByteXrefOffset = 0xffffffff;
 
-class CFX_FileBufferArchive final : public IFX_ArchiveStream {
+class FileBufferArchive final : public IFX_ArchiveStream {
  public:
-  explicit CFX_FileBufferArchive(RetainPtr<IFX_RetainableWriteStream> file);
-  ~CFX_FileBufferArchive() override;
+  explicit FileBufferArchive(RetainPtr<IFX_RetainableWriteStream> file);
+  ~FileBufferArchive() override;
 
   bool WriteBlock(pdfium::span<const uint8_t> buffer) override;
   FX_FILESIZE CurrentOffset() const override { return offset_; }
@@ -83,25 +86,24 @@ class CFX_FileBufferArchive final : public IFX_ArchiveStream {
   RetainPtr<IFX_RetainableWriteStream> const backing_file_;
 };
 
-CFX_FileBufferArchive::CFX_FileBufferArchive(
-    RetainPtr<IFX_RetainableWriteStream> file)
+FileBufferArchive::FileBufferArchive(RetainPtr<IFX_RetainableWriteStream> file)
     : buffer_(FixedSizeDataVector<uint8_t>::Uninit(kArchiveBufferSize)),
       available_(buffer_.span()),
       backing_file_(std::move(file)) {
   DCHECK(backing_file_);
 }
 
-CFX_FileBufferArchive::~CFX_FileBufferArchive() {
+FileBufferArchive::~FileBufferArchive() {
   Flush();
 }
 
-bool CFX_FileBufferArchive::Flush() {
+bool FileBufferArchive::Flush() {
   size_t used = buffer_.size() - available_.size();
   available_ = buffer_.span();
   return used == 0 || backing_file_->WriteBlock(available_.first(used));
 }
 
-bool CFX_FileBufferArchive::WriteBlock(pdfium::span<const uint8_t> buffer) {
+bool FileBufferArchive::WriteBlock(pdfium::span<const uint8_t> buffer) {
   if (buffer.empty()) {
     return true;
   }
@@ -124,17 +126,6 @@ bool CFX_FileBufferArchive::WriteBlock(pdfium::span<const uint8_t> buffer) {
 
   offset_ = safe_offset.ValueOrDie();
   return true;
-}
-
-std::array<uint32_t, 4> GenerateFileID(uint32_t dwSeed1, uint32_t dwSeed2) {
-  void* context1 = FX_Random_MT_Start(dwSeed1);
-  void* context2 = FX_Random_MT_Start(dwSeed2);
-  std::array<uint32_t, 4> buffer = {
-      FX_Random_MT_Generate(context1), FX_Random_MT_Generate(context1),
-      FX_Random_MT_Generate(context2), FX_Random_MT_Generate(context2)};
-  FX_Random_MT_Close(context1);
-  FX_Random_MT_Close(context2);
-  return buffer;
 }
 
 // EmbedPDF(save-generations): a cross-reference stream entry carries its
@@ -245,7 +236,7 @@ CPDF_Creator::CPDF_Creator(CPDF_Document* doc,
       encrypt_dict_(parser_ ? parser_->GetEncryptDict() : nullptr),
       security_handler_(parser_ ? parser_->GetSecurityHandler() : nullptr),
       last_obj_num_(document_->GetLastObjNum()),
-      archive_(std::make_unique<CFX_FileBufferArchive>(std::move(archive))) {}
+      archive_(std::make_unique<FileBufferArchive>(std::move(archive))) {}
 
 CPDF_Creator::~CPDF_Creator() = default;
 
@@ -313,16 +304,28 @@ bool CPDF_Creator::WriteFullDocument() {
   CPDF_SaveObjectReader reader(document_);
   SaveObjectWorklist pending;
 
+  // Upstream subsets new fonts in WriteNewObjs(), which a full save doesn't
+  // run.
+  std::map<uint32_t, RetainPtr<const CPDF_Object>> font_obj_overrides;
+  if (subset_new_fonts_) {
+    CPDF_FontSubsetter subsetter(document_);
+    font_obj_overrides = subsetter.GenerateObjectOverrides(NewObjectNumbers());
+  }
+
   for (uint32_t number : trailer_->roots()) {
     pending.Add(number);
   }
 
   while (!pending.empty()) {
     const uint32_t object_number = pending.TakeNext();
-    auto object = reader.Read(object_number);
+    RetainPtr<const CPDF_Object> object = reader.Read(object_number);
     if (!object) {
       // Match the existing writer's treatment of unresolved references.
       continue;
+    }
+    if (auto it = font_obj_overrides.find(object_number);
+        it != font_obj_overrides.end()) {
+      object = it->second;
     }
 
     pending.AddReferences(object);
@@ -339,20 +342,44 @@ bool CPDF_Creator::WriteFullDocument() {
   return true;
 }
 
+std::vector<uint32_t> CPDF_Creator::NewObjectNumbers() const {
+  std::vector<uint32_t> numbers;
+  for (const auto& [object_number, object] : *document_) {
+    if (object->GetObjNum() == CPDF_Object::kInvalidObjNum) {
+      continue;
+    }
+    if (parser_ && parser_->IsValidObjectNumber(object_number) &&
+        !parser_->IsObjectFree(object_number)) {
+      continue;
+    }
+    numbers.push_back(object_number);
+  }
+  return numbers;
+}
+
 // EmbedPDF(view-scope, layer-save): objects are read as the layer sees them,
 // and the cross-reference lists only the ones written.
 bool CPDF_Creator::WriteNewObjs() {
   CPDF_DocumentViewScope view(document_);
+  std::map<uint32_t, RetainPtr<const CPDF_Object>> font_obj_overrides;
+  if (subset_new_fonts_) {
+    CPDF_FontSubsetter subsetter(document_);
+    font_obj_overrides = subsetter.GenerateObjectOverrides(new_obj_num_array_);
+  }
   std::vector<uint32_t> written_new_obj_nums;
   for (size_t i = cur_obj_num_; i < new_obj_num_array_.size(); ++i) {
     uint32_t objnum = new_obj_num_array_[i];
-    RetainPtr<const CPDF_Object> pObj = document_->GetIndirectObject(objnum);
-    if (!pObj) {
+    RetainPtr<const CPDF_Object> obj = document_->GetIndirectObject(objnum);
+    if (!obj) {
       continue;
     }
 
     object_offsets_[objnum] = archive_->CurrentOffset();
-    if (!WriteIndirectObj(pObj->GetObjNum(), pObj.Get())) {
+
+    auto it = font_obj_overrides.find(objnum);
+    const CPDF_Object* obj_to_write =
+        it != font_obj_overrides.end() ? it->second.Get() : obj.Get();
+    if (!WriteIndirectObj(objnum, obj_to_write)) {
       return false;
     }
     written_new_obj_nums.push_back(objnum);
@@ -583,15 +610,12 @@ CPDF_Creator::Stage CPDF_Creator::WriteDoc_Stage3() {
     if (!is_incremental_ || is_incremental_append_only_ ||
         !parser_->IsXRefStream()) {
       if (!is_incremental_ || parser_->GetLastXRefOffset() == 0) {
-        ByteString str;
-        str = pdfium::Contains(object_offsets_, 1)
-                  ? "xref\r\n"
-                  : "xref\r\n0 1\r\n0000000000 65535 f\r\n";
-        if (!archive_->WriteString(str.AsStringView())) {
+        // EmbedPDF(complete-xref): the subsection header is written with the
+        // entries (kWriteXrefsNotIncremental81).
+        if (!archive_->WriteString("xref\r\n")) {
           return Stage::kInvalid;
         }
 
-        cur_obj_num_ = 1;
         stage_ = Stage::kWriteXrefsNotIncremental81;
       } else {
         if (!archive_->WriteString("xref\r\n")) {
@@ -606,49 +630,52 @@ CPDF_Creator::Stage CPDF_Creator::WriteDoc_Stage3() {
     }
   }
   if (stage_ == Stage::kWriteXrefsNotIncremental81) {
-    ByteString str;
-    uint32_t i = cur_obj_num_;
-    uint32_t j;
-    while (i <= dwLastObjNum) {
-      while (i <= dwLastObjNum && !pdfium::Contains(object_offsets_, i)) {
-        i++;
+    // EmbedPDF(complete-xref): the file's only table is one subsection, from
+    // object 0 through the last object number (ISO 32000-1 7.5.4). A number
+    // no written object holds - reserved by an editing session and never
+    // used, deleted, or no longer reached - is a free entry. Entry 0 heads
+    // the list of free entries, each links to the next higher one, and the
+    // last links back to 0. A free entry's generation is 0, the generation a
+    // new object at that number starts with. Upstream wrote a subsection per
+    // run of written objects and gave the numbers between runs no entry;
+    // Acrobat then can't judge the changes a later revision makes.
+    std::vector<uint32_t> free_numbers;
+    for (uint32_t number = 1; number <= dwLastObjNum; ++number) {
+      if (!pdfium::Contains(object_offsets_, number)) {
+        free_numbers.push_back(number);
       }
-
-      if (i > dwLastObjNum) {
-        break;
-      }
-
-      j = i;
-      while (j <= dwLastObjNum && pdfium::Contains(object_offsets_, j)) {
-        j++;
-      }
-
-      if (i == 1) {
-        str = ByteString::Format("0 %d\r\n0000000000 65535 f\r\n", j);
+    }
+    FX_SAFE_UINT32 entry_count = dwLastObjNum;
+    entry_count += 1;
+    if (!entry_count.IsValid()) {
+      return Stage::kInvalid;
+    }
+    const uint32_t first_free = free_numbers.empty() ? 0 : free_numbers[0];
+    ByteString str = ByteString::Format("0 %u\r\n", entry_count.ValueOrDie()) +
+                     FormatXrefOffset10(first_free) + " 65535 f\r\n";
+    if (!archive_->WriteString(str.AsStringView())) {
+      return Stage::kInvalid;
+    }
+    size_t next_free = 0;
+    for (uint32_t objnum = 1; objnum <= dwLastObjNum; ++objnum) {
+      if (next_free < free_numbers.size() &&
+          free_numbers[next_free] == objnum) {
+        ++next_free;
+        const uint32_t link =
+            next_free < free_numbers.size() ? free_numbers[next_free] : 0;
+        str = FormatXrefOffset10(link) + " 00000 f\r\n";
       } else {
-        str = ByteString::Format("%d %d\r\n", i, j - i);
-      }
-
-      if (!archive_->WriteString(str.AsStringView())) {
-        return Stage::kInvalid;
-      }
-
-      while (i < j) {
         // EmbedPDF(save-generations, layer-save): each entry carries its
         // object's generation, and only an offset an entry can hold.
-        const uint32_t objnum = i++;
         const FX_FILESIZE offset = object_offsets_[objnum];
         if (!CheckEmittedOffset(offset)) {
           return Stage::kInvalid;
         }
         str = FormatXrefOffset10(offset) +
               ByteString::Format(" %05u n\r\n", GetObjectGeneration(objnum));
-        if (!archive_->WriteString(str.AsStringView())) {
-          return Stage::kInvalid;
-        }
       }
-      if (i > dwLastObjNum) {
-        break;
+      if (!archive_->WriteString(str.AsStringView())) {
+        return Stage::kInvalid;
       }
     }
     stage_ = Stage::kWriteTrailerAndFinish90;
@@ -702,7 +729,7 @@ CPDF_Creator::Stage CPDF_Creator::WriteDoc_Stage3() {
 }
 
 CPDF_Creator::Stage CPDF_Creator::WriteDoc_Stage4() {
-  DCHECK(stage_ >= Stage::kWriteTrailerAndFinish90);
+  DCHECK_GE(stage_, Stage::kWriteTrailerAndFinish90);
 
   // EmbedPDF(layer-save): an append-only delta writes a cross-reference
   // table, never a stream.
@@ -872,8 +899,9 @@ bool CPDF_Creator::Create(Mask<CreateFlags> flags, int32_t file_version) {
     return false;
   }
   is_original_ = !(flags & CreateFlags::kNoOriginal);
+  subset_new_fonts_ = !!(flags & CreateFlags::kSubsetNewFonts);
   if (is_incremental_append_only_ && parser_) {
-    static_cast<CFX_FileBufferArchive*>(archive_.get())
+    static_cast<FileBufferArchive*>(archive_.get())
         ->SetNotionalStartOffset(document_->GetLayerAppendBaseOffset());
   }
 
@@ -946,7 +974,7 @@ bool CPDF_Creator::BuildTrailer() {
 void CPDF_Creator::InitID() {
   DCHECK(!id_array_);
 
-  id_array_ = pdfium::MakeRetain<CPDF_Array>();
+  id_array_ = document_->New<CPDF_Array>();
   // EmbedPDF(annot-appearance): a created document can carry a preset
   // identifier, so a canonical stamp drawing is the same bytes every time.
   RetainPtr<const CPDF_Array> pOldIDArray =
@@ -956,8 +984,8 @@ void CPDF_Creator::InitID() {
   if (pID1) {
     id_array_->Append(pID1->Clone());
   } else {
-    std::array<uint32_t, 4> file_id =
-        GenerateFileID((uint32_t)(uintptr_t)this, last_obj_num_);
+    std::array<uint32_t, 4> file_id;
+    FX_Random::Fill(file_id);
     id_array_->AppendNew<CPDF_String>(pdfium::as_byte_span(file_id),
                                       CPDF_String::DataType::kIsHex);
   }
@@ -974,8 +1002,8 @@ void CPDF_Creator::InitID() {
       id_array_->Append(pID2->Clone());
       return;
     }
-    std::array<uint32_t, 4> file_id =
-        GenerateFileID((uint32_t)(uintptr_t)this, last_obj_num_);
+    std::array<uint32_t, 4> file_id;
+    FX_Random::Fill(file_id);
     id_array_->AppendNew<CPDF_String>(pdfium::as_byte_span(file_id),
                                       CPDF_String::DataType::kIsHex);
     return;

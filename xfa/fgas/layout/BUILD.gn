@@ -31,8 +31,8 @@ source_set("layout") {
     "fgas_arabic.h",
     "fgas_linebreak.h",
   ]
+  public_deps = [ "../../../core/fxcrt" ]
   deps = [
-    "../../../core/fxcrt",
     "../../../core/fxcrt/css",
     "../../../core/fxge",
     "../font",

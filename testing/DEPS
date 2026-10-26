@@ -7,5 +7,5 @@ include_rules = [
   '+third_party/simdutf/simdutf.h',
   '+third_party/skia/include',
   '+v8',
-  '+xfa'
+  '+xfa',
 ]

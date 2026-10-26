@@ -74,21 +74,14 @@ const JSMethodSpec CJS_App::MethodSpecs[] = {
     {"setInterval", setInterval_static},
     {"setTimeOut", setTimeOut_static}};
 
-uint32_t CJS_App::ObjDefnID = 0;
-
 const char CJS_App::kName[] = "app";
 
 // static
-uint32_t CJS_App::GetObjDefnID() {
-  return ObjDefnID;
-}
-
-// static
 void CJS_App::DefineJSObjects(CFXJS_Engine* pEngine) {
-  ObjDefnID = pEngine->DefineObj(CJS_App::kName, FXJSOBJTYPE_STATIC,
-                                 JSConstructor<CJS_App>, JSDestructor);
-  DefineProps(pEngine, ObjDefnID, PropertySpecs);
-  DefineMethods(pEngine, ObjDefnID, MethodSpecs);
+  pEngine->DefineObj(kObjDefnId, CJS_App::kName, FXJSOBJTYPE_STATIC,
+                     JSConstructor<CJS_App>, JSDestructor);
+  DefineProps(pEngine, kObjDefnId, PropertySpecs);
+  DefineMethods(pEngine, kObjDefnId, MethodSpecs);
 }
 
 CJS_App::CJS_App(v8::Local<v8::Object> pObject, CJS_Runtime* pRuntime)
@@ -98,12 +91,12 @@ CJS_App::~CJS_App() = default;
 
 CJS_Result CJS_App::get_active_docs(CJS_Runtime* pRuntime) {
   v8::Local<v8::Object> pObj = pRuntime->GetThisObj();
-  auto pJSDocument = JSGetObject<CJS_Document>(pRuntime->GetIsolate(), pObj);
+  auto pJSDocument = JSGetObject<CJS_Document>(pObj);
   if (!pJSDocument) {
     return CJS_Result::Failure(JSMessage::kObjectTypeError);
   }
   v8::Local<v8::Array> aDocs = pRuntime->NewArray();
-  pRuntime->PutArrayElement(aDocs, 0, pJSDocument->ToV8Object());
+  pRuntime->PutArrayElementReentrant(aDocs, 0, pJSDocument->ToV8Object());
   if (pRuntime->GetArrayLength(aDocs) > 0) {
     return CJS_Result::Success(aDocs);
   }
@@ -122,7 +115,7 @@ CJS_Result CJS_App::get_calculate(CJS_Runtime* pRuntime) {
 
 CJS_Result CJS_App::set_calculate(CJS_Runtime* pRuntime,
                                   v8::Local<v8::Value> vp) {
-  calculate_ = pRuntime->ToBoolean(vp);
+  calculate_ = pRuntime->ToBooleanReentrant(vp);
   pRuntime->GetFormFillEnv()->GetInteractiveForm()->EnableCalculate(calculate_);
   return CJS_Result::Success();
 }
@@ -237,33 +230,34 @@ CJS_Result CJS_App::alert(CJS_Runtime* pRuntime,
 
   WideString swMsg;
   if (newParams[0]->IsArray()) {
-    v8::Local<v8::Array> carray = pRuntime->ToArray(newParams[0]);
+    v8::Local<v8::Array> carray = pRuntime->ToArrayReentrant(newParams[0]);
     swMsg = L"[";
     for (size_t i = 0; i < pRuntime->GetArrayLength(carray); ++i) {
       if (i) {
         swMsg += L", ";
       }
 
-      swMsg += pRuntime->ToWideString(pRuntime->GetArrayElement(carray, i));
+      swMsg += pRuntime->ToWideStringReentrant(
+          pRuntime->GetArrayElementReentrant(carray, i));
     }
     swMsg += L"]";
   } else {
-    swMsg = pRuntime->ToWideString(newParams[0]);
+    swMsg = pRuntime->ToWideStringReentrant(newParams[0]);
   }
 
   int iIcon = JSPLATFORM_ALERT_ICON_DEFAULT;
   if (IsExpandedParamKnown(newParams[1])) {
-    iIcon = pRuntime->ToInt32(newParams[1]);
+    iIcon = pRuntime->ToInt32Reentrant(newParams[1]);
   }
 
   int iType = JSPLATFORM_ALERT_BUTTON_DEFAULT;
   if (IsExpandedParamKnown(newParams[2])) {
-    iType = pRuntime->ToInt32(newParams[2]);
+    iType = pRuntime->ToInt32Reentrant(newParams[2]);
   }
 
   WideString swTitle;
   if (IsExpandedParamKnown(newParams[3])) {
-    swTitle = pRuntime->ToWideString(newParams[3]);
+    swTitle = pRuntime->ToWideStringReentrant(newParams[3]);
   } else {
     swTitle = JSGetStringFromID(JSMessage::kAlert);
   }
@@ -285,10 +279,13 @@ CJS_Result CJS_App::beep(CJS_Runtime* pRuntime,
 
   int type = JSPLATFORM_BEEP_DEFAULT;
   if (IsExpandedParamKnown(params[0])) {
-    type = pRuntime->ToInt32(params[0]);
+    type = pRuntime->ToInt32Reentrant(params[0]);
   }
 
+  pRuntime->BeginBlock();
   pRuntime->GetFormFillEnv()->JS_appBeep(type);
+  pRuntime->EndBlock();
+
   return CJS_Result::Success();
 }
 
@@ -316,19 +313,21 @@ CJS_Result CJS_App::setInterval(CJS_Runtime* pRuntime,
     return CJS_Result::Failure(JSMessage::kParamError);
   }
 
-  WideString script = pRuntime->ToWideString(params[0]);
+  WideString script = pRuntime->ToWideStringReentrant(params[0]);
+
   if (script.IsEmpty()) {
     return CJS_Result::Failure(JSMessage::kInvalidInputError);
   }
 
-  uint32_t dwInterval = params.size() > 1 ? pRuntime->ToInt32(params[1]) : 1000;
+  uint32_t dwInterval =
+      params.size() > 1 ? pRuntime->ToInt32Reentrant(params[1]) : 1000;
   auto timerRef = std::make_unique<GlobalTimer>(
       this, pRuntime, GlobalTimer::Type::kRepeating, script, dwInterval, 0);
   GlobalTimer* pTimerRef = timerRef.get();
   timers_.insert(std::move(timerRef));
 
   v8::Local<v8::Object> pRetObj = pRuntime->NewFXJSBoundObject(
-      CJS_TimerObj::GetObjDefnID(), FXJSOBJTYPE_DYNAMIC);
+      CJS_TimerObj::kObjDefnId, FXJSOBJTYPE_DYNAMIC);
   if (pRetObj.IsEmpty()) {
     return CJS_Result::Failure(JSMessage::kBadObjectError);
   }
@@ -346,12 +345,13 @@ CJS_Result CJS_App::setTimeOut(CJS_Runtime* pRuntime,
     return CJS_Result::Failure(JSMessage::kParamError);
   }
 
-  WideString script = pRuntime->ToWideString(params[0]);
+  WideString script = pRuntime->ToWideStringReentrant(params[0]);
   if (script.IsEmpty()) {
     return CJS_Result::Failure(JSMessage::kInvalidInputError);
   }
 
-  uint32_t dwTimeOut = params.size() > 1 ? pRuntime->ToInt32(params[1]) : 1000;
+  uint32_t dwTimeOut =
+      params.size() > 1 ? pRuntime->ToInt32Reentrant(params[1]) : 1000;
   auto timerRef =
       std::make_unique<GlobalTimer>(this, pRuntime, GlobalTimer::Type::kOneShot,
                                     script, dwTimeOut, dwTimeOut);
@@ -359,7 +359,7 @@ CJS_Result CJS_App::setTimeOut(CJS_Runtime* pRuntime,
   timers_.insert(std::move(timerRef));
 
   v8::Local<v8::Object> pRetObj = pRuntime->NewFXJSBoundObject(
-      CJS_TimerObj::GetObjDefnID(), FXJSOBJTYPE_DYNAMIC);
+      CJS_TimerObj::kObjDefnId, FXJSOBJTYPE_DYNAMIC);
   if (pRetObj.IsEmpty()) {
     return CJS_Result::Failure(JSMessage::kBadObjectError);
   }
@@ -397,8 +397,8 @@ void CJS_App::ClearTimerCommon(CJS_Runtime* pRuntime,
     return;
   }
 
-  v8::Local<v8::Object> pObj = pRuntime->ToObject(param);
-  auto pTimer = JSGetObject<CJS_TimerObj>(pRuntime->GetIsolate(), pObj);
+  v8::Local<v8::Object> pObj = pRuntime->ToObjectReentrant(param);
+  auto pTimer = JSGetObject<CJS_TimerObj>(pObj);
   if (!pTimer) {
     return;
   }
@@ -457,10 +457,10 @@ CJS_Result CJS_App::mailMsg(CJS_Runtime* pRuntime,
     return CJS_Result::Failure(JSMessage::kParamError);
   }
 
-  bool bUI = pRuntime->ToBoolean(newParams[0]);
+  bool bUI = pRuntime->ToBooleanReentrant(newParams[0]);
   WideString cTo;
   if (IsExpandedParamKnown(newParams[1])) {
-    cTo = pRuntime->ToWideString(newParams[1]);
+    cTo = pRuntime->ToWideStringReentrant(newParams[1]);
   } else {
     // cTo parameter required when UI not invoked.
     if (!bUI) {
@@ -470,22 +470,22 @@ CJS_Result CJS_App::mailMsg(CJS_Runtime* pRuntime,
 
   WideString cCc;
   if (IsExpandedParamKnown(newParams[2])) {
-    cCc = pRuntime->ToWideString(newParams[2]);
+    cCc = pRuntime->ToWideStringReentrant(newParams[2]);
   }
 
   WideString cBcc;
   if (IsExpandedParamKnown(newParams[3])) {
-    cBcc = pRuntime->ToWideString(newParams[3]);
+    cBcc = pRuntime->ToWideStringReentrant(newParams[3]);
   }
 
   WideString cSubject;
   if (IsExpandedParamKnown(newParams[4])) {
-    cSubject = pRuntime->ToWideString(newParams[4]);
+    cSubject = pRuntime->ToWideStringReentrant(newParams[4]);
   }
 
   WideString cMsg;
   if (IsExpandedParamKnown(newParams[5])) {
-    cMsg = pRuntime->ToWideString(newParams[5]);
+    cMsg = pRuntime->ToWideStringReentrant(newParams[5]);
   }
 
   pRuntime->BeginBlock();
@@ -507,7 +507,7 @@ CJS_Result CJS_App::get_runtime_highlight(CJS_Runtime* pRuntime) {
 
 CJS_Result CJS_App::set_runtime_highlight(CJS_Runtime* pRuntime,
                                           v8::Local<v8::Value> vp) {
-  runtime_high_light_ = pRuntime->ToBoolean(vp);
+  runtime_high_light_ = pRuntime->ToBooleanReentrant(vp);
   return CJS_Result::Success();
 }
 
@@ -561,32 +561,32 @@ CJS_Result CJS_App::response(CJS_Runtime* pRuntime,
     return CJS_Result::Failure(JSMessage::kParamError);
   }
 
-  WideString swQuestion = pRuntime->ToWideString(newParams[0]);
+  WideString swQuestion = pRuntime->ToWideStringReentrant(newParams[0]);
   auto swTitle = WideString::FromASCII("PDF");
   if (IsExpandedParamKnown(newParams[1])) {
-    swTitle = pRuntime->ToWideString(newParams[1]);
+    swTitle = pRuntime->ToWideStringReentrant(newParams[1]);
   }
-
   WideString swDefault;
   if (IsExpandedParamKnown(newParams[2])) {
-    swDefault = pRuntime->ToWideString(newParams[2]);
+    swDefault = pRuntime->ToWideStringReentrant(newParams[2]);
   }
-
   bool bPassword = false;
   if (IsExpandedParamKnown(newParams[3])) {
-    bPassword = pRuntime->ToBoolean(newParams[3]);
+    bPassword = pRuntime->ToBooleanReentrant(newParams[3]);
   }
-
   WideString swLabel;
   if (IsExpandedParamKnown(newParams[4])) {
-    swLabel = pRuntime->ToWideString(newParams[4]);
+    swLabel = pRuntime->ToWideStringReentrant(newParams[4]);
   }
 
   static constexpr int kMaxWideChars = 1024;
   static constexpr int kMaxBytes = kMaxWideChars * sizeof(uint16_t);
   auto buffer = FixedSizeDataVector<uint8_t>::Zeroed(kMaxBytes);
+
+  pRuntime->BeginBlock();
   int byte_length = pRuntime->GetFormFillEnv()->JS_appResponse(
       swQuestion, swTitle, swDefault, swLabel, bPassword, buffer.span());
+  pRuntime->EndBlock();
 
   if (byte_length < 0 || byte_length > kMaxBytes) {
     return CJS_Result::Failure(JSMessage::kParamTooLongError);

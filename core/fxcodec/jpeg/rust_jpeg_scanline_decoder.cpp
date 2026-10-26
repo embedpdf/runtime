@@ -1,0 +1,252 @@
+// Copyright 2026 The PDFium Authors
+// Use of this source code is governed by a BSD-style license that can be
+// found in the LICENSE file.
+
+#include "core/fxcodec/jpeg/rust_jpeg_scanline_decoder.h"
+
+#include <algorithm>
+#include <memory>
+#include <optional>
+#include <utility>
+
+#include "core/fxcodec/jpeg/rust_jpeg_ffi.rs.h"
+#include "core/fxcrt/check.h"
+#include "core/fxcrt/check_op.h"
+#include "core/fxcrt/fx_ceil_div.h"
+#include "core/fxcrt/fx_safe_types.h"
+#include "core/fxcrt/span_util.h"
+
+namespace fxcodec {
+
+namespace {
+
+constexpr size_t kKnownBadHeaderWithInvalidHeightByteOffsetStarts[] = {94, 163};
+
+// For a given invalid height byte offset in
+// `kKnownBadHeaderWithInvalidHeightByteOffsetStarts`, the SOFn marker should
+// be this many bytes before that.
+constexpr size_t kSofMarkerByteOffset = 5;
+
+pdfium::span<const uint8_t> JpegScanSOI(pdfium::span<const uint8_t> src_span) {
+  if (src_span.size() < 2) {
+    return src_span;
+  }
+  for (size_t offset = 0; offset + 1 < src_span.size(); ++offset) {
+    if (src_span[offset] == 0xff && src_span[offset + 1] == 0xd8) {
+      return src_span.subspan(offset);
+    }
+  }
+  return src_span;
+}
+
+uint32_t ScaledJpegSize(uint32_t dim, uint32_t scale_denom) {
+  return fxcrt::CeilDiv(dim, scale_denom);
+}
+
+}  // namespace
+
+// static
+std::unique_ptr<ScanlineDecoder> RustJpegScanlineDecoder::Create(
+    pdfium::span<const uint8_t> src_span,
+    uint32_t width,
+    uint32_t height,
+    int num_components,
+    bool color_transform,
+    uint32_t scale_denom) {
+  auto decoder = std::make_unique<RustJpegScanlineDecoder>();
+  if (!decoder->CreateImpl(src_span, width, height, num_components,
+                           color_transform, scale_denom)) {
+    return nullptr;
+  }
+  return decoder;
+}
+
+RustJpegScanlineDecoder::RustJpegScanlineDecoder() = default;
+
+RustJpegScanlineDecoder::~RustJpegScanlineDecoder() {
+  // Span in superclass can't outlive our buffer.
+  last_scanline_ = pdfium::span<uint8_t>();
+}
+
+bool RustJpegScanlineDecoder::CreateImpl(pdfium::span<const uint8_t> src_span,
+                                         uint32_t width,
+                                         uint32_t height,
+                                         int num_components,
+                                         bool color_transform,
+                                         uint32_t scale_denom) {
+  src_span_ = JpegScanSOI(src_span);
+  if (src_span_.size() < 2) {
+    return false;
+  }
+
+  PatchUpTrailer();
+
+  rust_jpeg::JpegHeaderInfo header_info{};
+  rust::Slice<const uint8_t> src_slice(src_span_);
+  if (!rust_jpeg::read_jpeg_info(src_slice, header_info)) {
+    bool patched = false;
+    for (size_t offset : kKnownBadHeaderWithInvalidHeightByteOffsetStarts) {
+      if (HasKnownBadHeaderWithInvalidHeight(offset, width)) {
+        PatchUpKnownBadHeaderWithInvalidHeight(offset, height);
+        patched = true;
+        break;
+      }
+    }
+    if (!patched) {
+      return false;
+    }
+    // Recreate `src_slice` since patching updates `src_span_` to point to
+    // `corrected_src_data_`.
+    src_slice = rust::Slice<const uint8_t>(src_span_);
+    if (!rust_jpeg::read_jpeg_info(src_slice, header_info)) {
+      return false;
+    }
+  }
+
+  orig_width_ = header_info.width;
+  orig_height_ = header_info.height;
+
+  DCHECK(scale_denom == 1 || scale_denom == 2 || scale_denom == 4 ||
+         scale_denom == 8);
+
+  comps_ = header_info.num_components;
+  bpc_ = header_info.bits_per_component;
+
+  constexpr int kDctSize = 8;
+  const int max_h_samp = std::max<int>(1, header_info.max_h_samp);
+  const int max_v_samp = std::max<int>(1, header_info.max_v_samp);
+  if (orig_width_ % (max_h_samp * kDctSize) != 0 ||
+      orig_height_ % (max_v_samp * kDctSize) != 0) {
+    scale_denom = 1;
+  }
+
+  output_width_ = ScaledJpegSize(orig_width_, scale_denom);
+  output_height_ = ScaledJpegSize(orig_height_, scale_denom);
+
+  CalcPitch();
+
+  FX_SAFE_SIZE_T buf_size = pitch_;
+  buf_size *= output_height_;
+  if (!buf_size.IsValid()) {
+    return false;
+  }
+  decoded_image_ = DataVector<uint8_t>(buf_size.ValueOrDie());
+
+  rust::Slice<uint8_t> out_slice(decoded_image_);
+  if (!rust_jpeg::decode_jpeg_to_buf(src_slice, out_slice, pitch_,
+                                     scale_denom)) {
+    return false;
+  }
+
+  next_row_ = 0;
+  return true;
+}
+
+bool RustJpegScanlineDecoder::Rewind() {
+  next_row_ = 0;
+  return true;
+}
+
+pdfium::span<uint8_t> RustJpegScanlineDecoder::GetNextLine() {
+  if (next_row_ >= static_cast<uint32_t>(output_height_)) {
+    return pdfium::span<uint8_t>();
+  }
+
+  size_t offset = next_row_ * pitch_;
+  if (offset + pitch_ > decoded_image_.size()) {
+    return pdfium::span<uint8_t>();
+  }
+
+  ++next_row_;
+  return pdfium::span(decoded_image_).subspan(offset, pitch_);
+}
+
+uint32_t RustJpegScanlineDecoder::GetSrcOffset() {
+  return 0;
+}
+
+void RustJpegScanlineDecoder::CalcPitch() {
+  DCHECK_GT(output_width_, 0);
+  pitch_ = static_cast<uint32_t>(output_width_) * comps_;
+  pitch_ = fxcrt::CeilDiv(pitch_, 4) * 4;
+}
+
+bool RustJpegScanlineDecoder::HasKnownBadHeaderWithInvalidHeight(
+    size_t dimension_offset,
+    uint32_t orig_width) const {
+  if (src_span_.size() <= dimension_offset + 3u) {
+    return false;
+  }
+  if (dimension_offset < kSofMarkerByteOffset) {
+    return false;
+  }
+  if (!IsSofSegment(dimension_offset - kSofMarkerByteOffset)) {
+    return false;
+  }
+  const auto header_dimensions = src_span_.subspan(dimension_offset);
+  uint8_t expected_width_byte1 = (orig_width >> 8) & 0xff;
+  uint8_t expected_width_byte2 = orig_width & 0xff;
+  return header_dimensions[0] == 0xff && header_dimensions[1] == 0xff &&
+         header_dimensions[2] == expected_width_byte1 &&
+         header_dimensions[3] == expected_width_byte2;
+}
+
+void RustJpegScanlineDecoder::PatchUpKnownBadHeaderWithInvalidHeight(
+    size_t dimension_offset,
+    uint32_t orig_height) {
+  auto corrected_span = GetWritableSrcData().subspan(dimension_offset);
+  corrected_span[0] = (orig_height >> 8) & 0xff;
+  corrected_span[1] = orig_height & 0xff;
+}
+
+bool RustJpegScanlineDecoder::IsSofSegment(size_t marker_offset) const {
+  if (src_span_.size() <= marker_offset + 1) {
+    return false;
+  }
+  const auto header_marker = src_span_.subspan(marker_offset);
+  return header_marker[0] == 0xff && header_marker[1] >= 0xc0 &&
+         header_marker[1] <= 0xcf;
+}
+
+void RustJpegScanlineDecoder::PatchUpTrailer() {
+  auto trailer_span = src_span_.last<2>();
+  if (trailer_span[0] == 0xff && trailer_span[1] == 0xd9) {
+    return;
+  }
+  auto corrected_trailer_span = GetWritableSrcData().last<2>();
+  corrected_trailer_span[0] = 0xff;
+  corrected_trailer_span[1] = 0xd9;
+}
+
+pdfium::span<uint8_t> RustJpegScanlineDecoder::GetWritableSrcData() {
+  if (corrected_src_data_.empty()) {
+    corrected_src_data_ = ToDataVector(src_span_);
+    src_span_ = corrected_src_data_;
+  }
+  return corrected_src_data_;
+}
+
+// static
+std::optional<JpegModule::ImageInfo> RustJpegScanlineDecoder::LoadInfo(
+    pdfium::span<const uint8_t> src_span) {
+  src_span = JpegScanSOI(src_span);
+  if (src_span.size() < 2) {
+    return std::nullopt;
+  }
+
+  rust_jpeg::JpegHeaderInfo header_info{};
+  rust::Slice<const uint8_t> src_slice(src_span);
+  if (!rust_jpeg::read_jpeg_info(src_slice, header_info)) {
+    return std::nullopt;
+  }
+
+  JpegModule::ImageInfo info;
+  info.width = header_info.width;
+  info.height = header_info.height;
+  info.num_components = header_info.num_components;
+  info.color_transform = header_info.color_transform;
+  info.bits_per_components = header_info.bits_per_component;
+  return info;
+}
+
+}  // namespace fxcodec

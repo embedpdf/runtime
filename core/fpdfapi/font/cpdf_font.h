@@ -23,6 +23,7 @@
 #include "core/fxcrt/retain_ptr.h"
 #include "core/fxcrt/unowned_ptr.h"
 #include "core/fxge/cfx_font.h"
+#include "core/fxge/text_char_pos.h"
 
 class CFX_DIBitmap;
 class CPDF_CIDFont;
@@ -34,6 +35,7 @@ class CPDF_Type3Font;
 class CPDF_ToUnicodeMap;
 enum class FontEncoding;
 
+// Abstract base class for all PDF fonts.
 class CPDF_Font : public Retainable, public Observable {
  public:
   // Callback mechanism for Type3 fonts to get pixels from forms.
@@ -68,18 +70,30 @@ class CPDF_Font : public Retainable, public Observable {
   static RetainPtr<CPDF_Font> GetStockFont(CPDF_Document* doc,
                                            ByteStringView fontname);
 
-  virtual bool IsType1Font() const;
-  virtual bool IsTrueTypeFont() const;
-  virtual bool IsType3Font() const;
-  virtual bool IsCIDFont() const;
-  virtual const CPDF_Type1Font* AsType1Font() const;
   virtual CPDF_Type1Font* AsType1Font();
-  virtual const CPDF_TrueTypeFont* AsTrueTypeFont() const;
   virtual CPDF_TrueTypeFont* AsTrueTypeFont();
-  virtual const CPDF_Type3Font* AsType3Font() const;
   virtual CPDF_Type3Font* AsType3Font();
-  virtual const CPDF_CIDFont* AsCIDFont() const;
   virtual CPDF_CIDFont* AsCIDFont();
+
+  // Const methods wrap non-const virtual As*() methods.
+  const CPDF_Type1Font* AsType1Font() const {
+    return const_cast<CPDF_Font*>(this)->AsType1Font();
+  }
+  const CPDF_TrueTypeFont* AsTrueTypeFont() const {
+    return const_cast<CPDF_Font*>(this)->AsTrueTypeFont();
+  }
+  const CPDF_Type3Font* AsType3Font() const {
+    return const_cast<CPDF_Font*>(this)->AsType3Font();
+  }
+  const CPDF_CIDFont* AsCIDFont() const {
+    return const_cast<CPDF_Font*>(this)->AsCIDFont();
+  }
+
+  // Type-testing methods merely wrap As*() methods.
+  bool IsType1Font() const { return !!AsType1Font(); }
+  bool IsTrueTypeFont() const { return !!AsTrueTypeFont(); }
+  bool IsType3Font() const { return !!AsType3Font(); }
+  bool IsCIDFont() const { return !!AsCIDFont(); }
 
   virtual void WillBeDestroyed();
   virtual bool IsVertWriting() const;
@@ -94,6 +108,12 @@ class CPDF_Font : public Retainable, public Observable {
   virtual WideString UnicodeFromCharCode(uint32_t charcode) const;
   virtual uint32_t CharCodeFromUnicode(wchar_t Unicode) const;
   virtual bool HasFontWidths() const;
+
+  bool ShouldUseFont(uint32_t glyph_id, bool has_to_unicode) const;
+  std::vector<TextCharPos> GetCharPosList(
+      pdfium::span<const uint32_t> char_codes,
+      pdfium::span<const float> char_pos,
+      float font_size);
 
   ByteString GetBaseFontName() const { return base_font_name_; }
   std::optional<FX_Charset> GetSubstFontCharset() const;
@@ -121,7 +141,7 @@ class CPDF_Font : public Retainable, public Observable {
   // of [100, 900].
   std::optional<int> GetFontWeight() const;
 
-  virtual int GetCharWidthF(uint32_t charcode) = 0;
+  virtual int GetCharWidth(uint32_t charcode) = 0;
   virtual FX_RECT GetCharBBox(uint32_t charcode) = 0;
 
   // Can return nullptr for stock Type1 fonts. Always returns non-null for other
@@ -144,7 +164,7 @@ class CPDF_Font : public Retainable, public Observable {
   static bool UseTTCharmapUnicode(const RetainPtr<CFX_Face>& face);
 
   static bool UseTTCharmap(const RetainPtr<CFX_Face>& face,
-                           const CFX_Face::CharMapId& cmap_id);
+                           const CFX_Face::CharMapIdPair& charmap_id_pair);
 
   static const char* GetAdobeCharName(FontEncoding base_encoding,
                                       const std::vector<ByteString>& charnames,
@@ -155,6 +175,8 @@ class CPDF_Font : public Retainable, public Observable {
   void LoadUnicodeMap() const;  // logically const only.
   void LoadFontDescriptor(const CPDF_Dictionary* font_desc);
   void CheckFontMetrics();
+  bool ShouldApplyGlyphSpacingHeuristic(const CFX_Font* current_font,
+                                        bool is_vertical_writing) const;
 
   UnownedPtr<CPDF_Document> const document_;
   ByteString resource_name_;  // The resource name for this font.
@@ -168,6 +190,7 @@ class CPDF_Font : public Retainable, public Observable {
   bool will_be_destroyed_ = false;
   int flags_ = 0;
   int stem_v_ = 0;
+  std::optional<int> font_weight_;
   int ascent_ = 0;
   int descent_ = 0;
   int italic_angle_ = 0;

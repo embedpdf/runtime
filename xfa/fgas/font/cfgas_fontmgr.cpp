@@ -19,6 +19,7 @@
 #include "core/fxcrt/byteorder.h"
 #include "core/fxcrt/cfx_read_only_container_stream.h"
 #include "core/fxcrt/check.h"
+#include "core/fxcrt/check_op.h"
 #include "core/fxcrt/compiler_specific.h"
 #include "core/fxcrt/containers/contains.h"
 #include "core/fxcrt/data_vector.h"
@@ -29,6 +30,7 @@
 #include "core/fxcrt/fx_system.h"
 #include "core/fxcrt/span.h"
 #include "core/fxcrt/stl_util.h"
+#include "core/fxge/cfx_cttnametable.h"
 #include "core/fxge/cfx_font.h"
 #include "core/fxge/cfx_fontmapper.h"
 #include "core/fxge/cfx_fontmgr.h"
@@ -393,54 +395,6 @@ uint16_t FX_GetUnicodeBit(wchar_t wcUnicode) {
   return x ? x->wBitField : FGAS_FONTUSB::kNoBitField;
 }
 
-uint16_t ReadUInt16FromSpanAtOffset(pdfium::span<const uint8_t> data,
-                                    size_t offset) {
-  return fxcrt::GetUInt16MSBFirst(data.subspan(offset).first<2u>());
-}
-
-std::vector<WideString> GetNames(pdfium::span<const uint8_t> name_table) {
-  std::vector<WideString> results;
-  if (name_table.empty()) {
-    return results;
-  }
-
-  uint16_t nNameCount = ReadUInt16FromSpanAtOffset(name_table, 2);
-  pdfium::span<const uint8_t> str =
-      name_table.subspan(ReadUInt16FromSpanAtOffset(name_table, 4));
-  pdfium::span<const uint8_t> name_record = name_table.subspan<6u>();
-  for (uint16_t i = 0; i < nNameCount; ++i) {
-    uint16_t nNameID = ReadUInt16FromSpanAtOffset(name_table, i * 12 + 6);
-    if (nNameID != 1) {
-      continue;
-    }
-
-    uint16_t nPlatformID = ReadUInt16FromSpanAtOffset(name_record, i * 12);
-    uint16_t nNameLength = ReadUInt16FromSpanAtOffset(name_record, i * 12 + 8);
-    uint16_t nNameOffset = ReadUInt16FromSpanAtOffset(name_record, i * 12 + 10);
-    if (nPlatformID != 1) {
-      WideString wsFamily;
-      for (uint16_t j = 0; j < nNameLength / 2; ++j) {
-        wchar_t wcTemp = ReadUInt16FromSpanAtOffset(str, nNameOffset + j * 2);
-        wsFamily += wcTemp;
-      }
-      results.push_back(wsFamily);
-      continue;
-    }
-
-    // Avoid out of bounds crashes if the length and/or offset are wrong.
-    if (static_cast<size_t>(nNameLength) + nNameOffset >= str.size()) {
-      continue;
-    }
-
-    WideString wsFamily;
-    for (uint16_t j = 0; j < nNameLength; ++j) {
-      wchar_t wcTemp = str[nNameOffset + j];
-      wsFamily += wcTemp;
-    }
-    results.push_back(wsFamily);
-  }
-  return results;
-}
 
 RetainPtr<CFX_ReadOnlyFixedSizeDataVectorStream> CreateFontStream(
     CFX_FontMapper* font_mapper,
@@ -480,12 +434,14 @@ int32_t CalcPenalty(CFGAS_FontDescriptor* pInstalled,
   if (FontName.GetLength() != 0) {
     if (FontName != pInstalled->face_name_) {
       size_t i;
-      for (i = 0; i < pInstalled->family_names_.size(); ++i) {
-        if (pInstalled->family_names_[i] == FontName) {
+      pdfium::span<const WideString> names =
+          pInstalled->family_names_->GetFamilyNames();
+      for (i = 0; i < names.size(); ++i) {
+        if (names[i] == FontName) {
           break;
         }
       }
-      if (i == pInstalled->family_names_.size()) {
+      if (i == names.size()) {
         nPenalty += 0xFFFF;
       } else {
         nPenalty -= 28000;
@@ -495,12 +451,14 @@ int32_t CalcPenalty(CFGAS_FontDescriptor* pInstalled,
     }
     if (nPenalty == 30000 && !IsPartName(pInstalled->face_name_, FontName)) {
       size_t i;
-      for (i = 0; i < pInstalled->family_names_.size(); i++) {
-        if (IsPartName(pInstalled->family_names_[i], FontName)) {
+      pdfium::span<const WideString> names =
+          pInstalled->family_names_->GetFamilyNames();
+      for (i = 0; i < names.size(); i++) {
+        if (IsPartName(names[i], FontName)) {
           break;
         }
       }
-      if (i == pInstalled->family_names_.size()) {
+      if (i == names.size()) {
         nPenalty += 0xFFFF;
       } else {
         nPenalty -= 26000;
@@ -534,7 +492,7 @@ int32_t CalcPenalty(CFGAS_FontDescriptor* pInstalled,
           ? static_cast<uint16_t>(-1)
           : FX_GetCodePageBit(wCodePage);
   if (wBit != static_cast<uint16_t>(-1)) {
-    DCHECK(wBit < 64);
+    DCHECK_LT(wBit, 64);
     if ((pInstalled->csb_[wBit / 32] & (1 << (wBit % 32))) == 0) {
       nPenalty += 0xFFFF;
     } else {
@@ -544,7 +502,7 @@ int32_t CalcPenalty(CFGAS_FontDescriptor* pInstalled,
   wBit = (wcUnicode == 0 || wcUnicode == 0xFFFE) ? FGAS_FONTUSB::kNoBitField
                                                  : FX_GetUnicodeBit(wcUnicode);
   if (wBit != FGAS_FONTUSB::kNoBitField) {
-    DCHECK(wBit < 128);
+    DCHECK_LT(wBit, 128);
     if ((pInstalled->usb_[wBit / 32] & (1 << (wBit % 32))) == 0) {
       nPenalty += 0xFFFF;
     } else {
@@ -567,8 +525,8 @@ bool CFGAS_FontDescriptor::VerifyUnicode(wchar_t unicode) {
     if (!file_read) {
       return false;
     }
-    RetainPtr<CFX_Face> ft_face = CFX_Face::NewFromSpanStream(
-        CFX_GEModule::Get()->GetFontMgr(), file_read, face_index_);
+    RetainPtr<CFX_Face> ft_face =
+        CFX_Face::New(nullptr, file_read, face_index_);
     if (!ft_face) {
       return false;
     }
@@ -621,11 +579,11 @@ RetainPtr<CFGAS_GEFont> CFGAS_FontMgr::GetFontByUnicodeImpl(
     uint32_t dwHash,
     FX_CodePage wCodePage,
     uint16_t /* wBitField*/) {
-  if (!pdfium::Contains(hash_2candidate_list_, dwHash)) {
-    hash_2candidate_list_[dwHash] =
+  if (!pdfium::Contains(hash_to_candidates_map_, dwHash)) {
+    hash_to_candidates_map_[dwHash] =
         MatchFonts(wCodePage, dwFontStyles, pszFontFamily, wUnicode);
   }
-  for (const auto& info : hash_2candidate_list_[dwHash]) {
+  for (const auto& info : hash_to_candidates_map_[dwHash]) {
     CFGAS_FontDescriptor* pDesc = info.font;
     if (!pDesc->VerifyUnicode(wUnicode)) {
       continue;
@@ -654,19 +612,19 @@ RetainPtr<CFGAS_GEFont> CFGAS_FontMgr::LoadFontInternal(
     return nullptr;
   }
   auto internal_font = std::make_unique<CFX_Font>();
-  if (!internal_font->LoadFromSpanStream(font_stream, face_index)) {
+  if (!internal_font->LoadFaceFromSpanStream(font_stream, face_index, 0)) {
     return nullptr;
   }
   return CFGAS_GEFont::LoadFont(std::move(internal_font));
 }
 
-std::vector<CFGAS_FontDescriptorInfo> CFGAS_FontMgr::MatchFonts(
+std::vector<CFGAS_FontDescriptor::Rank> CFGAS_FontMgr::MatchFonts(
     FX_CodePage wCodePage,
     uint32_t dwFontStyles,
     const WideString& FontName,
     wchar_t wcUnicode) {
   EnsureFontsEnumerated();
-  std::vector<CFGAS_FontDescriptorInfo> matched_fonts;
+  std::vector<CFGAS_FontDescriptor::Rank> matched_fonts;
   for (const auto& font : installed_fonts_) {
     int32_t nPenalty =
         CalcPenalty(font.get(), wCodePage, dwFontStyles, FontName, wcUnicode);
@@ -704,19 +662,11 @@ void CFGAS_FontMgr::RegisterFace(RetainPtr<CFX_Face> face,
     fxcrt::Copy(code_page_range.value(), font->csb_);
   }
 
-  static constexpr uint32_t kNameTag =
-      CFX_FontMapper::MakeTag('n', 'a', 'm', 'e');
-
-  DataVector<uint8_t> table;
-  size_t table_size = face->GetSfntTable(kNameTag, table);
-  if (table_size) {
-    table.resize(table_size);
-    if (!face->GetSfntTable(kNameTag, table)) {
-      table.clear();
-    }
+  font->family_names_ = face->ParseNameTable();
+  if (!font->family_names_) {
+    font->family_names_ = std::make_unique<CFX_CTTNameTable>();
   }
-  font->family_names_ = GetNames(table);
-  font->family_names_.push_back(
+  font->family_names_->AddFamilyName(
       WideString::FromUTF8(face->GetFamilyName().AsStringView()));
   font->face_name_ = wsFaceName;
   font->face_index_ = face_index;
@@ -729,8 +679,7 @@ void CFGAS_FontMgr::RegisterFaces(
   int index = 0;
   int num_faces = 0;
   do {
-    RetainPtr<CFX_Face> face = CFX_Face::NewFromSpanStream(
-        CFX_GEModule::Get()->GetFontMgr(), font_stream, index);
+    RetainPtr<CFX_Face> face = CFX_Face::New(nullptr, font_stream, index);
     if (!face) {
       ++index;
       continue;
@@ -780,15 +729,15 @@ RetainPtr<CFGAS_GEFont> CFGAS_FontMgr::GetFontByCodePage(
   RetainPtr<CFGAS_GEFont> font =
       CFGAS_GEFont::LoadFont(pFD->wsFontFace, dwFontStyles, wCodePage);
 #else   // BUILDFLAG(IS_WIN)
-  if (!pdfium::Contains(hash_2candidate_list_, dwHash)) {
-    hash_2candidate_list_[dwHash] =
+  if (!pdfium::Contains(hash_to_candidates_map_, dwHash)) {
+    hash_to_candidates_map_[dwHash] =
         MatchFonts(wCodePage, dwFontStyles, WideString(pszFontFamily), 0);
   }
-  if (hash_2candidate_list_[dwHash].empty()) {
+  if (hash_to_candidates_map_[dwHash].empty()) {
     return nullptr;
   }
 
-  CFGAS_FontDescriptor* pDesc = hash_2candidate_list_[dwHash].front().font;
+  CFGAS_FontDescriptor* pDesc = hash_to_candidates_map_[dwHash].front().font;
   RetainPtr<CFGAS_GEFont> font =
       LoadFontInternal(pDesc->face_name_, pDesc->face_index_);
 #endif  // BUILDFLAG(IS_WIN)

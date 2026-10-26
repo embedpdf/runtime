@@ -2,15 +2,17 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
+#include "public/fpdf_structtree.h"
+
 #include <limits.h>
 
 #include <algorithm>
 #include <iterator>
 #include <optional>
-
-#include "public/fpdf_structtree.h"
 #include "testing/embedder_test.h"
 #include "testing/fx_string_testhelpers.h"
+#include "testing/gmock/include/gmock/gmock.h"
+#include "testing/gtest/include/gtest/gtest.h"
 
 class FPDFStructTreeEmbedderTest : public EmbedderTest {};
 
@@ -115,6 +117,42 @@ TEST_F(FPDFStructTreeEmbedderTest, GetActualText) {
     ASSERT_EQ(24U, FPDF_StructElement_GetActualText(gchild_element, buffer,
                                                     sizeof(buffer)));
     EXPECT_EQ(L"Actual Text", GetPlatformWString(buffer));
+  }
+}
+
+TEST_F(FPDFStructTreeEmbedderTest, GetExpansion) {
+  ASSERT_TRUE(OpenDocument("tagged_expansion.pdf"));
+  ScopedPage page = LoadScopedPage(0);
+  ASSERT_TRUE(page);
+
+  {
+    ScopedFPDFStructTree struct_tree(FPDF_StructTree_GetForPage(page.get()));
+    ASSERT_TRUE(struct_tree);
+    ASSERT_EQ(1, FPDF_StructTree_CountChildren(struct_tree.get()));
+
+    EXPECT_EQ(0U, FPDF_StructElement_GetExpansion(nullptr, nullptr, 0));
+
+    FPDF_STRUCTELEMENT element =
+        FPDF_StructTree_GetChildAtIndex(struct_tree.get(), 0);
+    ASSERT_TRUE(element);
+    // Document element has no /E attribute.
+    EXPECT_EQ(0U, FPDF_StructElement_GetExpansion(element, nullptr, 0));
+
+    ASSERT_EQ(1, FPDF_StructElement_CountChildren(element));
+    FPDF_STRUCTELEMENT child_element =
+        FPDF_StructElement_GetChildAtIndex(element, 0);
+    ASSERT_TRUE(child_element);
+    // Span element has /E set to "Expansion".
+    ASSERT_EQ(20U, FPDF_StructElement_GetExpansion(child_element, nullptr, 0));
+
+    unsigned short buffer[10] = {};
+    // Deliberately pass in a small buffer size to make sure `buffer` remains
+    // untouched.
+    ASSERT_EQ(20U, FPDF_StructElement_GetExpansion(child_element, buffer, 1));
+    EXPECT_THAT(buffer, testing::Each(0u));
+    ASSERT_EQ(20U, FPDF_StructElement_GetExpansion(child_element, buffer,
+                                                   sizeof(buffer)));
+    EXPECT_EQ(L"Expansion", GetPlatformWString(buffer));
   }
 }
 
@@ -532,6 +570,74 @@ TEST_F(FPDFStructTreeEmbedderTest, GetParent) {
     // The parent of `parent` is StructTreeRoot and no longer a StructElement.
     // We currently handle this case by returning a nullptr.
     ASSERT_EQ(nullptr, FPDF_StructElement_GetParent(parent));
+  }
+}
+
+TEST_F(FPDFStructTreeEmbedderTest, GetRawTypeValue) {
+  ASSERT_TRUE(OpenDocument("raw_type_text.pdf"));
+  ScopedPage page = LoadScopedPage(0);
+  ASSERT_TRUE(page);
+
+  {
+    ScopedFPDFStructTree struct_tree(FPDF_StructTree_GetForPage(page.get()));
+    ASSERT_TRUE(struct_tree);
+    ASSERT_EQ(4, FPDF_StructTree_CountChildren(struct_tree.get()));
+
+    FPDF_WCHAR buffer[18];
+    ASSERT_EQ(0U,
+              FPDF_StructElement_GetRawType(nullptr, buffer, sizeof(buffer)));
+    ASSERT_EQ(0U, FPDF_StructElement_GetRawType(nullptr, nullptr, 0));
+
+    // The raw type (/S) value is valid.
+    FPDF_STRUCTELEMENT element1 =
+        FPDF_StructTree_GetChildAtIndex(struct_tree.get(), 0);
+    ASSERT_TRUE(element1);
+
+    ASSERT_EQ(18U, FPDF_StructElement_GetRawType(element1, nullptr, 0));
+
+    // Deliberately pass in a buffer size too small to make sure `buffer`
+    // remains untouched.
+    std::ranges::fill(buffer, 0xabcd);
+    ASSERT_EQ(18U, FPDF_StructElement_GetRawType(element1, buffer, 1));
+    for (const auto b : buffer) {
+      EXPECT_EQ(0xabcd, b);
+    }
+
+    ASSERT_EQ(18U,
+              FPDF_StructElement_GetRawType(element1, buffer, sizeof(buffer)));
+    EXPECT_EQ(L"Workbook", GetPlatformWString(buffer));
+
+    // The type value is a number.
+    FPDF_STRUCTELEMENT element2 =
+        FPDF_StructTree_GetChildAtIndex(struct_tree.get(), 1);
+    ASSERT_TRUE(element2);
+
+    // For this 2 digit number, 0 is returned.
+    ASSERT_EQ(0U,
+              FPDF_StructElement_GetRawType(element2, buffer, sizeof(buffer)));
+
+    // There is no type value.
+    FPDF_STRUCTELEMENT element3 =
+        FPDF_StructTree_GetChildAtIndex(struct_tree.get(), 2);
+    ASSERT_TRUE(element3);
+
+    std::ranges::fill(buffer, 0xabcd);
+    ASSERT_EQ(0U, FPDF_StructElement_GetRawType(element3, nullptr, 0));
+    ASSERT_EQ(0U,
+              FPDF_StructElement_GetRawType(element3, buffer, sizeof(buffer)));
+    for (const auto b : buffer) {
+      EXPECT_EQ(0xabcd, b);
+    }
+
+    // The type value is the same as one of the types returned by GetType().
+    FPDF_STRUCTELEMENT element4 =
+        FPDF_StructTree_GetChildAtIndex(struct_tree.get(), 3);
+    ASSERT_TRUE(element4);
+
+    ASSERT_EQ(10U, FPDF_StructElement_GetRawType(element4, nullptr, 0));
+    ASSERT_EQ(10U,
+              FPDF_StructElement_GetRawType(element4, buffer, sizeof(buffer)));
+    EXPECT_EQ(L"Part", GetPlatformWString(buffer));
   }
 }
 

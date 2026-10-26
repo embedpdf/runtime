@@ -101,15 +101,21 @@ source_set("parser") {
     "object_tree_traversal_util.h",
   ]
   configs += [ "../../../:pdfium_strict_config" ]
-  deps = [
-    "../../../constants",
+  public_deps = [
     "../../fdrm",
     "../../fxcodec",
-    "../edit:contentstream_write_utils",
+    "../../fxcrt",
   ]
-  public_deps = [ "../../fxcrt" ]
+  deps = [ "../../../constants" ]
   allow_circular_includes_from = []
   visibility = [ "../../../*" ]
+
+  # EmbedPDF: the base and layer documents make their page and render data
+  # (cpdf_docpagedata.h, cpdf_docrenderdata.h), whose font headers need
+  # FreeType's include path; fxge passes it on (fxcrt no longer does).
+  if (!pdf_use_skia) {
+    deps += [ "../../fxge" ]
+  }
 
   if (pdf_enable_xfa) {
     sources += [
@@ -130,8 +136,11 @@ source_set("unit_test_support") {
     "cpdf_test_document.h",
   ]
   configs += [ "../../../:pdfium_strict_config" ]
-  deps = [
+  public_deps = [
     ":parser",
+    "../../fxcrt",
+  ]
+  deps = [
     "../page",
     "../render",
   ]
@@ -169,6 +178,8 @@ pdfium_unittest_source_set("unittests") {
     ":parser",
     ":unit_test_support",
     "../../../constants",
+    "../../../testing:path_service",
+    "../../../testing:test_support",
     "../../fxcodec",
     "../page",
     "../page:unit_test_support",
@@ -190,6 +201,7 @@ pdfium_embeddertest_source_set("embeddertests") {
   ]
   deps = [
     ":parser",
+    "../../../testing:test_support",
     "../../fxge",
   ]
   pdfium_root_dir = "../../../"

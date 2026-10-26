@@ -20,7 +20,7 @@
 
 #include "constants/annotation_common.h"
 #include "constants/transparency.h"
-#include "core/fpdfapi/edit/cpdf_contentstream_write_utils.h"
+#include "core/fxcrt/stream_write_utils.h"
 #include "core/fpdfapi/page/cpdf_form.h"
 #include "core/fpdfapi/page/cpdf_paintedbounds.h"
 #include "core/fpdfapi/parser/cpdf_array.h"
@@ -459,9 +459,8 @@ ByteString GenerateBorderAP(const CFX_FloatRect& rect,
     case BorderStyle::kInset: {
       const float left_top_gray_value =
           border_style_info.style == BorderStyle::kBeveled ? 1.0f : 0.5f;
-      app_stream << GenerateColorAP(
-          CFX_Color(CFX_Color::Type::kGray, left_top_gray_value),
-          PaintOperation::kFill);
+      app_stream << GenerateColorAP(CFX_Color::MakeGray(left_top_gray_value),
+                                    PaintOperation::kFill);
       WritePoint(app_stream, {left + half_width, bottom + half_width})
           << " m\n";
       WritePoint(app_stream, {left + half_width, top - half_width}) << " l\n";
@@ -473,8 +472,7 @@ ByteString GenerateBorderAP(const CFX_FloatRect& rect,
       const float right_bottom_gray_value =
           border_style_info.style == BorderStyle::kBeveled ? 0.5f : 0.75f;
       app_stream << GenerateColorAP(
-          CFX_Color(CFX_Color::Type::kGray, right_bottom_gray_value),
-          PaintOperation::kFill);
+          CFX_Color::MakeGray(right_bottom_gray_value), PaintOperation::kFill);
       WritePoint(app_stream, {right - half_width, top - half_width}) << " m\n";
       WritePoint(app_stream, {right - half_width, bottom + half_width})
           << " l\n";
