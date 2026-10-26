@@ -27,6 +27,7 @@
 #include "core/fpdfapi/page/cpdf_docpagedata.h"
 #include "core/fpdfapi/parser/cpdf_base_document.h"
 #include "core/fpdfapi/parser/cpdf_cross_ref_table.h"
+#include "core/fpdfapi/parser/cpdf_crypto_handler.h"
 #include "core/fpdfapi/parser/cpdf_dictionary.h"
 #include "core/fpdfapi/parser/cpdf_document.h"
 #include "core/fpdfapi/parser/cpdf_layer_document.h"
@@ -34,11 +35,13 @@
 #include "core/fpdfapi/parser/cpdf_object_walker.h"
 #include "core/fpdfapi/parser/cpdf_parser.h"
 #include "core/fpdfapi/parser/cpdf_reference.h"
+#include "core/fpdfapi/parser/cpdf_security_handler.h"
 #include "core/fpdfapi/parser/cpdf_stream.h"
 #include "core/fpdfapi/parser/cpdf_string.h"
 #include "core/fpdfapi/parser/cpdf_syntax_parser.h"
 #include "core/fpdfapi/render/cpdf_docrenderdata.h"
 #include "core/fxcrt/cfx_read_only_span_stream.h"
+#include "core/fxcrt/data_vector.h"
 #include "fpdfsdk/cpdfsdk_helpers.h"
 #include "public/cpp/fpdf_scopers.h"
 #include "public/epdf_annot.h"
@@ -130,7 +133,8 @@ std::string MakeGenerationDocument(uint16_t generation,
     auto* crypto = encryption_source->GetSecurityHandler()->GetCryptoHandler();
     const std::string title = "original";
     auto encrypted_title =
-        crypto->EncryptContent(5, generation, pdfium::as_byte_span(title));
+        crypto->EncryptContent(5, generation, pdfium::as_byte_span(title))
+            .value();
     auto title_object = pdfium::MakeRetain<CPDF_String>(
         encrypted_title, CPDF_String::DataType::kIsHex);
     objects[4] = "<</Title " + SerializeObject(title_object.Get()) + ">>";
@@ -1225,6 +1229,68 @@ TEST_F(EPDFSaveEmbedderTest, SetEncryptionRoundTripsWithInlineEncryptDict) {
   ASSERT_TRUE(saved_page);
   ScopedFPDFBitmap bitmap = RenderSavedPage(saved_page.get());
   ASSERT_TRUE(bitmap);
+}
+
+// The file key and the salts in /U and /O come from the operating system's
+// secure random source, so two saves with the same passwords share neither.
+// (They came from FX_Random, a Mersenne Twister with a 32-bit seed, and the
+// public salts let an attacker find that seed and recompute the key.)
+TEST_F(EPDFSaveEmbedderTest, EncryptedSavesShareNoKeyOrSalts) {
+  ASSERT_TRUE(OpenDocument("hello_world.pdf"));
+  std::string saves[2];
+  for (std::string& save : saves) {
+    ASSERT_TRUE(EPDF_SetEncryption(document(), "user", "owner",
+                                   EPDF_PERM_PRINT | EPDF_PERM_COPY));
+    ClearString();
+    ASSERT_TRUE(FPDF_SaveAsCopy(document(), this, FPDF_NO_INCREMENTAL));
+    save = GetString();
+  }
+
+  ScopedFPDFDocument saved[2];
+  for (size_t i = 0; i < 2; ++i) {
+    SCOPED_TRACE(i);
+    const std::string& save = saves[i];
+    // The owner password opens the file too.
+    EXPECT_TRUE(ScopedFPDFDocument(
+        FPDF_LoadMemDocument(save.data(), save.size(), "owner")));
+    saved[i].reset(FPDF_LoadMemDocument(save.data(), save.size(), "user"));
+    ASSERT_TRUE(saved[i]);
+    // Streams decrypt with the file's key and its IVs: the page's content
+    // reads back.
+    ScopedFPDFPage page(FPDF_LoadPage(saved[i].get(), 0));
+    ASSERT_TRUE(page);
+    EXPECT_GT(FPDFPage_CountObjects(page.get()), 0);
+  }
+
+  const CPDF_Parser* parsers[2] = {
+      CPDFDocumentFromFPDFDocument(saved[0].get())->GetParser(),
+      CPDFDocumentFromFPDFDocument(saved[1].get())->GetParser()};
+  for (const char* key : {"U", "UE", "O", "OE"}) {
+    SCOPED_TRACE(key);
+    const ByteString first =
+        parsers[0]->GetEncryptDict()->GetByteStringFor(key);
+    const ByteString second =
+        parsers[1]->GetEncryptDict()->GetByteStringFor(key);
+    EXPECT_FALSE(first.IsEmpty());
+    EXPECT_NE(first, second);
+  }
+
+  // The file keys differ: what the first file's key encrypts, its own key
+  // decrypts and the second file's doesn't.
+  CPDF_CryptoHandler* crypto[2] = {
+      parsers[0]->GetSecurityHandler()->GetCryptoHandler(),
+      parsers[1]->GetSecurityHandler()->GetCryptoHandler()};
+  const ByteString probe = "the same plaintext";
+  const DataVector<uint8_t> encrypted =
+      crypto[0]->EncryptContent(1, 0, probe.unsigned_span()).value();
+  auto own =
+      pdfium::MakeRetain<CPDF_String>(encrypted, CPDF_String::DataType::kIsHex);
+  auto other =
+      pdfium::MakeRetain<CPDF_String>(encrypted, CPDF_String::DataType::kIsHex);
+  ASSERT_TRUE(crypto[0]->DecryptObjectTree(own));
+  EXPECT_EQ(probe, own->GetString());
+  crypto[1]->DecryptObjectTree(other);
+  EXPECT_NE(probe, other->GetString());
 }
 
 TEST_F(EPDFSaveEmbedderTest, RemoveEncryptionUsesDocumentOwnedPendingState) {

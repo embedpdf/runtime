@@ -208,12 +208,21 @@ and the free list. Update sections (incremental saves) stay sparse.
 
 ### save-security
 **Rule.** Pending encryption settings belong to the document, not to a global. AES-256 encryption
-and password probing are ours.
-**Why.** Saves on different threads must not share pending security state.
+and password probing are ours. The file key, the `/U` and `/O` salts and every AES IV come from
+`EPDF_FillSecureRandom`, the operating system's secure random source, never from `FX_Random` or
+`rand()`. When it fails, `EPDF_SetEncryption` or the save fails.
+**Why.** Saves on different threads must not share pending security state. `FX_Random` is a
+Mersenne Twister with a 32-bit seed (time, pid and a stack address outside Windows): the public
+salts give the seed away, and with it a file key, without the password.
 **Where.** `CPDF_Document` pending security, `fpdf_save.cpp`, `cpdf_security_handler.cpp`,
-`cpdf_crypto_handler.cpp`.
-**Guarded by.** Encrypted save embedder tests; the thread soak's encrypted save.
-**When upstream touches this.** The security handler and the save paths.
+`cpdf_crypto_handler.cpp`, `CPDF_Encryptor` and its callers in `cpdf_string.cpp` and
+`cpdf_stream.cpp`, `core/fxcrt/epdf_secure_random.{h,cpp}`.
+**Guarded by.** Encrypted save embedder tests (`EncryptedSavesShareNoKeyOrSalts`),
+`epdf_secure_random_unittest.cpp`; the thread soak's encrypted save.
+**When upstream touches this.** The security handler and the save paths. New key, salt or IV bytes
+use `EPDF_FillSecureRandom` and fail when it fails. Two upstream draws still use `FX_Random`, and
+neither is secret: the `/Perms` filler bytes (encrypted under the file key) and the R≥5 branch of
+`OnCreate` (the creator calls `OnCreate` only for R2 and R3).
 
 ## Content and pages
 
