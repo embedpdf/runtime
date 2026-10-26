@@ -8,6 +8,7 @@
 
 #include <stdint.h>
 
+#include <optional>
 #include <sstream>
 #include <utility>
 #include <variant>
@@ -294,11 +295,15 @@ bool CPDF_Stream::WriteTo(IFX_ArchiveStream* archive,
   const bool is_metadata = IsMetaDataStreamDictionary(GetDict().Get());
   CPDF_FlateEncoder encoder(pdfium::WrapRetain(this), !is_metadata);
 
-  DataVector<uint8_t> encrypted_data;
+  std::optional<DataVector<uint8_t>> encrypted_data;
   pdfium::span<const uint8_t> data = encoder.GetSpan();
   if (encryptor && !is_metadata) {
+    // EmbedPDF(save-security): a stream that can't be encrypted fails the save.
     encrypted_data = encryptor->Encrypt(data);
-    data = encrypted_data;
+    if (!encrypted_data) {
+      return false;
+    }
+    data = *encrypted_data;
   }
 
   encoder.UpdateLength(data.size());

@@ -24,6 +24,7 @@
 #include "core/fxcrt/check.h"
 #include "core/fxcrt/check_op.h"
 #include "core/fxcrt/data_vector.h"
+#include "core/fxcrt/epdf_secure_random.h"
 #include "core/fxcrt/fx_random.h"
 #include "core/fxcrt/notreached.h"
 #include "core/fxcrt/span.h"
@@ -700,16 +701,17 @@ bool CPDF_SecurityHandler::OnCreateWithPasswords(
     return false;
   }
 
-  // Generate random file encryption key (32 bytes) directly
-  // Using 8 x uint32_t = 32 bytes from MT RNG, then copy to avoid alignment
-  // issues
+  // EmbedPDF(save-security): the file encryption key comes from the operating
+  // system's secure random source. Without it there is no key, and no save.
   static_assert(sizeof(encrypt_key_) == 32);
-  uint32_t random_key[8];
-  FX_Random_GenerateMT(random_key);
-  memcpy(encrypt_key_.data(), random_key, 32);
+  if (!EPDF_FillSecureRandom(encrypt_key_)) {
+    return false;
+  }
 
   // Set all password entries (U, UE, O, OE)
-  AES256_SetPasswords(pEncryptDict, user_password, owner_password);
+  if (!AES256_SetPasswords(pEncryptDict, user_password, owner_password)) {
+    return false;
+  }
 
   // Set Perms entry
   AES256_SetPerms(pEncryptDict);
@@ -798,16 +800,16 @@ void CPDF_SecurityHandler::AES256_SetPerms(CPDF_Dictionary* pEncryptDict) {
 }
 
 // EmbedPDF(save-security): AES-256 with both passwords.
-void CPDF_SecurityHandler::AES256_SetPasswords(
+bool CPDF_SecurityHandler::AES256_SetPasswords(
     CPDF_Dictionary* pEncryptDict,
     const ByteString& user_password,
     const ByteString& owner_password) {
-  // Generate 4 separate random salts (8 bytes each = 32 bytes total)
-  // Use uint8_t array so we can pass to Revision6_Hash directly
+  // Four 8-byte salts (U validation, U key, O validation, O key), from the
+  // operating system's secure random source.
   uint8_t salt_buffer[32];
-  uint32_t random_salt[8];
-  FX_Random_GenerateMT(random_salt);
-  memcpy(salt_buffer, random_salt, 32);
+  if (!EPDF_FillSecureRandom(salt_buffer)) {
+    return false;
+  }
 
   // Create salt spans matching Revision6_Hash signature (span<const uint8_t,8>)
   auto u_val_salt = pdfium::span(salt_buffer).subspan<0, 8>();
@@ -856,6 +858,7 @@ void CPDF_SecurityHandler::AES256_SetPasswords(
   CRYPT_AESEncrypt(&aes, OE, encrypt_key_);
   pEncryptDict->SetNewFor<CPDF_String>(
       "OE", ByteString(ByteStringView(pdfium::span(OE))));
+  return true;
 }
 
 void CPDF_SecurityHandler::InitCryptoHandler() {
