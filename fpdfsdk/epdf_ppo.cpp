@@ -22,6 +22,7 @@
 #include "core/fpdfapi/parser/cpdf_layer_document.h"
 #include "core/fpdfapi/parser/cpdf_number.h"
 #include "core/fpdfapi/parser/cpdf_reference.h"
+#include "core/fpdfapi/parser/cpdf_simple_parser.h"
 #include "core/fpdfapi/parser/cpdf_stream.h"
 #include "core/fpdfapi/parser/cpdf_string.h"
 #include "core/fpdfapi/parser/fpdf_parser_utility.h"
@@ -53,6 +54,9 @@ constexpr char kSigFlags[] = "SigFlags";
 
 // The deepest field tree followed, as CPDF_InteractiveForm loads one.
 constexpr int kMaxFieldDepth = 32;
+
+// The deepest a /DR font is compared (font, descriptor, an array in it).
+constexpr int kMaxDefinitionDepth = 8;
 
 // ISO 32000-2 table 224.
 constexpr int kSignaturesExist = 1;
@@ -303,69 +307,65 @@ void CopyField(CPDF_Document* src,
   }
 }
 
-// Whether two fonts' /Encoding entries are the same: none, the same name, or
-// dictionaries with the same base encoding and /Differences (Acrobat gives
-// every /Helv the same one).
-bool IsSameEncoding(const CPDF_Object* a, const CPDF_Object* b) {
-  if (!a || !b) {
-    return !a && !b;
-  }
-  if (a->IsName() || b->IsName()) {
-    return a->IsName() && b->IsName() && a->GetString() == b->GetString();
-  }
-  const CPDF_Dictionary* dict_a = a->AsDictionary();
-  const CPDF_Dictionary* dict_b = b->AsDictionary();
-  if (!dict_a || !dict_b ||
-      dict_a->GetNameFor("BaseEncoding") !=
-          dict_b->GetNameFor("BaseEncoding")) {
+// Whether |a| and |b|, objects of two documents, define the same thing: the
+// same values all the way down, references compared by what they resolve
+// to. A stream never is (an embedded font program, a /ToUnicode map), nor
+// anything nested deeper than kMaxDefinitionDepth. So two /DR fonts are
+// shared only when every key agrees, /Widths and the descriptor's metrics
+// included: Acrobat writes the same /Helv into every form.
+bool IsSameDefinition(RetainPtr<const CPDF_Object> a,
+                      RetainPtr<const CPDF_Object> b,
+                      int depth) {
+  a = a ? a->GetDirect() : nullptr;
+  b = b ? b->GetDirect() : nullptr;
+  if (!a || !b || depth > kMaxDefinitionDepth || a->GetType() != b->GetType()) {
     return false;
   }
-  RetainPtr<const CPDF_Array> differences_a =
-      dict_a->GetArrayFor("Differences");
-  RetainPtr<const CPDF_Array> differences_b =
-      dict_b->GetArrayFor("Differences");
-  if (!differences_a || !differences_b) {
-    return !differences_a && !differences_b;
-  }
-  if (differences_a->size() != differences_b->size()) {
-    return false;
-  }
-  for (size_t i = 0; i < differences_a->size(); ++i) {
-    RetainPtr<const CPDF_Object> entry_a = differences_a->GetDirectObjectAt(i);
-    RetainPtr<const CPDF_Object> entry_b = differences_b->GetDirectObjectAt(i);
-    if (!entry_a || !entry_b || entry_a->GetType() != entry_b->GetType() ||
-        entry_a->GetString() != entry_b->GetString()) {
-      return false;
+  switch (a->GetType()) {
+    case CPDF_Object::kBoolean:
+    case CPDF_Object::kNumber:
+    case CPDF_Object::kString:
+    case CPDF_Object::kName:
+      return a->GetString() == b->GetString();
+    case CPDF_Object::kNullobj:
+      return true;
+    case CPDF_Object::kArray: {
+      const CPDF_Array* array_a = a->AsArray();
+      const CPDF_Array* array_b = b->AsArray();
+      if (array_a->size() != array_b->size()) {
+        return false;
+      }
+      for (size_t i = 0; i < array_a->size(); ++i) {
+        if (!IsSameDefinition(array_a->GetObjectAt(i), array_b->GetObjectAt(i),
+                              depth + 1)) {
+          return false;
+        }
+      }
+      return true;
     }
-  }
-  return true;
-}
-
-// Whether two /DR fonts draw the same: the same standard (not embedded)
-// simple font, in the same encoding.
-bool IsSameStandardFont(const CPDF_Dictionary* a, const CPDF_Dictionary* b) {
-  auto standard = [](const CPDF_Dictionary* font) {
-    if (!font || font->GetNameFor("Subtype") == "Type0") {
-      return false;
+    case CPDF_Object::kDictionary: {
+      const CPDF_Dictionary* dict_a = a->AsDictionary();
+      const CPDF_Dictionary* dict_b = b->AsDictionary();
+      if (dict_a->size() != dict_b->size()) {
+        return false;
+      }
+      CPDF_DictionaryLocker locker(dict_a);
+      for (const auto& [key, value] : locker) {
+        if (!IsSameDefinition(value, dict_b->GetObjectFor(key.AsStringView()),
+                              depth + 1)) {
+          return false;
+        }
+      }
+      return true;
     }
-    RetainPtr<const CPDF_Dictionary> descriptor =
-        font->GetDictFor("FontDescriptor");
-    return !descriptor || !(descriptor->KeyExist("FontFile") ||
-                            descriptor->KeyExist("FontFile2") ||
-                            descriptor->KeyExist("FontFile3"));
-  };
-  if (!standard(a) || !standard(b) ||
-      a->GetNameFor("Subtype") != b->GetNameFor("Subtype") ||
-      a->GetNameFor("BaseFont") != b->GetNameFor("BaseFont")) {
-    return false;
+    default:
+      return false;
   }
-  return IsSameEncoding(a->GetDirectObjectFor("Encoding").Get(),
-                        b->GetDirectObjectFor("Encoding").Get());
 }
 
 // The source's /DR entries the destination's /DR doesn't name, copied in. A
-// font under a name the destination gives another font gets a free name,
-// returned old name to new.
+// font under a name the destination gives a font defined otherwise gets a
+// free name, returned old name to new.
 std::map<ByteString, ByteString> MergeResources(
     CPDF_Document* dest,
     CPDF_PageExporter& exporter,
@@ -394,8 +394,8 @@ std::map<ByteString, ByteString> MergeResources(
       ByteString target = name;
       if (dest_entries->KeyExist(name.AsStringView())) {
         if (category != kFont ||
-            IsSameStandardFont(dest_entries->GetDictFor(name.AsStringView()),
-                               ToDictionary(entry->GetDirect()))) {
+            IsSameDefinition(dest_entries->GetObjectFor(name.AsStringView()),
+                             entry, 0)) {
           continue;
         }
         for (int n = 1; dest_entries->KeyExist(target.AsStringView()); ++n) {
@@ -413,49 +413,36 @@ std::map<ByteString, ByteString> MergeResources(
 }
 
 // |appearance| (a /DA string) with the font it sets renamed as |renamed|
-// says: the name operand of its Tf.
+// says: the name operand of its Tf. Read with PDFium's content tokenizer, so a
+// comment between the operands is skipped as a viewer skips it.
 ByteString RenameAppearanceFont(
     const ByteString& appearance,
     const std::map<ByteString, ByteString>& renamed) {
   if (renamed.empty()) {
     return appearance;
   }
-  // The tokens, as [start, end) offsets.
-  std::vector<std::pair<size_t, size_t>> tokens;
-  const ByteStringView text = appearance.AsStringView();
-  for (size_t i = 0; i < text.GetLength();) {
-    const uint8_t c = text[i];
-    if (PDFCharIsWhitespace(c)) {
-      ++i;
-      continue;
-    }
-    size_t end = i + 1;
-    if (c == '/' || !PDFCharIsDelimiter(c)) {
-      while (end < text.GetLength() && !PDFCharIsWhitespace(text[end]) &&
-             !PDFCharIsDelimiter(text[end])) {
-        ++end;
-      }
-    }
-    tokens.emplace_back(i, end);
-    i = end;
+  // Each word, with the offset it starts at.
+  std::vector<std::pair<ByteStringView, uint32_t>> words;
+  CPDF_SimpleParser parser(appearance.unsigned_span());
+  for (ByteStringView word = parser.GetWord(); !word.IsEmpty();
+       word = parser.GetWord()) {
+    words.emplace_back(word, parser.GetCurrentPosition() - word.GetLength());
   }
+  const ByteStringView text = appearance.AsStringView();
   ByteString result;
   size_t written = 0;
-  for (size_t t = 2; t < tokens.size(); ++t) {
-    const auto [start, end] = tokens[t - 2];
-    if (text.Substr(tokens[t].first, tokens[t].second - tokens[t].first) !=
-            "Tf" ||
-        text[start] != '/') {
+  for (size_t i = 2; i < words.size(); ++i) {
+    const auto [font, start] = words[i - 2];
+    if (words[i].first != "Tf" || font[0] != '/') {
       continue;
     }
-    const auto it =
-        renamed.find(PDF_NameDecode(text.Substr(start + 1, end - start - 1)));
+    const auto it = renamed.find(PDF_NameDecode(font.Substr(1)));
     if (it == renamed.end()) {
       continue;
     }
     result += text.Substr(written, start - written);
     result += ByteString("/") + PDF_NameEncode(it->second);
-    written = end;
+    written = start + font.GetLength();
   }
   result += text.Substr(written);
   return result;

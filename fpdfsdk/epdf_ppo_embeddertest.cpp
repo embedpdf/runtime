@@ -113,6 +113,58 @@ RetainPtr<const CPDF_Dictionary> AcroFormOf(FPDF_DOCUMENT document) {
   return doc->GetRoot()->GetDictFor("AcroForm");
 }
 
+// A Type 1 font of |doc| named |base_font|.
+RetainPtr<CPDF_Dictionary> NewFont(CPDF_Document* doc,
+                                   const ByteString& base_font) {
+  auto font = doc->NewIndirect<CPDF_Dictionary>();
+  font->SetNewFor<CPDF_Name>("Type", "Font");
+  font->SetNewFor<CPDF_Name>("Subtype", "Type1");
+  font->SetNewFor<CPDF_Name>("BaseFont", base_font);
+  return font;
+}
+
+// |font| told that its one character, the space, is |width| wide.
+void SetSpaceWidth(CPDF_Dictionary* font, int width) {
+  font->SetNewFor<CPDF_Number>("FirstChar", 32);
+  font->SetNewFor<CPDF_Number>("LastChar", 32);
+  font->SetNewFor<CPDF_Array>("Widths")->AppendNew<CPDF_Number>(width);
+}
+
+// A new one-page document with a form: a "person" field, |font| as /F1 and a
+// /DA of its own.
+ScopedFPDFDocument NewTargetForm(const ByteString& base_font, int width = 0) {
+  ScopedFPDFDocument dest(FPDF_CreateNewDocument());
+  FPDF_ClosePage(FPDFPage_New(dest.get(), 0, 300, 300));
+  CPDF_Document* doc = CPDFDocumentFromFPDFDocument(dest.get());
+  RetainPtr<CPDF_Dictionary> font = NewFont(doc, base_font);
+  if (width) {
+    SetSpaceWidth(font.Get(), width);
+  }
+  auto existing = doc->NewIndirect<CPDF_Dictionary>();
+  existing->SetNewFor<CPDF_Name>("FT", "Tx");
+  existing->SetNewFor<CPDF_String>("T", "person");
+  auto acro_form =
+      doc->GetMutableRoot()->SetNewFor<CPDF_Dictionary>("AcroForm");
+  acro_form->SetNewFor<CPDF_Array>("Fields")->AppendNew<CPDF_Reference>(
+      doc, existing->GetObjNum());
+  acro_form->SetNewFor<CPDF_Dictionary>("DR")
+      ->SetNewFor<CPDF_Dictionary>("Font")
+      ->SetNewFor<CPDF_Reference>("F1", doc, font->GetObjNum());
+  acro_form->SetNewFor<CPDF_String>("DA", "/F1 12 Tf 0 g");
+  return dest;
+}
+
+// The /DA of the copy of "email", under the copied "person_2".
+ByteString CopiedEmailAppearance(FPDF_DOCUMENT document) {
+  RetainPtr<const CPDF_Dictionary> email = AcroFormOf(document)
+                                               ->GetArrayFor("Fields")
+                                               ->GetDictAt(1)
+                                               ->GetArrayFor("Kids")
+                                               ->GetDictAt(1);
+  EXPECT_EQ(L"email", email->GetUnicodeTextFor("T"));
+  return email->GetByteStringFor("DA");
+}
+
 class EPDFPpoEmbedderTest : public EmbedderTest {
  protected:
   // |document| saved in full and opened again.
@@ -270,25 +322,7 @@ TEST_F(EPDFPpoEmbedderTest, PointsCopiedParentsAtTheCopies) {
 
 TEST_F(EPDFPpoEmbedderTest, AddsToAFormAndRenamesAFontItUses) {
   ASSERT_TRUE(OpenDocument("form_page_import.pdf"));
-  ScopedFPDFDocument dest(FPDF_CreateNewDocument());
-  FPDF_ClosePage(FPDFPage_New(dest.get(), 0, 300, 300));
-  // A form with "person", /F1 another font, and a /DA of its own.
-  CPDF_Document* doc = CPDFDocumentFromFPDFDocument(dest.get());
-  auto courier = doc->NewIndirect<CPDF_Dictionary>();
-  courier->SetNewFor<CPDF_Name>("Type", "Font");
-  courier->SetNewFor<CPDF_Name>("Subtype", "Type1");
-  courier->SetNewFor<CPDF_Name>("BaseFont", "Courier");
-  auto existing = doc->NewIndirect<CPDF_Dictionary>();
-  existing->SetNewFor<CPDF_Name>("FT", "Tx");
-  existing->SetNewFor<CPDF_String>("T", "person");
-  auto acro_form =
-      doc->GetMutableRoot()->SetNewFor<CPDF_Dictionary>("AcroForm");
-  acro_form->SetNewFor<CPDF_Array>("Fields")->AppendNew<CPDF_Reference>(
-      doc, existing->GetObjNum());
-  acro_form->SetNewFor<CPDF_Dictionary>("DR")
-      ->SetNewFor<CPDF_Dictionary>("Font")
-      ->SetNewFor<CPDF_Reference>("F1", doc, courier->GetObjNum());
-  acro_form->SetNewFor<CPDF_String>("DA", "/F1 12 Tf 0 g");
+  ScopedFPDFDocument dest = NewTargetForm("Courier");
 
   // The caller renames the source's "person" first.
   EXPECT_FALSE(EPDFForm_SetFieldName(document(), kPerson,
@@ -382,4 +416,52 @@ TEST_F(EPDFPpoEmbedderTest, RefusesBadArguments) {
   EXPECT_FALSE(AcroFormOf(dest.get()));
   EXPECT_EQ(0ul, EPDFDoc_GetImportFieldRoots(document(), out_of_range, 2,
                                              nullptr, 0));
+}
+
+TEST_F(EPDFPpoEmbedderTest, SharesAFontDefinedTheSameWay) {
+  ASSERT_TRUE(OpenDocument("form_page_import.pdf"));
+  // /F1 is Times-Roman in both, with the same keys.
+  ScopedFPDFDocument dest = NewTargetForm("Times-Roman");
+  ASSERT_TRUE(EPDFForm_SetFieldName(document(), kPerson,
+                                    GetFPDFWideString(L"person_2").get()));
+  ASSERT_TRUE(EPDFDoc_ImportPages(dest.get(), document(), nullptr, 0, 1));
+
+  RetainPtr<const CPDF_Dictionary> fonts =
+      AcroFormOf(dest.get())->GetDictFor("DR")->GetDictFor("Font");
+  EXPECT_FALSE(fonts->KeyExist("F1_1"));
+  EXPECT_EQ("/F1 10 Tf 0 g", CopiedEmailAppearance(dest.get()));
+}
+
+TEST_F(EPDFPpoEmbedderTest, RenamesAFontWithOtherWidths) {
+  ASSERT_TRUE(OpenDocument("form_page_import.pdf"));
+  // The same Times-Roman, but its widths differ: 900 here, 200 there.
+  CPDF_Document* src = CPDFDocumentFromFPDFDocument(document());
+  SetSpaceWidth(ToDictionary(src->GetMutableIndirectObject(21)).Get(), 900);
+  ScopedFPDFDocument dest = NewTargetForm("Times-Roman", 200);
+  ASSERT_TRUE(EPDFForm_SetFieldName(document(), kPerson,
+                                    GetFPDFWideString(L"person_2").get()));
+  ASSERT_TRUE(EPDFDoc_ImportPages(dest.get(), document(), nullptr, 0, 1));
+
+  RetainPtr<const CPDF_Dictionary> fonts =
+      AcroFormOf(dest.get())->GetDictFor("DR")->GetDictFor("Font");
+  EXPECT_EQ(200,
+            fonts->GetDictFor("F1")->GetArrayFor("Widths")->GetIntegerAt(0));
+  ASSERT_TRUE(fonts->KeyExist("F1_1"));
+  EXPECT_EQ(900,
+            fonts->GetDictFor("F1_1")->GetArrayFor("Widths")->GetIntegerAt(0));
+  EXPECT_EQ("/F1_1 10 Tf 0 g", CopiedEmailAppearance(dest.get()));
+}
+
+TEST_F(EPDFPpoEmbedderTest, RenamesTheFontOfAnAppearanceWithAComment) {
+  ASSERT_TRUE(OpenDocument("form_page_import.pdf"));
+  CPDF_Document* src = CPDFDocumentFromFPDFDocument(document());
+  ToDictionary(src->GetMutableIndirectObject(kEmail))
+      ->SetNewFor<CPDF_String>("DA", "/F1 % the field's font\n10 Tf 0 g");
+  ScopedFPDFDocument dest = NewTargetForm("Courier");
+  ASSERT_TRUE(EPDFForm_SetFieldName(document(), kPerson,
+                                    GetFPDFWideString(L"person_2").get()));
+  ASSERT_TRUE(EPDFDoc_ImportPages(dest.get(), document(), nullptr, 0, 1));
+
+  EXPECT_EQ("/F1_1 % the field's font\n10 Tf 0 g",
+            CopiedEmailAppearance(dest.get()));
 }
