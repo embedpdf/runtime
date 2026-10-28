@@ -21,6 +21,19 @@ class CPDF_Object;
 class CPDF_Reference;
 
 class CPDF_PageOrganizer {
+ public:
+  // EmbedPDF(epdf-api): EPDFDoc_ImportPages() (fpdfsdk/epdf_ppo.cpp) copies
+  // the form fields above the copied widgets: it names its copies before the
+  // pages are copied, finds the copies the pages made, and points the
+  // references in its own copies at the destination.
+  void MapObjectNumber(uint32_t src_obj_num, uint32_t dest_obj_num) {
+    AddObjectMapping(src_obj_num, dest_obj_num);
+  }
+  const std::map<uint32_t, uint32_t>& object_number_map() const {
+    return object_number_map_;
+  }
+  bool RetargetReferences(RetainPtr<CPDF_Object> obj);
+
  protected:
   CPDF_PageOrganizer(CPDF_Document* dest_doc, CPDF_Document* src_doc);
   ~CPDF_PageOrganizer();
