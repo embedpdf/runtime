@@ -296,7 +296,12 @@ bool CPDF_Stream::WriteTo(IFX_ArchiveStream* archive,
 
   DataVector<uint8_t> encrypted_data;
   pdfium::span<const uint8_t> data = encoder.GetSpan();
-  if (encryptor && !is_metadata) {
+  // EmbedPDF(bug-fix): a metadata stream is encrypted like any other stream;
+  // the creator gives the one a file keeps in the clear (/EncryptMetadata
+  // false) no encryptor. Upstream never encrypted one, so a save of an
+  // encrypted file wrote its XMP in the clear, and readers decrypted it into
+  // noise.
+  if (encryptor) {
     encrypted_data = encryptor->Encrypt(data);
     data = encrypted_data;
   }

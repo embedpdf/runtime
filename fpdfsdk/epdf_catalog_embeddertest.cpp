@@ -18,6 +18,7 @@
 #include "public/cpp/fpdf_scopers.h"
 #include "public/epdf_layer.h"
 #include "public/epdf_save.h"
+#include "public/epdf_view.h"
 #include "public/fpdf_save.h"
 #include "public/fpdfview.h"
 #include "testing/embedder_test.h"
@@ -265,6 +266,52 @@ TEST_F(EPDFCatalogEmbedderTest, SavesWriteAFilteredPacketDecoded) {
     ScopedSavedDoc reopened = OpenScopedSavedDocument();
     ASSERT_TRUE(reopened);
     EXPECT_EQ(kOldPacket, MetadataOf(reopened.get()));
+  }
+}
+
+// A save of an encrypted file encrypts its packet with everything else
+// (/EncryptMetadata defaults to true), so readers decrypt it back.
+TEST_F(EPDFCatalogEmbedderTest, EncryptedSavesKeepThePacketReadable) {
+  const std::string input = PdfWithPacket();
+  std::string encrypted;
+  {
+    OpenedPdf opened = OpenPdf(input, false);
+    ASSERT_TRUE(opened.doc);
+    ASSERT_TRUE(EPDF_SetEncryption(opened.doc.get(), "", "owner",
+                                   EPDF_PERM_PRINT));
+    ClearString();
+    ASSERT_TRUE(
+        FPDF_SaveAsCopy(opened.doc.get(), this, FPDF_NO_INCREMENTAL));
+    encrypted = GetString();
+    EXPECT_EQ(std::string::npos, encrypted.find("OLDPRODUCER"));
+  }
+  for (bool layer : {false, true}) {
+    for (FPDF_DWORD flags : {FPDF_NO_INCREMENTAL, FPDF_INCREMENTAL}) {
+      SCOPED_TRACE(layer ? "layer" : "document");
+      SCOPED_TRACE(flags == FPDF_INCREMENTAL ? "incremental" : "rewrite");
+      OpenedPdf opened = OpenPdf(encrypted, layer);
+      ASSERT_TRUE(opened.doc);
+      ASSERT_TRUE(EPDF_IsEncrypted(opened.doc.get()));
+      EXPECT_EQ(kOldPacket, MetadataOf(opened.doc.get()));
+
+      // Saved again as it is.
+      ClearString();
+      ASSERT_TRUE(FPDF_SaveAsCopy(opened.doc.get(), this, flags));
+      {
+        ScopedSavedDoc reopened = OpenScopedSavedDocument();
+        ASSERT_TRUE(reopened);
+        EXPECT_EQ(kOldPacket, MetadataOf(reopened.get()));
+      }
+
+      // And with a new packet.
+      ASSERT_NO_FATAL_FAILURE(SetPacket(opened.doc.get(), layer, kNewPacket));
+      ClearString();
+      ASSERT_TRUE(FPDF_SaveAsCopy(opened.doc.get(), this, flags));
+      EXPECT_EQ(std::string::npos, GetString().find(kNewPacket));
+      ScopedSavedDoc reopened = OpenScopedSavedDocument();
+      ASSERT_TRUE(reopened);
+      EXPECT_EQ(kNewPacket, MetadataOf(reopened.get()));
+    }
   }
 }
 
