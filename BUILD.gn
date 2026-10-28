@@ -237,6 +237,8 @@ source_set("pdfium_public_headers_impl") {
     "public/epdf_pieceinfo.h",
     # EmbedPDF: PNG encoding of RGBA bitmaps.
     "public/epdf_png.h",
+    # EmbedPDF: what we add to public/fpdf_ppo.h.
+    "public/epdf_ppo.h",
     # EmbedPDF: what we add to public/fpdf_progressive.h.
     "public/epdf_progressive.h",
     # EmbedPDF: typed measurement, viewport and caption API.

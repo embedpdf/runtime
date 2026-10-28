@@ -693,6 +693,19 @@ EPDFForm_SetFieldName(FPDF_DOCUMENT document,
                       FPDF_WIDESTRING partial_name);
 
 // Experimental EmbedPDF Extension API.
+// Copy the field's own /T segment (the name EPDFForm_SetFieldName() sets, not
+// the dotted path) of the field dictionary |field_objnum| into |buffer| as
+// UTF-16LE, including the trailing NUL: for a field that isn't in a form
+// model, such as a top-level field EPDFDoc_GetImportFieldRoots() names. Returns
+// the byte length of the string, or 0 when the dictionary has no /T. |buffer|
+// may be NULL to query the length.
+FPDF_EXPORT unsigned long FPDF_CALLCONV
+EPDFForm_GetFieldPartialName(FPDF_DOCUMENT document,
+                             uint32_t field_objnum,
+                             FPDF_WCHAR* buffer,
+                             unsigned long buflen);
+
+// Experimental EmbedPDF Extension API.
 // Masked /Ff update: bits in |set_bits| are set, bits in |clear_bits| are
 // cleared. Family-DEFINING bits (Radio, Pushbutton, Combo) are immutable -
 // touching them fails.

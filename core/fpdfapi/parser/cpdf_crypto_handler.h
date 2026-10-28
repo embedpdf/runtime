@@ -12,6 +12,7 @@
 
 #include <array>
 #include <memory>
+#include <optional>
 
 #include "core/fdrm/fx_crypt.h"
 #include "core/fxcrt/binary_buffer.h"
@@ -40,9 +41,12 @@ class CPDF_CryptoHandler {
 
   bool DecryptObjectTree(RetainPtr<CPDF_Object> object);
 
-  DataVector<uint8_t> EncryptContent(uint32_t objnum,
-                                     uint32_t gennum,
-                                     pdfium::span<const uint8_t> source) const;
+  // EmbedPDF(save-security): nullopt when the secure random source can't
+  // give an AES IV. The save must fail then.
+  std::optional<DataVector<uint8_t>> EncryptContent(
+      uint32_t objnum,
+      uint32_t gennum,
+      pdfium::span<const uint8_t> source) const;
 
   bool IsCipherAES() const;
 

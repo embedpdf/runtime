@@ -77,6 +77,8 @@ source_set("fpdfsdk") {
     # EmbedPDF: what a parsed page costs, and whether it is still current.
     "epdf_page_residency.cpp",
     "epdf_png_shim.cpp",
+    # EmbedPDF: pages copied with their form fields (public/epdf_ppo.h).
+    "epdf_ppo.cpp",
     "epdf_redact.cpp",
     "epdf_threading.cpp",
     "epdf_wrapped_appearance.cpp",
@@ -278,6 +280,8 @@ pdfium_embeddertest_source_set("embeddertests") {
     "epdf_sliced_load_embeddertest.cpp",
     # EmbedPDF: covers the /Names /Pages and /Templates name-tree APIs.
     "epdf_named_pages_embeddertest.cpp",
+    # EmbedPDF: covers pages copied with their form fields (public/epdf_ppo.h).
+    "epdf_ppo_embeddertest.cpp",
     # EmbedPDF: a content rewrite keeps what it did not change.
     "epdf_content_rewrite_embeddertest.cpp",
     "epdf_redact_embeddertest.cpp",

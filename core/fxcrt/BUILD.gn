@@ -60,6 +60,11 @@ source_set("fxcrt") {
     "data_vector.h",
     "debug/alias.cc",
     "debug/alias.h",
+
+    # EmbedPDF: key, salt and IV bytes for encrypted saves come from the
+    # operating system's secure random source (ledger rule save-security).
+    "epdf_secure_random.cpp",
+    "epdf_secure_random.h",
     "fileaccess_iface.h",
     "fixed_size_data_vector.h",
     "fx_2d_size.h",
@@ -197,6 +202,9 @@ source_set("fxcrt") {
       "win/win_util.cc",
       "win/win_util.h",
     ]
+
+    # EmbedPDF: BCryptGenRandom, for epdf_secure_random.cpp.
+    libs = [ "bcrypt.lib" ]
   }
   # EmbedPDF: CFX_MemoryStream was XFA-gated upstream because XFA was its
   # only consumer; the EPDFForm_* XFDF serializer (fpdfsdk/epdf_form.cpp)
@@ -249,6 +257,7 @@ pdfium_unittest_source_set("unittests") {
     "code_point_view_unittest.cpp",
     "containers/to_vector_unittest.cpp",
     "data_vector_unittest.cpp",
+    "epdf_secure_random_unittest.cpp",
     "fixed_size_data_vector_unittest.cpp",
     "fx_bidi_unittest.cpp",
     "fx_ceil_div_unittest.cpp",

@@ -357,7 +357,7 @@ class CPDF_Document : public Observable,
  private:
   // EmbedPDF(measurement): see GetMeasureStorage().
   std::unique_ptr<CPDF_MeasureStorage> measure_storage_;
-  class StockFontClearer {
+  class [[maybe_unused, nodiscard]] StockFontClearer {
    public:
     FX_STACK_ALLOCATED();
 

@@ -126,6 +126,11 @@ bool CPDF_PageOrganizer::UpdateReference(RetainPtr<CPDF_Object> obj) {
   }
 }
 
+// EmbedPDF(epdf-api): see the header.
+bool CPDF_PageOrganizer::RetargetReferences(RetainPtr<CPDF_Object> obj) {
+  return UpdateReference(std::move(obj));
+}
+
 uint32_t CPDF_PageOrganizer::GetNewObjId(CPDF_Reference* ref) {
   if (!ref) {
     return 0;
