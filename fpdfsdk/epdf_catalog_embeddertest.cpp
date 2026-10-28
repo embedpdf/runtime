@@ -250,6 +250,24 @@ TEST_F(EPDFCatalogEmbedderTest, SetMetadataMakesAStreamWhenThereIsNone) {
   }
 }
 
+// A save writes the packet decoded, without its filter, where XMP readers
+// find it in the file's bytes.
+TEST_F(EPDFCatalogEmbedderTest, SavesWriteAFilteredPacketDecoded) {
+  const std::string input = PdfWithPacket();
+  for (bool layer : {false, true}) {
+    SCOPED_TRACE(layer ? "layer" : "document");
+    OpenedPdf opened = OpenPdf(input, layer);
+    ASSERT_TRUE(opened.doc);
+    ClearString();
+    ASSERT_TRUE(
+        FPDF_SaveAsCopy(opened.doc.get(), this, FPDF_NO_INCREMENTAL));
+    EXPECT_NE(std::string::npos, GetString().find(kOldPacket));
+    ScopedSavedDoc reopened = OpenScopedSavedDocument();
+    ASSERT_TRUE(reopened);
+    EXPECT_EQ(kOldPacket, MetadataOf(reopened.get()));
+  }
+}
+
 TEST_F(EPDFCatalogEmbedderTest, SetMetadataWithoutDataRemovesThePacket) {
   const std::string input = PdfWithPacket();
   for (bool layer : {false, true}) {
