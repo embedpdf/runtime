@@ -234,6 +234,8 @@ int CheckEmbedPDFCApi(void) {
 
   // epdf_catalog.h
   CHK(EPDFCatalog_GetLanguage);
+  CHK(EPDFCatalog_GetMetadata);
+  CHK(EPDFCatalog_SetMetadata);
 
   // epdf_digest.h
   CHK(EPDF_DigestBuffer);
