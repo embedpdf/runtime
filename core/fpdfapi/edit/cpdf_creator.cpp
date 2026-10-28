@@ -256,7 +256,8 @@ bool CPDF_Creator::WriteIndirectObj(uint32_t objnum, const CPDF_Object* pObj) {
   }
 
   std::unique_ptr<CPDF_Encryptor> encryptor;
-  if (GetCryptoHandler() && pObj != encrypt_dict_) {
+  // EmbedPDF(bug-fix): see IsClearMetadata().
+  if (GetCryptoHandler() && pObj != encrypt_dict_ && !IsClearMetadata(objnum)) {
     encryptor = std::make_unique<CPDF_Encryptor>(GetCryptoHandler(), objnum,
                                                  generation);
   }
@@ -266,6 +267,19 @@ bool CPDF_Creator::WriteIndirectObj(uint32_t objnum, const CPDF_Object* pObj) {
   }
 
   return archive_->WriteString("\r\nendobj\r\n");
+}
+
+// EmbedPDF(bug-fix): the document's metadata stream stays in the clear when
+// the encryption dictionary says /EncryptMetadata false, as the parser reads
+// it. Every other stream is encrypted, other metadata streams included.
+bool CPDF_Creator::IsClearMetadata(uint32_t objnum) const {
+  if (!security_handler_ || security_handler_->IsMetadataEncrypted()) {
+    return false;
+  }
+  const CPDF_Dictionary* root = document_->GetRoot();
+  RetainPtr<const CPDF_Reference> metadata =
+      root ? ToReference(root->GetObjectFor("Metadata")) : nullptr;
+  return metadata && metadata->GetRefObjNum() == objnum;
 }
 
 // EmbedPDF(save-generations): the generation an incremental save writes for an

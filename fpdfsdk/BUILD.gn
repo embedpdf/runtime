@@ -22,6 +22,8 @@ source_set("fpdfsdk") {
     "epdf_base_document.cpp",
     # EmbedPDF: captures of what a layer write loses (EPDF*_Export*Raw).
     "epdf_capture.cpp",
+    # EmbedPDF: the catalog's metadata stream (public/epdf_catalog.h).
+    "epdf_catalog.cpp",
     # EmbedPDF: implements EPDFFont_* runtime font registration APIs.
     "epdf_font.cpp",
     # EmbedPDF: session-free AcroForm model snapshot (EPDFForm_* APIs).
@@ -253,6 +255,8 @@ pdfium_embeddertest_source_set("embeddertests") {
     "epdf_edit_test_util.h",
     # EmbedPDF: covers captures and their imports (EPDF*_Export*Raw).
     "epdf_capture_embeddertest.cpp",
+    # EmbedPDF: covers the catalog's metadata stream (EPDFCatalog_*Metadata).
+    "epdf_catalog_embeddertest.cpp",
     # EmbedPDF: covers appearance states and modes, widgets in page renders,
     # and the check box and radio button symbols.
     "epdf_appearance_state_embeddertest.cpp",
