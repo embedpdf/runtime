@@ -12,7 +12,77 @@ extern "C" {
 #endif  // __cplusplus
 
 // EmbedPDF's additions to public/fpdf_edit.h: blank pages without loading the
-// page, PNG and JPEG image objects, and text redaction.
+// page, PNG and JPEG image objects, text redaction, and page-object state.
+
+// Experimental EmbedPDF Extension API.
+// Read the object's non-stroking alpha, including for images and shadings
+// that have no color state. This is the object's graphics-state value, not
+// a composited opacity after soft masks or enclosing transparency groups.
+//
+//   page_object - handle to a page object.
+//   alpha       - receives the alpha (0 = transparent, 1 = opaque).
+//
+// Returns TRUE on success. Returns FALSE for a NULL handle or output pointer,
+// leaving the output unchanged. Does not modify the object.
+FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV
+EPDFPageObj_GetFillAlpha(FPDF_PAGEOBJECT page_object, float* alpha);
+
+// Experimental EmbedPDF Extension API.
+// Read the object's stroking alpha. The output, failure, and ownership
+// semantics are the same as EPDFPageObj_GetFillAlpha(). The value does not
+// imply that the object actually strokes any content.
+FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV
+EPDFPageObj_GetStrokeAlpha(FPDF_PAGEOBJECT page_object, float* alpha);
+
+// Experimental EmbedPDF Extension API.
+// Read the object's resolved blend-mode name, using the names accepted by
+// FPDFPageObj_SetBlendMode(). The default is "Normal".
+//
+//   page_object - handle to a page object.
+//   buffer      - caller-owned buffer, or NULL to query the required size.
+//   buflen      - size of |buffer| in bytes.
+//
+// Returns the required byte count including the terminating NUL, or 0 for a
+// NULL object. Copies only when |buffer| is non-NULL and large enough;
+// otherwise leaves it unchanged. Does not modify the object.
+FPDF_EXPORT unsigned long FPDF_CALLCONV
+EPDFPageObj_GetBlendMode(FPDF_PAGEOBJECT page_object,
+                         char* buffer,
+                         unsigned long buflen);
+
+// Experimental EmbedPDF Extension API.
+// Return TRUE if the object's graphics state contains a soft mask, FALSE
+// otherwise (including a NULL object). This does not report an image's own
+// /SMask or masks applied by enclosing objects. Does not modify the object.
+FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV
+EPDFPageObj_HasSoftMask(FPDF_PAGEOBJECT page_object);
+
+// Experimental EmbedPDF Extension API.
+// Read a Form XObject's transparency-group state.
+//
+//   form_object - handle to a form page object.
+//   is_group    - receives TRUE for a transparency group, FALSE otherwise.
+//   is_isolated - receives TRUE for an isolated transparency group, FALSE
+//                 otherwise, including an ordinary form.
+//
+// Returns TRUE on success. Returns FALSE for a NULL/non-form object or NULL
+// output pointer, leaving both outputs unchanged. Does not modify the form.
+FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV
+EPDFFormObj_GetTransparencyGroup(FPDF_PAGEOBJECT form_object,
+                                 FPDF_BOOL* is_group,
+                                 FPDF_BOOL* is_isolated);
+
+// Experimental EmbedPDF Extension API.
+// Read the object's miter limit: the maximum ratio of miter length to stroke
+// width. The PDF default is 10. The value does not imply a miter join is used.
+//
+//   page_object - handle to a page object.
+//   miter_limit - receives the graphics-state miter limit.
+//
+// Returns TRUE on success. Returns FALSE for a NULL handle or output pointer,
+// leaving the output unchanged. Does not modify the object.
+FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV
+EPDFPageObj_GetMiterLimit(FPDF_PAGEOBJECT page_object, float* miter_limit);
 
 // Experimental EmbedPDF Extension API.
 // Insert a blank page without loading it: FPDFPage_New() for a caller that
