@@ -267,8 +267,14 @@ int CheckEmbedPDFCApi(void) {
   CHK(EPDF_SetMetaTrapped);
 
   // epdf_edit.h
+  CHK(EPDFFormObj_GetTransparencyGroup);
   CHK(EPDFImageObj_SetJpeg);
   CHK(EPDFImageObj_SetPng);
+  CHK(EPDFPageObj_GetBlendMode);
+  CHK(EPDFPageObj_GetFillAlpha);
+  CHK(EPDFPageObj_GetMiterLimit);
+  CHK(EPDFPageObj_GetStrokeAlpha);
+  CHK(EPDFPageObj_HasSoftMask);
   CHK(EPDFPage_InsertBlankRaw);
   CHK(EPDFText_RedactInQuads);
   CHK(EPDFText_RedactInRect);
