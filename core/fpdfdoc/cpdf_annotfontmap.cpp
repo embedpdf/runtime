@@ -926,11 +926,16 @@ int CPDF_AnnotFontMap::FindRichFallback(WideStringView grapheme,
   }
   for (CFX_FontRegistry::FontId font_id : CFX_FontRegistry::GetFallbackOrder(
            weight, italic, /*for_authoring=*/true)) {
-    const bool covers = std::ranges::all_of(
-        pdfium::CodePointView(grapheme), [font_id](char32_t cp) {
-          return !NeedsGlyph(cp) || CFX_FontRegistry::SupportsUnicode(
-                                        font_id, static_cast<uint32_t>(cp));
-        });
+    // A plain loop: on a 16-bit wchar_t platform CodePointView is no range a
+    // std::ranges algorithm accepts, only something to iterate.
+    bool covers = true;
+    for (char32_t cp : pdfium::CodePointView(grapheme)) {
+      if (NeedsGlyph(cp) && !CFX_FontRegistry::SupportsUnicode(
+                                font_id, static_cast<uint32_t>(cp))) {
+        covers = false;
+        break;
+      }
+    }
     if (covers) {
       return EntryForRegisteredFont(font_id);
     }
