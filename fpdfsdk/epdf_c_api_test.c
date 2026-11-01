@@ -138,6 +138,7 @@ int CheckEmbedPDFCApi(void) {
   CHK(EPDFAnnot_GetRichTextJSON);
   CHK(EPDFAnnot_GetRotate);
   CHK(EPDFAnnot_GetStampDrawing);
+  CHK(EPDFAnnot_GetStructurePosition);
   CHK(EPDFAnnot_GetTextAlignment);
   CHK(EPDFAnnot_HasAppearanceStream);
   CHK(EPDFAnnot_HasEmbedMetadata);

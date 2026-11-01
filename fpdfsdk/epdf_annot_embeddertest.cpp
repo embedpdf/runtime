@@ -9594,3 +9594,82 @@ INSTANTIATE_TEST_SUITE_P(AppearanceSharing,
                                "SharedStates"};
                            return kNames[info.param];
                          }));
+
+// Where an annotation sits in its document's structure tree
+// (structure_position.in): the page lists its fields a to g, and its
+// structure reads c, a, b.
+class EPDFAnnotStructureEmbedderTest : public EmbedderTest {
+ protected:
+  // The position of the first page's annotation at |index|, read from the
+  // page's dictionary without loading the page, as the engine reads it.
+  std::vector<unsigned int> PositionOf(int index) {
+    ScopedFPDFAnnotation annot(EPDFPage_GetAnnotRaw(document(), 0, index));
+    EXPECT_TRUE(annot);
+    const unsigned long count =
+        EPDFAnnot_GetStructurePosition(annot.get(), nullptr, 0);
+    std::vector<unsigned int> steps(count);
+    EXPECT_EQ(count, EPDFAnnot_GetStructurePosition(annot.get(), steps.data(),
+                                                    steps.size()));
+    return steps;
+  }
+};
+
+TEST_F(EPDFAnnotStructureEmbedderTest,
+       FindsEachTaggedAnnotationFromItsElementUp) {
+  ASSERT_TRUE(OpenDocument("structure_position.pdf"));
+  // a: the first section's third kid; its reference follows a marked-content
+  // kid in its element.
+  EXPECT_THAT(PositionOf(0), ::testing::ElementsAre(0u, 0u, 2u, 1u));
+  // b: the second section's first kid; its element's /K is the reference
+  // itself, not an array.
+  EXPECT_THAT(PositionOf(1), ::testing::ElementsAre(0u, 1u, 0u, 0u));
+  // c: the first section's first kid.
+  EXPECT_THAT(PositionOf(2), ::testing::ElementsAre(0u, 0u, 0u, 0u));
+}
+
+TEST_F(EPDFAnnotStructureEmbedderTest,
+       ComparedIndexByIndexPositionsReadInTheTreesOrder) {
+  ASSERT_TRUE(OpenDocument("structure_position.pdf"));
+  std::vector<std::pair<std::vector<unsigned int>, char>> tagged = {
+      {PositionOf(0), 'a'}, {PositionOf(1), 'b'}, {PositionOf(2), 'c'}};
+  std::sort(tagged.begin(), tagged.end());
+  std::string order;
+  for (const auto& [position, name] : tagged) {
+    order += name;
+  }
+  EXPECT_EQ("cab", order);
+}
+
+TEST_F(EPDFAnnotStructureEmbedderTest,
+       AnAnnotationTheTreeDoesNotReachHasNoPosition) {
+  ASSERT_TRUE(OpenDocument("structure_position.pdf"));
+  // d: no /StructParent.
+  EXPECT_TRUE(PositionOf(3).empty());
+  // e: the parent tree names an element that doesn't list it.
+  EXPECT_TRUE(PositionOf(4).empty());
+  // f: its element's way up is a cycle that never reaches the root.
+  EXPECT_TRUE(PositionOf(5).empty());
+  // g: a /StructParent the parent tree doesn't have.
+  EXPECT_TRUE(PositionOf(6).empty());
+}
+
+TEST_F(EPDFAnnotStructureEmbedderTest,
+       ReadsTheSameOnALoadedPageAndCountsPastTheBuffer) {
+  ASSERT_TRUE(OpenDocument("structure_position.pdf"));
+  ScopedPage page = LoadScopedPage(0);
+  ASSERT_TRUE(page);
+  ScopedFPDFAnnotation annot(FPDFPage_GetAnnot(page.get(), 0));
+  ASSERT_TRUE(annot);
+  std::array<unsigned int, 2> first_two = {99u, 99u};
+  EXPECT_EQ(4u, EPDFAnnot_GetStructurePosition(annot.get(), first_two.data(),
+                                               first_two.size()));
+  EXPECT_THAT(first_two, ::testing::ElementsAre(0u, 0u));
+  EXPECT_EQ(0u, EPDFAnnot_GetStructurePosition(nullptr, nullptr, 0));
+}
+
+TEST_F(EPDFAnnotStructureEmbedderTest, AnUntaggedDocumentHasNoPositions) {
+  ASSERT_TRUE(OpenDocument("annotation_highlight_long_content.pdf"));
+  ScopedFPDFAnnotation annot(EPDFPage_GetAnnotRaw(document(), 0, 0));
+  ASSERT_TRUE(annot);
+  EXPECT_EQ(0u, EPDFAnnot_GetStructurePosition(annot.get(), nullptr, 0));
+}

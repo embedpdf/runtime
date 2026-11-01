@@ -1636,6 +1636,29 @@ FPDF_EXPORT unsigned int FPDF_CALLCONV
 EPDFAnnot_GetObjectNumber(FPDF_ANNOTATION annot);
 
 // Experimental EmbedPDF Extension API.
+// Where an annotation sits in its document's logical structure (the tags,
+// ISO 32000-2 14.7): from the structure tree root down to the annotation's
+// object reference (/OBJR), the index of each step among its parent's /K
+// kids. Compared index by index, two positions give the structure's reading
+// order, the order a page's /Tabs /S gives its annotations focus in. It is
+// found from the annotation up: its /StructParent, the parent tree, then each
+// element's /P. No page is loaded, and nothing else in the tree is read.
+//
+//   annot  - handle to an annotation.
+//   buffer - receives up to |buflen| indexes, the root's first; may be NULL.
+//   buflen - capacity of |buffer|, in entries.
+//
+// Returns the number of indexes, which may exceed |buflen|; 0 when the
+// annotation isn't in the structure tree: it has no /StructParent, the parent
+// tree doesn't lead to an element that lists it, or the way up is broken (a
+// missing /P, a parent that doesn't list its kid, a cycle, or more than 256
+// levels).
+FPDF_EXPORT unsigned long FPDF_CALLCONV
+EPDFAnnot_GetStructurePosition(FPDF_ANNOTATION annot,
+                               unsigned int* buffer,
+                               unsigned long buflen);
+
+// Experimental EmbedPDF Extension API.
 // Get an annotation on a page by its PDF indirect object number.
 // Similar to EPDFPage_GetAnnotByName() but keyed by object number.
 //
