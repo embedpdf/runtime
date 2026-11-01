@@ -143,6 +143,9 @@ class CPDF_DocumentFonts final : public CPDF_Document::FontIndex {
   };
   bool ReserveProgramAlias(uint32_t objnum, ByteString* alias);
   std::optional<ReservedProgram> ProgramForAlias(const ByteString& alias) const;
+  // A program the walk found, as its font dictionary describes it (the first
+  // that names it); nullopt for any other number.
+  std::optional<ReservedProgram> DescribeProgram(uint32_t objnum);
 
   // Characters an appearance drew with no font that has them (each a
   // grapheme, drawn as its face's missing glyph), first seen first, at most

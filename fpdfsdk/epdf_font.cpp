@@ -606,7 +606,8 @@ EPDFDoc_ResolveFonts(FPDF_DOCUMENT document,
                      const FPDF_WIDESTRING* texts,
                      const FPDF_WIDESTRING* families,
                      const int* weights,
-                     const FPDF_BOOL* italics) {
+                     const FPDF_BOOL* italics,
+                     const int* programs) {
   ScopedFPDFDocumentView document_view(document);
   CPDF_Document* doc = document_view.Get();
   if (!doc || run_count < 0 ||
@@ -626,6 +627,10 @@ EPDFDoc_ResolveFonts(FPDF_DOCUMENT document,
   auto family_span = UNSAFE_BUFFERS(pdfium::span(families, count));
   auto weight_span = UNSAFE_BUFFERS(pdfium::span(weights, count));
   auto italic_span = UNSAFE_BUFFERS(pdfium::span(italics, count));
+  pdfium::span<const int> program_span;
+  if (programs) {
+    program_span = UNSAFE_BUFFERS(pdfium::span(programs, count));
+  }
   for (size_t i = 0; i < count; ++i) {
     CPDF_FontResolver::Run run;
     run.text = text_span[i] ? WideStringFromFPDFWideString(text_span[i])
@@ -634,6 +639,9 @@ EPDFDoc_ResolveFonts(FPDF_DOCUMENT document,
                                 : WideString();
     run.weight = weight_span[i];
     run.italic = !!italic_span[i];
+    if (!program_span.empty() && program_span[i] > 0) {
+      run.program = static_cast<uint32_t>(program_span[i]);
+    }
     runs.push_back(std::move(run));
   }
   auto resolution = std::make_unique<epdf_font_resolution_t__>();

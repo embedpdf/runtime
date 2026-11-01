@@ -463,6 +463,14 @@ bool ReadStyleDelta(const JsonValue* object, CPDF_RichTextStyleDelta* delta) {
       if (!delta->horz_scale || *delta->horz_scale <= 0) {
         return false;
       }
+    } else if (key == "program") {
+      // A document program's object number: the exact font for the face.
+      if (value.type != JsonValue::Type::kNumber || value.number < 1 ||
+          value.number > 0x7FFFFFFF ||
+          value.number != static_cast<uint32_t>(value.number)) {
+        return false;
+      }
+      delta->program = static_cast<uint32_t>(value.number);
     } else if (key == "unknown") {
       std::optional<WideString> unknown = String(&value);
       if (!unknown) {

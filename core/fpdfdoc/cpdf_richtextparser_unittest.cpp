@@ -318,3 +318,31 @@ TEST(CPDF_RichTextParserTest, JsonShape) {
   EXPECT_TRUE(CPDF_RichTextParser::ToJSON(plain).Contains(
       "{\"text\":\"a \\\"quoted\\\" \\\\ line\\ttab\"}"));
 }
+
+// A program draws the base's face only: a run keeps it while it restates that
+// face (the family as it compares), and finds another face by its family.
+TEST(CPDF_RichTextParserTest, AProgramFollowsItsFaceOnly) {
+  CPDF_RichTextStyle base = Defaults();
+  base.family = L"Mono";
+  base.program = 8;
+
+  CPDF_RichTextStyleDelta same;
+  same.family = L"mono";
+  same.size = 14.0f;
+  EXPECT_EQ(8u, ApplyRichTextStyleDelta(base, same).program);
+  EXPECT_EQ(8u,
+            ApplyRichTextStyleDelta(base, CPDF_RichTextStyleDelta()).program);
+
+  CPDF_RichTextStyleDelta bold;
+  bold.weight = 700;
+  EXPECT_EQ(0u, ApplyRichTextStyleDelta(base, bold).program);
+  CPDF_RichTextStyleDelta other;
+  other.family = L"Helvetica";
+  EXPECT_EQ(0u, ApplyRichTextStyleDelta(base, other).program);
+
+  CPDF_RichTextStyleDelta named;
+  named.weight = 700;
+  named.program = 5;
+  EXPECT_EQ(5u, ApplyRichTextStyleDelta(base, named).program);
+  EXPECT_FALSE(named.IsEmpty());
+}

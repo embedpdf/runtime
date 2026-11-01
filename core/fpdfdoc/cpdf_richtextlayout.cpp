@@ -622,7 +622,8 @@ struct CPDF_RichTextLayout::Impl {
           styles[style].face_entry >= 0
               ? styles[style].face_entry
               : fonts->ResolveRichFace(resolved.family, resolved.weight,
-                                       resolved.italic);
+                                       resolved.italic, WideStringView(),
+                                       resolved.program);
       const GraphemeMatch match = MatchGrapheme(
           fonts, face, grapheme, resolved.weight, resolved.italic);
       if (!match.covered && !IsInvisibleGrapheme(grapheme)) {
@@ -801,7 +802,7 @@ CPDF_RichTextLayout::Result CPDF_RichTextLayout::Arrange(
     std::vector<RequestText> requests;
     auto note = [&](const CPDF_RichTextStyle& style, const WideString& text) {
       const ByteString key = CPDF_AnnotFontMap::FaceRequestKey(
-          style.family, style.weight, style.italic);
+          style.family, style.weight, style.italic, style.program);
       auto it = std::ranges::find_if(
           requests, [&](const RequestText& r) { return r.key == key; });
       if (it == requests.end()) {
@@ -822,8 +823,8 @@ CPDF_RichTextLayout::Result CPDF_RichTextLayout::Arrange(
     }
     for (const RequestText& request : requests) {
       fonts_->ResolveRichFace(request.style.family, request.style.weight,
-                              request.style.italic,
-                              request.text.AsStringView());
+                              request.style.italic, request.text.AsStringView(),
+                              request.style.program);
     }
   }
 
@@ -982,9 +983,10 @@ CPDF_RichTextLayout::Result CPDF_RichTextLayout::Arrange(
           // 4. The line box (C note §4.4).
           if (line.runs.empty()) {
             const ResolvedStyle& at_break = styles[segment.break_style];
-            int entry = fonts_->ResolveRichFace(at_break.style.family,
-                                                at_break.style.weight,
-                                                at_break.style.italic);
+            int entry = fonts_->ResolveRichFace(
+                at_break.style.family, at_break.style.weight,
+                at_break.style.italic, WideStringView(),
+                at_break.style.program);
             const CPDF_AnnotFontMap::RichFace face = impl.FaceOf(entry);
             const float size = at_break.style.size;  // parent size
             line.ascent = face.ascent * size;

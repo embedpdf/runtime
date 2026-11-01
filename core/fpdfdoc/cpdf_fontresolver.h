@@ -26,6 +26,9 @@ class CPDF_FontResolver {
     WideString family;  // a family name, or a registered font's family
     int weight = 400;
     bool italic = false;
+    // The document program the write would name (its stream's object
+    // number), the face exactly; 0 when the family decides.
+    uint32_t program = 0;
   };
 
   struct ResolvedRun {

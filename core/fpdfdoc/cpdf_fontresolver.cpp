@@ -70,20 +70,22 @@ CPDF_FontResolver::Result CPDF_FontResolver::Resolve(
 
   // Each face resolves once over every character asked of it, as the
   // layout primes it, so two runs of one face get one program.
+  auto key_of = [](const Run& run) {
+    return CPDF_AnnotFontMap::FaceRequestKey(run.family, run.weight, run.italic,
+                                             run.program);
+  };
   std::map<ByteString, WideString> text_of;
   for (const Run& run : runs) {
-    text_of[CPDF_AnnotFontMap::FaceRequestKey(run.family, run.weight,
-                                              run.italic)] += run.text;
+    text_of[key_of(run)] += run.text;
   }
   for (const Run& run : runs) {
     map.ResolveRichFace(run.family, run.weight, run.italic,
-                        text_of[CPDF_AnnotFontMap::FaceRequestKey(
-                                    run.family, run.weight, run.italic)]
-                            .AsStringView());
+                        text_of[key_of(run)].AsStringView(), run.program);
   }
 
   for (const Run& run : runs) {
-    const int entry = map.ResolveRichFace(run.family, run.weight, run.italic);
+    const int entry = map.ResolveRichFace(run.family, run.weight, run.italic,
+                                          WideStringView(), run.program);
     ResolvedRun resolved;
     resolved.face = map.DescribeEntry(entry);
     resolved.fallbacks = CFX_FontRegistry::GetFallbackOrder(

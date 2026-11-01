@@ -800,9 +800,11 @@ void CPDF_AnnotFontMap::PinRichFace(const WideString& family,
 // static
 ByteString CPDF_AnnotFontMap::FaceRequestKey(const WideString& family,
                                              int weight,
-                                             bool italic) {
-  return ByteString::Format("%s|%d|%d", FontFamilyKey(family).c_str(),
-                            std::clamp(weight, 100, 900), italic ? 1 : 0);
+                                             bool italic,
+                                             uint32_t program) {
+  return ByteString::Format("%s|%d|%d|%u", FontFamilyKey(family).c_str(),
+                            std::clamp(weight, 100, 900), italic ? 1 : 0,
+                            program);
 }
 
 bool CPDF_AnnotFontMap::CoversText(int entry, WideStringView text) {
@@ -825,13 +827,15 @@ bool CPDF_AnnotFontMap::CoversText(int entry, WideStringView text) {
 int CPDF_AnnotFontMap::ResolveRichFace(const WideString& family,
                                        int weight,
                                        bool italic,
-                                       WideStringView text) {
-  const ByteString request = FaceRequestKey(family, weight, italic);
+                                       WideStringView text,
+                                       uint32_t program) {
+  const ByteString request = FaceRequestKey(family, weight, italic, program);
   auto cached = resolved_faces_.find(request);
   if (cached != resolved_faces_.end()) {
     return cached->second;
   }
-  const int entry = ResolveRichFaceUncached(family, weight, italic, text);
+  const int entry =
+      ResolveRichFaceUncached(family, weight, italic, text, program);
   if (entry >= 0) {
     resolved_faces_[request] = entry;
   }
@@ -841,9 +845,18 @@ int CPDF_AnnotFontMap::ResolveRichFace(const WideString& family,
 int CPDF_AnnotFontMap::ResolveRichFaceUncached(const WideString& family,
                                                int weight,
                                                bool italic,
-                                               WideStringView text) {
+                                               WideStringView text,
+                                               uint32_t program) {
   weight = std::clamp(weight, 100, 900);
   bool degraded = false;
+
+  // A program the writer named is the face, whatever the family resolves to.
+  if (program != 0) {
+    const int entry = EntryForDocumentProgram(program);
+    if (entry >= 0) {
+      return entry;
+    }
+  }
 
   // 0. A face the caller pinned to an entry (the /DA font of a regenerated
   // plain box), if it can draw the text; a box's own font that lacks a
@@ -1159,6 +1172,29 @@ int CPDF_AnnotFontMap::FindDocumentProgram(const WideString& family,
     }
   }
   return -1;
+}
+
+int CPDF_AnnotFontMap::EntryForDocumentProgram(uint32_t objnum) {
+  for (size_t i = 0; i < fonts_.size(); ++i) {
+    if (fonts_[i].source == Source::kDocumentProgram &&
+        fonts_[i].program_stream &&
+        fonts_[i].program_stream->GetObjNum() == objnum) {
+      return static_cast<int>(i);
+    }
+  }
+  if (!doc_) {
+    return -1;
+  }
+  CPDF_DocumentFonts* document_fonts = CPDF_DocumentFonts::For(doc_);
+  std::optional<CPDF_DocumentFonts::ReservedProgram> described =
+      document_fonts->DescribeProgram(objnum);
+  RetainPtr<CPDF_Stream> stream = document_fonts->ProgramStream(objnum);
+  if (!described.has_value() || !stream) {
+    return -1;
+  }
+  return AddDocumentProgram(
+      std::move(stream), described->base_font_name,
+      {described->family.ToUTF8(), described->weight, described->italic});
 }
 
 int CPDF_AnnotFontMap::AddDocumentProgram(

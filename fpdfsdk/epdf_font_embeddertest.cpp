@@ -685,7 +685,7 @@ TEST_F(EPDFFontEmbedderTest, ResolvesTheFontsAWriteWouldUse) {
   const FPDF_BOOL italics[] = {false, false, false};
 
   EPDF_FONT_RESOLUTION resolution = EPDFDoc_ResolveFonts(
-      document(), nullptr, 3, texts, families, weights, italics);
+      document(), nullptr, 3, texts, families, weights, italics, nullptr);
   ASSERT_TRUE(resolution);
   EXPECT_EQ(EPDF_FONT_SOURCE_STANDARD,
             EPDFFontResolution_GetSource(resolution, 0));
@@ -712,7 +712,7 @@ TEST_F(EPDFFontEmbedderTest, ResolvesTheFontsAWriteWouldUse) {
   // Without the fallback, the CJK character has no font.
   EPDFFont_ClearFallbackFonts();
   resolution = EPDFDoc_ResolveFonts(document(), nullptr, 1, texts, families,
-                                    weights, italics);
+                                    weights, italics, nullptr);
   ASSERT_TRUE(resolution);
   EXPECT_EQ(0u, EPDFFontResolution_GetFallbacks(resolution, 0, nullptr, 0));
   ASSERT_EQ(1, EPDFFontResolution_CountMissingCharacters(resolution));
@@ -752,7 +752,7 @@ TEST_F(EPDFFontEmbedderTest, ResolvesADocumentProgram) {
   const int weights[] = {400};
   const FPDF_BOOL italics[] = {false};
   EPDF_FONT_RESOLUTION resolution = EPDFDoc_ResolveFonts(
-      document(), nullptr, 1, texts, families, weights, italics);
+      document(), nullptr, 1, texts, families, weights, italics, nullptr);
   ASSERT_TRUE(resolution);
   EXPECT_EQ(EPDF_FONT_SOURCE_DOCUMENT_PROGRAM,
             EPDFFontResolution_GetSource(resolution, 0));
@@ -1044,7 +1044,7 @@ TEST_F(EPDFFontEmbedderTest, UnauthorizedRegisteredFontDoesNotTakeOverABox) {
   const int weights[] = {400};
   const FPDF_BOOL italics[] = {false};
   EPDF_FONT_RESOLUTION resolution = EPDFDoc_ResolveFonts(
-      document(), annot.get(), 1, texts, families, weights, italics);
+      document(), annot.get(), 1, texts, families, weights, italics, nullptr);
   ASSERT_TRUE(resolution);
   EXPECT_EQ(EPDF_FONT_SOURCE_DOCUMENT_FONT,
             EPDFFontResolution_GetSource(resolution, 0));
@@ -1414,4 +1414,153 @@ TEST_F(EPDFFontEmbedderTest, PasswordFieldWritesOnlyStars) {
   EXPECT_NE(std::string::npos, stream.find("(*******) Tj")) << stream;
   EXPECT_EQ(std::string::npos, stream.find("hunter")) << stream;
   EXPECT_EQ(std::string::npos, stream.find("ActualText")) << stream;
+}
+
+namespace {
+
+// One page holding two whole programs that describe themselves alike: neither
+// font dictionary has /FontFamily or /FontWeight, and "Thin" isn't a weight
+// the name is read for, so both are Mono, 400, upright. Object 5 is
+// Mono-Regular's program (Roboto), object 8 Mono-Thin's (Arimo).
+constexpr uint32_t kMonoRegular = 5;
+constexpr uint32_t kMonoThin = 8;
+
+std::string TwoProgramsDescribedAlike() {
+  const std::vector<uint8_t> regular = LoadRoboto();
+  const std::vector<uint8_t> thin =
+      LoadThirdPartyFont("test_fonts/test_fonts/Arimo-Regular.ttf");
+  auto program = [](const std::vector<uint8_t>& bytes) {
+    return Stream("/Length1 " + std::to_string(bytes.size()),
+                  std::string(bytes.begin(), bytes.end()));
+  };
+  auto descriptor = [](const std::string& name, uint32_t file) {
+    return "<< /Type /FontDescriptor /FontName /" + name +
+           " /Flags 32 /FontBBox [0 -300 1000 900] /ItalicAngle 0 /Ascent 900 "
+           "/Descent -300 /CapHeight 700 /StemV 80 /FontFile2 " +
+           std::to_string(file) + " 0 R >>";
+  };
+  auto font = [](const std::string& name, uint32_t descriptor) {
+    return "<< /Type /Font /Subtype /TrueType /BaseFont /" + name +
+           " /FirstChar 32 /LastChar 32 /Widths [250] /Encoding "
+           "/WinAnsiEncoding /FontDescriptor " +
+           std::to_string(descriptor) + " 0 R >>";
+  };
+  return MakePdf({
+      "<< /Type /Catalog /Pages 2 0 R >>",
+      "<< /Type /Pages /Kids [3 0 R] /Count 1 >>",
+      "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 400 400] /Contents 4 0 R "
+      "/Resources << /Font << /F1 7 0 R /F2 10 0 R >> >> >>",
+      Stream("BT /F1 12 Tf 40 300 Td ( ) Tj /F2 12 Tf ( ) Tj ET"),
+      program(regular),
+      descriptor("Mono-Regular", kMonoRegular),
+      font("Mono-Regular", 6),
+      program(thin),
+      descriptor("Mono-Thin", kMonoThin),
+      font("Mono-Thin", 9),
+  });
+}
+
+// The programs of the Type 0 fonts |annot|'s appearance draws with.
+std::vector<uint32_t> AppearanceFontPrograms(FPDF_ANNOTATION annot) {
+  CPDF_AnnotContext* context = CPDFAnnotContextFromFPDFAnnotation(annot);
+  RetainPtr<const CPDF_Dictionary> ap =
+      context->GetAnnotDict()->GetDictFor("AP");
+  RetainPtr<const CPDF_Stream> normal = ap ? ap->GetStreamFor("N") : nullptr;
+  RetainPtr<const CPDF_Dictionary> resources =
+      normal ? normal->GetDict()->GetDictFor("Resources") : nullptr;
+  RetainPtr<const CPDF_Dictionary> fonts =
+      resources ? resources->GetDictFor("Font") : nullptr;
+  std::vector<uint32_t> programs;
+  if (!fonts) {
+    return programs;
+  }
+  CPDF_DictionaryLocker locker(fonts);
+  for (const auto& [alias, value] : locker) {
+    const uint32_t program = AppearanceFontProgram(annot, alias);
+    if (program != 0) {
+      programs.push_back(program);
+    }
+  }
+  std::ranges::sort(programs);
+  return programs;
+}
+
+}  // namespace
+
+// A run can name the program a write would use: two programs that describe
+// themselves alike are one face to their family, never to their program.
+TEST_F(EPDFFontEmbedderTest, ResolvesTheProgramARunNames) {
+  ScopedRegisteredFonts scoped_fonts;
+  const std::string pdf = TwoProgramsDescribedAlike();
+  ScopedFPDFDocument doc(FPDF_LoadMemDocument(pdf.data(), pdf.size(), nullptr));
+  ASSERT_TRUE(doc);
+  ScopedFPDFWideString text = GetFPDFWideString(L"Hello");
+  ScopedFPDFWideString family = GetFPDFWideString(L"Mono");
+  FPDF_WIDESTRING texts[] = {text.get(), text.get()};
+  FPDF_WIDESTRING families[] = {family.get(), family.get()};
+  const int weights[] = {400, 400};
+  const FPDF_BOOL italics[] = {false, false};
+  const int programs[] = {0, static_cast<int>(kMonoThin)};
+
+  EPDF_FONT_RESOLUTION resolution = EPDFDoc_ResolveFonts(
+      doc.get(), nullptr, 2, texts, families, weights, italics, programs);
+  ASSERT_TRUE(resolution);
+  // By its family, the first of the two the document holds.
+  EXPECT_EQ(EPDF_FONT_SOURCE_DOCUMENT_PROGRAM,
+            EPDFFontResolution_GetSource(resolution, 0));
+  EXPECT_EQ(kMonoRegular, EPDFFontResolution_GetProgramObjNum(resolution, 0));
+  // By its program, the one named.
+  EXPECT_EQ(EPDF_FONT_SOURCE_DOCUMENT_PROGRAM,
+            EPDFFontResolution_GetSource(resolution, 1));
+  EXPECT_EQ(kMonoThin, EPDFFontResolution_GetProgramObjNum(resolution, 1));
+  EPDFFontResolution_Close(resolution);
+}
+
+// A rich text body that names its program draws with it and writes it as the
+// /DA font; a run that restates the body's face keeps it, and a run in
+// another face finds that face by its family.
+TEST_F(EPDFFontEmbedderTest, RichTextDrawsTheProgramItsStyleNames) {
+  ScopedRegisteredFonts scoped_fonts;
+  const std::string pdf = TwoProgramsDescribedAlike();
+  ScopedFPDFDocument doc(FPDF_LoadMemDocument(pdf.data(), pdf.size(), nullptr));
+  ASSERT_TRUE(doc);
+  ScopedFPDFPage page(FPDF_LoadPage(doc.get(), 0));
+  ASSERT_TRUE(page);
+  auto box = [&](const std::string& json) {
+    ScopedFPDFAnnotation annot(
+        FPDFPage_CreateAnnot(page.get(), FPDF_ANNOT_FREETEXT));
+    const FS_RECTF rect{50.0f, 320.0f, 350.0f, 250.0f};
+    EXPECT_TRUE(FPDFAnnot_SetRect(annot.get(), &rect));
+    EXPECT_TRUE(EPDFAnnot_SetRichTextJSON(annot.get(), json.c_str()));
+    return annot;
+  };
+  const std::string mono =
+      "\"family\":\"Mono\",\"weight\":400,\"italic\":false";
+
+  // First, while the document holds only its own two: by the family, the
+  // first of them (a write adds its /DR entry, which a later one finds first).
+  ScopedFPDFAnnotation by_family =
+      box("{\"body\":{" + mono +
+          "},\"paragraphs\":[{\"runs\":[{\"text\":\"Hello\"}]}]}");
+  EXPECT_EQ(kMonoRegular,
+            AppearanceFontProgram(by_family.get(),
+                                  DefaultAppearanceFontName(by_family.get())));
+
+  ScopedFPDFAnnotation named = box(
+      "{\"body\":{" + mono +
+      ",\"program\":8},\"paragraphs\":[{\"runs\":[{\"text\":\"Hello\"}]}]}");
+  EXPECT_EQ(kMonoThin,
+            AppearanceFontProgram(named.get(),
+                                  DefaultAppearanceFontName(named.get())));
+
+  ScopedFPDFAnnotation runs =
+      box("{\"body\":{" + mono +
+          ",\"program\":8},\"paragraphs\":[{\"runs\":[{\"text\":\"A\"},"
+          "{\"text\":\"B\",\"style\":{\"family\":\"Mono\"}},"
+          "{\"text\":\"C\",\"style\":{\"family\":\"Helvetica\"}}]}]}");
+  // Only Mono-Thin among the programs: "B" restates the body's face, and
+  // "C" draws in Helvetica.
+  EXPECT_EQ(std::vector<uint32_t>{kMonoThin},
+            AppearanceFontPrograms(runs.get()));
+  EXPECT_NE(std::string::npos, NormalAppearanceOf(runs.get()).find("/Helv"));
 }

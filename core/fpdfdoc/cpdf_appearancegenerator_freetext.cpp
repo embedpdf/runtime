@@ -462,8 +462,8 @@ PrepareRichFreeTextAPInternal(CPDF_Document* doc,
     // request resolves here without text. Aliases are settled before the
     // content names them.
     const CPDF_RichTextStyle& body = in.document->body;
-    const int body_entry =
-        map.ResolveRichFace(body.family, body.weight, body.italic);
+    const int body_entry = map.ResolveRichFace(
+        body.family, body.weight, body.italic, WideStringView(), body.program);
     if (body_entry < 0) {
       return nullptr;
     }

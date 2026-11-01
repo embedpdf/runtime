@@ -157,14 +157,22 @@ class CPDF_AnnotFontMap final {
   // next rung takes over for the whole request, so a subset never draws
   // glyph 0 for the characters it lacks. Registered and standard faces keep
   // the layout's per-glyph fallback (rung 4) for their own gaps.
+  //
+  // A |program| (a document program's object number) is the face exactly,
+  // before every rung: the writer chose it by the name the font list gives
+  // it, which the family can't tell from another program that describes
+  // itself alike. Like a registered face it keeps the per-glyph fallback for
+  // its gaps. A program that can't author text leaves the family to decide.
   int ResolveRichFace(const WideString& family,
                       int weight,
                       bool italic,
-                      WideStringView text = WideStringView());
+                      WideStringView text = WideStringView(),
+                      uint32_t program = 0);
   // The key ResolveRichFace caches by: what the layout groups text with.
   static ByteString FaceRequestKey(const WideString& family,
                                    int weight,
-                                   bool italic);
+                                   bool italic,
+                                   uint32_t program = 0);
   // Does |entry| map every base character of |text|? Joiners and variation
   // selectors are exempt, as in the layout. Empty text is covered.
   bool CoversText(int entry, WideStringView text);
@@ -286,7 +294,11 @@ class CPDF_AnnotFontMap final {
   int ResolveRichFaceUncached(const WideString& family,
                               int weight,
                               bool italic,
-                              WideStringView text);
+                              WideStringView text,
+                              uint32_t program);
+  // The entry drawing with the document program |objnum|, added when it is
+  // the first; -1 when the walk didn't find it or it can't author text.
+  int EntryForDocumentProgram(uint32_t objnum);
   // The best-styled document program under |family| that is eligible and
   // covers |text|; -1 when none is.
   int FindDocumentProgram(const WideString& family,

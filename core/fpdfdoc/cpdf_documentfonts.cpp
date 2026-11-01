@@ -691,19 +691,7 @@ bool CPDF_DocumentFonts::ReserveProgramAlias(uint32_t objnum,
       return true;
     }
   }
-  std::optional<ReservedProgram> found;
-  for (const Face& face : CollectFaces()) {
-    for (const Program& program : face.programs) {
-      if (program.objnum == objnum) {
-        found = ReservedProgram{objnum, program.postscript_name, face.family,
-                                face.weight, face.italic};
-        break;
-      }
-    }
-    if (found.has_value()) {
-      break;
-    }
-  }
+  std::optional<ReservedProgram> found = DescribeProgram(objnum);
   if (!found.has_value()) {
     return false;
   }
@@ -725,6 +713,22 @@ bool CPDF_DocumentFonts::ReserveProgramAlias(uint32_t objnum,
   program_aliases_[candidate] = std::move(*found);
   *alias = candidate;
   return true;
+}
+
+std::optional<CPDF_DocumentFonts::ReservedProgram>
+CPDF_DocumentFonts::DescribeProgram(uint32_t objnum) {
+  if (objnum == 0) {
+    return std::nullopt;
+  }
+  for (const Face& face : CollectFaces()) {
+    for (const Program& program : face.programs) {
+      if (program.objnum == objnum) {
+        return ReservedProgram{objnum, program.postscript_name, face.family,
+                               face.weight, face.italic};
+      }
+    }
+  }
+  return std::nullopt;
 }
 
 std::optional<CPDF_DocumentFonts::ReservedProgram>

@@ -417,6 +417,10 @@ typedef struct epdf_font_resolution_t__* EPDF_FONT_RESOLUTION;
 //   families  - each run's family (a family name or a registered font's).
 //   weights   - each run's weight, 100 to 900.
 //   italics   - whether each run is italic.
+//   programs  - each run's document program, the object number of the font
+//               program stream a write would name for it (the face exactly,
+//               whatever its family says), or 0 to resolve the family; NULL
+//               when no run names one.
 //
 // Returns NULL for a NULL document or arrays.
 FPDF_EXPORT EPDF_FONT_RESOLUTION FPDF_CALLCONV
@@ -426,7 +430,8 @@ EPDFDoc_ResolveFonts(FPDF_DOCUMENT document,
                      const FPDF_WIDESTRING* texts,
                      const FPDF_WIDESTRING* families,
                      const int* weights,
-                     const FPDF_BOOL* italics);
+                     const FPDF_BOOL* italics,
+                     const int* programs);
 FPDF_EXPORT void FPDF_CALLCONV
 EPDFFontResolution_Close(EPDF_FONT_RESOLUTION resolution);
 
