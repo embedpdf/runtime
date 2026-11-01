@@ -95,6 +95,8 @@ source_set("fxge") {
     "dib/cfx_imagetransformer.h",
     "dib/cfx_scanlinecompositor.cpp",
     "dib/cfx_scanlinecompositor.h",
+    "dib/cfx_scanlinecompositor_hwy.cpp",
+    "dib/cfx_scanlinecompositor_hwy.h",
     "dib/cstretchengine.cpp",
     "dib/cstretchengine.h",
     "dib/cstretchengine_hwy.cpp",
@@ -250,11 +252,6 @@ source_set("fxge") {
       "skia/fx_skia_device.h",
     ]
     public_deps += [ "//skia" ]
-
-    if (pdf_skia_font_manager_target != "") {
-      defines += [ "PDF_USE_SKIA_CUSTOM_FONT_MANAGER" ]
-      deps += [ pdf_skia_font_manager_target ]
-    }
   }
 
   visibility = [ "../../*" ]
@@ -270,8 +267,8 @@ if (pdf_enable_fontations) {
     features = [ "agl" ]
     deps = [
       "//build/rust:cxx_cppdeps",
-      "//third_party/rust/read_fonts/v0_43:lib",
-      "//third_party/rust/skrifa/v0_46:lib",
+      "//third_party/rust/read_fonts/v0_45:lib",
+      "//third_party/rust/skrifa/v0_48:lib",
     ]
     configs += [ ":skrifa_cxx_config" ]
   }
@@ -304,6 +301,7 @@ source_set("test_support") {
   deps = [
     ":fxge",
     "../fxcrt",
+    "../fxcrt:test_support",
   ]
 }
 
