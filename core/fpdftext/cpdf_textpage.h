@@ -210,9 +210,9 @@ class CPDF_TextPage {
   MarkedContentState PreMarkedContent(const CPDF_TextObject* text_obj);
   // Processes `/ActualText` marked content for `obj` and appends character info
   // and text to `temp_char_list_` and `temp_text_buf_`.
-  // Returns true if the caller needs to call ReverseTempTextBufs() because the
-  // text is RTL, requiring the newly appended character order to be reversed.
-  bool ProcessMarkedContent(const TransformedTextObject& obj);
+  // EmbedPDF(bug-fix): the text is appended as written, in logical order, and
+  // never reversed here; CloseTempLine() orders a line's spans.
+  void ProcessMarkedContent(const TransformedTextObject& obj);
   void FindPreviousTextObject();
   void AddCharInfo(wchar_t wc, const CharInfo& info, bool is_rtl);
   TextOrientation GetTextObjectWritingMode(

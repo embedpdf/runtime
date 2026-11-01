@@ -2635,19 +2635,13 @@ TEST_F(FPDFTextEmbedderTest, ArabicActualTextOrdering) {
   // TODO(crbug.com/525093248): Text extraction for the remaining variants
   // currently produces differing results with unintended linebreaks/spaces
   // and reversed characters within spans.
-  // EmbedPDF(bug-fix): what the fork extracts. It reverses an /ActualText
-  // span only after literal right-to-left text and reads marks with their
-  // base (Acrobat's shaped runs come out right), so variant 2, spans in
-  // visual order, keeps that order where upstream reverses it. Ordering a
-  // line's spans by position would fix both; until then this records it.
-  const std::vector<unsigned short> kExpectedPages[] = {
-      {0x0645, 0x0650, '\r', '\n', 0x0633, 0x0652, 0x0628, 0x0650, '\0'},
-      {0x0645, 0x0650, 0x0633, 0x0652, 0x0628, 0x0650, '\0'},
-      {0x0633, 0x0652, 0x0628, 0x0650, ' ', 0x0628, 0x0650, '\r', '\n', 0x0645,
-       0x0650, '\0'},
-      {0x0633, 0x0652, 0x0628, 0x0650, ' ', 0x0628, 0x0650, '\r', '\n', 0x0645,
-       0x0650, 0x0633, 0x0652, '\r', '\n', 0x0645, 0x0650, '\0'},
-  };
+  // EmbedPDF(bug-fix): the fork extracts all four as typed. A line's marks
+  // stay on it, and a right-to-left run is reversed span by span, each
+  // /ActualText span kept as written.
+  const std::vector<unsigned short> kWord = {0x0628, 0x0650, 0x0633, 0x0652,
+                                             0x0645, 0x0650, '\0'};
+  const std::vector<unsigned short> kExpectedPages[] = {kWord, kWord, kWord,
+                                                        kWord};
 
   int page_index = 0;
   for (const std::vector<unsigned short>& expected_page : kExpectedPages) {
