@@ -364,34 +364,37 @@ EPDFDoc_GetFontProgramData(FPDF_DOCUMENT document,
                            unsigned long buflen);
 
 // Experimental EmbedPDF Extension API.
-// What a browser loads for such a program: the program itself when it is
+// What a browser loads, by the SHA-256 EPDFFontFaces_GetProgramDisplayHash()
+// gives (|display_sha256|, 32 bytes): the program itself when it is
 // TrueType or OpenType with a Unicode cmap. When such a program's tables
 // don't each start on a four-byte boundary (a browser refuses it, FreeType
 // doesn't), the same tables realigned. Otherwise (Type 1, bare CFF, a
-// program without a Unicode cmap) an OpenType font built from it: its
-// glyphs, a Unicode cmap holding exactly the characters the engine writes
-// with the font (each through the PDF's encoding to the glyph it draws), and
-// the advances the engine lays them out with (/Widths). The same bytes every
-// time. Returns the length, 0 when a browser can't draw it or
-// |program_objnum| isn't such a program; pass NULL/0 to query it. Nothing is
+// program without a Unicode cmap) an OpenType font built from the program as
+// one font dictionary reads it: its glyphs, a Unicode cmap holding exactly
+// the characters the engine writes with that font (each through its
+// encoding to the glyph it draws), and the advances the engine lays them out
+// with (its /Widths). Two dictionaries that read one stream differently have
+// two. The same bytes every time. Returns the length, 0 when no program the
+// document's fonts use has that hash; pass NULL/0 to query it. Nothing is
 // copied when |buflen| is too small.
 FPDF_EXPORT unsigned long FPDF_CALLCONV
 EPDFDoc_GetFontDisplayProgramData(FPDF_DOCUMENT document,
-                                  unsigned long program_objnum,
+                                  const unsigned char* display_sha256,
                                   void* buffer,
                                   unsigned long buflen);
 
 // Experimental EmbedPDF Extension API.
-// The characters a browser draws with such a program, which are the ones the
+// The characters a browser draws with that program (by |display_sha256|, as
+// EPDFDoc_GetFontDisplayProgramData() takes it), which are the ones the
 // engine writes with it, as ranges: |ranges| receives up to
 // |range_capacity| pairs (first code point, count). Returns the number of
-// ranges, 0 when it maps none or isn't such a program; pass NULL/0 to query
-// it.
+// ranges, 0 when it maps none or no program has that hash; pass NULL/0 to
+// query it.
 FPDF_EXPORT unsigned long FPDF_CALLCONV
-EPDFDoc_GetFontProgramCoverage(FPDF_DOCUMENT document,
-                               unsigned long program_objnum,
-                               uint32_t* ranges,
-                               unsigned long range_capacity);
+EPDFDoc_GetFontDisplayProgramCoverage(FPDF_DOCUMENT document,
+                                      const unsigned char* display_sha256,
+                                      uint32_t* ranges,
+                                      unsigned long range_capacity);
 
 // ---- The fonts a write would use --------------------------------------------
 

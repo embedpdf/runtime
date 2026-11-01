@@ -21,6 +21,7 @@
 #include "core/fxcrt/bytestring.h"
 #include "core/fxcrt/data_vector.h"
 #include "core/fxcrt/retain_ptr.h"
+#include "core/fxcrt/span.h"
 #include "core/fxcrt/unowned_ptr.h"
 #include "core/fxcrt/widestring.h"
 #include "core/fxge/cfx_codepointrange.h"
@@ -76,8 +77,10 @@ class CPDF_DocumentFonts final : public CPDF_Document::FontIndex {
     WideString family;
     int weight = 400;
     bool italic = false;
-    // One per program stream, in the order the walk found them; fonts
-    // without a program (not embedded, Type 3) add one entry per format.
+    // One per program stream and display program, in the order the walk
+    // found them (a stream two dictionaries read differently is two);
+    // fonts without a program (not embedded, Type 3) add one entry per
+    // format.
     std::vector<Program> programs;
   };
 
@@ -120,13 +123,14 @@ class CPDF_DocumentFonts final : public CPDF_Document::FontIndex {
   // A program found by the walk, by its stream's object number: its decoded
   // bytes, the program as the layout reads it. Empty for any other number.
   DataVector<uint8_t> ProgramData(uint32_t objnum);
-  // What a browser loads for such a program (see Program::display_sha256);
-  // empty when it can't draw it or |objnum| isn't one.
-  DataVector<uint8_t> DisplayProgramData(uint32_t objnum);
+  // What a browser loads, by its SHA-256 (a Program::display_sha256 the walk
+  // found); empty for any other hash.
+  DataVector<uint8_t> DisplayProgramData(pdfium::span<const uint8_t> sha256);
   // The scalars a browser draws with it, which are the ones the engine writes
-  // with it, as ranges in order; empty when it maps none or |objnum| isn't
-  // one.
-  std::vector<CFX_CodePointRange> ProgramCoverage(uint32_t objnum);
+  // with it, as ranges in order; empty when it maps none or |sha256| isn't
+  // one the walk found.
+  std::vector<CFX_CodePointRange> DisplayProgramCoverage(
+      pdfium::span<const uint8_t> sha256);
   // The program stream itself, for the writer; null when |objnum| isn't one.
   RetainPtr<CPDF_Stream> ProgramStream(uint32_t objnum);
 
@@ -178,10 +182,21 @@ class CPDF_DocumentFonts final : public CPDF_Document::FontIndex {
     RetainPtr<const CPDF_Stream> stream;  // the version inspected
     size_t raw_size = 0;
     Program facts;
+    // The scalars its own cmap maps.
     std::optional<std::vector<CFX_CodePointRange>> coverage;
-    // Built from the first font dictionary found to use the stream.
-    bool display_built = false;
-    std::optional<Display> display;
+    // A Unicode sfnt a browser would refuse, its tables realigned: the same
+    // whichever dictionary reads it.
+    bool aligned_built = false;
+    std::optional<Display> aligned;
+    // Display programs by their SHA-256. Any other program is read through
+    // each font dictionary's encoding, widths and flags, so one stream can
+    // be drawn as more than one.
+    std::map<DataVector<uint8_t>, Display> displays;
+    // The display each font dictionary (by object number) reads the stream
+    // as; nullopt when it builds none. Forgotten when the dictionary
+    // changes; one that isn't an indirect object builds its display again
+    // each time.
+    std::map<uint32_t, std::optional<DataVector<uint8_t>>> display_of_dict;
   };
 
   // Every font dictionary the document's drawings can use, each once, in
@@ -197,6 +212,13 @@ class CPDF_DocumentFonts final : public CPDF_Document::FontIndex {
   Inspected* FindInspected(uint32_t objnum);
   // The decoded bytes of the stream |inspected| is.
   DataVector<uint8_t> BytesOf(const Inspected& inspected);
+  // The scalars |inspected|'s own cmap maps, read once.
+  const std::vector<CFX_CodePointRange>& CmapCoverage(Inspected& inspected);
+  // The program a browser loads by |sha256|: its inspection, with |display|
+  // the display program it is, or null when it is the program as it is.
+  // Walks again when no current inspection has it.
+  Inspected* FindDisplay(pdfium::span<const uint8_t> sha256,
+                         const Display** display);
   // |program|'s display hash, its display program built through
   // |font_dict| once per stream version when it needs one.
   DataVector<uint8_t> DisplayHashOf(const Program& program,

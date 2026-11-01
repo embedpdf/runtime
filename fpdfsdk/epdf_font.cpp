@@ -551,33 +551,36 @@ EPDFDoc_GetFontProgramData(FPDF_DOCUMENT document,
 
 FPDF_EXPORT unsigned long FPDF_CALLCONV
 EPDFDoc_GetFontDisplayProgramData(FPDF_DOCUMENT document,
-                                  unsigned long program_objnum,
+                                  const unsigned char* display_sha256,
                                   void* buffer,
                                   unsigned long buflen) {
   ScopedFPDFDocumentView document_view(document);
   CPDF_Document* doc = document_view.Get();
-  if (!doc || program_objnum == 0) {
+  if (!doc || !display_sha256) {
     return 0;
   }
+  // SAFETY: required from caller: |display_sha256| holds 32 bytes.
   const DataVector<uint8_t> data =
       CPDF_DocumentFonts::For(doc)->DisplayProgramData(
-          static_cast<uint32_t>(program_objnum));
+          UNSAFE_BUFFERS(pdfium::span(display_sha256, 32u)));
   return CopyBytesAndReturnLength(data, buffer, buflen);
 }
 
 FPDF_EXPORT unsigned long FPDF_CALLCONV
-EPDFDoc_GetFontProgramCoverage(FPDF_DOCUMENT document,
-                               unsigned long program_objnum,
-                               uint32_t* ranges,
-                               unsigned long range_capacity) {
+EPDFDoc_GetFontDisplayProgramCoverage(FPDF_DOCUMENT document,
+                                      const unsigned char* display_sha256,
+                                      uint32_t* ranges,
+                                      unsigned long range_capacity) {
   ScopedFPDFDocumentView document_view(document);
   CPDF_Document* doc = document_view.Get();
-  if (!doc || program_objnum == 0) {
+  if (!doc || !display_sha256) {
     return 0;
   }
-  return CopyRangesAndReturnCount(CPDF_DocumentFonts::For(doc)->ProgramCoverage(
-                                      static_cast<uint32_t>(program_objnum)),
-                                  ranges, range_capacity);
+  // SAFETY: required from caller: |display_sha256| holds 32 bytes.
+  return CopyRangesAndReturnCount(
+      CPDF_DocumentFonts::For(doc)->DisplayProgramCoverage(
+          UNSAFE_BUFFERS(pdfium::span(display_sha256, 32u))),
+      ranges, range_capacity);
 }
 
 // ---- The fonts a write would use

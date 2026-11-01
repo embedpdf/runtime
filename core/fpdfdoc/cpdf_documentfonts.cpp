@@ -326,7 +326,8 @@ std::vector<CPDF_DocumentFonts::Face> CPDF_DocumentFonts::CollectFaces() {
     const bool known =
         std::ranges::any_of(entry.programs, [&](const Program& other) {
           return program.objnum != 0
-                     ? other.objnum == program.objnum
+                     ? other.objnum == program.objnum &&
+                           other.display_sha256 == program.display_sha256
                      : other.objnum == 0 && other.format == program.format &&
                            other.sha256 == program.sha256;
         });
@@ -475,6 +476,11 @@ void CPDF_DocumentFonts::Forget(const std::set<uint32_t>& objnums) {
   for (uint32_t objnum : objnums) {
     inspected_.erase(objnum);
   }
+  for (auto& [objnum, inspected] : inspected_) {
+    std::erase_if(inspected.display_of_dict, [&](const auto& entry) {
+      return objnums.contains(entry.first);
+    });
+  }
 }
 
 void CPDF_DocumentFonts::ForgetPlaces() {
@@ -598,67 +604,119 @@ DataVector<uint8_t> CPDF_DocumentFonts::DisplayHashOf(
     return {};
   }
   Inspected& inspected = it->second;
-  if (!inspected.display_built) {
-    inspected.display_built = true;
-    if (IsSfnt(program.format) && program.maps_unicode) {
-      // Only its tables are out of place: the same program, realigned. Its
-      // coverage is its own cmap's (ProgramCoverage).
+  if (IsSfnt(program.format) && program.maps_unicode) {
+    // Only its tables are out of place: the same program, realigned, whatever
+    // reads it. Its coverage is its own cmap's.
+    if (!inspected.aligned_built) {
+      inspected.aligned_built = true;
       DataVector<uint8_t> aligned = AlignSfntTables(BytesOf(inspected));
       if (!aligned.empty()) {
         Display display;
         display.sha256 = CryptSha256Generate(aligned);
         display.bytes = std::move(aligned);
-        inspected.display = std::move(display);
-      }
-    } else {
-      std::optional<CPDF_DisplayProgram> built =
-          BuildDisplayProgram(doc_, font_dict, program.postscript_name,
-                              CPDF_FontFace{family, weight, italic});
-      if (built.has_value()) {
-        Display display;
-        display.sha256 = CryptSha256Generate(built->bytes);
-        display.coverage = RangesOf(std::move(built->characters));
-        display.bytes = std::move(built->bytes);
-        inspected.display = std::move(display);
+        inspected.aligned = std::move(display);
       }
     }
+    return inspected.aligned.has_value() ? inspected.aligned->sha256
+                                         : DataVector<uint8_t>();
   }
-  return inspected.display.has_value() ? inspected.display->sha256
-                                       : DataVector<uint8_t>();
+  // Any other program is drawn as this dictionary reads it: its encoding,
+  // widths and flags go into the display program, so two dictionaries that
+  // share a stream can need two.
+  const uint32_t dict_objnum = font_dict->GetObjNum();
+  if (dict_objnum != 0) {
+    auto known = inspected.display_of_dict.find(dict_objnum);
+    if (known != inspected.display_of_dict.end()) {
+      return known->second.value_or(DataVector<uint8_t>());
+    }
+  }
+  std::optional<DataVector<uint8_t>> sha256;
+  std::optional<CPDF_DisplayProgram> built =
+      BuildDisplayProgram(doc_, font_dict, program.postscript_name,
+                          CPDF_FontFace{family, weight, italic});
+  if (built.has_value()) {
+    Display display;
+    display.sha256 = CryptSha256Generate(built->bytes);
+    display.coverage = RangesOf(std::move(built->characters));
+    display.bytes = std::move(built->bytes);
+    sha256 = display.sha256;
+    inspected.displays.try_emplace(display.sha256, std::move(display));
+  }
+  if (dict_objnum != 0) {
+    inspected.display_of_dict[dict_objnum] = sha256;
+  }
+  return sha256.value_or(DataVector<uint8_t>());
 }
 
-DataVector<uint8_t> CPDF_DocumentFonts::DisplayProgramData(uint32_t objnum) {
-  Inspected* inspected = FindInspected(objnum);
+CPDF_DocumentFonts::Inspected* CPDF_DocumentFonts::FindDisplay(
+    pdfium::span<const uint8_t> sha256,
+    const Display** display) {
+  const DataVector<uint8_t> wanted(sha256.begin(), sha256.end());
+  auto found = [&]() -> Inspected* {
+    for (auto& [objnum, inspected] : inspected_) {
+      // Only a version the document still has.
+      if (doc_->GetIndirectObject(objnum) != inspected.stream ||
+          inspected.stream->GetRawSize() != inspected.raw_size) {
+        continue;
+      }
+      if (LoadsAsIs(inspected.facts) && inspected.facts.sha256 == wanted) {
+        *display = nullptr;
+        return &inspected;
+      }
+      if (inspected.aligned.has_value() &&
+          inspected.aligned->sha256 == wanted) {
+        *display = &*inspected.aligned;
+        return &inspected;
+      }
+      auto built = inspected.displays.find(wanted);
+      if (built != inspected.displays.end()) {
+        *display = &built->second;
+        return &inspected;
+      }
+    }
+    return nullptr;
+  };
+  if (Inspected* inspected = found()) {
+    return inspected;
+  }
+  // Not found by a walk yet, or changed since: walk again.
+  CollectFaces();
+  return found();
+}
+
+DataVector<uint8_t> CPDF_DocumentFonts::DisplayProgramData(
+    pdfium::span<const uint8_t> sha256) {
+  const Display* display = nullptr;
+  Inspected* inspected = FindDisplay(sha256, &display);
   if (!inspected) {
     return {};
   }
-  if (inspected->display.has_value()) {
-    return inspected->display->bytes;
-  }
-  if (LoadsAsIs(inspected->facts)) {
-    return ProgramData(objnum);
-  }
-  return {};
+  return display ? display->bytes : BytesOf(*inspected);
 }
 
-std::vector<CFX_CodePointRange> CPDF_DocumentFonts::ProgramCoverage(
-    uint32_t objnum) {
-  Inspected* inspected = FindInspected(objnum);
+std::vector<CFX_CodePointRange> CPDF_DocumentFonts::DisplayProgramCoverage(
+    pdfium::span<const uint8_t> sha256) {
+  const Display* display = nullptr;
+  Inspected* inspected = FindDisplay(sha256, &display);
   if (!inspected) {
     return {};
   }
   // A program that maps Unicode is drawn through its own cmap, its tables
   // realigned or not; any other through its display program's.
-  if (!inspected->facts.maps_unicode) {
-    return inspected->display.has_value() ? inspected->display->coverage
-                                          : std::vector<CFX_CodePointRange>();
+  if (inspected->facts.maps_unicode) {
+    return CmapCoverage(*inspected);
   }
-  if (inspected->coverage.has_value()) {
-    return *inspected->coverage;
+  return display ? display->coverage : std::vector<CFX_CodePointRange>();
+}
+
+const std::vector<CFX_CodePointRange>& CPDF_DocumentFonts::CmapCoverage(
+    Inspected& inspected) {
+  if (inspected.coverage.has_value()) {
+    return *inspected.coverage;
   }
   std::vector<CFX_CodePointRange> ranges;
   {
-    DataVector<uint8_t> bytes = ProgramData(objnum);
+    DataVector<uint8_t> bytes = BytesOf(inspected);
     auto program = std::make_unique<CFX_Font>();
     if (!bytes.empty() &&
         program->LoadFaceZeroFromSpan(bytes, /*force_vertical=*/false,
@@ -668,8 +726,8 @@ std::vector<CFX_CodePointRange> CPDF_DocumentFonts::ProgramCoverage(
           pdfium::kMaximumSupplementaryCodePoint);
     }
   }
-  inspected->coverage = ranges;
-  return ranges;
+  inspected.coverage = std::move(ranges);
+  return *inspected.coverage;
 }
 
 RetainPtr<CPDF_Stream> CPDF_DocumentFonts::ProgramStream(uint32_t objnum) {

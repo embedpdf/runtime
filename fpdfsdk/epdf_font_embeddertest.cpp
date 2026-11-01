@@ -477,10 +477,13 @@ TEST_F(EPDFFontEmbedderTest, ListsADocumentProgramAndHandsOutItsBytes) {
   ASSERT_EQ(roboto.size(), EPDFDoc_GetFontProgramData(
                                document(), objnum, bytes.data(), bytes.size()));
   EXPECT_EQ(roboto, bytes);
-  ASSERT_EQ(roboto.size(), EPDFDoc_GetFontDisplayProgramData(
-                               document(), objnum, bytes.data(), bytes.size()));
+  ASSERT_EQ(roboto.size(),
+            EPDFDoc_GetFontDisplayProgramData(document(), display_hash,
+                                              bytes.data(), bytes.size()));
   EXPECT_EQ(roboto, bytes);
-  EXPECT_GT(EPDFDoc_GetFontProgramCoverage(document(), objnum, nullptr, 0), 0u);
+  EXPECT_GT(EPDFDoc_GetFontDisplayProgramCoverage(document(), display_hash,
+                                                  nullptr, 0),
+            0u);
   // The catalog is an object, not a font program.
   EXPECT_EQ(0u, EPDFDoc_GetFontProgramData(document(), 1, nullptr, 0));
 }
@@ -530,11 +533,12 @@ TEST_F(EPDFFontEmbedderTest, RealignsAProgramABrowserWouldRefuse) {
   EXPECT_EQ(misaligned, program);
 
   const unsigned long length =
-      EPDFDoc_GetFontDisplayProgramData(document(), objnum, nullptr, 0);
+      EPDFDoc_GetFontDisplayProgramData(document(), display_hash, nullptr, 0);
   ASSERT_GT(length, 0u);
   std::vector<uint8_t> display(length);
-  ASSERT_EQ(length, EPDFDoc_GetFontDisplayProgramData(
-                        document(), objnum, display.data(), display.size()));
+  ASSERT_EQ(length,
+            EPDFDoc_GetFontDisplayProgramData(document(), display_hash,
+                                              display.data(), display.size()));
   EXPECT_TRUE(SfntTablesAligned(display));
   EXPECT_EQ(TablesOf(misaligned), TablesOf(display));
   // Named by its own bytes, not the program's.
@@ -553,11 +557,11 @@ TEST_F(EPDFFontEmbedderTest, RealignsAProgramABrowserWouldRefuse) {
   }
   EXPECT_EQ(0xb1b0afbau, sum);
   // A browser draws the characters the program's own cmap maps.
-  const unsigned long range_count =
-      EPDFDoc_GetFontProgramCoverage(document(), objnum, nullptr, 0);
+  const unsigned long range_count = EPDFDoc_GetFontDisplayProgramCoverage(
+      document(), display_hash, nullptr, 0);
   std::vector<uint32_t> ranges(range_count * 2);
-  EPDFDoc_GetFontProgramCoverage(document(), objnum, ranges.data(),
-                                 range_count);
+  EPDFDoc_GetFontDisplayProgramCoverage(document(), display_hash, ranges.data(),
+                                        range_count);
   auto covers = [&](uint32_t scalar) {
     for (size_t i = 0; i + 1 < ranges.size(); i += 2) {
       if (scalar >= ranges[i] && scalar < ranges[i] + ranges[i + 1]) {
@@ -1176,15 +1180,13 @@ void ExpectDisplayProgramDrawsTheKeptFont(const std::string& pdf,
       faces, found->face, found->program, display_hash));
   EXPECT_NE(std::vector<uint8_t>(source_hash, source_hash + 32),
             std::vector<uint8_t>(display_hash, display_hash + 32));
-  const unsigned long objnum =
-      EPDFFontFaces_GetProgramObjNum(faces, found->face, found->program);
   EPDFFontFaces_Close(faces);
 
   const unsigned long length =
-      EPDFDoc_GetFontDisplayProgramData(doc.get(), objnum, nullptr, 0);
+      EPDFDoc_GetFontDisplayProgramData(doc.get(), display_hash, nullptr, 0);
   ASSERT_GT(length, 0u);
   std::vector<uint8_t> display(length);
-  ASSERT_EQ(length, EPDFDoc_GetFontDisplayProgramData(doc.get(), objnum,
+  ASSERT_EQ(length, EPDFDoc_GetFontDisplayProgramData(doc.get(), display_hash,
                                                       display.data(), length));
   const DataVector<uint8_t> hashed = CryptSha256Generate(display);
   EXPECT_EQ(std::vector<uint8_t>(display_hash, display_hash + 32),
@@ -1237,11 +1239,12 @@ void ExpectDisplayProgramDrawsTheKeptFont(const std::string& pdf,
   EXPECT_GE(compared, 5);
 
   // The characters it draws are exactly the ones the engine writes.
-  const unsigned long range_count =
-      EPDFDoc_GetFontProgramCoverage(doc.get(), objnum, nullptr, 0);
+  const unsigned long range_count = EPDFDoc_GetFontDisplayProgramCoverage(
+      doc.get(), display_hash, nullptr, 0);
   ASSERT_GT(range_count, 0u);
   std::vector<uint32_t> ranges(range_count * 2);
-  EPDFDoc_GetFontProgramCoverage(doc.get(), objnum, ranges.data(), range_count);
+  EPDFDoc_GetFontDisplayProgramCoverage(doc.get(), display_hash, ranges.data(),
+                                        range_count);
   for (uint32_t scalar = 1; scalar < 0x3000; ++scalar) {
     const uint32_t code =
         font->CharCodeFromUnicode(static_cast<wchar_t>(scalar));
@@ -1252,12 +1255,13 @@ void ExpectDisplayProgramDrawsTheKeptFont(const std::string& pdf,
     EXPECT_EQ(written, display_face->GetCharIndex(scalar) > 0) << scalar;
   }
 
-  // The same bytes from another opening of the same file.
+  // The same bytes from another opening of the same file, by the hash alone:
+  // the document is walked to find it.
   ScopedFPDFDocument again(
       FPDF_LoadMemDocument(pdf.data(), pdf.size(), nullptr));
   ASSERT_TRUE(again);
   std::vector<uint8_t> rebuilt(length);
-  ASSERT_EQ(length, EPDFDoc_GetFontDisplayProgramData(again.get(), objnum,
+  ASSERT_EQ(length, EPDFDoc_GetFontDisplayProgramData(again.get(), display_hash,
                                                       rebuilt.data(), length));
   EXPECT_EQ(display, rebuilt);
 }
@@ -1308,6 +1312,99 @@ TEST_F(EPDFFontEmbedderTest, BuildsADisplayProgramForAType1Font) {
   ExpectDisplayProgramDrawsTheKeptFont(
       FormWithFieldFont(type1, "FontFile", nullptr, "Roboto2-Regular"),
       EPDF_FONT_FORMAT_TYPE1);
+}
+
+// Two font dictionaries that share one bare CFF program but give it other
+// widths are two display programs: each draws at its own dictionary's
+// advances, under a hash of its own. The program is still one stream.
+TEST_F(EPDFFontEmbedderTest,
+       ADisplayProgramIsTheProgramAsItsDictionaryReadsIt) {
+  std::vector<uint8_t> cff = LoadTestFont("fonts/foxit_fixed.cff");
+  ASSERT_FALSE(cff.empty());
+  auto font = [](int width, int descriptor) {
+    std::string widths;
+    for (int code = 32; code <= 126; ++code) {
+      widths += std::to_string(width) + " ";
+    }
+    return "<< /Type /Font /Subtype /Type1 /BaseFont /FoxitFixed /FirstChar 32 "
+           "/LastChar 126 /Widths [" +
+           widths + "] /Encoding /WinAnsiEncoding /FontDescriptor " +
+           std::to_string(descriptor) + " 0 R >>";
+  };
+  const char kDescriptor[] =
+      "<< /Type /FontDescriptor /FontName /FoxitFixed /Flags 32 /FontBBox [0 "
+      "-250 1000 900] /ItalicAngle 0 /Ascent 900 /Descent -250 /CapHeight 700 "
+      "/StemV 80 /FontFile3 4 0 R >>";
+  const std::string pdf = MakePdf({
+      "<< /Type /Catalog /Pages 2 0 R /AcroForm << /Fields [] /DR << /Font << "
+      "/FNarrow 5 0 R /FWide 6 0 R >> >> >> >>",
+      "<< /Type /Pages /Kids [3 0 R] /Count 1 >>",
+      "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 300 300] >>",
+      Stream("/Subtype /Type1C", std::string(cff.begin(), cff.end())),
+      font(600, 7),
+      font(900, 8),
+      kDescriptor,
+      kDescriptor,
+  });
+  ScopedFPDFDocument doc(FPDF_LoadMemDocument(pdf.data(), pdf.size(), nullptr));
+  ASSERT_TRUE(doc);
+
+  EPDF_FONT_FACES faces = EPDFFontFaces_Load(doc.get());
+  ASSERT_TRUE(faces);
+  std::vector<std::vector<uint8_t>> display_hashes;
+  std::vector<std::vector<uint8_t>> source_hashes;
+  for (int face = 0; face < EPDFFontFaces_Count(faces); ++face) {
+    for (int program = 0; program < EPDFFontFaces_CountPrograms(faces, face);
+         ++program) {
+      if (EPDFFontFaces_GetProgramFormat(faces, face, program) !=
+          EPDF_FONT_FORMAT_CFF) {
+        continue;
+      }
+      EXPECT_EQ(4u, EPDFFontFaces_GetProgramObjNum(faces, face, program));
+      unsigned char hash[32] = {};
+      ASSERT_TRUE(EPDFFontFaces_GetProgramHash(faces, face, program, hash));
+      source_hashes.emplace_back(hash, hash + 32);
+      ASSERT_TRUE(
+          EPDFFontFaces_GetProgramDisplayHash(faces, face, program, hash));
+      display_hashes.emplace_back(hash, hash + 32);
+    }
+  }
+  EPDFFontFaces_Close(faces);
+  ASSERT_EQ(2u, display_hashes.size());
+  EXPECT_EQ(source_hashes[0], source_hashes[1]);
+  EXPECT_NE(display_hashes[0], display_hashes[1]);
+
+  // Each draws "A" at the advance its dictionary gives it, in walk order.
+  const int expected_advance[] = {600, 900};
+  for (size_t i = 0; i < 2; ++i) {
+    const unsigned long length = EPDFDoc_GetFontDisplayProgramData(
+        doc.get(), display_hashes[i].data(), nullptr, 0);
+    ASSERT_GT(length, 0u);
+    std::vector<uint8_t> display(length);
+    ASSERT_EQ(length,
+              EPDFDoc_GetFontDisplayProgramData(
+                  doc.get(), display_hashes[i].data(), display.data(), length));
+    const DataVector<uint8_t> hashed = CryptSha256Generate(display);
+    EXPECT_EQ(display_hashes[i],
+              std::vector<uint8_t>(hashed.begin(), hashed.end()));
+    auto display_font = std::make_unique<CFX_Font>();
+    ASSERT_TRUE(display_font->LoadFaceZeroFromSpan(
+        display, /*force_vertical=*/false, /*object_tag=*/0));
+    RetainPtr<CFX_Face> display_face = display_font->GetFace();
+    ASSERT_TRUE(display_face->SelectCharMap(fxge::FontEncoding::kUnicode));
+    const int glyph = display_face->GetCharIndex('A');
+    ASSERT_GT(glyph, 0);
+    ASSERT_EQ(0, display_face->LoadGlyph(glyph, /*scale=*/false));
+    EXPECT_EQ(expected_advance[i], display_face->GetGlyphTTWidth(glyph)) << i;
+    EXPECT_GT(EPDFDoc_GetFontDisplayProgramCoverage(
+                  doc.get(), display_hashes[i].data(), nullptr, 0),
+              0u);
+  }
+
+  // A hash no program has finds nothing.
+  const unsigned char unknown[32] = {};
+  EXPECT_EQ(0u,
+            EPDFDoc_GetFontDisplayProgramData(doc.get(), unknown, nullptr, 0));
 }
 
 // A form field draws each cluster in the first font that has it: Hebrew

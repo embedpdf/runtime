@@ -284,9 +284,9 @@ int CheckEmbedPDFCApi(void) {
   // epdf_font.h
   CHK(EPDFDoc_ClearMissingCharacters);
   CHK(EPDFDoc_CountMissingCharacters);
+  CHK(EPDFDoc_GetFontDisplayProgramCoverage);
   CHK(EPDFDoc_GetFontDisplayProgramData);
   CHK(EPDFDoc_GetFontEmbeddingPolicy);
-  CHK(EPDFDoc_GetFontProgramCoverage);
   CHK(EPDFDoc_GetFontProgramData);
   CHK(EPDFDoc_GetFontsFingerprint);
   CHK(EPDFDoc_GetMissingCharacter);
