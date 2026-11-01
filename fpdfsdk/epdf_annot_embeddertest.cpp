@@ -54,6 +54,7 @@
 #include "core/fxge/cfx_font.h"
 #include "core/fxge/cfx_fontregistry.h"
 #include "fpdfsdk/cpdfsdk_helpers.h"
+#include "fpdfsdk/epdf_edit_test_util.h"
 #include "public/cpp/fpdf_scopers.h"
 #include "public/epdf_edit.h"
 #include "public/epdf_flatten.h"
@@ -76,6 +77,7 @@
 #include "testing/embedder_test_constants.h"
 #include "testing/embedpdf_form_writes.h"
 #include "testing/embedpdf_layer_fixture.h"
+#include "testing/embedpdf_layer_mode.h"
 #include "testing/fx_string_testhelpers.h"
 #include "testing/gmock/include/gmock/gmock-matchers.h"
 #include "testing/utils/file_util.h"
@@ -4303,7 +4305,9 @@ TEST_F(EPDFAnnotEmbedderTest, RichTextLastResortDrawsWhatNoFontHas) {
 
   std::string saved;
   {
-    ScopedFPDFDocument doc(FPDF_CreateNewDocument());
+    const std::string empty = EmptyPdf();
+    embedpdf_test::ScopedTestDocument doc(embedpdf_test::LoadMemDocumentForTest(
+        empty.data(), empty.size(), nullptr));
     ScopedFPDFPage page(FPDFPage_New(doc.get(), 0, 400, 400));
     ScopedFPDFAnnotation annot(
         FPDFPage_CreateAnnot(page.get(), FPDF_ANNOT_FREETEXT));
@@ -4337,8 +4341,8 @@ TEST_F(EPDFAnnotEmbedderTest, RichTextLastResortDrawsWhatNoFontHas) {
     saved.assign(static_cast<const char*>(saved_buffer), saved_size);
     EPDF_FreeBuffer(saved_buffer);
   }
-  ScopedFPDFDocument doc(FPDF_LoadMemDocument(
-      saved.data(), static_cast<int>(saved.size()), nullptr));
+  embedpdf_test::ScopedTestDocument doc(embedpdf_test::LoadMemDocumentForTest(
+      saved.data(), saved.size(), nullptr));
   ASSERT_TRUE(doc);
   ScopedFPDFPage page(FPDF_LoadPage(doc.get(), 0));
   ASSERT_TRUE(page);
@@ -4367,7 +4371,9 @@ TEST_F(EPDFAnnotEmbedderTest, RichTextPreviewAndPrintLastResortWaits) {
   ASSERT_NE(0u, box_id);
   ASSERT_TRUE(EPDFFont_SetLastResortFont(box_id));
 
-  ScopedFPDFDocument doc(FPDF_CreateNewDocument());
+  const std::string empty = EmptyPdf();
+  embedpdf_test::ScopedTestDocument doc(embedpdf_test::LoadMemDocumentForTest(
+      empty.data(), empty.size(), nullptr));
   ScopedFPDFPage page(FPDFPage_New(doc.get(), 0, 400, 400));
   const char kJson[] =
       "{\"body\":{\"family\":\"Roboto\",\"size\":18},"

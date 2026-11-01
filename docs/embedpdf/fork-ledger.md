@@ -491,12 +491,15 @@ race.
 ### layer-mode
 **Rule.** With `EPDF_EMBEDDER_LAYER_MODE=1`, the embedder test harness opens every file as a fresh
 layer over a frozen base. Like the engine, it sends the form-fill environment no page events and
-doesn't draw with it.
+doesn't draw with it. A document a test builds in memory goes through the layer too when the test
+opens it with `EmbedderTest::OpenDocumentFromMemory()`, or with
+`embedpdf_test::LoadMemDocumentForTest()` when it keeps the document itself; a test that writes
+into a new document starts from `EmptyPdf()`, since `CreateEmptyDocument()` never makes a layer.
 **Why.** Upstream's embedder tests then run through the layer's read and write paths, so a new
 upstream feature is tested on a layer without anyone writing a layer test.
-**Where.** `testing/embedpdf_layer_mode.{h,cpp}`, four hooks in `testing/embedder_test.cpp`,
-`testing/tools/run_layer_mode.py` with `testing/embedpdf_layer_mode_expectations.txt` and
-`testing/embedpdf_layer_mode_writers.txt`.
+**Where.** `testing/embedpdf_layer_mode.{h,cpp}`, the `EmbedPDF(layer-mode)` hooks in
+`testing/embedder_test.{h,cpp}`, `testing/tools/run_layer_mode.py` with
+`testing/embedpdf_layer_mode_expectations.txt` and `testing/embedpdf_layer_mode_writers.txt`.
 **Guarded by.** `run_layer_mode.py` fails when no test leaves an object in a layer, which is what
 happens when a hook stops working.
 **When upstream touches this.** `EmbedderTest`'s document opening, page loading and page

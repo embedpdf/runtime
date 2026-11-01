@@ -200,7 +200,8 @@ class CPDF_DocumentFonts final : public CPDF_Document::FontIndex {
     std::optional<Display> aligned;
     // Display programs by their SHA-256. Any other program is read through
     // each font dictionary's encoding, widths and flags, so one stream can
-    // be drawn as more than one.
+    // be drawn as more than one. A display goes when the last dictionary that
+    // read it changes.
     std::map<DataVector<uint8_t>, Display> displays;
     // The display each font dictionary (by object number) reads the stream
     // as; nullopt when it builds none. Forgotten when the dictionary

@@ -102,6 +102,13 @@ std::string MakePdf(const std::vector<std::string>& objects) {
   return pdf;
 }
 
+std::string EmptyPdf() {
+  return MakePdf({
+      "<< /Type /Catalog /Pages 2 0 R >>",
+      "<< /Type /Pages /Kids [] /Count 0 >>",
+  });
+}
+
 std::string Stream(const std::string& data) {
   return Stream("", data);
 }

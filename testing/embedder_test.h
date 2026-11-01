@@ -215,6 +215,9 @@ class EmbedderTest : public ::testing::Test,
   bool OpenDocumentWithPassword(const std::string& filename,
                                 const ByteString& password);
   bool OpenDocumentWithoutJavaScript(const std::string& filename);
+  // EmbedPDF(layer-mode): OpenDocument() for a document a test builds in
+  // memory, so that in layer mode it opens as a layer, as a file does.
+  bool OpenDocumentFromMemory(std::string_view contents);
 
   // Close the document from a previous OpenDocument() call. This happens
   // automatically at tear-down, and is usually not explicitly required,

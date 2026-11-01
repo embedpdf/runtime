@@ -8,6 +8,7 @@
 #include <utility>
 #include <vector>
 #include "public/epdf_layer.h"
+#include "public/epdf_save.h"
 #include "public/fpdf_save.h"
 #include "public/fpdfview.h"
 #include "testing/utils/file_util.h"
@@ -77,6 +78,24 @@ struct LayerFixture {
     EPDFLayerOpenStatus status;
     layer = EPDFLayer_OpenLayer(base, nullptr, nullptr, &status);
     return layer && status == EPDFLayerOpenStatus_kSuccess;
+  }
+
+  // The layer's changes as a session saves them, for Reopen(); empty when it
+  // has none or the save fails.
+  std::vector<uint8_t> SaveDelta() const {
+    unsigned long size = 0;
+    EPDFLayerSaveStatus status = EPDFLayerSaveStatus_kSaveFailed;
+    void* buffer = EPDFLayer_SaveDeltaToOwnedBuffer(layer, &size, &status);
+    std::vector<uint8_t> delta;
+    if (!buffer) {
+      return delta;
+    }
+    if (status == EPDFLayerSaveStatus_kSuccess) {
+      const uint8_t* data = static_cast<const uint8_t*>(buffer);
+      delta.assign(data, data + size);
+    }
+    EPDF_FreeBuffer(buffer);
+    return delta;
   }
 
   // Close the layer and open a new one over the same base with |delta| as
