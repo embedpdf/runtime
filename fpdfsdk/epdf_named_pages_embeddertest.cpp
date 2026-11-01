@@ -6,6 +6,7 @@
 #include <string>
 #include <vector>
 
+#include "fpdfsdk/epdf_edit_test_util.h"
 #include "public/cpp/fpdf_scopers.h"
 #include "public/epdf_layer.h"
 #include "public/epdf_save.h"
@@ -233,7 +234,7 @@ TEST_F(EPDFNamedPagesEmbedderTest, DeletingAPageDropsItsRegistrations) {
 }
 
 TEST_F(EPDFNamedPagesEmbedderTest, NewDocumentGrowsATreeOnFirstSet) {
-  CreateEmptyDocument();
+  ASSERT_TRUE(OpenDocumentFromMemory(EmptyPdf()));
   ScopedFPDFPage first(FPDFPage_New(document(), 0, 200, 100));
   ScopedFPDFPage second(FPDFPage_New(document(), 1, 200, 100));
   ASSERT_TRUE(first);

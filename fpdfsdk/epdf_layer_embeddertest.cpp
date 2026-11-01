@@ -1470,6 +1470,7 @@ TEST_F(EPDFLayerEmbedderTest, SaveLayerDeltaMaterializesWithBaseBytes) {
     materialized += delta;
   }
 
+  // Plain in layer mode too: any reader opens the materialized file.
   ScopedFPDFDocument reopened(FPDF_LoadMemDocument64(
       materialized.data(), materialized.size(), nullptr));
   ASSERT_TRUE(reopened);
@@ -1540,6 +1541,7 @@ TEST_F(EPDFLayerEmbedderTest, LayerDeltaReplayWithLeadingBytesInBase) {
   EXPECT_EQ(1, FPDFPage_GetAnnotCount(replayed_page.get()));
 
   const std::string materialized = base_bytes + delta;
+  // Plain in layer mode too: any reader opens the materialized file.
   ScopedFPDFDocument stock_reopened(FPDF_LoadMemDocument64(
       materialized.data(), materialized.size(), nullptr));
   ASSERT_TRUE(stock_reopened);
@@ -1594,6 +1596,7 @@ TEST_F(EPDFLayerEmbedderTest, LayerDeltaReplayWithTrailingBytesInBase) {
   EXPECT_EQ(1, FPDFPage_GetAnnotCount(replayed_page.get()));
 
   const std::string materialized = base_bytes + delta;
+  // Plain in layer mode too: any reader opens the materialized file.
   ScopedFPDFDocument stock_reopened(FPDF_LoadMemDocument64(
       materialized.data(), materialized.size(), nullptr));
   ASSERT_TRUE(stock_reopened);
@@ -1897,6 +1900,7 @@ TEST_F(EPDFLayerEmbedderTest, LayerReplaySoakSmoke) {
       materialized += GetString();
     }
 
+    // Plain in layer mode too: any reader opens the materialized file.
     ScopedFPDFDocument reopened(FPDF_LoadMemDocument64(
         materialized.data(), materialized.size(), nullptr));
     ASSERT_TRUE(reopened);
@@ -1958,6 +1962,7 @@ TEST_F(EPDFLayerEmbedderTest, LayerDeltaReplaysMultipleAnnotRemoval) {
   std::string materialized(reinterpret_cast<const char*>(base_bytes.data()),
                            base_bytes.size());
   materialized += delta;
+  // Plain in layer mode too: any reader opens the materialized file.
   ScopedFPDFDocument stock_reopened(FPDF_LoadMemDocument64(
       materialized.data(), materialized.size(), nullptr));
   ASSERT_TRUE(stock_reopened);

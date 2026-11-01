@@ -26,6 +26,7 @@
 #include "core/fxge/dib/cstretchengine.h"
 #include "fpdfsdk/cpdfsdk_helpers.h"
 #include "fpdfsdk/epdf_c_api_test.h"
+#include "fpdfsdk/epdf_edit_test_util.h"
 #include "public/cpp/fpdf_scopers.h"
 #include "public/epdf_progressive.h"
 #include "public/fpdf_edit.h"
@@ -33,6 +34,7 @@
 #include "public/fpdf_save.h"
 #include "public/fpdfview.h"
 #include "testing/embedder_test.h"
+#include "testing/embedpdf_layer_mode.h"
 
 // Our public headers compile and link as C (fpdfsdk/epdf_c_api_test.c).
 TEST(epdf, CApiTest) {
@@ -978,8 +980,8 @@ TEST_F(EPDFViewEmbedderTest, ImageOfAnotherDocumentDraws) {
     return HashBitmap(bitmap.get());
   };
 
-  ScopedFPDFDocument document(FPDF_CreateNewDocument());
-  ScopedFPDFDocument other(FPDF_CreateNewDocument());
+  embedpdf_test::ScopedTestDocument document(NewTestDocument());
+  embedpdf_test::ScopedTestDocument other(NewTestDocument());
   ASSERT_TRUE(document);
   ASSERT_TRUE(other);
   EXPECT_EQ(render(document.get(), document.get()),

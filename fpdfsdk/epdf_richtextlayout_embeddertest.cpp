@@ -20,10 +20,12 @@
 #include "core/fxcrt/fx_coordinates.h"
 #include "core/fxcrt/widestring.h"
 #include "fpdfsdk/cpdfsdk_helpers.h"
+#include "fpdfsdk/epdf_edit_test_util.h"
 #include "public/cpp/fpdf_scopers.h"
 #include "public/epdf_font.h"
 #include "public/fpdf_edit.h"
 #include "testing/embedder_test.h"
+#include "testing/embedpdf_layer_mode.h"
 #include "testing/fx_string_testhelpers.h"
 #include "testing/gtest/include/gtest/gtest.h"
 #include "testing/utils/file_util.h"
@@ -61,7 +63,7 @@ class EPDFRichTextLayoutEmbedderTest : public EmbedderTest {
     EPDFFont_ClearRegisteredFonts();
     arimo_ = Register("Arimo", TestFont("Arimo-Regular.ttf"));
     ASSERT_NE(0u, arimo_);
-    doc_.reset(FPDF_CreateNewDocument());
+    doc_ = NewTestDocument();
     ASSERT_TRUE(doc_);
   }
 
@@ -128,7 +130,7 @@ class EPDFRichTextLayoutEmbedderTest : public EmbedderTest {
   }
 
   EPDF_FONT_ID arimo_ = 0;
-  ScopedFPDFDocument doc_;
+  embedpdf_test::ScopedTestDocument doc_;
   // The fonts of the last Arrange().
   std::unique_ptr<CPDF_AnnotFontMap> fonts_;
 };

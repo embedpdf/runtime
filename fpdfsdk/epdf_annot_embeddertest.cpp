@@ -56,6 +56,7 @@
 #include "fpdfsdk/cpdfsdk_helpers.h"
 #include "fpdfsdk/epdf_edit_test_util.h"
 #include "public/cpp/fpdf_scopers.h"
+#include "public/epdf_doc.h"
 #include "public/epdf_edit.h"
 #include "public/epdf_flatten.h"
 #include "public/epdf_font.h"
@@ -626,7 +627,7 @@ int CountInkPixels(FPDF_BITMAP bitmap,
 class EPDFAnnotEmbedderTest : public EmbedderTest {};
 
 TEST_F(EPDFAnnotEmbedderTest, SetNumberValueStoresTheNumberAsGiven) {
-  ScopedFPDFDocument doc(FPDF_CreateNewDocument());
+  embedpdf_test::ScopedTestDocument doc(NewTestDocument());
   ASSERT_TRUE(doc);
   ScopedFPDFPage page(FPDFPage_New(doc.get(), 0, 612, 792));
   ASSERT_TRUE(page);
@@ -665,7 +666,7 @@ TEST_F(EPDFAnnotEmbedderTest, SetNumberValueStoresTheNumberAsGiven) {
 }
 
 TEST_F(EPDFAnnotEmbedderTest, SetNumberValueRefusesWithoutWriting) {
-  ScopedFPDFDocument doc(FPDF_CreateNewDocument());
+  embedpdf_test::ScopedTestDocument doc(NewTestDocument());
   ASSERT_TRUE(doc);
   ScopedFPDFPage page(FPDFPage_New(doc.get(), 0, 612, 792));
   ASSERT_TRUE(page);
@@ -764,7 +765,7 @@ TEST_F(EPDFAnnotEmbedderTest, ReadsResolveThroughTheLayer) {
 }
 
 TEST_F(EPDFAnnotEmbedderTest, OpacityIsStoredAsGiven) {
-  ScopedFPDFDocument doc(FPDF_CreateNewDocument());
+  embedpdf_test::ScopedTestDocument doc(NewTestDocument());
   ASSERT_TRUE(doc);
   ScopedFPDFPage page(FPDFPage_New(doc.get(), 0, 100, 100));
   ASSERT_TRUE(page);
@@ -799,7 +800,7 @@ TEST_F(EPDFAnnotEmbedderTest, OpacityIsStoredAsGiven) {
 }
 
 TEST_F(EPDFAnnotEmbedderTest, GenerateInkAppearanceSetsRectToWhatItPaints) {
-  ScopedFPDFDocument doc(FPDF_CreateNewDocument());
+  embedpdf_test::ScopedTestDocument doc(NewTestDocument());
   ASSERT_TRUE(doc);
   ScopedFPDFPage page(FPDFPage_New(doc.get(), 0, 200, 200));
   ASSERT_TRUE(page);
@@ -849,7 +850,7 @@ TEST_F(EPDFAnnotEmbedderTest, GenerateInkAppearanceSetsRectToWhatItPaints) {
 }
 
 TEST_F(EPDFAnnotEmbedderTest, LineRectHoldsItsArrowhead) {
-  ScopedFPDFDocument doc(FPDF_CreateNewDocument());
+  embedpdf_test::ScopedTestDocument doc(NewTestDocument());
   ASSERT_TRUE(doc);
   ScopedFPDFPage page(FPDFPage_New(doc.get(), 0, 600, 600));
   ASSERT_TRUE(page);
@@ -879,7 +880,7 @@ TEST_F(EPDFAnnotEmbedderTest, LineRectHoldsItsArrowhead) {
 }
 
 TEST_F(EPDFAnnotEmbedderTest, LineRectIsWhatItsStrokePaints) {
-  ScopedFPDFDocument doc(FPDF_CreateNewDocument());
+  embedpdf_test::ScopedTestDocument doc(NewTestDocument());
   ASSERT_TRUE(doc);
   ScopedFPDFPage page(FPDFPage_New(doc.get(), 0, 600, 600));
   ASSERT_TRUE(page);
@@ -918,7 +919,7 @@ TEST_F(EPDFAnnotEmbedderTest, LineRectIsWhatItsStrokePaints) {
 }
 
 TEST_F(EPDFAnnotEmbedderTest, PolylineKneePastTheMiterLimitIsBeveled) {
-  ScopedFPDFDocument doc(FPDF_CreateNewDocument());
+  embedpdf_test::ScopedTestDocument doc(NewTestDocument());
   ASSERT_TRUE(doc);
   ScopedFPDFPage page(FPDFPage_New(doc.get(), 0, 600, 600));
   ASSERT_TRUE(page);
@@ -941,7 +942,7 @@ TEST_F(EPDFAnnotEmbedderTest, PolylineKneePastTheMiterLimitIsBeveled) {
 }
 
 TEST_F(EPDFAnnotEmbedderTest, DrawingAnnotationsWithoutAppearancesWritesNone) {
-  ScopedFPDFDocument doc(FPDF_CreateNewDocument());
+  embedpdf_test::ScopedTestDocument doc(NewTestDocument());
   ASSERT_TRUE(doc);
   ScopedFPDFPage page(FPDFPage_New(doc.get(), 0, 300, 300));
   ASSERT_TRUE(page);
@@ -1025,7 +1026,7 @@ TEST_F(EPDFAnnotEmbedderTest, DrawingARedactionMarkWithoutAppearanceWritesNone) 
 }
 
 TEST_F(EPDFAnnotEmbedderTest, DrawingRectIsWhereTheAppearanceIsDrawn) {
-  ScopedFPDFDocument doc(FPDF_CreateNewDocument());
+  embedpdf_test::ScopedTestDocument doc(NewTestDocument());
   ASSERT_TRUE(doc);
   ScopedFPDFPage page(FPDFPage_New(doc.get(), 0, 600, 600));
   ASSERT_TRUE(page);
@@ -1086,7 +1087,7 @@ TEST_F(EPDFAnnotEmbedderTest, DrawingRectIsWhereTheAppearanceIsDrawn) {
 }
 
 TEST_F(EPDFAnnotEmbedderTest, CloudyPolygonRectHoldsItsBumps) {
-  ScopedFPDFDocument doc(FPDF_CreateNewDocument());
+  embedpdf_test::ScopedTestDocument doc(NewTestDocument());
   ASSERT_TRUE(doc);
   ScopedFPDFPage page(FPDFPage_New(doc.get(), 0, 600, 600));
   ASSERT_TRUE(page);
@@ -1226,7 +1227,7 @@ TEST_F(EPDFAnnotEmbedderTest,
       FPDF_FONT_ZAPFDINGBATS,
   };
 
-  ScopedFPDFDocument doc(FPDF_CreateNewDocument());
+  embedpdf_test::ScopedTestDocument doc(NewTestDocument());
   ASSERT_TRUE(doc);
   ScopedFPDFPage page(FPDFPage_New(doc.get(), 0, 400, 400));
   ASSERT_TRUE(page);
@@ -1256,7 +1257,7 @@ TEST_F(EPDFAnnotEmbedderTest,
 
 TEST_F(EPDFAnnotEmbedderTest,
        DefaultAppearancePrefersAnnotationDrThenFallsBackToAcroFormDr) {
-  ScopedFPDFDocument doc(FPDF_CreateNewDocument());
+  embedpdf_test::ScopedTestDocument doc(NewTestDocument());
   ASSERT_TRUE(doc);
   ScopedFPDFPage page(FPDFPage_New(doc.get(), 0, 400, 400));
   ASSERT_TRUE(page);
@@ -1316,7 +1317,7 @@ TEST_F(EPDFAnnotEmbedderTest, FreeTextAppearanceUsesRegisteredMemoryFont) {
                                  font_data.data(), font_data.size());
   ASSERT_NE(0u, font_id);
 
-  ScopedFPDFDocument doc(FPDF_CreateNewDocument());
+  embedpdf_test::ScopedTestDocument doc(NewTestDocument());
   ASSERT_TRUE(doc);
   ScopedFPDFPage page(FPDFPage_New(doc.get(), 0, 400, 400));
   ASSERT_TRUE(page);
@@ -1358,7 +1359,7 @@ TEST_F(EPDFAnnotEmbedderTest, FreeTextAppearanceFallsBackToRegisteredFont) {
   ASSERT_NE(0u, font_id);
   ASSERT_TRUE(EPDFFont_AddFallbackFont(font_id, /*tier=*/0));
 
-  ScopedFPDFDocument doc(FPDF_CreateNewDocument());
+  embedpdf_test::ScopedTestDocument doc(NewTestDocument());
   ASSERT_TRUE(doc);
   ScopedFPDFPage page(FPDFPage_New(doc.get(), 0, 400, 400));
   ASSERT_TRUE(page);
@@ -1386,7 +1387,7 @@ TEST_F(EPDFAnnotEmbedderTest, FreeTextKoreanUsesRegisteredDroidFallbackFont) {
   EPDF_FONT_ID font_id = RegisterDroidSansFallbackFullFont();
   ASSERT_NE(0u, font_id);
 
-  ScopedFPDFDocument doc(FPDF_CreateNewDocument());
+  embedpdf_test::ScopedTestDocument doc(NewTestDocument());
   ASSERT_TRUE(doc);
   ScopedFPDFPage page(FPDFPage_New(doc.get(), 0, 400, 400));
   ASSERT_TRUE(page);
@@ -1418,7 +1419,7 @@ TEST_F(EPDFAnnotEmbedderTest, FreeTextRegisteredFontEmbedsSubsetInSavedPdf) {
                                  font_data.data(), font_data.size());
   ASSERT_NE(0u, font_id);
 
-  ScopedFPDFDocument doc(FPDF_CreateNewDocument());
+  embedpdf_test::ScopedTestDocument doc(NewTestDocument());
   ASSERT_TRUE(doc);
   ScopedFPDFPage page(FPDFPage_New(doc.get(), 0, 400, 400));
   ASSERT_TRUE(page);
@@ -1465,7 +1466,7 @@ TEST_F(EPDFAnnotEmbedderTest, FreeTextRegistersFontFromFileAccess) {
                                                /*italic=*/0, &font_access);
   ASSERT_NE(0u, font_id);
 
-  ScopedFPDFDocument doc(FPDF_CreateNewDocument());
+  embedpdf_test::ScopedTestDocument doc(NewTestDocument());
   ASSERT_TRUE(doc);
   ScopedFPDFPage page(FPDFPage_New(doc.get(), 0, 400, 400));
   ASSERT_TRUE(page);
@@ -1663,7 +1664,7 @@ TEST_F(EPDFAnnotEmbedderTest, FreeTextRegisteredFontInstallsRealDrEntry) {
                                  font_data.data(), font_data.size());
   ASSERT_NE(0u, font_id);
 
-  ScopedFPDFDocument doc(FPDF_CreateNewDocument());
+  embedpdf_test::ScopedTestDocument doc(NewTestDocument());
   ASSERT_TRUE(doc);
   ScopedFPDFPage page(FPDFPage_New(doc.get(), 0, 400, 400));
   ASSERT_TRUE(page);
@@ -1727,7 +1728,7 @@ TEST_F(EPDFAnnotEmbedderTest,
 
   std::string saved_pdf;
   {
-    ScopedFPDFDocument doc(FPDF_CreateNewDocument());
+    embedpdf_test::ScopedTestDocument doc(NewTestDocument());
     ASSERT_TRUE(doc);
     ScopedFPDFPage page(FPDFPage_New(doc.get(), 0, 400, 400));
     ASSERT_TRUE(page);
@@ -1764,8 +1765,8 @@ TEST_F(EPDFAnnotEmbedderTest,
   ASSERT_NE(roboto_id, roboto_id_2);
   ASSERT_EQ(roboto_id_2, amiri_id + 2u);  // the stale hint must not win by luck
 
-  ScopedFPDFDocument doc(FPDF_LoadMemDocument(
-      saved_pdf.data(), static_cast<int>(saved_pdf.size()), nullptr));
+  embedpdf_test::ScopedTestDocument doc(embedpdf_test::LoadMemDocumentForTest(
+      saved_pdf.data(), saved_pdf.size(), nullptr));
   ASSERT_TRUE(doc);
   ScopedFPDFPage page(FPDF_LoadPage(doc.get(), 0));
   ASSERT_TRUE(page);
@@ -1809,7 +1810,7 @@ TEST_F(EPDFAnnotEmbedderTest, FreeTextLegacyMarkerDrEntryUpgradesToRealFont) {
                                  font_data.data(), font_data.size());
   ASSERT_NE(0u, font_id);
 
-  ScopedFPDFDocument doc(FPDF_CreateNewDocument());
+  embedpdf_test::ScopedTestDocument doc(NewTestDocument());
   ASSERT_TRUE(doc);
   ScopedFPDFPage page(FPDFPage_New(doc.get(), 0, 400, 400));
   ASSERT_TRUE(page);
@@ -1880,7 +1881,7 @@ TEST_F(EPDFAnnotEmbedderTest, RegisteredFontResolutionPrefersStoredFamily) {
   ASSERT_NE(0u, roboto_id);
   ASSERT_NE(0u, amiri_id);
 
-  ScopedFPDFDocument doc(FPDF_CreateNewDocument());
+  embedpdf_test::ScopedTestDocument doc(NewTestDocument());
   CPDF_Document* cpdf_doc = CPDFDocumentFromFPDFDocument(doc.get());
 
   // Requested family present, hint elsewhere: the family wins.
@@ -1914,7 +1915,7 @@ TEST_F(EPDFAnnotEmbedderTest, RegisteredFontResolutionRefusesConflictingHint) {
       "Roboto", /*weight=*/400, /*italic=*/0, roboto.data(), roboto.size());
   ASSERT_NE(0u, roboto_id);
 
-  ScopedFPDFDocument doc(FPDF_CreateNewDocument());
+  embedpdf_test::ScopedTestDocument doc(NewTestDocument());
   CPDF_Document* cpdf_doc = CPDFDocumentFromFPDFDocument(doc.get());
 
   // Requested family absent, hint points at a live but different font.
@@ -1951,7 +1952,7 @@ TEST_F(EPDFAnnotEmbedderTest,
   EPDF_FONT_ID droid_id = RegisterDroidSansFallbackFullFont();
   ASSERT_NE(0u, droid_id);
 
-  ScopedFPDFDocument doc(FPDF_CreateNewDocument());
+  embedpdf_test::ScopedTestDocument doc(NewTestDocument());
   ASSERT_TRUE(doc);
   ScopedFPDFPage page(FPDFPage_New(doc.get(), 0, 400, 400));
   ASSERT_TRUE(page);
@@ -2016,7 +2017,7 @@ TEST_F(EPDFAnnotEmbedderTest,
 
   std::string saved_pdf;
   {
-    ScopedFPDFDocument doc(FPDF_CreateNewDocument());
+    embedpdf_test::ScopedTestDocument doc(NewTestDocument());
     ScopedFPDFPage page(FPDFPage_New(doc.get(), 0, 400, 400));
     ScopedFPDFAnnotation annot(
         FPDFPage_CreateAnnot(page.get(), FPDF_ANNOT_FREETEXT));
@@ -2058,8 +2059,8 @@ TEST_F(EPDFAnnotEmbedderTest,
       "Roboto", /*weight=*/400, /*italic=*/0, roboto.data(), roboto.size());
   ASSERT_NE(roboto_id, roboto_id_2);
 
-  ScopedFPDFDocument doc(FPDF_LoadMemDocument(
-      saved_pdf.data(), static_cast<int>(saved_pdf.size()), nullptr));
+  embedpdf_test::ScopedTestDocument doc(embedpdf_test::LoadMemDocumentForTest(
+      saved_pdf.data(), saved_pdf.size(), nullptr));
   ASSERT_TRUE(doc);
   ScopedFPDFPage page(FPDF_LoadPage(doc.get(), 0));
   ScopedFPDFAnnotation annot(FPDFPage_GetAnnot(page.get(), 0));
@@ -2087,7 +2088,7 @@ TEST_F(EPDFAnnotEmbedderTest, FreeTextAllFallbackTextKeepsRegisteredDaFont) {
   EPDF_FONT_ID droid_id = RegisterDroidSansFallbackFullFont();
   ASSERT_NE(0u, droid_id);
 
-  ScopedFPDFDocument doc(FPDF_CreateNewDocument());
+  embedpdf_test::ScopedTestDocument doc(NewTestDocument());
   ScopedFPDFPage page(FPDFPage_New(doc.get(), 0, 400, 400));
   ScopedFPDFAnnotation annot(
       FPDFPage_CreateAnnot(page.get(), FPDF_ANNOT_FREETEXT));
@@ -2124,7 +2125,7 @@ TEST_F(EPDFAnnotEmbedderTest, FreeTextRegeneratingOneAnnotationLeavesTheOther) {
   ASSERT_NE(0u, roboto_id);
   const ByteString alias = RegisteredFontAlias(roboto_id);
 
-  ScopedFPDFDocument doc(FPDF_CreateNewDocument());
+  embedpdf_test::ScopedTestDocument doc(NewTestDocument());
   ScopedFPDFPage page(FPDFPage_New(doc.get(), 0, 400, 400));
   auto make = [&](const wchar_t* text, float top) {
     ScopedFPDFAnnotation annot(
@@ -2173,7 +2174,7 @@ TEST_F(EPDFAnnotEmbedderTest, FreeTextEphemeralAppearanceLeavesDrUntouched) {
       "Roboto", /*weight=*/400, /*italic=*/0, roboto.data(), roboto.size());
   ASSERT_NE(0u, roboto_id);
 
-  ScopedFPDFDocument doc(FPDF_CreateNewDocument());
+  embedpdf_test::ScopedTestDocument doc(NewTestDocument());
   ScopedFPDFPage page(FPDFPage_New(doc.get(), 0, 400, 400));
   ASSERT_TRUE(page);
   ScopedFPDFAnnotation annot(
@@ -2205,7 +2206,7 @@ TEST_F(EPDFAnnotEmbedderTest, WidgetRegisteredFontInstallsRealDrEntry) {
   ASSERT_NE(0u, roboto_id);
   const ByteString alias = RegisteredFontAlias(roboto_id);
 
-  CreateEmptyDocument();
+  ASSERT_TRUE(OpenDocumentFromMemory(EmptyPdf()));
   {
     ScopedFPDFPage page(FPDFPage_New(document(), 0, 400, 400));
     ASSERT_TRUE(page);
@@ -2250,7 +2251,7 @@ TEST_F(EPDFAnnotEmbedderTest, RedactLabelRegisteredFontInstallsRealDrEntry) {
       "Roboto", /*weight=*/400, /*italic=*/0, roboto.data(), roboto.size());
   ASSERT_NE(0u, roboto_id);
 
-  ScopedFPDFDocument doc(FPDF_CreateNewDocument());
+  embedpdf_test::ScopedTestDocument doc(NewTestDocument());
   ScopedFPDFPage page(FPDFPage_New(doc.get(), 0, 200, 200));
   {
     ScopedFPDFAnnotation annot =
@@ -2298,7 +2299,7 @@ TEST_F(EPDFAnnotEmbedderTest, WriteA1AcrobatFixtureFromEnv) {
                                  font_data.data(), font_data.size());
   ASSERT_NE(0u, font_id);
 
-  ScopedFPDFDocument doc(FPDF_CreateNewDocument());
+  embedpdf_test::ScopedTestDocument doc(NewTestDocument());
   ASSERT_TRUE(doc);
   ScopedFPDFPage page(FPDFPage_New(doc.get(), 0, 612, 792));
   ASSERT_TRUE(page);
@@ -2373,7 +2374,7 @@ TEST_F(EPDFAnnotEmbedderTest, RegistryHonoursFsTypeEmbeddingPermissions) {
   EXPECT_EQ(-1, EPDFFont_GetEmbeddingPermission(preview + 1000));
   EXPECT_FALSE(EPDFFont_AuthorizeEditing(preview + 1000));
 
-  ScopedFPDFDocument doc(FPDF_CreateNewDocument());
+  embedpdf_test::ScopedTestDocument doc(NewTestDocument());
   ScopedFPDFPage page(FPDFPage_New(doc.get(), 0, 400, 400));
   ScopedFPDFAnnotation annot(
       FPDFPage_CreateAnnot(page.get(), FPDF_ANNOT_FREETEXT));
@@ -2416,7 +2417,7 @@ TEST_F(EPDFAnnotEmbedderTest,
   ASSERT_NE(0u, droid_id);
   ASSERT_TRUE(EPDFFont_AddFallbackFont(droid_id, /*tier=*/0));
 
-  ScopedFPDFDocument doc(FPDF_CreateNewDocument());
+  embedpdf_test::ScopedTestDocument doc(NewTestDocument());
   ScopedFPDFPage page(FPDFPage_New(doc.get(), 0, 400, 400));
   ScopedFPDFAnnotation annot(
       FPDFPage_CreateAnnot(page.get(), FPDF_ANNOT_FREETEXT));
@@ -2453,7 +2454,7 @@ TEST_F(EPDFAnnotEmbedderTest, NoSubsettingFontEmbedsWholeProgram) {
   EXPECT_EQ(EPDF_FONT_EMBEDDING_INSTALLABLE,
             EPDFFont_GetEmbeddingPermission(font_id));
 
-  ScopedFPDFDocument doc(FPDF_CreateNewDocument());
+  embedpdf_test::ScopedTestDocument doc(NewTestDocument());
   ScopedFPDFPage page(FPDFPage_New(doc.get(), 0, 400, 400));
   ScopedFPDFAnnotation annot(
       FPDFPage_CreateAnnot(page.get(), FPDF_ANNOT_FREETEXT));
@@ -2526,7 +2527,7 @@ TEST_F(EPDFAnnotEmbedderTest, VariableFontIsInstancedAtRegistration) {
   EXPECT_GT(bold_a, regular_a);
 
   // What gets embedded is static too.
-  ScopedFPDFDocument doc(FPDF_CreateNewDocument());
+  embedpdf_test::ScopedTestDocument doc(NewTestDocument());
   ScopedFPDFPage page(FPDFPage_New(doc.get(), 0, 400, 400));
   ScopedFPDFAnnotation annot(
       FPDFPage_CreateAnnot(page.get(), FPDF_ANNOT_FREETEXT));
@@ -2571,7 +2572,7 @@ std::string GetRichTextJson(FPDF_ANNOTATION annot) {
 // B: without /RC the rich text model is synthesised from /Contents and /DA,
 // so callers always get one shape.
 TEST_F(EPDFAnnotEmbedderTest, RichTextJsonFromContentsOnly) {
-  ScopedFPDFDocument doc(FPDF_CreateNewDocument());
+  embedpdf_test::ScopedTestDocument doc(NewTestDocument());
   ScopedFPDFPage page(FPDFPage_New(doc.get(), 0, 400, 400));
   ScopedFPDFAnnotation annot(
       FPDFPage_CreateAnnot(page.get(), FPDF_ANNOT_FREETEXT));
@@ -2595,7 +2596,7 @@ TEST_F(EPDFAnnotEmbedderTest, RichTextJsonFromContentsOnly) {
 }
 
 TEST_F(EPDFAnnotEmbedderTest, RichTextJsonFromRCAndDS) {
-  ScopedFPDFDocument doc(FPDF_CreateNewDocument());
+  embedpdf_test::ScopedTestDocument doc(NewTestDocument());
   ScopedFPDFPage page(FPDFPage_New(doc.get(), 0, 400, 400));
   ScopedFPDFAnnotation annot(
       FPDFPage_CreateAnnot(page.get(), FPDF_ANNOT_FREETEXT));
@@ -2759,7 +2760,7 @@ TEST_F(EPDFAnnotEmbedderTest, RegisteredCffFontEmitsCidFontType0) {
       "CffLatin", /*weight=*/400, /*italic=*/0, cff.data(), cff.size());
   ASSERT_NE(0u, font_id);
 
-  ScopedFPDFDocument doc(FPDF_CreateNewDocument());
+  embedpdf_test::ScopedTestDocument doc(NewTestDocument());
   ScopedFPDFPage page(FPDFPage_New(doc.get(), 0, 400, 400));
   ScopedFPDFAnnotation annot = AuthorFreeText(page.get(), font_id, L"ABC");
   ASSERT_TRUE(annot);
@@ -2820,7 +2821,7 @@ TEST_F(EPDFAnnotEmbedderTest, RegisteredCidKeyedCffKeepsCidsInAppearance) {
     EXPECT_EQ(9831, identity.CidOf(3).value());
   }
 
-  ScopedFPDFDocument doc(FPDF_CreateNewDocument());
+  embedpdf_test::ScopedTestDocument doc(NewTestDocument());
   ScopedFPDFPage page(FPDFPage_New(doc.get(), 0, 400, 400));
   ScopedFPDFAnnotation annot = AuthorFreeText(page.get(), font_id, L"\x4e00");
   ASSERT_TRUE(annot);
@@ -2880,7 +2881,7 @@ TEST_F(EPDFAnnotEmbedderTest, CffProgramRaisesPdfVersionTo16) {
   // A 1.4 file: a fresh document saved with that version and reloaded.
   std::string old_pdf;
   {
-    ScopedFPDFDocument doc(FPDF_CreateNewDocument());
+    embedpdf_test::ScopedTestDocument doc(NewTestDocument());
     ScopedFPDFPage page(FPDFPage_New(doc.get(), 0, 400, 400));
     ASSERT_TRUE(FPDFPage_GenerateContent(page.get()));
     ASSERT_TRUE(FPDF_SaveWithVersion(doc.get(), this, 0, 14));
@@ -2889,8 +2890,8 @@ TEST_F(EPDFAnnotEmbedderTest, CffProgramRaisesPdfVersionTo16) {
   }
   ASSERT_EQ(0u, old_pdf.find("%PDF-1.4"));
 
-  ScopedFPDFDocument doc(FPDF_LoadMemDocument(
-      old_pdf.data(), static_cast<int>(old_pdf.size()), nullptr));
+  embedpdf_test::ScopedTestDocument doc(embedpdf_test::LoadMemDocumentForTest(
+      old_pdf.data(), old_pdf.size(), nullptr));
   ASSERT_TRUE(doc);
   ScopedFPDFPage page(FPDF_LoadPage(doc.get(), 0));
   ASSERT_TRUE(page);
@@ -2904,8 +2905,8 @@ TEST_F(EPDFAnnotEmbedderTest, CffProgramRaisesPdfVersionTo16) {
   std::vector<uint8_t> roboto = LoadRobotoFontData();
   EPDF_FONT_ID roboto_id = EPDFFont_RegisterMemFont64(
       "Roboto", /*weight=*/400, /*italic=*/0, roboto.data(), roboto.size());
-  ScopedFPDFDocument doc2(FPDF_LoadMemDocument(
-      old_pdf.data(), static_cast<int>(old_pdf.size()), nullptr));
+  embedpdf_test::ScopedTestDocument doc2(embedpdf_test::LoadMemDocumentForTest(
+      old_pdf.data(), old_pdf.size(), nullptr));
   ScopedFPDFPage page2(FPDF_LoadPage(doc2.get(), 0));
   ScopedFPDFAnnotation annot2 = AuthorFreeText(page2.get(), roboto_id, L"ABC");
   ASSERT_TRUE(annot2);
@@ -2974,7 +2975,7 @@ TEST_F(EPDFAnnotEmbedderTest,
   ASSERT_NE(0u, noto_id);
   ASSERT_TRUE(EPDFFont_AddFallbackFont(noto_id, /*tier=*/0));
 
-  ScopedFPDFDocument doc(FPDF_CreateNewDocument());
+  embedpdf_test::ScopedTestDocument doc(NewTestDocument());
   ASSERT_TRUE(doc);
   ScopedFPDFPage page(FPDFPage_New(doc.get(), 0, 400, 400));
   ASSERT_TRUE(page);
@@ -3035,7 +3036,7 @@ TEST_F(EPDFAnnotEmbedderTest, RegisteredLayoutFontAllocatesNoDocumentObject) {
       "Roboto", /*weight=*/400, /*italic=*/0, roboto.data(), roboto.size());
   ASSERT_NE(0u, roboto_id);
 
-  ScopedFPDFDocument doc(FPDF_CreateNewDocument());
+  embedpdf_test::ScopedTestDocument doc(NewTestDocument());
   CPDF_Document* cpdf_doc = CPDFDocumentFromFPDFDocument(doc.get());
   const uint32_t last_obj_before = cpdf_doc->GetLastObjNum();
   {
@@ -3068,7 +3069,7 @@ TEST_F(EPDFAnnotEmbedderTest, FontEmbeddingPolicyGovernsRegisteredResources) {
   EXPECT_EQ(-1, EPDFDoc_GetFontEmbeddingPolicy(nullptr));
   EXPECT_FALSE(EPDFDoc_SetFontEmbeddingPolicy(nullptr, 0));
 
-  CreateEmptyDocument();
+  ASSERT_TRUE(OpenDocumentFromMemory(EmptyPdf()));
   {
     EXPECT_EQ(EPDF_FONT_EMBEDDING_POLICY_DEFAULT,
               EPDFDoc_GetFontEmbeddingPolicy(document()));
@@ -3668,7 +3669,7 @@ TEST_F(RichTextParityTest, SubSuperscriptFixtureMatchesAcrobat) {
 // the appearance in one go, in Acrobat's shapes, and reads back the same
 // document.
 TEST_F(EPDFAnnotEmbedderTest, SetRichTextJSONWritesAllFourForms) {
-  ScopedFPDFDocument doc(FPDF_CreateNewDocument());
+  embedpdf_test::ScopedTestDocument doc(NewTestDocument());
   ScopedFPDFPage page(FPDFPage_New(doc.get(), 0, 400, 400));
   ScopedFPDFAnnotation annot(
       FPDFPage_CreateAnnot(page.get(), FPDF_ANNOT_FREETEXT));
@@ -3736,7 +3737,7 @@ TEST_F(EPDFAnnotEmbedderTest, SetRichTextJSONWritesAllFourForms) {
 }
 
 TEST_F(EPDFAnnotEmbedderTest, SetRichTextJSONWithoutBodyKeepsCurrentBody) {
-  ScopedFPDFDocument doc(FPDF_CreateNewDocument());
+  embedpdf_test::ScopedTestDocument doc(NewTestDocument());
   ScopedFPDFPage page(FPDFPage_New(doc.get(), 0, 400, 400));
   ScopedFPDFAnnotation annot(
       FPDFPage_CreateAnnot(page.get(), FPDF_ANNOT_FREETEXT));
@@ -3761,7 +3762,7 @@ TEST_F(EPDFAnnotEmbedderTest, SetRichTextJSONWithoutBodyKeepsCurrentBody) {
 }
 
 TEST_F(EPDFAnnotEmbedderTest, SetRichTextJSONRejectsInvalidInputUnchanged) {
-  ScopedFPDFDocument doc(FPDF_CreateNewDocument());
+  embedpdf_test::ScopedTestDocument doc(NewTestDocument());
   ScopedFPDFPage page(FPDFPage_New(doc.get(), 0, 400, 400));
   ScopedFPDFAnnotation annot(
       FPDFPage_CreateAnnot(page.get(), FPDF_ANNOT_FREETEXT));
@@ -3802,7 +3803,7 @@ TEST_F(EPDFAnnotEmbedderTest, SetRichTextJSONRejectsInvalidInputUnchanged) {
 }
 
 TEST_F(EPDFAnnotEmbedderTest, SetRichTextXHTMLImportsOverDefaults) {
-  ScopedFPDFDocument doc(FPDF_CreateNewDocument());
+  embedpdf_test::ScopedTestDocument doc(NewTestDocument());
   ScopedFPDFPage page(FPDFPage_New(doc.get(), 0, 400, 400));
   ScopedFPDFAnnotation annot(
       FPDFPage_CreateAnnot(page.get(), FPDF_ANNOT_FREETEXT));
@@ -3836,7 +3837,7 @@ TEST_F(EPDFAnnotEmbedderTest, SetRichTextJSONWithRegisteredBodyFont) {
 
   std::string saved;
   {
-    ScopedFPDFDocument doc(FPDF_CreateNewDocument());
+    embedpdf_test::ScopedTestDocument doc(NewTestDocument());
     ScopedFPDFPage page(FPDFPage_New(doc.get(), 0, 400, 400));
     ScopedFPDFAnnotation annot(
         FPDFPage_CreateAnnot(page.get(), FPDF_ANNOT_FREETEXT));
@@ -3876,8 +3877,8 @@ TEST_F(EPDFAnnotEmbedderTest, SetRichTextJSONWithRegisteredBodyFont) {
     EPDF_FreeBuffer(saved_buffer);
   }
   // Reopened: the body family reads back from the descriptor.
-  ScopedFPDFDocument doc(FPDF_LoadMemDocument(
-      saved.data(), static_cast<int>(saved.size()), nullptr));
+  embedpdf_test::ScopedTestDocument doc(embedpdf_test::LoadMemDocumentForTest(
+      saved.data(), saved.size(), nullptr));
   ASSERT_TRUE(doc);
   ScopedFPDFPage page(FPDF_LoadPage(doc.get(), 0));
   ScopedFPDFAnnotation annot(FPDFPage_GetAnnot(page.get(), 0));
@@ -4029,7 +4030,7 @@ TEST_F(EPDFAnnotEmbedderTest, TextFieldDrawsItsBorderStyle) {
 }
 
 TEST_F(EPDFAnnotEmbedderTest, RichTextAlignmentFollowsTheAnnotation) {
-  ScopedFPDFDocument doc(FPDF_CreateNewDocument());
+  embedpdf_test::ScopedTestDocument doc(NewTestDocument());
   ASSERT_TRUE(doc);
   ScopedFPDFPage page(FPDFPage_New(doc.get(), 0, 400, 400));
   ASSERT_TRUE(page);
@@ -4106,7 +4107,7 @@ TEST_F(EPDFAnnotEmbedderTest, RichTextAlignmentFollowsTheAnnotation) {
 // no text is laid out). Plain /Contents and /RC boxes share the one engine.
 TEST_F(EPDFAnnotEmbedderTest, FreeTextPlateFollowsBorderWidth) {
   {
-    ScopedFPDFDocument doc(FPDF_CreateNewDocument());
+    embedpdf_test::ScopedTestDocument doc(NewTestDocument());
     ASSERT_TRUE(doc);
     ScopedFPDFPage page(FPDFPage_New(doc.get(), 0, 400, 400));
     ASSERT_TRUE(page);
@@ -4168,7 +4169,7 @@ TEST_F(EPDFAnnotEmbedderTest, FreeTextPlateFollowsBorderWidth) {
 // The document-level typographic features switch (kerning/ligatures off by
 // default for Acrobat parity).
 TEST_F(EPDFAnnotEmbedderTest, TypographicFeaturesSwitch) {
-  ScopedFPDFDocument doc(FPDF_CreateNewDocument());
+  embedpdf_test::ScopedTestDocument doc(NewTestDocument());
   EXPECT_FALSE(EPDFDoc_GetTypographicFeatures(doc.get()));
   EXPECT_TRUE(EPDFDoc_SetTypographicFeatures(doc.get(), true));
   EXPECT_TRUE(EPDFDoc_GetTypographicFeatures(doc.get()));
@@ -4189,7 +4190,7 @@ TEST_F(EPDFAnnotEmbedderTest, RichTextWriterFailureLeavesDocumentUntouched) {
   ASSERT_NE(0u, roboto_id);
   ASSERT_NE(0u, amiri_id);
 
-  ScopedFPDFDocument doc(FPDF_CreateNewDocument());
+  embedpdf_test::ScopedTestDocument doc(NewTestDocument());
   ScopedFPDFPage page(FPDFPage_New(doc.get(), 0, 400, 400));
   ScopedFPDFAnnotation annot(
       FPDFPage_CreateAnnot(page.get(), FPDF_ANNOT_FREETEXT));
@@ -4240,7 +4241,7 @@ TEST_F(EPDFAnnotEmbedderTest, RichTextRtlRunCarriesActualTextAndExtracts) {
                                      /*italic=*/0, amiri.data(), amiri.size()));
   std::string saved;
   {
-    ScopedFPDFDocument doc(FPDF_CreateNewDocument());
+    embedpdf_test::ScopedTestDocument doc(NewTestDocument());
     ScopedFPDFPage page(FPDFPage_New(doc.get(), 0, 400, 400));
     ScopedFPDFAnnotation annot(
         FPDFPage_CreateAnnot(page.get(), FPDF_ANNOT_FREETEXT));
@@ -4264,8 +4265,8 @@ TEST_F(EPDFAnnotEmbedderTest, RichTextRtlRunCarriesActualTextAndExtracts) {
     saved.assign(static_cast<const char*>(saved_buffer), saved_size);
     EPDF_FreeBuffer(saved_buffer);
   }
-  ScopedFPDFDocument doc(FPDF_LoadMemDocument(
-      saved.data(), static_cast<int>(saved.size()), nullptr));
+  embedpdf_test::ScopedTestDocument doc(embedpdf_test::LoadMemDocumentForTest(
+      saved.data(), saved.size(), nullptr));
   ASSERT_TRUE(doc);
   ScopedFPDFPage page(FPDF_LoadPage(doc.get(), 0));
   ASSERT_TRUE(page);
@@ -4405,7 +4406,7 @@ TEST_F(EPDFAnnotEmbedderTest, RichTextResolvesDocumentProgramWhenUnregistered) {
       "Roboto", /*weight=*/400, /*italic=*/0, roboto.data(), roboto.size());
   ASSERT_NE(0u, roboto_id);
 
-  ScopedFPDFDocument doc(FPDF_CreateNewDocument());
+  embedpdf_test::ScopedTestDocument doc(NewTestDocument());
   ASSERT_TRUE(EPDFDoc_SetFontEmbeddingPolicy(doc.get(),
                                              EPDF_FONT_EMBEDDING_POLICY_FULL));
   ScopedFPDFPage page(FPDFPage_New(doc.get(), 0, 400, 400));
@@ -4536,8 +4537,9 @@ TEST_F(EPDFAnnotEmbedderTest, RichTextSkipsDocumentSubsetWithoutCmap) {
   EPDF_FreeBuffer(saved_buffer);
   UnloadPage(page);
   {
-    ScopedFPDFDocument reloaded(FPDF_LoadMemDocument(
-        saved.data(), static_cast<int>(saved.size()), nullptr));
+    embedpdf_test::ScopedTestDocument reloaded(
+        embedpdf_test::LoadMemDocumentForTest(saved.data(), saved.size(),
+                                              nullptr));
     ASSERT_TRUE(reloaded);
     ScopedFPDFPage reloaded_page(FPDF_LoadPage(reloaded.get(), 0));
     ASSERT_TRUE(reloaded_page);
@@ -4552,8 +4554,8 @@ TEST_F(EPDFAnnotEmbedderTest, RichTextSkipsDocumentSubsetWithoutCmap) {
     saved.assign(static_cast<const char*>(flat_buffer), flat_size);
     EPDF_FreeBuffer(flat_buffer);
   }
-  ScopedFPDFDocument flat(FPDF_LoadMemDocument(
-      saved.data(), static_cast<int>(saved.size()), nullptr));
+  embedpdf_test::ScopedTestDocument flat(embedpdf_test::LoadMemDocumentForTest(
+      saved.data(), saved.size(), nullptr));
   ASSERT_TRUE(flat);
   ScopedFPDFPage flat_page(FPDF_LoadPage(flat.get(), 0));
   ASSERT_TRUE(flat_page);
@@ -4597,7 +4599,7 @@ TEST_F(EPDFAnnotEmbedderTest, RichTextDocumentSubsetDrawsOnlyWhatItCovers) {
                                            roboto.size()));
   std::string saved;
   {
-    ScopedFPDFDocument doc(FPDF_CreateNewDocument());
+    embedpdf_test::ScopedTestDocument doc(NewTestDocument());
     ScopedFPDFPage page(FPDFPage_New(doc.get(), 0, 400, 400));
     ScopedFPDFAnnotation annot(
         FPDFPage_CreateAnnot(page.get(), FPDF_ANNOT_FREETEXT));
@@ -4614,8 +4616,8 @@ TEST_F(EPDFAnnotEmbedderTest, RichTextDocumentSubsetDrawsOnlyWhatItCovers) {
     EPDF_FreeBuffer(saved_buffer);
   }
   EPDFFont_ClearRegisteredFonts();
-  ScopedFPDFDocument doc(FPDF_LoadMemDocument(
-      saved.data(), static_cast<int>(saved.size()), nullptr));
+  embedpdf_test::ScopedTestDocument doc(embedpdf_test::LoadMemDocumentForTest(
+      saved.data(), saved.size(), nullptr));
   ASSERT_TRUE(doc);
   ScopedFPDFPage page(FPDF_LoadPage(doc.get(), 0));
   ASSERT_TRUE(page);
@@ -4691,11 +4693,11 @@ TEST_F(EPDFAnnotEmbedderTest, RichTextPicksTheDocumentSubsetThatCoversTheText) {
     ASSERT_NE(0u, EPDFFont_RegisterMemFont64("Roboto", /*weight=*/400,
                                              /*italic=*/0, roboto.data(),
                                              roboto.size()));
-    ScopedFPDFDocument doc(saved.empty()
-                               ? FPDF_CreateNewDocument()
-                               : FPDF_LoadMemDocument(
-                                     saved.data(),
-                                     static_cast<int>(saved.size()), nullptr));
+    embedpdf_test::ScopedTestDocument doc =
+        saved.empty() ? NewTestDocument()
+                      : embedpdf_test::ScopedTestDocument(
+                            embedpdf_test::LoadMemDocumentForTest(
+                                saved.data(), saved.size(), nullptr));
     ASSERT_TRUE(doc);
     ScopedFPDFPage page(saved.empty()
                             ? FPDFPage_New(doc.get(), 0, 400, 400)
@@ -4717,8 +4719,8 @@ TEST_F(EPDFAnnotEmbedderTest, RichTextPicksTheDocumentSubsetThatCoversTheText) {
   };
   author("Hello", 380.0f);  // subset 1: H e l o
   author("World", 300.0f);  // subset 2: W o r l d
-  ScopedFPDFDocument doc(FPDF_LoadMemDocument(
-      saved.data(), static_cast<int>(saved.size()), nullptr));
+  embedpdf_test::ScopedTestDocument doc(embedpdf_test::LoadMemDocumentForTest(
+      saved.data(), saved.size(), nullptr));
   ASSERT_TRUE(doc);
   ScopedFPDFPage page(FPDF_LoadPage(doc.get(), 0));
   ASSERT_TRUE(page);
@@ -4761,7 +4763,7 @@ TEST_F(EPDFAnnotEmbedderTest, AnnotFontMapStagesEveryNamedFont) {
   EPDF_FONT_ID roboto_id = EPDFFont_RegisterMemFont64(
       "Roboto", /*weight=*/400, /*italic=*/0, roboto.data(), roboto.size());
   ASSERT_NE(0u, roboto_id);
-  ScopedFPDFDocument doc(FPDF_CreateNewDocument());
+  embedpdf_test::ScopedTestDocument doc(NewTestDocument());
   ASSERT_TRUE(EPDFDoc_SetFontEmbeddingPolicy(doc.get(),
                                              EPDF_FONT_EMBEDDING_POLICY_FULL));
   ScopedFPDFPage page(FPDFPage_New(doc.get(), 0, 400, 400));
@@ -4877,7 +4879,7 @@ TEST_F(EPDFAnnotEmbedderTest, FreeTextRegisteredFontMarkerSurvivesAliasSuffix) {
                                  font_data.data(), font_data.size());
   ASSERT_NE(0u, font_id);
 
-  ScopedFPDFDocument doc(FPDF_CreateNewDocument());
+  embedpdf_test::ScopedTestDocument doc(NewTestDocument());
   ASSERT_TRUE(doc);
   ScopedFPDFPage page(FPDFPage_New(doc.get(), 0, 400, 400));
   ASSERT_TRUE(page);
@@ -4931,7 +4933,7 @@ TEST_F(EPDFAnnotEmbedderTest, TextFieldKoreanUsesRegisteredDroidFallbackFont) {
   EPDF_FONT_ID font_id = RegisterDroidSansFallbackFullFont();
   ASSERT_NE(0u, font_id);
 
-  CreateEmptyDocument();
+  ASSERT_TRUE(OpenDocumentFromMemory(EmptyPdf()));
   {
     ScopedFPDFPage page(FPDFPage_New(document(), 0, 400, 400));
     ASSERT_TRUE(page);
@@ -4971,7 +4973,7 @@ TEST_F(EPDFAnnotEmbedderTest, ComboBoxKoreanUsesRegisteredDroidFallbackFont) {
   EPDF_FONT_ID font_id = RegisterDroidSansFallbackFullFont();
   ASSERT_NE(0u, font_id);
 
-  CreateEmptyDocument();
+  ASSERT_TRUE(OpenDocumentFromMemory(EmptyPdf()));
   {
     ScopedFPDFPage page(FPDFPage_New(document(), 0, 400, 400));
     ASSERT_TRUE(page);
@@ -5012,7 +5014,7 @@ TEST_F(EPDFAnnotEmbedderTest, ListBoxKoreanUsesRegisteredDroidFallbackFont) {
   EPDF_FONT_ID font_id = RegisterDroidSansFallbackFullFont();
   ASSERT_NE(0u, font_id);
 
-  CreateEmptyDocument();
+  ASSERT_TRUE(OpenDocumentFromMemory(EmptyPdf()));
   {
     ScopedFPDFPage page(FPDFPage_New(document(), 0, 400, 400));
     ASSERT_TRUE(page);
@@ -5139,7 +5141,7 @@ TEST_F(EPDFAnnotEmbedderTest, FreeTextRegisteredFontSubsetsAreLayerLocal) {
 
 TEST_F(EPDFAnnotEmbedderTest, RegisteredFallbackFontRendersPageMissingGlyph) {
   auto create_broken_pdf = []() {
-    ScopedFPDFDocument doc(FPDF_CreateNewDocument());
+    embedpdf_test::ScopedTestDocument doc(NewTestDocument());
     EXPECT_TRUE(doc);
     {
       ScopedFPDFPage page(FPDFPage_New(doc.get(), 0, 200, 200));
@@ -5888,7 +5890,7 @@ TEST_F(EPDFAnnotEmbedderTest, CloudyBumpsReachPastTheBoxIntoRect) {
 }
 
 TEST_F(EPDFAnnotEmbedderTest, CalloutRectHoldsItsLineAndArrow) {
-  ScopedFPDFDocument doc(FPDF_CreateNewDocument());
+  embedpdf_test::ScopedTestDocument doc(NewTestDocument());
   ASSERT_TRUE(doc);
   ScopedFPDFPage page(FPDFPage_New(doc.get(), 0, 400, 400));
   ASSERT_TRUE(page);
@@ -6669,7 +6671,7 @@ TEST_F(EPDFAnnotEmbedderTest, ApplyRedactionCascadesPopupRemoval) {
 }
 
 TEST_F(EPDFAnnotEmbedderTest, ApplyRedactionRemovesTheMarksOwnPopup) {
-  ScopedFPDFDocument doc(FPDF_CreateNewDocument());
+  embedpdf_test::ScopedTestDocument doc(NewTestDocument());
   ASSERT_TRUE(doc);
   ScopedFPDFPage page(FPDFPage_New(doc.get(), 0, 200, 200));
   ASSERT_TRUE(page);
@@ -6723,7 +6725,7 @@ TEST_F(EPDFAnnotEmbedderTest, ApplyPageRedactionsCountsRemovedAnnotations) {
 // [50,150) with the top half of the region at y [50,100).
 
 TEST_F(EPDFAnnotEmbedderTest, ApplyRedactionSynthesizesInteriorColorFill) {
-  ScopedFPDFDocument doc(FPDF_CreateNewDocument());
+  embedpdf_test::ScopedTestDocument doc(NewTestDocument());
   ASSERT_TRUE(doc);
   ScopedFPDFPage page(FPDFPage_New(doc.get(), 0, 200, 200));
   ASSERT_TRUE(page);
@@ -6747,7 +6749,7 @@ TEST_F(EPDFAnnotEmbedderTest, ApplyRedactionSynthesizesInteriorColorFill) {
 }
 
 TEST_F(EPDFAnnotEmbedderTest, ApplyRedactionSynthesizesOverlayTextLabel) {
-  ScopedFPDFDocument doc(FPDF_CreateNewDocument());
+  embedpdf_test::ScopedTestDocument doc(NewTestDocument());
   ASSERT_TRUE(doc);
   ScopedFPDFPage page(FPDFPage_New(doc.get(), 0, 200, 200));
   ASSERT_TRUE(page);
@@ -6778,7 +6780,7 @@ TEST_F(EPDFAnnotEmbedderTest, ApplyRedactionSynthesizesOverlayTextLabel) {
 }
 
 TEST_F(EPDFAnnotEmbedderTest, ApplyRedactionRepeatsOverlayTextToFillRegion) {
-  ScopedFPDFDocument doc(FPDF_CreateNewDocument());
+  embedpdf_test::ScopedTestDocument doc(NewTestDocument());
   ASSERT_TRUE(doc);
   ScopedFPDFPage page(FPDFPage_New(doc.get(), 0, 200, 200));
   ASSERT_TRUE(page);
@@ -6809,7 +6811,7 @@ TEST_F(EPDFAnnotEmbedderTest, ApplyRedactionRepeatsOverlayTextToFillRegion) {
 }
 
 TEST_F(EPDFAnnotEmbedderTest, ApplyRedactionHonorsOverlayTextAlignment) {
-  ScopedFPDFDocument doc(FPDF_CreateNewDocument());
+  embedpdf_test::ScopedTestDocument doc(NewTestDocument());
   ASSERT_TRUE(doc);
   ScopedFPDFPage page(FPDFPage_New(doc.get(), 0, 200, 200));
   ASSERT_TRUE(page);
@@ -6840,7 +6842,7 @@ TEST_F(EPDFAnnotEmbedderTest, ApplyRedactionHonorsOverlayTextAlignment) {
 }
 
 TEST_F(EPDFAnnotEmbedderTest, ApplyRedactionPrefersBakedOverlayStream) {
-  ScopedFPDFDocument doc(FPDF_CreateNewDocument());
+  embedpdf_test::ScopedTestDocument doc(NewTestDocument());
   ASSERT_TRUE(doc);
   ScopedFPDFPage page(FPDFPage_New(doc.get(), 0, 200, 200));
   ASSERT_TRUE(page);
@@ -6876,7 +6878,7 @@ TEST_F(EPDFAnnotEmbedderTest, ApplyRedactionPrefersBakedOverlayStream) {
 }
 
 TEST_F(EPDFAnnotEmbedderTest, ApplyRedactionWithoutOverlayLeavesRegionClear) {
-  ScopedFPDFDocument doc(FPDF_CreateNewDocument());
+  embedpdf_test::ScopedTestDocument doc(NewTestDocument());
   ASSERT_TRUE(doc);
   ScopedFPDFPage page(FPDFPage_New(doc.get(), 0, 200, 200));
   ASSERT_TRUE(page);
@@ -6975,7 +6977,7 @@ TEST_F(EPDFAnnotEmbedderTest, ApplyRedactionOnNeverParsedPageRemovesText) {
 }
 
 TEST_F(EPDFAnnotEmbedderTest, GenerateRedactAppearanceBakesLabelIntoOverlay) {
-  ScopedFPDFDocument doc(FPDF_CreateNewDocument());
+  embedpdf_test::ScopedTestDocument doc(NewTestDocument());
   ASSERT_TRUE(doc);
   ScopedFPDFPage page(FPDFPage_New(doc.get(), 0, 200, 200));
   ASSERT_TRUE(page);
@@ -7012,7 +7014,7 @@ TEST_F(EPDFAnnotEmbedderTest, GenerateRedactAppearanceBakesLabelIntoOverlay) {
 // A /DA size of 0 means auto-size, and the font is still named: without it no
 // viewer can draw the text.
 TEST_F(EPDFAnnotEmbedderTest, SetDefaultAppearanceKeepsFontAtAutoSize) {
-  ScopedFPDFDocument doc(FPDF_CreateNewDocument());
+  embedpdf_test::ScopedTestDocument doc(NewTestDocument());
   ASSERT_TRUE(doc);
   ScopedFPDFPage page(FPDFPage_New(doc.get(), 0, 200, 200));
   ASSERT_TRUE(page);
@@ -7041,7 +7043,7 @@ TEST_F(EPDFAnnotEmbedderTest, SetDefaultAppearanceKeepsFontAtAutoSize) {
 
 // The engine's path: the label at auto-size, baked into /RO, then applied.
 TEST_F(EPDFAnnotEmbedderTest, ApplyRedactionBurnsInAutoSizedLabel) {
-  ScopedFPDFDocument doc(FPDF_CreateNewDocument());
+  embedpdf_test::ScopedTestDocument doc(NewTestDocument());
   ASSERT_TRUE(doc);
   ScopedFPDFPage page(FPDFPage_New(doc.get(), 0, 200, 200));
   ASSERT_TRUE(page);
@@ -7075,7 +7077,7 @@ TEST_F(EPDFAnnotEmbedderTest, ApplyRedactionBurnsInAutoSizedLabel) {
 // /Repeat at auto-size tiles the label at the fallback size, so the bottom
 // half of the region carries ink too.
 TEST_F(EPDFAnnotEmbedderTest, ApplyRedactionRepeatsAutoSizedLabel) {
-  ScopedFPDFDocument doc(FPDF_CreateNewDocument());
+  embedpdf_test::ScopedTestDocument doc(NewTestDocument());
   ASSERT_TRUE(doc);
   ScopedFPDFPage page(FPDFPage_New(doc.get(), 0, 200, 200));
   ASSERT_TRUE(page);
@@ -7107,7 +7109,7 @@ TEST_F(EPDFAnnotEmbedderTest, ApplyRedactionRepeatsAutoSizedLabel) {
 // A /DA that names no font (another producer, or a mark written before /DA
 // kept the font at auto-size) still draws the label, in Helvetica.
 TEST_F(EPDFAnnotEmbedderTest, ApplyRedactionLabelWithoutDaFontUsesHelvetica) {
-  ScopedFPDFDocument doc(FPDF_CreateNewDocument());
+  embedpdf_test::ScopedTestDocument doc(NewTestDocument());
   ASSERT_TRUE(doc);
   ScopedFPDFPage page(FPDFPage_New(doc.get(), 0, 200, 200));
   ASSERT_TRUE(page);
@@ -7133,7 +7135,7 @@ TEST_F(EPDFAnnotEmbedderTest, ApplyRedactionLabelWithoutDaFontUsesHelvetica) {
 }
 
 TEST_F(EPDFAnnotEmbedderTest, BorderStyleResolutionUsesISOPrecedence) {
-  ScopedFPDFDocument doc(FPDF_CreateNewDocument());
+  embedpdf_test::ScopedTestDocument doc(NewTestDocument());
   ASSERT_TRUE(doc);
   ScopedFPDFPage page(FPDFPage_New(doc.get(), 0, 100, 100));
   ASSERT_TRUE(page);
@@ -7221,7 +7223,7 @@ TEST_F(EPDFAnnotEmbedderTest, BorderStyleResolutionUsesISOPrecedence) {
 }
 
 TEST_F(EPDFAnnotEmbedderTest, DashedBorderDrawsItsDashOrTheDefault) {
-  ScopedFPDFDocument doc(FPDF_CreateNewDocument());
+  embedpdf_test::ScopedTestDocument doc(NewTestDocument());
   ASSERT_TRUE(doc);
   ScopedFPDFPage page(FPDFPage_New(doc.get(), 0, 200, 200));
   ASSERT_TRUE(page);
@@ -7263,7 +7265,7 @@ TEST_F(EPDFAnnotEmbedderTest, DashedBorderDrawsItsDashOrTheDefault) {
 }
 
 TEST_F(EPDFAnnotEmbedderTest, SetNameAcceptsAnyNameAndKeepsAppearance) {
-  ScopedFPDFDocument doc(FPDF_CreateNewDocument());
+  embedpdf_test::ScopedTestDocument doc(NewTestDocument());
   ASSERT_TRUE(doc);
   ScopedFPDFPage page(FPDFPage_New(doc.get(), 0, 400, 400));
   ASSERT_TRUE(page);
@@ -7348,7 +7350,7 @@ TEST_F(EPDFAnnotEmbedderTest, SetNameAcceptsAnyNameAndKeepsAppearance) {
 }
 
 TEST_F(EPDFAnnotEmbedderTest, GenerateFileAttachmentAppearance) {
-  ScopedFPDFDocument doc(FPDF_CreateNewDocument());
+  embedpdf_test::ScopedTestDocument doc(NewTestDocument());
   ASSERT_TRUE(doc);
   ScopedFPDFPage page(FPDFPage_New(doc.get(), 0, 400, 400));
   ASSERT_TRUE(page);
@@ -7380,7 +7382,7 @@ TEST_F(EPDFAnnotEmbedderTest, GenerateFileAttachmentAppearance) {
 }
 
 TEST_F(EPDFAnnotEmbedderTest, GenerateTextAppearanceFillsItsRect) {
-  ScopedFPDFDocument doc(FPDF_CreateNewDocument());
+  embedpdf_test::ScopedTestDocument doc(NewTestDocument());
   ASSERT_TRUE(doc);
   ScopedFPDFPage page(FPDFPage_New(doc.get(), 0, 400, 400));
   ASSERT_TRUE(page);
@@ -7412,7 +7414,7 @@ TEST_F(EPDFAnnotEmbedderTest, GenerateTextAppearanceFillsItsRect) {
 }
 
 TEST_F(EPDFAnnotEmbedderTest, GenerateTextAppearancePerIcon) {
-  ScopedFPDFDocument doc(FPDF_CreateNewDocument());
+  embedpdf_test::ScopedTestDocument doc(NewTestDocument());
   ASSERT_TRUE(doc);
   ScopedFPDFPage page(FPDFPage_New(doc.get(), 0, 400, 400));
   ASSERT_TRUE(page);
@@ -7448,7 +7450,7 @@ TEST_F(EPDFAnnotEmbedderTest, GenerateTextAppearancePerIcon) {
 }
 
 TEST_F(EPDFAnnotEmbedderTest, GenerateFileAttachmentAppearancePerIcon) {
-  ScopedFPDFDocument doc(FPDF_CreateNewDocument());
+  embedpdf_test::ScopedTestDocument doc(NewTestDocument());
   ASSERT_TRUE(doc);
   ScopedFPDFPage page(FPDFPage_New(doc.get(), 0, 400, 400));
   ASSERT_TRUE(page);
@@ -8214,7 +8216,7 @@ class EPDFStampResizeEmbedderTest : public EmbedderTest {
  protected:
   void SetUp() override {
     EmbedderTest::SetUp();
-    doc_.reset(FPDF_CreateNewDocument());
+    doc_ = NewTestDocument();
     ASSERT_TRUE(doc_);
     page_.reset(FPDFPage_New(doc_.get(), 0, 600, 600));
     ASSERT_TRUE(page_);
@@ -8275,8 +8277,9 @@ class EPDFStampResizeEmbedderTest : public EmbedderTest {
     ScopedFPDFAnnotation stamp(FPDFPage_CreateAnnot(page, FPDF_ANNOT_STAMP));
     EXPECT_TRUE(stamp);
     EXPECT_TRUE(EPDFAnnot_SetRect(stamp.get(), &rect));
-    ScopedFPDFDocument source(
-        FPDF_LoadMemDocument(bytes.data(), bytes.size(), nullptr));
+    embedpdf_test::ScopedTestDocument source(
+        embedpdf_test::LoadMemDocumentForTest(bytes.data(), bytes.size(),
+                                              nullptr));
     EXPECT_TRUE(source);
     EXPECT_TRUE(EPDFAnnot_SetAppearanceFromPage(stamp.get(), source.get(), 0));
     EXPECT_TRUE(
@@ -8284,7 +8287,7 @@ class EPDFStampResizeEmbedderTest : public EmbedderTest {
     return stamp;
   }
 
-  ScopedFPDFDocument doc_;
+  embedpdf_test::ScopedTestDocument doc_;
   ScopedFPDFPage page_;
   ScopedFPDFAnnotation annot_;
 };
@@ -8758,8 +8761,9 @@ TEST_F(EPDFStampResizeEmbedderTest, AnExportIsTheCanonicalDrawingPage) {
   EXPECT_EQ(std::string::npos, bytes.find("EPDFOrigContentRect"));
   EXPECT_EQ(std::string::npos, bytes.find("EPDFWRAP"));
 
-  ScopedFPDFDocument exported(
-      FPDF_LoadMemDocument(bytes.data(), bytes.size(), nullptr));
+  embedpdf_test::ScopedTestDocument exported(
+      embedpdf_test::LoadMemDocumentForTest(bytes.data(), bytes.size(),
+                                            nullptr));
   ScopedFPDFPage page(FPDF_LoadPage(exported.get(), 0));
   auto page_dict = CPDFPageFromFPDFPage(page.get())->GetDict();
   EXPECT_EQ("/EPDFDRAWING Do",
@@ -8812,7 +8816,7 @@ TEST_F(EPDFStampResizeEmbedderTest, ExportAndImportAreAFixedPoint) {
               StreamBytes(drawing.Get()));
 
     // Another document numbers its objects differently: still the same bytes.
-    ScopedFPDFDocument other(FPDF_CreateNewDocument());
+    embedpdf_test::ScopedTestDocument other(NewTestDocument());
     ScopedFPDFPage other_page(FPDFPage_New(other.get(), 0, 300, 300));
     FS_RECTF other_rect{10, 60, 110, 10};
     for (int cycle = 0; cycle < 2; ++cycle) {
@@ -8830,7 +8834,7 @@ TEST_F(EPDFStampResizeEmbedderTest, ExportAndImportAreAFixedPoint) {
 // A page exported before the canonical shape (placement in a `cm`) still
 // imports, wrapped like any page.
 TEST_F(EPDFStampResizeEmbedderTest, AnOlderExportStillImports) {
-  ScopedFPDFDocument source(FPDF_CreateNewDocument());
+  embedpdf_test::ScopedTestDocument source(NewTestDocument());
   ScopedFPDFPage source_page(FPDFPage_New(source.get(), 0, 100, 50));
   CPDF_Document* source_doc = CPDFDocumentFromFPDFDocument(source.get());
   const ByteStringView kArtwork = "1 0 0 rg 0 0 100 50 re f";
@@ -8860,9 +8864,8 @@ TEST_F(EPDFStampResizeEmbedderTest, AnOlderExportStillImports) {
 // Making a stamp from a page copies the page's drawing and changes nothing
 // else in the document: not its /Info.
 TEST_F(EPDFStampResizeEmbedderTest, AStampFromAPageLeavesTheDocumentInfoAlone) {
-  RetainPtr<CPDF_Dictionary> info = pdf()->GetInfo();
-  ASSERT_TRUE(info);
-  info->SetNewFor<CPDF_String>("Producer", "Acme Writer");
+  ScopedFPDFWideString producer = GetFPDFWideString(L"Acme Writer");
+  ASSERT_TRUE(EPDF_SetMetaText(doc_.get(), "Producer", producer.get()));
   InstallArtwork();
   ASSERT_TRUE(
       EPDFAnnot_UpdateAppearanceToRect(annot_.get(), EPDF_STAMP_FIT_CONTAIN));
@@ -8983,8 +8986,8 @@ std::string StreamSnapshot(const CPDF_Stream* stream) {
 // How many streams of the saved file `bytes` have exactly `content`,
 // filters applied.
 size_t StreamsWithContent(const std::string& bytes, ByteStringView content) {
-  ScopedFPDFDocument saved(
-      FPDF_LoadMemDocument(bytes.data(), bytes.size(), nullptr));
+  embedpdf_test::ScopedTestDocument saved(embedpdf_test::LoadMemDocumentForTest(
+      bytes.data(), bytes.size(), nullptr));
   CPDF_Document* doc = CPDFDocumentFromFPDFDocument(saved.get());
   if (!doc) {
     ADD_FAILURE() << "the saved file does not open";
@@ -9007,8 +9010,9 @@ size_t StreamsWithContent(const std::string& bytes, ByteStringView content) {
 // exports, and a canonical page is its own canonical drawing.
 TEST_F(EPDFStampResizeEmbedderTest, CanonicalDrawingIsWhatAStampExports) {
   const std::string artwork = OnePagePdf(kBlueArtwork, 200, 100);
-  ScopedFPDFDocument source(
-      FPDF_LoadMemDocument(artwork.data(), artwork.size(), nullptr));
+  embedpdf_test::ScopedTestDocument source(
+      embedpdf_test::LoadMemDocumentForTest(artwork.data(), artwork.size(),
+                                            nullptr));
   ASSERT_TRUE(source);
   ScopedFPDFDocument canonical(EPDFDoc_CanonicalDrawing(source.get(), 0));
   ASSERT_TRUE(canonical);
@@ -9018,8 +9022,9 @@ TEST_F(EPDFStampResizeEmbedderTest, CanonicalDrawingIsWhatAStampExports) {
       StampFrom(page_.get(), artwork, FS_RECTF{300, 400, 500, 300});
   EXPECT_EQ(bytes, ExportedBytes(stamp.get()));
 
-  ScopedFPDFDocument reloaded(
-      FPDF_LoadMemDocument(bytes.data(), bytes.size(), nullptr));
+  embedpdf_test::ScopedTestDocument reloaded(
+      embedpdf_test::LoadMemDocumentForTest(bytes.data(), bytes.size(),
+                                            nullptr));
   ScopedFPDFDocument again(EPDFDoc_CanonicalDrawing(reloaded.get(), 0));
   ASSERT_TRUE(again);
   EXPECT_EQ(bytes, SavedBytes(again.get()));
@@ -9032,8 +9037,9 @@ TEST_F(EPDFStampResizeEmbedderTest, CanonicalDrawingIsWhatAStampExports) {
 // canonical page is a drawing, and only a form exports as one.
 TEST_F(EPDFStampResizeEmbedderTest, AnImportedDrawingExportsItsCanonicalBytes) {
   const std::string artwork = OnePagePdf(kBlueArtwork, 200, 100);
-  ScopedFPDFDocument source(
-      FPDF_LoadMemDocument(artwork.data(), artwork.size(), nullptr));
+  embedpdf_test::ScopedTestDocument source(
+      embedpdf_test::LoadMemDocumentForTest(artwork.data(), artwork.size(),
+                                            nullptr));
   ScopedFPDFDocument canonical(EPDFDoc_CanonicalDrawing(source.get(), 0));
   ASSERT_TRUE(canonical);
   const std::string bytes = SavedBytes(canonical.get());
@@ -9052,12 +9058,29 @@ TEST_F(EPDFStampResizeEmbedderTest, AnImportedDrawingExportsItsCanonicalBytes) {
       doc_.get(), EPDFDoc_GetPageObjectNumberByIndex(doc_.get(), 0)));
 }
 
+// Taking a drawing from another document's page only reads that document
+// (rule reads-dont-write): a layer's page stays in its base, and the layer
+// hands out no object number.
+TEST_F(EPDFStampResizeEmbedderTest,
+       ADrawingFromALayersPageLeavesTheLayerAlone) {
+  const std::string artwork = OnePagePdf(kBlueArtwork, 200, 100);
+  embedpdf_test::LayerFixture source;
+  ASSERT_TRUE(source.OpenBytes({artwork.begin(), artwork.end()}));
+  const unsigned long last = EPDFLayer_GetLastObjectNumber(source.layer);
+  ScopedFPDFDocument canonical(EPDFDoc_CanonicalDrawing(source.layer, 0));
+  ASSERT_TRUE(canonical);
+  ASSERT_TRUE(EPDFAnnot_SetAppearanceFromPage(annot_.get(), source.layer, 0));
+  EXPECT_EQ(0u, EPDFLayer_GetPromotedObjectCount(source.layer));
+  EXPECT_EQ(last, EPDFLayer_GetLastObjectNumber(source.layer));
+}
+
 // Stamps placing one drawing share it: a wrapper each, one drawing, and a
 // full save holds the drawing once.
 TEST_F(EPDFStampResizeEmbedderTest, StampsPlacingOneDrawingShareIt) {
   const std::string artwork = OnePagePdf(kBlueArtwork, 200, 100);
-  ScopedFPDFDocument source(
-      FPDF_LoadMemDocument(artwork.data(), artwork.size(), nullptr));
+  embedpdf_test::ScopedTestDocument source(
+      embedpdf_test::LoadMemDocumentForTest(artwork.data(), artwork.size(),
+                                            nullptr));
   ScopedFPDFDocument canonical(EPDFDoc_CanonicalDrawing(source.get(), 0));
   const std::string bytes = SavedBytes(canonical.get());
   const unsigned int drawing =
@@ -9095,12 +9118,14 @@ TEST_F(EPDFStampResizeEmbedderTest, StampsPlacingOneDrawingShareIt) {
   // nothing has loaded it yet.
   unsigned int saved_drawing = 0;
   {
-    ScopedFPDFDocument saved(
-        FPDF_LoadMemDocument(saved_bytes.data(), saved_bytes.size(), nullptr));
+    embedpdf_test::ScopedTestDocument saved(
+        embedpdf_test::LoadMemDocumentForTest(saved_bytes.data(),
+                                              saved_bytes.size(), nullptr));
     ASSERT_EQ(1u, EPDFDoc_GetStampDrawings(saved.get(), &saved_drawing, 1));
   }
-  ScopedFPDFDocument reopened(
-      FPDF_LoadMemDocument(saved_bytes.data(), saved_bytes.size(), nullptr));
+  embedpdf_test::ScopedTestDocument reopened(
+      embedpdf_test::LoadMemDocumentForTest(saved_bytes.data(),
+                                            saved_bytes.size(), nullptr));
   ScopedFPDFDocument reexported(
       EPDFDoc_ExportDrawing(reopened.get(), saved_drawing));
   ASSERT_TRUE(reexported);
@@ -9157,11 +9182,12 @@ TEST_F(EPDFStampResizeEmbedderTest,
        {Change::kResize, Change::kFit, Change::kTurn, Change::kOpacity,
         Change::kNewDrawing, Change::kFlatten, Change::kDelete}) {
     SCOPED_TRACE(static_cast<int>(change));
-    ScopedFPDFDocument doc(FPDF_CreateNewDocument());
+    embedpdf_test::ScopedTestDocument doc(NewTestDocument());
     ScopedFPDFPage page(FPDFPage_New(doc.get(), 0, 600, 600));
     auto import = [&](const std::string& bytes) {
-      ScopedFPDFDocument source(
-          FPDF_LoadMemDocument(bytes.data(), bytes.size(), nullptr));
+      embedpdf_test::ScopedTestDocument source(
+          embedpdf_test::LoadMemDocumentForTest(bytes.data(), bytes.size(),
+                                                nullptr));
       ScopedFPDFDocument canonical(EPDFDoc_CanonicalDrawing(source.get(), 0));
       return EPDFDoc_ImportDrawing(doc.get(), canonical.get());
     };
@@ -9512,8 +9538,9 @@ TEST_P(EPDFStampSaveEmbedderTest,
       EXPECT_TRUE(std::equal(layer.bytes.begin(), layer.bytes.end(),
                              saved.bytes.begin()));
     }
-    ScopedFPDFDocument reopened(FPDF_LoadMemDocument64(
-        saved.bytes.data(), saved.bytes.size(), nullptr));
+    embedpdf_test::ScopedTestDocument reopened(
+        embedpdf_test::LoadMemDocumentForTest(saved.bytes.data(),
+                                              saved.bytes.size(), nullptr));
     ASSERT_TRUE(reopened);
     ScopedFPDFPage reopened_page(FPDF_LoadPage(reopened.get(), 0));
     ASSERT_TRUE(reopened_page);

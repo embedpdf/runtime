@@ -30,6 +30,7 @@
 #include "public/fpdfview.h"
 #include "testing/embedder_test.h"
 #include "testing/embedpdf_form_writes.h"
+#include "testing/embedpdf_layer_mode.h"
 #include "testing/fx_string_testhelpers.h"
 #include "testing/gtest/include/gtest/gtest.h"
 #include "testing/utils/file_util.h"
@@ -792,7 +793,9 @@ TEST_F(EPDFSignatureEmbedderTest, SignRoundTrip) {
   EXPECT_EQ(0u, EPDFSig_Prepare(document(), field, &opts));
 
   // The sealed bytes are a complete, signed, two-revision document.
-  ScopedFPDFDocument signed_doc(FPDF_LoadMemDocument64(sealed.bytes.data(), sealed.bytes.size(), nullptr));
+  embedpdf_test::ScopedTestDocument signed_doc(
+      embedpdf_test::LoadMemDocumentForTest(sealed.bytes.data(),
+                                            sealed.bytes.size(), nullptr));
   ASSERT_TRUE(signed_doc);
   EXPECT_EQ(2, EPDFDoc_GetRevisionCount(signed_doc.get()));
   EPDF_SIGNATURE_MODEL model = EPDFSig_LoadModel(signed_doc.get());
@@ -880,7 +883,9 @@ TEST_F(EPDFSignatureEmbedderTest, CertifyThenRefuseSecondCertification) {
   Sealed sealed;
   ASSERT_TRUE(SignField(document(), first, opts, &sealed));
 
-  ScopedFPDFDocument signed_doc(FPDF_LoadMemDocument64(sealed.bytes.data(), sealed.bytes.size(), nullptr));
+  embedpdf_test::ScopedTestDocument signed_doc(
+      embedpdf_test::LoadMemDocumentForTest(sealed.bytes.data(),
+                                            sealed.bytes.size(), nullptr));
   ASSERT_TRUE(signed_doc);
   EPDF_SIGNATURE_MODEL model = EPDFSig_LoadModel(signed_doc.get());
   ASSERT_TRUE(model);
@@ -918,7 +923,9 @@ TEST_F(EPDFSignatureEmbedderTest, PermissionOneAllowsOnlyTimestamps) {
   opts.docmdp_permission = 1;
   Sealed sealed;
   ASSERT_TRUE(SignField(document(), first, opts, &sealed));
-  ScopedFPDFDocument signed_doc(FPDF_LoadMemDocument64(sealed.bytes.data(), sealed.bytes.size(), nullptr));
+  embedpdf_test::ScopedTestDocument signed_doc(
+      embedpdf_test::LoadMemDocumentForTest(sealed.bytes.data(),
+                                            sealed.bytes.size(), nullptr));
   ASSERT_TRUE(signed_doc);
 
   EPDF_SIG_PREPARE approval = opts;
@@ -942,7 +949,9 @@ TEST_F(EPDFSignatureEmbedderTest, PermissionOneAllowsOnlyTimestamps) {
                            stamped.range, &stamped.contents_offset, &stamped.contents_hex_len, digest, &len));
   ASSERT_TRUE(EPDFSig_WriteContents(stamped.bytes.data(), size, stamped.contents_offset,
                                     stamped.contents_hex_len, kFakeCms, sizeof(kFakeCms)));
-  ScopedFPDFDocument stamped_doc(FPDF_LoadMemDocument64(stamped.bytes.data(), stamped.bytes.size(), nullptr));
+  embedpdf_test::ScopedTestDocument stamped_doc(
+      embedpdf_test::LoadMemDocumentForTest(stamped.bytes.data(),
+                                            stamped.bytes.size(), nullptr));
   ASSERT_TRUE(stamped_doc);
   EXPECT_EQ(3, EPDFDoc_GetRevisionCount(stamped_doc.get()));
   EPDF_SIGNATURE_MODEL model = EPDFSig_LoadModel(stamped_doc.get());
@@ -1002,7 +1011,9 @@ TEST_F(EPDFSignatureEmbedderTest, SealRejectsDecoysAndBadDer) {
   huge[3] = 0x28;  // 296 content bytes: 300 total, 600 hex > 512
   EXPECT_FALSE(EPDFSig_WriteContents(bytes.data(), size, contents_offset, hex_len, huge.data(), huge.size()));
   ASSERT_TRUE(EPDFSig_WriteContents(bytes.data(), size, contents_offset, hex_len, kFakeCms, sizeof(kFakeCms)));
-  ScopedFPDFDocument signed_doc(FPDF_LoadMemDocument64(bytes.data(), bytes.size(), nullptr));
+  embedpdf_test::ScopedTestDocument signed_doc(
+      embedpdf_test::LoadMemDocumentForTest(bytes.data(), bytes.size(),
+                                            nullptr));
   ASSERT_TRUE(signed_doc);
   EPDF_SIGNATURE_MODEL model = EPDFSig_LoadModel(signed_doc.get());
   EXPECT_EQ(EPDF_SIG_COVERAGE_WHOLE_REVISION, EPDFSig_GetCoverage(model, 0));
@@ -1028,7 +1039,9 @@ TEST_F(EPDFSignatureEmbedderTest, SignEncryptedDocument) {
   ASSERT_TRUE(SignField(document(), field, opts, &sealed));
   // Encrypted with the empty user password: reopens without one, /Contents
   // was written in the clear, and the digest covers the encrypted bytes.
-  ScopedFPDFDocument signed_doc(FPDF_LoadMemDocument64(sealed.bytes.data(), sealed.bytes.size(), nullptr));
+  embedpdf_test::ScopedTestDocument signed_doc(
+      embedpdf_test::LoadMemDocumentForTest(sealed.bytes.data(),
+                                            sealed.bytes.size(), nullptr));
   ASSERT_TRUE(signed_doc);
   EXPECT_EQ(5, EPDFDoc_GetRevisionCount(signed_doc.get()));
   EPDF_SIGNATURE_MODEL model = EPDFSig_LoadModel(signed_doc.get());
@@ -1101,8 +1114,11 @@ std::vector<std::string> BasicObjects(const std::string& catalog_extra = "") {
           "<</Type/Page /Parent 2 0 R /MediaBox[0 0 100 100]>>"};
 }
 
-ScopedFPDFDocument OpenRaw(const RawPdf& p) {
-  return ScopedFPDFDocument(FPDF_LoadMemDocument64(p.bytes.data(), p.bytes.size(), nullptr));
+// |p| as a test opens it: a layer in layer mode.
+embedpdf_test::ScopedTestDocument OpenRaw(const RawPdf& p) {
+  return embedpdf_test::ScopedTestDocument(
+      embedpdf_test::LoadMemDocumentForTest(p.bytes.data(), p.bytes.size(),
+                                            nullptr));
 }
 
 // A form with a group field carrying an inherited Multiline flag, a text
@@ -1197,7 +1213,7 @@ TEST_F(EPDFSignatureEmbedderTest, DiffReadStatusSeparatesFailureFromNull) {
     snprintf(fixed, sizeof(fixed), "%010zu", offset + 2);
     broken.bytes.replace(row, 10, fixed);
   }
-  ScopedFPDFDocument dnew = OpenRaw(broken);
+  embedpdf_test::ScopedTestDocument dnew = OpenRaw(broken);
   ASSERT_TRUE(dnew);
   ScopedFPDFDocument dold(EPDFDoc_OpenRevision(dnew.get(), old.bytes.size()));
   ASSERT_TRUE(dold);
@@ -1211,7 +1227,7 @@ TEST_F(EPDFSignatureEmbedderTest, DiffReadStatusSeparatesFailureFromNull) {
 
   // An added object: absent on the old side, readable on the new.
   RawPdf added = AppendRawUpdate(old, 5, "<</New true>>", 6);
-  ScopedFPDFDocument dadded = OpenRaw(added);
+  embedpdf_test::ScopedTestDocument dadded = OpenRaw(added);
   ASSERT_TRUE(dadded);
   ScopedFPDFDocument dbase(EPDFDoc_OpenRevision(dadded.get(), old.bytes.size()));
   ASSERT_TRUE(dbase);
@@ -1237,7 +1253,7 @@ TEST_F(EPDFSignatureEmbedderTest, DiffStreamSignatureIsChunkedAndShared) {
   std::string changed = data;
   changed.back() = 'b';
   RawPdf touched = AppendRawUpdate(old, 4, stream_body(changed), 5);
-  ScopedFPDFDocument dnew = OpenRaw(touched);
+  embedpdf_test::ScopedTestDocument dnew = OpenRaw(touched);
   ASSERT_TRUE(dnew);
   ScopedFPDFDocument dold(EPDFDoc_OpenRevision(dnew.get(), old.bytes.size()));
   ASSERT_TRUE(dold);
@@ -1255,7 +1271,7 @@ TEST_F(EPDFSignatureEmbedderTest, DiffStreamSignatureIsChunkedAndShared) {
   EPDFObjectDiff_Close(diff);
 
   RawPdf same = AppendRawUpdate(old, 4, stream_body(data), 5);
-  ScopedFPDFDocument dsame = OpenRaw(same);
+  embedpdf_test::ScopedTestDocument dsame = OpenRaw(same);
   ASSERT_TRUE(dsame);
   ScopedFPDFDocument dbase(EPDFDoc_OpenRevision(dsame.get(), old.bytes.size()));
   ASSERT_TRUE(dbase);
@@ -1274,7 +1290,7 @@ TEST_F(EPDFSignatureEmbedderTest, DiffRevisionHealthSparseTableAndBareReference)
   {
     RawPdf old = MakeRawPdf(BasicObjects());
     RawPdf newer = AppendRawUpdate(old, 4, "<</Orphan true>>", 5);
-    ScopedFPDFDocument dnew = OpenRaw(newer);
+    embedpdf_test::ScopedTestDocument dnew = OpenRaw(newer);
     ASSERT_TRUE(dnew);
     ScopedFPDFDocument dold(EPDFDoc_OpenRevision(dnew.get(), old.bytes.size()));
     ASSERT_TRUE(dold);
@@ -1295,7 +1311,7 @@ TEST_F(EPDFSignatureEmbedderTest, DiffRevisionHealthSparseTableAndBareReference)
   {
     RawPdf old = MakeRawPdf(BasicObjects());
     RawPdf newer = AppendRawUpdate(old, 6, "<</Orphan true>>", 7);
-    ScopedFPDFDocument dnew = OpenRaw(newer);
+    embedpdf_test::ScopedTestDocument dnew = OpenRaw(newer);
     ASSERT_TRUE(dnew);
     ScopedFPDFDocument dold(EPDFDoc_OpenRevision(dnew.get(), old.bytes.size()));
     ASSERT_TRUE(dold);
@@ -1309,7 +1325,7 @@ TEST_F(EPDFSignatureEmbedderTest, DiffRevisionHealthSparseTableAndBareReference)
   {
     RawPdf old = MakeRawPdf(BasicObjects());
     RawPdf newer = AppendRawUpdate(old, 4, "<</Orphan true>>", 9);
-    ScopedFPDFDocument dnew = OpenRaw(newer);
+    embedpdf_test::ScopedTestDocument dnew = OpenRaw(newer);
     ASSERT_TRUE(dnew);
     ScopedFPDFDocument dold(EPDFDoc_OpenRevision(dnew.get(), old.bytes.size()));
     ASSERT_TRUE(dold);
@@ -1329,7 +1345,7 @@ TEST_F(EPDFSignatureEmbedderTest, DiffRevisionHealthSparseTableAndBareReference)
     objects.push_back("<</Producer(x)>>");
     RawPdf old = MakeSparseRawPdf(numbers, objects, 8);
     RawPdf newer = AppendRawUpdate(old, 8, "<</Orphan true>>", 9);
-    ScopedFPDFDocument dnew = OpenRaw(newer);
+    embedpdf_test::ScopedTestDocument dnew = OpenRaw(newer);
     ASSERT_TRUE(dnew);
     ScopedFPDFDocument dold(EPDFDoc_OpenRevision(dnew.get(), old.bytes.size()));
     ASSERT_TRUE(dold);
@@ -1350,7 +1366,7 @@ TEST_F(EPDFSignatureEmbedderTest, DiffRevisionHealthSparseTableAndBareReference)
     objects.push_back("<</Producer(x)>>");
     RawPdf old = MakeSparseRawPdf(numbers, objects, 6);
     RawPdf newer = AppendRawUpdate(old, 6, "<</Orphan true>>", 7);
-    ScopedFPDFDocument dnew = OpenRaw(newer);
+    embedpdf_test::ScopedTestDocument dnew = OpenRaw(newer);
     ASSERT_TRUE(dnew);
     ScopedFPDFDocument dold(EPDFDoc_OpenRevision(dnew.get(), old.bytes.size()));
     ASSERT_TRUE(dold);
@@ -1372,10 +1388,10 @@ TEST_F(EPDFSignatureEmbedderTest, BareEofAtEndOfFileClosesTheRevision) {
     p->bytes.pop_back();
     ASSERT_EQ("%%EOF", p->bytes.substr(p->bytes.size() - 5));
   }
-  ScopedFPDFDocument d1 = OpenRaw(one);
+  embedpdf_test::ScopedTestDocument d1 = OpenRaw(one);
   ASSERT_TRUE(d1);
   EXPECT_EQ(1, EPDFDoc_GetRevisionCount(d1.get()));
-  ScopedFPDFDocument d2 = OpenRaw(two);
+  embedpdf_test::ScopedTestDocument d2 = OpenRaw(two);
   ASSERT_TRUE(d2);
   EXPECT_EQ(2, EPDFDoc_GetRevisionCount(d2.get()));
   unsigned long long end = 0;
@@ -1390,8 +1406,8 @@ TEST_F(EPDFSignatureEmbedderTest, ProbeUnrelatedFilesDoNotShareHistory) {
   // Same layout, same offsets, different bytes: not a revision pair.
   RawPdf a = MakeRawPdf(BasicObjects("/Tag(A)"));
   RawPdf b = MakeRawPdf(BasicObjects("/Tag(B)"));
-  ScopedFPDFDocument da = OpenRaw(a);
-  ScopedFPDFDocument db = OpenRaw(b);
+  embedpdf_test::ScopedTestDocument da = OpenRaw(a);
+  embedpdf_test::ScopedTestDocument db = OpenRaw(b);
   ASSERT_TRUE(da);
   ASSERT_TRUE(db);
   EXPECT_FALSE(EPDFDoc_CompareRevisions(da.get(), db.get()));
@@ -1402,7 +1418,7 @@ TEST_F(EPDFSignatureEmbedderTest, ProbeDictionaryEvidenceDoesNotCollide) {
   b.push_back("<</A 1 /B 2>>");
   RawPdf old = MakeRawPdf(b);
   RawPdf newer = AppendRawUpdate(old, 4, "<</A#201#2fB 2>>", 5);
-  ScopedFPDFDocument dnew = OpenRaw(newer);
+  embedpdf_test::ScopedTestDocument dnew = OpenRaw(newer);
   ASSERT_TRUE(dnew);
   ScopedFPDFDocument dold(EPDFDoc_OpenRevision(dnew.get(), old.bytes.size()));
   ASSERT_TRUE(dold);
@@ -1425,7 +1441,7 @@ TEST_F(EPDFSignatureEmbedderTest, ProbeReferrerLabelsEscapeKeys) {
   b.push_back("<</Kind/Y>>");
   RawPdf old = MakeRawPdf(b);
   RawPdf newer = AppendRawUpdate(old, 4, "<</Kind/Z>>", 6);
-  ScopedFPDFDocument dnew = OpenRaw(newer);
+  embedpdf_test::ScopedTestDocument dnew = OpenRaw(newer);
   ASSERT_TRUE(dnew);
   ScopedFPDFDocument dold(EPDFDoc_OpenRevision(dnew.get(), old.bytes.size()));
   ASSERT_TRUE(dold);
@@ -1450,7 +1466,7 @@ TEST_F(EPDFSignatureEmbedderTest, ProbeCoverageRequiresPhysicalContents) {
   snprintf(range, sizeof(range), "%010u %010zu %010zu %010zu", 0u, decoy, decoy + 18,
            p.bytes.size() - decoy - 18);
   p.bytes.replace(p.bytes.find(placeholder), placeholder.size(), range);
-  ScopedFPDFDocument doc = OpenRaw(p);
+  embedpdf_test::ScopedTestDocument doc = OpenRaw(p);
   ASSERT_TRUE(doc);
   EPDF_SIGNATURE_MODEL m = EPDFSig_LoadModel(doc.get());
   ASSERT_TRUE(m);
@@ -1466,7 +1482,7 @@ TEST_F(EPDFSignatureEmbedderTest, ProbeCoverageRequiresPhysicalContents) {
   snprintf(range, sizeof(range), "%010u %010zu %010zu %010zu", 0u, real, real + 18,
            q.bytes.size() - real - 18);
   q.bytes.replace(q.bytes.find(placeholder), placeholder.size(), range);
-  ScopedFPDFDocument doc2 = OpenRaw(q);
+  embedpdf_test::ScopedTestDocument doc2 = OpenRaw(q);
   ASSERT_TRUE(doc2);
   m = EPDFSig_LoadModel(doc2.get());
   EXPECT_EQ(EPDF_SIG_COVERAGE_WHOLE_REVISION, EPDFSig_GetCoverage(m, 0));
@@ -1476,7 +1492,7 @@ TEST_F(EPDFSignatureEmbedderTest, ProbeCoverageRequiresPhysicalContents) {
 
 TEST_F(EPDFSignatureEmbedderTest, ProbeContactInfoCannotBecomePlaceholder) {
   RawPdf p = FormObjects();
-  ScopedFPDFDocument doc = OpenRaw(p);
+  embedpdf_test::ScopedTestDocument doc = OpenRaw(p);
   ASSERT_TRUE(doc);
   EPDF_SIG_PREPARE o = DefaultPrepare();
   // Sorts before /Contents and reads exactly like the placeholder.
@@ -1502,7 +1518,7 @@ TEST_F(EPDFSignatureEmbedderTest, ProbeContactInfoCannotBecomePlaceholder) {
 
 TEST_F(EPDFSignatureEmbedderTest, ProbeLockPreservesInheritedFlags) {
   RawPdf p = FormObjects();
-  ScopedFPDFDocument doc = OpenRaw(p);
+  embedpdf_test::ScopedTestDocument doc = OpenRaw(p);
   ASSERT_TRUE(doc);
   EPDF_SIG_PREPARE o = DefaultPrepare();
   ScopedFPDFWideString name = GetFPDFWideString(L"group.total");
@@ -1516,7 +1532,7 @@ TEST_F(EPDFSignatureEmbedderTest, ProbeLockPreservesInheritedFlags) {
 
 TEST_F(EPDFSignatureEmbedderTest, ProbeLockParentCoversChildren) {
   RawPdf p = FormObjects();
-  ScopedFPDFDocument doc = OpenRaw(p);
+  embedpdf_test::ScopedTestDocument doc = OpenRaw(p);
   ASSERT_TRUE(doc);
   EPDF_SIG_PREPARE o = DefaultPrepare();
   ScopedFPDFWideString name = GetFPDFWideString(L"group");
@@ -1529,7 +1545,7 @@ TEST_F(EPDFSignatureEmbedderTest, ProbeLockParentCoversChildren) {
   EXPECT_FALSE(EPDFSig_Prepare(doc.get(), 6, &o));  // already prepared
   // Bad counts are refused, not converted.
   RawPdf p2 = FormObjects();
-  ScopedFPDFDocument doc2 = OpenRaw(p2);
+  embedpdf_test::ScopedTestDocument doc2 = OpenRaw(p2);
   o.fieldmdp_field_count = -1;
   EXPECT_EQ(0u, EPDFSig_Prepare(doc2.get(), 6, &o));
   EXPECT_FALSE(EPDFSig_SetFieldLock(doc2.get(), 6, EPDF_SIG_FIELD_ACTION_INCLUDE, names, -1, 0));
@@ -1537,7 +1553,7 @@ TEST_F(EPDFSignatureEmbedderTest, ProbeLockParentCoversChildren) {
 
 TEST_F(EPDFSignatureEmbedderTest, ProbeExistingLockBecomesFieldMdp) {
   RawPdf p = FormObjects("/Lock<</Type/SigFieldLock /Action/All /P 2>>");
-  ScopedFPDFDocument doc = OpenRaw(p);
+  embedpdf_test::ScopedTestDocument doc = OpenRaw(p);
   ASSERT_TRUE(doc);
   // A request that contradicts the field's lock is refused ...
   EPDF_SIG_PREPARE conflicting = DefaultPrepare();
@@ -1568,7 +1584,7 @@ TEST_F(EPDFSignatureEmbedderTest, ProbeNestedBerContentsLength) {
   // 30 80 { 30 80 { 02 01 01 } 00 00 } 00 00, then zero padding.
   b.push_back("<</Type/Sig /ByteRange[0 0 0 0] /Contents<308030800201010000000000000000>>>");
   RawPdf p = MakeRawPdf(b);
-  ScopedFPDFDocument doc = OpenRaw(p);
+  embedpdf_test::ScopedTestDocument doc = OpenRaw(p);
   ASSERT_TRUE(doc);
   EPDF_SIGNATURE_MODEL m = EPDFSig_LoadModel(doc.get());
   ASSERT_TRUE(m);
@@ -1577,7 +1593,7 @@ TEST_F(EPDFSignatureEmbedderTest, ProbeNestedBerContentsLength) {
   // A BER object that never closes is malformed.
   b.back() = "<</Type/Sig /ByteRange[0 0 0 0] /Contents<30803080020101000000>>>";
   RawPdf q = MakeRawPdf(b);
-  ScopedFPDFDocument doc2 = OpenRaw(q);
+  embedpdf_test::ScopedTestDocument doc2 = OpenRaw(q);
   ASSERT_TRUE(doc2);
   m = EPDFSig_LoadModel(doc2.get());
   EXPECT_EQ(0u, EPDFSig_GetContents(m, 0, nullptr, 0));
@@ -1587,7 +1603,7 @@ TEST_F(EPDFSignatureEmbedderTest, ProbeNestedBerContentsLength) {
 
 TEST_F(EPDFSignatureEmbedderTest, ProbeMdpStructuresAreDirect) {
   RawPdf p = FormObjects();
-  ScopedFPDFDocument doc = OpenRaw(p);
+  embedpdf_test::ScopedTestDocument doc = OpenRaw(p);
   ASSERT_TRUE(doc);
   EPDF_SIG_PREPARE o = DefaultPrepare();
   o.docmdp_permission = 2;
@@ -1634,7 +1650,7 @@ TEST_F(EPDFSignatureEmbedderTest, ProbeDuplicateContentsKeyIsNotWhole) {
   snprintf(range, sizeof(range), "%010u %010zu %010zu %010zu", 0u, first, first + 18,
            p.bytes.size() - first - 18);
   p.bytes.replace(p.bytes.find(placeholder), placeholder.size(), range);
-  ScopedFPDFDocument doc = OpenRaw(p);
+  embedpdf_test::ScopedTestDocument doc = OpenRaw(p);
   ASSERT_TRUE(doc);
   EPDF_SIGNATURE_MODEL m = EPDFSig_LoadModel(doc.get());
   ASSERT_TRUE(m);
@@ -1645,7 +1661,7 @@ TEST_F(EPDFSignatureEmbedderTest, ProbeDuplicateContentsKeyIsNotWhole) {
 TEST_F(EPDFSignatureEmbedderTest, ProbeSeedValueVersionAndApprovalOnly) {
   // A required parser capability newer than the PDF 1.7 entry set: refused.
   RawPdf p = FormObjects("/SV<</Ff 4 /V 99>>");
-  ScopedFPDFDocument doc = OpenRaw(p);
+  embedpdf_test::ScopedTestDocument doc = OpenRaw(p);
   ASSERT_TRUE(doc);
   EPDF_SIG_PREPARE o = DefaultPrepare();
   EXPECT_EQ(0u, EPDFSig_Prepare(doc.get(), 6, &o));
@@ -1655,13 +1671,13 @@ TEST_F(EPDFSignatureEmbedderTest, ProbeSeedValueVersionAndApprovalOnly) {
   EPDFSig_CloseModel(m);
   // The same requirement at version 2 is fine.
   RawPdf p2 = FormObjects("/SV<</Ff 4 /V 2>>");
-  ScopedFPDFDocument doc2 = OpenRaw(p2);
+  embedpdf_test::ScopedTestDocument doc2 = OpenRaw(p2);
   ASSERT_TRUE(doc2);
   EXPECT_NE(0u, EPDFSig_Prepare(doc2.get(), 6, &o));
 
   // /MDP /P 0: approval only. A certification is refused, an approval is not.
   RawPdf p3 = FormObjects("/SV<</MDP<</P 0>>>>");
-  ScopedFPDFDocument doc3 = OpenRaw(p3);
+  embedpdf_test::ScopedTestDocument doc3 = OpenRaw(p3);
   ASSERT_TRUE(doc3);
   m = EPDFSig_LoadModel(doc3.get());
   EXPECT_TRUE(EPDFSig_GetSeedValuePresentFlags(m, 0) & EPDF_SIG_SV_MDP);
@@ -1674,7 +1690,7 @@ TEST_F(EPDFSignatureEmbedderTest, ProbeSeedValueVersionAndApprovalOnly) {
 
   // /MDP without /P imposes no constraint: a certification is fine.
   RawPdf p5 = FormObjects("/SV<</MDP<<>>>>");
-  ScopedFPDFDocument doc5 = OpenRaw(p5);
+  embedpdf_test::ScopedTestDocument doc5 = OpenRaw(p5);
   ASSERT_TRUE(doc5);
   m = EPDFSig_LoadModel(doc5.get());
   EXPECT_FALSE(EPDFSig_GetSeedValuePresentFlags(m, 0) & EPDF_SIG_SV_MDP);
@@ -1683,7 +1699,7 @@ TEST_F(EPDFSignatureEmbedderTest, ProbeSeedValueVersionAndApprovalOnly) {
 
   // /MDP /P 2: a certification at that level is forced; other levels refused.
   RawPdf p4 = FormObjects("/SV<</MDP<</P 2>>>>");
-  ScopedFPDFDocument doc4 = OpenRaw(p4);
+  embedpdf_test::ScopedTestDocument doc4 = OpenRaw(p4);
   ASSERT_TRUE(doc4);
   certify.docmdp_permission = 1;
   EXPECT_EQ(0u, EPDFSig_Prepare(doc4.get(), 6, &certify));
@@ -1761,8 +1777,19 @@ std::string SaveDelta(FPDF_DOCUMENT layer) {
   return delta;
 }
 
-ScopedFPDFDocument OpenBytes(const std::string& bytes) {
-  return ScopedFPDFDocument(FPDF_LoadMemDocument64(bytes.data(), bytes.size(), nullptr));
+// |bytes| as a test opens them: a layer in layer mode.
+embedpdf_test::ScopedTestDocument OpenBytes(const std::string& bytes) {
+  return embedpdf_test::ScopedTestDocument(
+      embedpdf_test::LoadMemDocumentForTest(bytes.data(), bytes.size(),
+                                            nullptr));
+}
+
+// |bytes| as a plain document, in layer mode too: for a test about a plain
+// document, one that compares a plain document with a layer, or one that makes
+// the bytes a layer opens.
+ScopedFPDFDocument OpenPlainBytes(const std::string& bytes) {
+  return ScopedFPDFDocument(
+      FPDF_LoadMemDocument64(bytes.data(), bytes.size(), nullptr));
 }
 
 std::string BytesOf(const Sealed& sealed) {
@@ -1858,7 +1885,7 @@ TEST_F(EPDFSignatureEmbedderTest, LayerPrepareAndSaveStayInCandidate) {
   const std::string signed_bytes = BytesOf(sealed);
   // Saving a layer appends to the base bytes verbatim.
   EXPECT_EQ(p.bytes, signed_bytes.substr(0, p.bytes.size()));
-  ScopedFPDFDocument signed_doc = OpenBytes(signed_bytes);
+  embedpdf_test::ScopedTestDocument signed_doc = OpenBytes(signed_bytes);
   ASSERT_TRUE(signed_doc);
   EXPECT_EQ(EPDF_SIG_COVERAGE_WHOLE_REVISION, CoverageOf(signed_doc.get(), 0));
   EXPECT_EQ(0ul, EPDFLayer_GetPromotedObjectCount(sibling.get()));
@@ -1905,12 +1932,12 @@ TEST_F(EPDFSignatureEmbedderTest, LayerReopenedSignedDeltaReportsItsLoadedBytes)
   // delta. The layer was loaded from base + delta, so it must report what
   // the plain document reports: two revisions, WHOLE coverage, one digest.
   RawPdf p = FormObjects();
-  ScopedFPDFDocument plain = OpenRaw(p);
+  ScopedFPDFDocument plain = OpenPlainBytes(p.bytes);
   ASSERT_TRUE(plain);
   Sealed sealed;
   ASSERT_TRUE(SignField(plain.get(), 6, DefaultPrepare(), &sealed));
   const std::string signed_bytes = BytesOf(sealed);
-  ScopedFPDFDocument standalone = OpenBytes(signed_bytes);
+  ScopedFPDFDocument standalone = OpenPlainBytes(signed_bytes);
   ASSERT_TRUE(standalone);
   ASSERT_EQ(2, EPDFDoc_GetRevisionCount(standalone.get()));
   ASSERT_EQ(EPDF_SIG_COVERAGE_WHOLE_REVISION, CoverageOf(standalone.get(), 0));
@@ -1972,8 +1999,8 @@ TEST_F(EPDFSignatureEmbedderTest, LayerCompareLoadedDeltaReportsChanges) {
   EXPECT_NE(std::string::npos, ReadDiffValue(diff, 0, EPDF_DIFF_NEW).find("(changed)"));
   EPDFObjectDiff_Close(diff);
   // The layered comparison equals the plain one over the same bytes.
-  ScopedFPDFDocument older = OpenRaw(p);
-  ScopedFPDFDocument newer = OpenRaw(n);
+  ScopedFPDFDocument older = OpenPlainBytes(p.bytes);
+  ScopedFPDFDocument newer = OpenPlainBytes(n.bytes);
   EPDF_OBJECT_DIFF plain = EPDFDoc_CompareRevisions(older.get(), newer.get());
   ASSERT_TRUE(plain);
   const std::vector<DiffRow> plain_rows = ReadDiffRows(plain);
@@ -1998,8 +2025,8 @@ TEST_F(EPDFSignatureEmbedderTest, LayerFreshBaseDiffKeepsUnreachableObjectValues
   ScopedBase base(n.bytes);
   ASSERT_TRUE(base.get());
   ScopedFPDFDocument layer = OpenLayer(base.get());
-  ScopedFPDFDocument older = OpenRaw(p);
-  ScopedFPDFDocument newer = OpenRaw(n);
+  ScopedFPDFDocument older = OpenPlainBytes(p.bytes);
+  ScopedFPDFDocument newer = OpenPlainBytes(n.bytes);
   ASSERT_TRUE(layer);
   ASSERT_TRUE(older);
   ASSERT_TRUE(newer);
@@ -2028,7 +2055,7 @@ TEST_F(EPDFSignatureEmbedderTest, PlainDiffValuesComeFromBytesNotCache) {
   b.push_back("<</K(before)>>");
   RawPdf p = MakeRawPdf(b);
   RawPdf n = AppendRawUpdate(p, 4, "<</K(after)>>", 5);
-  ScopedFPDFDocument newer = OpenRaw(n);
+  ScopedFPDFDocument newer = OpenPlainBytes(n.bytes);
   ASSERT_TRUE(newer);
   ScopedFPDFDocument older(EPDFDoc_OpenRevision(newer.get(), p.bytes.size()));
   ASSERT_TRUE(older);
@@ -2072,7 +2099,7 @@ TEST_F(EPDFSignatureEmbedderTest, LayerFinalizedBytesAsNewBasePreserveConsecutiv
   const std::string second_bytes = BytesOf(second);
   EXPECT_EQ(first_bytes, second_bytes.substr(0, first_bytes.size()));
 
-  ScopedFPDFDocument reopened = OpenBytes(second_bytes);
+  embedpdf_test::ScopedTestDocument reopened = OpenBytes(second_bytes);
   ASSERT_TRUE(reopened);
   EXPECT_EQ(3, EPDFDoc_GetRevisionCount(reopened.get()));
   EXPECT_EQ(EPDF_SIG_COVERAGE_WHOLE_REVISION, CoverageOf(reopened.get(), 0));
@@ -2095,7 +2122,7 @@ TEST_F(EPDFSignatureEmbedderTest, LayerPrepareRefusesSignedBytesInLoadedDelta) {
   // dropping what the first signature sealed. The same bytes as a base, or
   // a delta holding only unsigned edits over a signed base, are fine.
   RawPdf p = TwoSignatureFields();
-  ScopedFPDFDocument plain = OpenRaw(p);
+  ScopedFPDFDocument plain = OpenPlainBytes(p.bytes);
   ASSERT_TRUE(plain);
   Sealed first;
   ASSERT_TRUE(SignField(plain.get(), 4, DefaultPrepare(), &first));
@@ -2132,7 +2159,7 @@ TEST_F(EPDFSignatureEmbedderTest, LayerPrepareRefusesSignedBytesInLoadedDelta) {
   ASSERT_TRUE(SignField(unsigned_delta_layer.get(), 5, opts, &second));
   const std::string second_bytes = BytesOf(second);
   EXPECT_EQ(signed_bytes, second_bytes.substr(0, signed_bytes.size()));
-  ScopedFPDFDocument reopened = OpenBytes(second_bytes);
+  embedpdf_test::ScopedTestDocument reopened = OpenBytes(second_bytes);
   ASSERT_TRUE(reopened);
   EXPECT_EQ(EPDF_SIG_COVERAGE_WHOLE_REVISION, CoverageOf(reopened.get(), 0));
   EXPECT_EQ(EPDF_SIG_COVERAGE_WHOLE_REVISION, CoverageOf(reopened.get(), 1));
@@ -2176,7 +2203,7 @@ TEST_F(EPDFSignatureEmbedderTest, LayerEncryptedBaseModelMatchesOrdinaryDocument
   ScopedBase base(bytes);
   ASSERT_TRUE(base.get());
   ScopedFPDFDocument layer = OpenLayer(base.get());
-  ScopedFPDFDocument plain = OpenBytes(bytes);
+  ScopedFPDFDocument plain = OpenPlainBytes(bytes);
   ASSERT_TRUE(layer);
   ASSERT_TRUE(plain);
   EPDF_SIGNATURE_MODEL from_layer = EPDFSig_LoadModel(layer.get());
@@ -2221,7 +2248,7 @@ TEST_F(EPDFSignatureEmbedderTest, LayerEncryptedSigningPreservesExistingSignatur
   ASSERT_TRUE(SignField(candidate.get(), field, opts, &sealed));
   const std::string signed_bytes = BytesOf(sealed);
   EXPECT_EQ(bytes, signed_bytes.substr(0, bytes.size()));
-  ScopedFPDFDocument signed_doc = OpenBytes(signed_bytes);
+  embedpdf_test::ScopedTestDocument signed_doc = OpenBytes(signed_bytes);
   ASSERT_TRUE(signed_doc);
   EPDF_SIGNATURE_MODEL model = EPDFSig_LoadModel(signed_doc.get());
   ASSERT_TRUE(model);
@@ -2238,7 +2265,7 @@ TEST_F(EPDFSignatureEmbedderTest, LayerEncryptedSigningPreservesExistingSignatur
 TEST_F(EPDFSignatureEmbedderTest, LoadedBytesPlainDocument) {
   RawPdf p = FormObjects();
   RawPdf n = AppendRawUpdate(p, 5, "<</T(total) /Parent 4 0 R /V(changed)>>", 7);
-  ScopedFPDFDocument doc = OpenRaw(n);
+  ScopedFPDFDocument doc = OpenPlainBytes(n.bytes);
   ASSERT_TRUE(doc);
   EXPECT_EQ(n.bytes.size(), EPDFDoc_GetLoadedBytesSize(doc.get()));
   EXPECT_EQ(n.bytes.size(), EPDFDoc_GetBaseBytesSize(doc.get()));
@@ -2302,7 +2329,7 @@ TEST_F(EPDFSignatureEmbedderTest, BaseSha256IsLazyAndCanBeSupplied) {
   ASSERT_EQ(32u, expected.size());
   EXPECT_EQ(0, memcmp(reported, expected.data(), 32));
   EXPECT_FALSE(EPDFLayer_GetBaseSha256(layer.get(), nullptr));
-  ScopedFPDFDocument plain = OpenRaw(p);
+  ScopedFPDFDocument plain = OpenPlainBytes(p.bytes);
   EXPECT_FALSE(EPDFLayer_GetBaseSha256(plain.get(), reported));
 
   // Supplied: a host that already hashed the bytes hands the value over and
@@ -2350,7 +2377,7 @@ TEST_F(EPDFSignatureEmbedderTest, BaseSha256IsLazyAndCanBeSupplied) {
 
 TEST_F(EPDFSignatureEmbedderTest, StructureObjectNumbers) {
   RawPdf p = FormObjects();
-  ScopedFPDFDocument doc = OpenRaw(p);
+  embedpdf_test::ScopedTestDocument doc = OpenRaw(p);
   ASSERT_TRUE(doc);
   unsigned int root = 0;
   unsigned int acroform = 0;
@@ -2442,7 +2469,7 @@ TEST_F(EPDFSignatureEmbedderTest, LayerBaseOverlayReplacesTheLoadedDelta) {
             static_cast<size_t>(EPDFDoc_GetLoadedBytesSize(reopened.get())));
 
   // Refused for a plain document and for an empty delta.
-  ScopedFPDFDocument plain = OpenBytes(p.bytes);
+  ScopedFPDFDocument plain = OpenPlainBytes(p.bytes);
   ASSERT_TRUE(plain);
   EXPECT_FALSE(EPDFDoc_OpenBaseOverlay(plain.get(), delta2.data(), delta2.size()));
   EXPECT_FALSE(EPDFDoc_OpenBaseOverlay(reopened.get(), delta2.data(), 0));

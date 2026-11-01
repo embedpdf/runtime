@@ -46,6 +46,7 @@
 #include "public/fpdf_transformpage.h"
 #include "public/fpdfview.h"
 #include "testing/embedder_test.h"
+#include "testing/embedpdf_layer_mode.h"
 #include "testing/fx_string_testhelpers.h"
 #include "testing/gmock/include/gmock/gmock.h"
 #include "testing/gtest/include/gtest/gtest.h"
@@ -888,6 +889,7 @@ TEST_F(EPDFCaptureEmbedderTest, NonTerminalFieldHasNoCapture) {
 
 // Captures are for layers: a plain document has none.
 TEST_F(EPDFCaptureEmbedderTest, PlainDocumentHasNoCaptures) {
+  // Plain in layer mode too: the test is about a plain document.
   ScopedFPDFDocument doc(
       FPDF_LoadMemDocument(input_.data(), input_.size(), nullptr));
   ASSERT_TRUE(doc);
@@ -1364,6 +1366,7 @@ TEST_F(EPDFPageCaptureEmbedderTest, CapturesNeedAPageAndALayer) {
   EXPECT_FALSE(ImportPage(layer.get(), capture));  // outside a transaction
   EXPECT_THAT(PageOrder(layer.get()), ElementsAre(kCover, kBody));
 
+  // Plain in layer mode too: a plain document has no captures.
   ScopedFPDFDocument plain(
       FPDF_LoadMemDocument(input_.data(), input_.size(), nullptr));
   ASSERT_TRUE(plain);
@@ -1670,6 +1673,7 @@ TEST_F(EPDFAttachmentCaptureEmbedderTest, CanonicalBytesTellTheSameFile) {
   EXPECT_NE(made, CanonicalAttachment(reopened.get(), L"c.txt"));
 
   EXPECT_TRUE(CanonicalAttachment(reopened.get(), L"none.txt").empty());
+  // Plain in layer mode too: a plain document has no captures.
   ScopedFPDFDocument plain(
       FPDF_LoadMemDocument(input_.data(), input_.size(), nullptr));
   ASSERT_TRUE(plain);
@@ -1696,6 +1700,7 @@ TEST_F(EPDFAttachmentCaptureEmbedderTest, CapturesNeedAFileAndALayer) {
   ASSERT_TRUE(EPDFLayer_CommitTransaction(layer.get()));
   EXPECT_THAT(AttachmentKeys(layer.get()), ElementsAre(L"b.txt"));
 
+  // Plain in layer mode too: a plain document has no captures.
   ScopedFPDFDocument plain(
       FPDF_LoadMemDocument(input_.data(), input_.size(), nullptr));
   ASSERT_TRUE(plain);

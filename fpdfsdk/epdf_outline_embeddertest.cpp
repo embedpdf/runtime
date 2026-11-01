@@ -32,6 +32,7 @@
 #include "public/fpdf_doc.h"
 #include "public/fpdfview.h"
 #include "testing/embedder_test.h"
+#include "testing/embedpdf_layer_mode.h"
 #include "testing/fx_string_testhelpers.h"
 #include "testing/gtest/include/gtest/gtest.h"
 
@@ -294,7 +295,16 @@ class EPDFOutlineEmbedderTest : public EmbedderTest {
     EmbedderTest::TearDown();
   }
 
-  // A plain document of |bytes|.
+  // A document of |bytes|, as a test opens one: a layer in layer mode.
+  embedpdf_test::ScopedTestDocument Open(std::string bytes = MakeDocument()) {
+    plain_ = std::move(bytes);
+    return embedpdf_test::ScopedTestDocument(
+        embedpdf_test::LoadMemDocumentForTest(plain_.data(), plain_.size(),
+                                              nullptr));
+  }
+
+  // A plain document of |bytes|, in layer mode too: for a test about plain
+  // documents.
   ScopedFPDFDocument OpenPlain(std::string bytes = MakeDocument()) {
     plain_ = std::move(bytes);
     return ScopedFPDFDocument(
@@ -344,7 +354,7 @@ class EPDFOutlineEmbedderTest : public EmbedderTest {
 };
 
 TEST_F(EPDFOutlineEmbedderTest, ItemsAreNamedByNumber) {
-  ScopedFPDFDocument doc = OpenPlain();
+  embedpdf_test::ScopedTestDocument doc = Open();
   ASSERT_TRUE(doc);
   EXPECT_EQ("4:A+1[A1] B C-1[C1]", Tree(doc.get()));
   EXPECT_EQ("", Problems(doc.get()));
@@ -362,7 +372,7 @@ TEST_F(EPDFOutlineEmbedderTest, ItemsAreNamedByNumber) {
 }
 
 TEST_F(EPDFOutlineEmbedderTest, CreatePlacesTheItemAndCounts) {
-  ScopedFPDFDocument doc = OpenPlain();
+  embedpdf_test::ScopedTestDocument doc = Open();
   ASSERT_TRUE(doc);
   const uint32_t top = Create(doc.get(), 0, 0, L"Top");
   ASSERT_TRUE(top);
@@ -390,7 +400,7 @@ TEST_F(EPDFOutlineEmbedderTest, CreatePlacesTheItemAndCounts) {
 }
 
 TEST_F(EPDFOutlineEmbedderTest, CreateRefusesAndChangesNothing) {
-  ScopedFPDFDocument doc = OpenPlain();
+  embedpdf_test::ScopedTestDocument doc = Open();
   ASSERT_TRUE(doc);
   CPDF_Document* pdf = CPDFDocumentFromFPDFDocument(doc.get());
   const std::map<uint32_t, std::string> before = ObjectGraph(pdf);
@@ -417,7 +427,7 @@ TEST_F(EPDFOutlineEmbedderTest, CreateAtANumberOnALayer) {
 }
 
 TEST_F(EPDFOutlineEmbedderTest, CreateMakesTheOutline) {
-  ScopedFPDFDocument doc = OpenPlain(MakePdf({
+  embedpdf_test::ScopedTestDocument doc = Open(MakePdf({
       "<< /Type /Catalog /Pages 2 0 R >>",
       "<< /Type /Pages /Kids [3 0 R] /Count 1 >>",
       "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 300 300] >>",
@@ -435,7 +445,7 @@ TEST_F(EPDFOutlineEmbedderTest, CreateMakesTheOutline) {
 }
 
 TEST_F(EPDFOutlineEmbedderTest, MoveKeepsNumbersKeysAndState) {
-  ScopedFPDFDocument doc = OpenPlain();
+  embedpdf_test::ScopedTestDocument doc = Open();
   ASSERT_TRUE(doc);
   // C goes under A, closed, with its child and its keys.
   ASSERT_TRUE(EPDFOutline_MoveItem(doc.get(), kC, kA, kA1));
@@ -459,7 +469,7 @@ TEST_F(EPDFOutlineEmbedderTest, MoveKeepsNumbersKeysAndState) {
 }
 
 TEST_F(EPDFOutlineEmbedderTest, MoveRefusesAndChangesNothing) {
-  ScopedFPDFDocument doc = OpenPlain();
+  embedpdf_test::ScopedTestDocument doc = Open();
   ASSERT_TRUE(doc);
   CPDF_Document* pdf = CPDFDocumentFromFPDFDocument(doc.get());
   const std::map<uint32_t, std::string> before = ObjectGraph(pdf);
@@ -474,7 +484,7 @@ TEST_F(EPDFOutlineEmbedderTest, MoveRefusesAndChangesNothing) {
 }
 
 TEST_F(EPDFOutlineEmbedderTest, DeleteTakesTheItemsUnderIt) {
-  ScopedFPDFDocument doc = OpenPlain();
+  embedpdf_test::ScopedTestDocument doc = Open();
   ASSERT_TRUE(doc);
   ASSERT_TRUE(EPDFOutline_DeleteItem(doc.get(), kA));
   EXPECT_EQ("2:B C-1[C1]", Tree(doc.get()));
@@ -499,7 +509,7 @@ TEST_F(EPDFOutlineEmbedderTest, DeleteTakesTheItemsUnderIt) {
 }
 
 TEST_F(EPDFOutlineEmbedderTest, SetOpenFlipsTheSignAndCountsAgain) {
-  ScopedFPDFDocument doc = OpenPlain();
+  embedpdf_test::ScopedTestDocument doc = Open();
   ASSERT_TRUE(doc);
   ASSERT_TRUE(EPDFOutline_SetOpen(doc.get(), kC, true));
   EXPECT_EQ("5:A+1[A1] B C+1[C1]", Tree(doc.get()));
@@ -513,7 +523,7 @@ TEST_F(EPDFOutlineEmbedderTest, SetOpenFlipsTheSignAndCountsAgain) {
 }
 
 TEST_F(EPDFOutlineEmbedderTest, TitleColorAndStyle) {
-  ScopedFPDFDocument doc = OpenPlain();
+  embedpdf_test::ScopedTestDocument doc = Open();
   ASSERT_TRUE(doc);
   ScopedFPDFWideString renamed = GetFPDFWideString(L"Ölçü");
   ASSERT_TRUE(EPDFOutline_SetTitle(doc.get(), kA1, renamed.get()));
@@ -544,7 +554,7 @@ TEST_F(EPDFOutlineEmbedderTest, TitleColorAndStyle) {
 }
 
 TEST_F(EPDFOutlineEmbedderTest, SetActionReplacesTheDestination) {
-  ScopedFPDFDocument doc = OpenPlain();
+  embedpdf_test::ScopedTestDocument doc = Open();
   ASSERT_TRUE(doc);
   ASSERT_TRUE(DictOf(doc.get(), kA)->KeyExist("Dest"));
   FPDF_ACTION action = GoTo(doc.get(), kFirstPage);
@@ -557,8 +567,8 @@ TEST_F(EPDFOutlineEmbedderTest, SetActionReplacesTheDestination) {
 
   // Another document's action is refused, also when its number names an
   // object here (the action set above); none removes the target.
-  ScopedFPDFDocument other(
-      FPDF_LoadMemDocument(plain_.data(), plain_.size(), nullptr));
+  embedpdf_test::ScopedTestDocument other(embedpdf_test::LoadMemDocumentForTest(
+      plain_.data(), plain_.size(), nullptr));
   ASSERT_TRUE(other);
   FPDF_ACTION foreign = GoTo(other.get(), kFirstPage);
   ASSERT_TRUE(foreign);
@@ -609,7 +619,7 @@ TEST_F(EPDFOutlineEmbedderTest, SetActionLeavesASharedActionAlone) {
 // A /Next that comes back ends the list; the next write of that list
 // straightens it.
 TEST_F(EPDFOutlineEmbedderTest, ALoopEndsTheList) {
-  ScopedFPDFDocument doc = OpenPlain(MakeDocumentWith({
+  embedpdf_test::ScopedTestDocument doc = Open(MakeDocumentWith({
       "<< /Type /Outlines /First 5 0 R /Last 6 0 R /Count 2 >>",
       "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 300 300] >>",
       "<< /Title (One) /Parent 3 0 R /Next 6 0 R >>",
@@ -625,7 +635,7 @@ TEST_F(EPDFOutlineEmbedderTest, ALoopEndsTheList) {
 // A wrong /Last, /Prev or /Count never misleads a write. A write puts right
 // the lists it changes and the counts above them, and leaves the rest.
 TEST_F(EPDFOutlineEmbedderTest, WrongLinksAndCountsAreWrittenRight) {
-  ScopedFPDFDocument doc = OpenPlain(MakeDocumentWith({
+  embedpdf_test::ScopedTestDocument doc = Open(MakeDocumentWith({
       "<< /Type /Outlines /First 5 0 R /Last 5 0 R /Count 9 >>",
       "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 300 300] >>",
       "<< /Title (One) /Parent 3 0 R /Next 6 0 R /Prev 6 0 R >>",
@@ -647,7 +657,7 @@ TEST_F(EPDFOutlineEmbedderTest, WrongLinksAndCountsAreWrittenRight) {
 // A list holding an item that isn't an indirect object is never written;
 // what doesn't change the list still works.
 TEST_F(EPDFOutlineEmbedderTest, ADirectItemKeepsItsListAsItIs) {
-  ScopedFPDFDocument doc = OpenPlain(MakeDocumentWith({
+  embedpdf_test::ScopedTestDocument doc = Open(MakeDocumentWith({
       "<< /Type /Outlines /First 5 0 R /Count 2 >>",
       "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 300 300] >>",
       "<< /Title (One) /Parent 3 0 R /Next << /Title (Direct) >> >>",
@@ -665,7 +675,7 @@ TEST_F(EPDFOutlineEmbedderTest, ADirectItemKeepsItsListAsItIs) {
 }
 
 TEST_F(EPDFOutlineEmbedderTest, ADirectOutlineDictionaryIsNeverWritten) {
-  ScopedFPDFDocument doc = OpenPlain(MakePdf({
+  embedpdf_test::ScopedTestDocument doc = Open(MakePdf({
       "<< /Type /Catalog /Pages 2 0 R /Outlines << /Type /Outlines >> >>",
       "<< /Type /Pages /Kids [3 0 R] /Count 1 >>",
       "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 300 300] >>",
@@ -687,7 +697,7 @@ TEST_F(EPDFOutlineEmbedderTest, ADictionaryThatIsntAnItemEndsTheList) {
            "<< /Type /Pages /Kids [4 0 R] /Count 1 >>",
        }) {
     SCOPED_TRACE(other);
-    ScopedFPDFDocument doc = OpenPlain(MakeDocumentWith({
+    embedpdf_test::ScopedTestDocument doc = Open(MakeDocumentWith({
         "<< /Type /Outlines /First 5 0 R /Last 5 0 R /Count 1 >>",
         "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 300 300] >>",
         "<< /Title (One) /Parent 3 0 R /Next 6 0 R >>",
@@ -713,7 +723,7 @@ TEST_F(EPDFOutlineEmbedderTest, ADictionaryThatIsntAnItemEndsTheList) {
 // no outline: the readers show none, and a create makes a new outline in
 // its place without touching what was linked there.
 TEST_F(EPDFOutlineEmbedderTest, AnOutlinesThatIsntAnOutlineIsNone) {
-  ScopedFPDFDocument doc = OpenPlain(MakePdf({
+  embedpdf_test::ScopedTestDocument doc = Open(MakePdf({
       "<< /Type /Catalog /Pages 2 0 R /Outlines 2 0 R >>",
       "<< /Type /Pages /Kids [3 0 R] /Count 1 >>",
       "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 300 300] >>",
@@ -747,7 +757,7 @@ TEST_F(EPDFOutlineEmbedderTest, SharedListsAreCountedOnce) {
     }
     outline.push_back(item + " >>");
   }
-  ScopedFPDFDocument doc = OpenPlain(MakeDocumentWith(outline));
+  embedpdf_test::ScopedTestDocument doc = Open(MakeDocumentWith(outline));
   ASSERT_TRUE(doc);
   ASSERT_TRUE(Create(doc.get(), 0, last, L"After"));
   EXPECT_EQ(static_cast<int>(kItems) + 1,
@@ -773,7 +783,7 @@ TEST_F(EPDFOutlineEmbedderTest, ItemsDeeperThanReadsGoAreLeftAlone) {
     }
     outline.push_back(item + " >>");
   }
-  ScopedFPDFDocument doc = OpenPlain(MakeDocumentWith(outline));
+  embedpdf_test::ScopedTestDocument doc = Open(MakeDocumentWith(outline));
   ASSERT_TRUE(doc);
   ScopedFPDFWideString title = GetFPDFWideString(L"y");
   EXPECT_TRUE(EPDFOutline_GetItem(doc.get(), 5 + 127));

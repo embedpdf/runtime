@@ -18,6 +18,7 @@
 #include "public/cpp/fpdf_scopers.h"
 #include "public/fpdf_annot.h"
 #include "public/fpdfview.h"
+#include "testing/embedpdf_layer_mode.h"
 
 class CPDF_Document;
 
@@ -47,6 +48,10 @@ std::string MakePdf(const std::vector<std::string>& objects);
 // embedpdf_test::LoadMemDocumentForTest(), it is a layer in layer mode, as
 // every document the engine opens is; CreateEmptyDocument() never is.
 std::string EmptyPdf();
+
+// EmptyPdf() opened with embedpdf_test::LoadMemDocumentForTest(): a document
+// of a test's own to write into, in place of FPDF_CreateNewDocument().
+embedpdf_test::ScopedTestDocument NewTestDocument();
 
 // A stream object body holding `data`.
 std::string Stream(const std::string& data);

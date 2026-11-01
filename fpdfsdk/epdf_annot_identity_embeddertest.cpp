@@ -363,6 +363,7 @@ TEST_F(EPDFAnnotIdentityEmbedderTest, InlineAnnotationInAnIndirectArray) {
 TEST_F(EPDFAnnotIdentityEmbedderTest, LinkingToAnInlineAnnotationPromotes) {
   for (bool layer : {true, false}) {
     SCOPED_TRACE(layer ? "layer" : "document");
+    // Plain in layer mode too: the layer is the other case.
     ScopedFPDFDocument doc = layer
                                  ? OpenLayer()
                                  : ScopedFPDFDocument(FPDF_LoadMemDocument(

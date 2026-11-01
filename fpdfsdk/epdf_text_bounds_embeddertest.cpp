@@ -22,6 +22,7 @@
 #include "public/fpdf_edit.h"
 #include "public/fpdfview.h"
 #include "testing/embedder_test.h"
+#include "testing/embedpdf_layer_mode.h"
 #include "testing/gtest/include/gtest/gtest.h"
 
 namespace {
@@ -61,7 +62,8 @@ struct Line {
 };
 
 Line BoundsOf(const std::string& pdf) {
-  ScopedFPDFDocument doc(FPDF_LoadMemDocument(pdf.data(), pdf.size(), nullptr));
+  embedpdf_test::ScopedTestDocument doc(
+      embedpdf_test::LoadMemDocumentForTest(pdf.data(), pdf.size(), nullptr));
   ScopedFPDFPage page(FPDF_LoadPage(doc.get(), 0));
   const CPDF_TextObject* text =
       CPDFPageFromFPDFPage(page.get())->GetPageObjectByIndex(0)->AsText();
@@ -74,7 +76,8 @@ Line BoundsOf(const std::string& pdf) {
 
 // Draws `pdf`'s page, which sets the generic font's design for its glyphs.
 void Draw(const std::string& pdf) {
-  ScopedFPDFDocument doc(FPDF_LoadMemDocument(pdf.data(), pdf.size(), nullptr));
+  embedpdf_test::ScopedTestDocument doc(
+      embedpdf_test::LoadMemDocumentForTest(pdf.data(), pdf.size(), nullptr));
   ScopedFPDFPage page(FPDF_LoadPage(doc.get(), 0));
   ScopedFPDFBitmap bitmap = EmbedderTest::RenderPage(page.get());
 }
@@ -82,7 +85,8 @@ void Draw(const std::string& pdf) {
 // The extent of the dark pixels of `pdf`'s page drawn at `scale` pixels per
 // point, in page space.
 CFX_FloatRect Ink(const std::string& pdf, int scale) {
-  ScopedFPDFDocument doc(FPDF_LoadMemDocument(pdf.data(), pdf.size(), nullptr));
+  embedpdf_test::ScopedTestDocument doc(
+      embedpdf_test::LoadMemDocumentForTest(pdf.data(), pdf.size(), nullptr));
   ScopedFPDFPage page(FPDF_LoadPage(doc.get(), 0));
   const int width = kPageWidth * scale;
   const int height = kPageHeight * scale;

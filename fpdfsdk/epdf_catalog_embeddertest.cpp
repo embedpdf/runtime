@@ -90,6 +90,7 @@ OpenedPdf OpenPdf(const std::string& input, bool layer) {
           EPDFLayer_OpenLayer(opened.base.get(), nullptr, nullptr, nullptr));
     }
   } else {
+    // Plain in layer mode too: the layer is the other case.
     opened.doc.reset(
         FPDF_LoadMemDocument64(input.data(), input.size(), nullptr));
   }

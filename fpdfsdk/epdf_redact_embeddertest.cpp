@@ -25,6 +25,7 @@
 #include "core/fpdfapi/parser/cpdf_stream_acc.h"
 #include "core/fxcodec/flate/flatemodule.h"
 #include "fpdfsdk/cpdfsdk_helpers.h"
+#include "fpdfsdk/epdf_edit_test_util.h"
 #include "public/cpp/fpdf_scopers.h"
 #include "public/epdf_annot.h"
 #include "public/epdf_edit.h"
@@ -37,6 +38,7 @@
 #include "public/fpdf_text.h"
 #include "testing/document_sentinels.h"
 #include "testing/embedder_test.h"
+#include "testing/embedpdf_layer_mode.h"
 #include "testing/fx_string_testhelpers.h"
 #include "testing/gtest/include/gtest/gtest.h"
 
@@ -203,6 +205,7 @@ OpenedPdf OpenPdf(const std::string& input, bool layer) {
           EPDFLayer_OpenLayer(opened.base.get(), nullptr, nullptr, nullptr));
     }
   } else {
+    // Plain in layer mode too: the layer is the other case.
     opened.doc.reset(
         FPDF_LoadMemDocument64(input.data(), input.size(), nullptr));
   }
@@ -521,8 +524,9 @@ class EPDFRedactEmbedderTest : public EmbedderTest {
       return -1;
     }
     const std::string bytes = GetString();
-    ScopedFPDFDocument saved(
-        FPDF_LoadMemDocument(bytes.data(), bytes.size(), nullptr));
+    embedpdf_test::ScopedTestDocument saved(
+        embedpdf_test::LoadMemDocumentForTest(bytes.data(), bytes.size(),
+                                              nullptr));
     if (!saved) {
       ADD_FAILURE() << "the rewrite does not open";
       return -1;
@@ -747,6 +751,7 @@ class EPDFRedactPageTreeTest
           EPDFLayer_OpenLayer(base_.get(), nullptr, nullptr, &status));
       EXPECT_EQ(EPDFLayerOpenStatus_kSuccess, status);
     } else {
+      // Plain in layer mode too: the layer is the other case.
       working_.reset(
           FPDF_LoadMemDocument64(input_.data(), input_.size(), nullptr));
     }
@@ -851,10 +856,11 @@ INSTANTIATE_TEST_SUITE_P(All,
 TEST_F(EPDFRedactEmbedderTest,
        RedactingAFlattenedStampLeavesAStampSharingItsDrawingAlone) {
   const std::string drawing_pdf = MakeTextDrawing({"SENTINELSHARED", "KEEP"});
-  ScopedFPDFDocument source(
-      FPDF_LoadMemDocument(drawing_pdf.data(), drawing_pdf.size(), nullptr));
+  embedpdf_test::ScopedTestDocument source(
+      embedpdf_test::LoadMemDocumentForTest(drawing_pdf.data(),
+                                            drawing_pdf.size(), nullptr));
   ASSERT_TRUE(source);
-  ScopedFPDFDocument doc(FPDF_CreateNewDocument());
+  embedpdf_test::ScopedTestDocument doc(NewTestDocument());
   ScopedFPDFPage page(FPDFPage_New(doc.get(), 0, 600, 600));
   ScopedFPDFAnnotation redacted =
       AddStamp(page.get(), source.get(), FS_RECTF{50, 590, 350, 500});
@@ -912,10 +918,11 @@ TEST_F(EPDFRedactEmbedderTest, RedactingTheOnlyStampLeavesNothingOfItsDrawing) {
   for (bool flatten : {false, true}) {
     SCOPED_TRACE(flatten ? "flattened" : "live");
     const std::string drawing_pdf = MakeTextDrawing({"SENTINELONLY"});
-    ScopedFPDFDocument source(
-        FPDF_LoadMemDocument(drawing_pdf.data(), drawing_pdf.size(), nullptr));
+    embedpdf_test::ScopedTestDocument source(
+        embedpdf_test::LoadMemDocumentForTest(drawing_pdf.data(),
+                                              drawing_pdf.size(), nullptr));
     ASSERT_TRUE(source);
-    ScopedFPDFDocument doc(FPDF_CreateNewDocument());
+    embedpdf_test::ScopedTestDocument doc(NewTestDocument());
     ScopedFPDFPage page(FPDFPage_New(doc.get(), 0, 600, 600));
     ScopedFPDFAnnotation stamp =
         AddStamp(page.get(), source.get(), FS_RECTF{50, 550, 350, 500});
@@ -968,6 +975,7 @@ TEST_F(EPDFRedactEmbedderTest, AppliesOnAPageWithoutContentsOrResources) {
       ASSERT_TRUE(base);
       doc.reset(EPDFLayer_OpenLayer(base.get(), nullptr, nullptr, nullptr));
     } else {
+      // Plain in layer mode too: the layer is the other case.
       doc.reset(FPDF_LoadMemDocument64(input.data(), input.size(), nullptr));
     }
     ASSERT_TRUE(doc);
@@ -1454,8 +1462,9 @@ TEST_F(EPDFRedactEmbedderTest, ARedactedImageKeepsItsSamplesAndFormat) {
                          image.entries,
                      image.data),
         "1 0 0 rg");
-    ScopedFPDFDocument source_doc(
-        FPDF_LoadMemDocument64(input.data(), input.size(), nullptr));
+    embedpdf_test::ScopedTestDocument source_doc(
+        embedpdf_test::LoadMemDocumentForTest(input.data(), input.size(),
+                                              nullptr));
     ASSERT_TRUE(source_doc);
     RetainPtr<const CPDF_Stream> source_image = OnlyImage(source_doc.get());
     ASSERT_TRUE(source_image);

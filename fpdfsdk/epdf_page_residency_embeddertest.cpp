@@ -26,6 +26,7 @@
 #include "public/fpdf_transformpage.h"
 #include "public/fpdfview.h"
 #include "testing/embedder_test.h"
+#include "testing/embedpdf_layer_mode.h"
 #include "testing/gtest/include/gtest/gtest.h"
 
 namespace {
@@ -103,10 +104,12 @@ class EPDFPageResidencyEmbedderTest : public EmbedderTest {
     return layer;
   }
 
-  ScopedFPDFDocument OpenPlain(std::string pdf) {
+  // A document of |pdf|, as a test opens one: a layer in layer mode.
+  embedpdf_test::ScopedTestDocument Open(std::string pdf) {
     inputs_.push_back(std::move(pdf));
-    return ScopedFPDFDocument(FPDF_LoadMemDocument(
-        inputs_.back().data(), inputs_.back().size(), nullptr));
+    return embedpdf_test::ScopedTestDocument(
+        embedpdf_test::LoadMemDocumentForTest(inputs_.back().data(),
+                                              inputs_.back().size(), nullptr));
   }
 
   // Removes the page's first object and writes the page's content.
@@ -124,7 +127,7 @@ class EPDFPageResidencyEmbedderTest : public EmbedderTest {
 }  // namespace
 
 TEST_F(EPDFPageResidencyEmbedderTest, CountsEveryObjectNestedFormsIncluded) {
-  ScopedFPDFDocument doc = OpenPlain(MakeDocument());
+  embedpdf_test::ScopedTestDocument doc = Open(MakeDocument());
   ScopedFPDFPage page(FPDF_LoadPage(doc.get(), 0));
   ASSERT_TRUE(page);
 
@@ -144,7 +147,7 @@ TEST_F(EPDFPageResidencyEmbedderTest, CountsEveryObjectNestedFormsIncluded) {
 // agree: after an edit the page counts again, and putting back what was taken
 // gives the parse's count exactly.
 TEST_F(EPDFPageResidencyEmbedderTest, CountsAgainAfterTheObjectsChange) {
-  ScopedFPDFDocument doc = OpenPlain(MakeDocument());
+  embedpdf_test::ScopedTestDocument doc = Open(MakeDocument());
   ScopedFPDFPage page(FPDF_LoadPage(doc.get(), 0));
   ASSERT_TRUE(page);
   const EPDF_PAGE_PARSED_SIZE parsed = SizeOf(page.get());
@@ -170,10 +173,13 @@ TEST_F(EPDFPageResidencyEmbedderTest, CountsAgainAfterTheObjectsChange) {
 // While a page parses, its size is what the parse has added so far.
 TEST_F(EPDFPageResidencyEmbedderTest, CountsWhileParsing) {
   constexpr int kSquares = 250;
-  ScopedFPDFDocument doc = OpenPlain(MakeManySquares(kSquares));
+  embedpdf_test::ScopedTestDocument doc = Open(MakeManySquares(kSquares));
   CPDF_Document* document = CPDFDocumentFromFPDFDocument(doc.get());
+  // As FPDF_LoadPage() makes a page: the mutable getter would copy the page
+  // dictionary into a layer, and the page copies it up on its first write.
+  RetainPtr<const CPDF_Dictionary> dict = document->GetPageDictionary(0);
   auto page = pdfium::MakeRetain<CPDF_Page>(
-      document, document->GetMutablePageDictionary(0));
+      document, pdfium::WrapRetain(const_cast<CPDF_Dictionary*>(dict.Get())));
   FPDF_PAGE handle = FPDFPageFromIPDFPage(page.Get());
 
   EXPECT_FALSE(SizeOf(handle).complete);
@@ -245,7 +251,9 @@ TEST_F(EPDFPageResidencyEmbedderTest,
 // A page that writes its own content outside a transaction matches what it
 // wrote; a page loaded before is not told.
 TEST_F(EPDFPageResidencyEmbedderTest, WritesInPlaceAreNotSeen) {
-  ScopedFPDFDocument doc = OpenPlain(MakeDocument());
+  // Plain in layer mode too: a layer tells the page loaded before.
+  const std::string pdf = MakeDocument();
+  ScopedFPDFDocument doc(FPDF_LoadMemDocument(pdf.data(), pdf.size(), nullptr));
   ScopedFPDFPage kept(FPDF_LoadPage(doc.get(), 0));
   ScopedFPDFPage writer(FPDF_LoadPage(doc.get(), 0));
   RemoveFirstObjectAndGenerate(writer.get());

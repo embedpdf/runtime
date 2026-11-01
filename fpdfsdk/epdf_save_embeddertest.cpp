@@ -52,6 +52,7 @@
 #include "public/fpdf_save.h"
 #include "public/fpdfview.h"
 #include "testing/embedder_test.h"
+#include "testing/embedpdf_layer_mode.h"
 #include "testing/fx_string_testhelpers.h"
 #include "testing/gmock/include/gmock/gmock-matchers.h"
 #include "testing/utils/file_util.h"
@@ -302,8 +303,8 @@ SavedPdfModel AnalyzeSavedPdf(const std::string& bytes,
                               const char* password = nullptr,
                               size_t original_size = 0) {
   SavedPdfModel model;
-  ScopedFPDFDocument saved(
-      FPDF_LoadMemDocument(bytes.data(), bytes.size(), password));
+  embedpdf_test::ScopedTestDocument saved(embedpdf_test::LoadMemDocumentForTest(
+      bytes.data(), bytes.size(), password));
   EXPECT_TRUE(saved);
   if (!saved) {
     return model;
@@ -382,6 +383,7 @@ TEST_F(EPDFSaveEmbedderTest, FullRewriteWritesOnlyReachableObjects) {
         source.reset(EPDFLayer_OpenLayer(base, nullptr, nullptr, nullptr));
         EPDF_ReleaseBaseDocument(base);
       } else {
+        // Plain in layer mode too: the layer is the other case.
         source.reset(FPDF_LoadMemDocument(input.data(), input.size(), nullptr));
       }
       ASSERT_TRUE(source);
@@ -590,8 +592,9 @@ TEST_F(EPDFSaveEmbedderTest, DetachedObjectDoesNotInflateWarmSaveReads) {
 TEST_F(EPDFSaveEmbedderTest, IncrementalRevisionWritesExactlyChangedObjects) {
   for (bool xref_stream : {false, true}) {
     const std::string input = MakeGenerationDocument(256, xref_stream);
-    ScopedFPDFDocument source(
-        FPDF_LoadMemDocument(input.data(), input.size(), nullptr));
+    embedpdf_test::ScopedTestDocument source(
+        embedpdf_test::LoadMemDocumentForTest(input.data(), input.size(),
+                                              nullptr));
     ASSERT_TRUE(source);
     auto* doc = CPDFDocumentFromFPDFDocument(source.get());
     auto page = doc->GetMutablePageDictionary(0);
@@ -678,8 +681,9 @@ TEST_F(EPDFSaveEmbedderTest, SavePreservesConsistentObjectGenerations) {
                      << generation << ":" << xref_stream << ":" << flags);
         const std::string input =
             MakeGenerationDocument(generation, xref_stream);
-        ScopedFPDFDocument source(
-            FPDF_LoadMemDocument(input.data(), input.size(), nullptr));
+        embedpdf_test::ScopedTestDocument source(
+            embedpdf_test::LoadMemDocumentForTest(input.data(), input.size(),
+                                                  nullptr));
         ASSERT_TRUE(source);
         auto* doc = CPDFDocumentFromFPDFDocument(source.get());
         ASSERT_FALSE(doc->GetParser()->xref_table_rebuilt());
@@ -709,8 +713,9 @@ TEST_F(EPDFSaveEmbedderTest, SavePreservesConsistentObjectGenerations) {
             revision,
             HasSubstr("3 " + std::to_string(saved_generation) + " obj"));
 
-        ScopedFPDFDocument saved(FPDF_LoadMemDocument(
-            GetString().data(), GetString().size(), nullptr));
+        embedpdf_test::ScopedTestDocument saved(
+            embedpdf_test::LoadMemDocumentForTest(GetString().data(),
+                                                  GetString().size(), nullptr));
         ASSERT_TRUE(saved);
         auto* saved_doc = CPDFDocumentFromFPDFDocument(saved.get());
         auto* parser = saved_doc->GetParser();
@@ -774,8 +779,9 @@ TEST_F(EPDFSaveEmbedderTest, IncrementalSavePreservesDeclaredXrefSize) {
   const auto size_position = input.find("/Size 6");
   ASSERT_NE(std::string::npos, size_position);
   input.replace(size_position, 7, "/Size 20");
-  ScopedFPDFDocument source(
-      FPDF_LoadMemDocument(input.data(), input.size(), nullptr));
+  embedpdf_test::ScopedTestDocument source(
+      embedpdf_test::LoadMemDocumentForTest(input.data(), input.size(),
+                                            nullptr));
   ASSERT_TRUE(source);
   auto* doc = CPDFDocumentFromFPDFDocument(source.get());
   ASSERT_FALSE(doc->GetParser()->xref_table_rebuilt());
@@ -802,8 +808,9 @@ TEST_F(EPDFSaveEmbedderTest,
       for (unsigned long flags : {FPDF_INCREMENTAL, FPDF_NO_INCREMENTAL}) {
         SCOPED_TRACE(testing::Message()
                      << filename << ":" << xref_stream << ":" << flags);
-        ScopedFPDFDocument source(
-            FPDF_LoadMemDocument(input.data(), input.size(), password));
+        embedpdf_test::ScopedTestDocument source(
+            embedpdf_test::LoadMemDocumentForTest(input.data(), input.size(),
+                                                  password));
         ASSERT_TRUE(source);
         auto* doc = CPDFDocumentFromFPDFDocument(source.get());
         ASSERT_EQ("original", doc->GetInfo()->GetByteStringFor("Title"));
@@ -822,8 +829,9 @@ TEST_F(EPDFSaveEmbedderTest,
           EXPECT_EQ(model.reachable, model.in_use);
           EXPECT_EQ(1u, model.encryption_dictionaries);
         }
-        ScopedFPDFDocument saved(FPDF_LoadMemDocument(
-            GetString().data(), GetString().size(), password));
+        embedpdf_test::ScopedTestDocument saved(
+            embedpdf_test::LoadMemDocumentForTest(
+                GetString().data(), GetString().size(), password));
         ASSERT_TRUE(saved);
         auto* saved_doc = CPDFDocumentFromFPDFDocument(saved.get());
         EXPECT_FALSE(saved_doc->GetParser()->xref_table_rebuilt());
@@ -874,8 +882,9 @@ TEST_F(EPDFSaveEmbedderTest, IncrementalSavePreservesSharedBaseAndSibling) {
     EXPECT_THAT(GetString(), HasSubstr("3 256 obj"));
     EXPECT_THAT(GetString(), HasSubstr("/Root 1 256 R"));
     const std::string combined = input + GetString();
-    ScopedFPDFDocument saved(
-        FPDF_LoadMemDocument(combined.data(), combined.size(), nullptr));
+    embedpdf_test::ScopedTestDocument saved(
+        embedpdf_test::LoadMemDocumentForTest(combined.data(), combined.size(),
+                                              nullptr));
     ASSERT_TRUE(saved);
     auto* saved_doc = CPDFDocumentFromFPDFDocument(saved.get());
     EXPECT_FALSE(saved_doc->GetParser()->xref_table_rebuilt());
@@ -918,8 +927,8 @@ TEST_F(EPDFSaveEmbedderTest, LayerSavePreservesReferenceGenerationChanges) {
   EXPECT_THAT(GetString(), HasSubstr("3 257 obj"));
   EXPECT_THAT(GetString(), HasSubstr(" 3 257 R "));
   const std::string combined = input + GetString();
-  ScopedFPDFDocument saved(
-      FPDF_LoadMemDocument(combined.data(), combined.size(), nullptr));
+  embedpdf_test::ScopedTestDocument saved(embedpdf_test::LoadMemDocumentForTest(
+      combined.data(), combined.size(), nullptr));
   ASSERT_TRUE(saved);
   auto* saved_doc = CPDFDocumentFromFPDFDocument(saved.get());
   EXPECT_FALSE(saved_doc->GetParser()->xref_table_rebuilt());
@@ -1246,14 +1255,16 @@ TEST_F(EPDFSaveEmbedderTest, EncryptedSavesShareNoKeyOrSalts) {
     save = GetString();
   }
 
-  ScopedFPDFDocument saved[2];
+  embedpdf_test::ScopedTestDocument saved[2];
   for (size_t i = 0; i < 2; ++i) {
     SCOPED_TRACE(i);
     const std::string& save = saves[i];
     // The owner password opens the file too.
-    EXPECT_TRUE(ScopedFPDFDocument(
-        FPDF_LoadMemDocument(save.data(), save.size(), "owner")));
-    saved[i].reset(FPDF_LoadMemDocument(save.data(), save.size(), "user"));
+    EXPECT_TRUE(
+        embedpdf_test::ScopedTestDocument(embedpdf_test::LoadMemDocumentForTest(
+            save.data(), save.size(), "owner")));
+    saved[i].reset(embedpdf_test::LoadMemDocumentForTest(save.data(),
+                                                         save.size(), "user"));
     ASSERT_TRUE(saved[i]);
     // Streams decrypt with the file's key and its IVs: the page's content
     // reads back.
