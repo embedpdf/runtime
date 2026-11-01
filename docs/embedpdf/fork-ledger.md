@@ -141,9 +141,12 @@ promote before any structural write.
 and the last object number only rises.
 **Why.** Optimistic edits name objects before the engine applies them.
 **Where.** `CPDF_LayerDocument::RaiseLastObjectNumber`, `CanAddIndirectObjectAt`,
-`AddIndirectObjectAt`, the explicit-number APIs in `fpdf_editpage.cpp`.
-**Guarded by.** `epdf_object_number_embeddertest.cpp`.
-**When upstream touches this.** The object number allocator: keep the free-number check.
+`AddIndirectObjectAt`, the explicit-number APIs in `fpdf_editpage.cpp`, the page numbers
+`CPDF_PageExporter::ExportPages` takes for `EPDFDoc_ImportPages`.
+**Guarded by.** `epdf_object_number_embeddertest.cpp`,
+`EPDFPpoEmbedderTest.CopiesTakeTheChosenNumbers`.
+**When upstream touches this.** The object number allocator: keep the free-number check. The page
+exporter: keep creating each page at its chosen number.
 
 ### layer-open
 **Rule.** A layer opens over a base file plus a saved delta: the parser reads the base bytes

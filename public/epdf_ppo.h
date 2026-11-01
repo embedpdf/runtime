@@ -55,13 +55,24 @@ extern "C" {
 // As with FPDF_ImportPagesByIndex(), the copies may still read streams from
 // |src_doc|: keep it open while |dest_doc| is in use.
 //
-// Returns TRUE on success. On FALSE, pages may already have been copied: on a
-// layer document, the caller aborts its transaction.
-FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV EPDFDoc_ImportPages(FPDF_DOCUMENT dest_doc,
-                                                        FPDF_DOCUMENT src_doc,
-                                                        const int* page_indices,
-                                                        unsigned long length,
-                                                        int index);
+// |page_objnums|, when not NULL, holds one object number per copied page, in
+// the order they are copied: the copy's page dictionary is written at it, so
+// the caller names the pages before the import (EPDFPage_InsertBlankRaw()
+// does the same for a blank page). 0 takes the next free number. A number
+// other than 0 needs a layer transaction on |dest_doc| and must be free
+// (EPDFLayer_RaiseLastObjectNumber()), and no two may be the same. Everything
+// else the pages bring gets the next free numbers.
+//
+// Returns TRUE on success. A number that can't be taken refuses the import
+// before anything is copied. On another FALSE, pages may already have been
+// copied: on a layer document, the caller aborts its transaction.
+FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV
+EPDFDoc_ImportPages(FPDF_DOCUMENT dest_doc,
+                    FPDF_DOCUMENT src_doc,
+                    const int* page_indices,
+                    unsigned long length,
+                    int index,
+                    const uint32_t* page_objnums);
 
 // Experimental EmbedPDF Extension API.
 // The top-level form fields EPDFDoc_ImportPages() brings with the pages at

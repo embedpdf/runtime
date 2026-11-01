@@ -10,6 +10,7 @@
 #include "core/fpdfapi/parser/cpdf_array.h"
 #include "core/fpdfapi/parser/cpdf_dictionary.h"
 #include "core/fpdfapi/parser/cpdf_document.h"
+#include "core/fpdfapi/parser/cpdf_document_view_scope.h"
 #include "core/fpdfapi/parser/cpdf_name.h"
 #include "core/fpdfapi/parser/cpdf_number.h"
 #include "core/fpdfapi/parser/cpdf_reference.h"
@@ -19,6 +20,7 @@
 #include "public/epdf_form.h"
 #include "public/epdf_layer.h"
 #include "public/epdf_save.h"
+#include "public/epdf_view.h"
 #include "public/fpdf_edit.h"
 #include "public/fpdf_save.h"
 #include "public/fpdfview.h"
@@ -111,6 +113,18 @@ std::vector<uint32_t> ImportRoots(FPDF_DOCUMENT document,
 RetainPtr<const CPDF_Dictionary> AcroFormOf(FPDF_DOCUMENT document) {
   CPDF_Document* doc = CPDFDocumentFromFPDFDocument(document);
   return doc->GetRoot()->GetDictFor("AcroForm");
+}
+
+// The page the first annotation of page |page_index| names in its /P, by
+// object number.
+uint32_t PageOfFirstAnnot(FPDF_DOCUMENT document, int page_index) {
+  CPDF_Document* doc = CPDFDocumentFromFPDFDocument(document);
+  CPDF_DocumentViewScope document_view(doc);
+  RetainPtr<const CPDF_Array> annots =
+      doc->GetPageDictionary(page_index)->GetArrayFor("Annots");
+  RetainPtr<const CPDF_Reference> page =
+      ToReference(annots->GetDictAt(0)->GetObjectFor("P"));
+  return page ? page->GetRefObjNum() : 0;
 }
 
 // A Type 1 font of |doc| named |base_font|.
@@ -238,7 +252,8 @@ TEST_F(EPDFPpoEmbedderTest, NamesTheTopLevelFieldsThePagesBring) {
 TEST_F(EPDFPpoEmbedderTest, BringsTheFieldsOfEveryPage) {
   ASSERT_TRUE(OpenDocument("form_page_import.pdf"));
   ScopedFPDFDocument dest(FPDF_CreateNewDocument());
-  ASSERT_TRUE(EPDFDoc_ImportPages(dest.get(), document(), nullptr, 0, 0));
+  ASSERT_TRUE(
+      EPDFDoc_ImportPages(dest.get(), document(), nullptr, 0, 0, nullptr));
   EXPECT_EQ(2, FPDF_GetPageCount(dest.get()));
   EXPECT_EQ(AllPagesFields(), ReadFields(dest.get()));
 
@@ -273,7 +288,8 @@ TEST_F(EPDFPpoEmbedderTest, BringsOnlyWhatIsAboveThePagesWidgets) {
   ASSERT_TRUE(OpenDocument("form_page_import.pdf"));
   ScopedFPDFDocument dest(FPDF_CreateNewDocument());
   const int second_page = 1;
-  ASSERT_TRUE(EPDFDoc_ImportPages(dest.get(), document(), &second_page, 1, 0));
+  ASSERT_TRUE(
+      EPDFDoc_ImportPages(dest.get(), document(), &second_page, 1, 0, nullptr));
   const std::map<std::wstring, Field> expected = {
       {L"person.email", {L"ann@example.com", 1, true}},
       {L"plan", {L"yearly", 1, true}},
@@ -299,7 +315,8 @@ TEST_F(EPDFPpoEmbedderTest, PointsCopiedParentsAtTheCopies) {
   // A page first, so the copies' numbers differ from the source's.
   FPDF_ClosePage(FPDFPage_New(dest.get(), 0, 300, 300));
   const int first_page = 0;
-  ASSERT_TRUE(EPDFDoc_ImportPages(dest.get(), document(), &first_page, 1, 1));
+  ASSERT_TRUE(
+      EPDFDoc_ImportPages(dest.get(), document(), &first_page, 1, 1, nullptr));
 
   CPDF_Document* doc = CPDFDocumentFromFPDFDocument(dest.get());
   RetainPtr<const CPDF_Array> annots =
@@ -329,7 +346,8 @@ TEST_F(EPDFPpoEmbedderTest, AddsToAFormAndRenamesAFontItUses) {
                                      GetFPDFWideString(L"plan").get()));
   ASSERT_TRUE(EPDFForm_SetFieldName(document(), kPerson,
                                     GetFPDFWideString(L"person_2").get()));
-  ASSERT_TRUE(EPDFDoc_ImportPages(dest.get(), document(), nullptr, 0, 1));
+  ASSERT_TRUE(
+      EPDFDoc_ImportPages(dest.get(), document(), nullptr, 0, 1, nullptr));
 
   std::map<std::wstring, Field> expected = {
       {L"person", {L"", 0, true}},
@@ -370,7 +388,8 @@ TEST_F(EPDFPpoEmbedderTest, CopiesIntoALayerInATransaction) {
   LayerDoc dest;
   ASSERT_TRUE(OpenLayer("hello_world.pdf", &dest));
   ASSERT_TRUE(EPDFLayer_BeginTransaction(dest.layer));
-  ASSERT_TRUE(EPDFDoc_ImportPages(dest.layer, document(), nullptr, 0, 1));
+  ASSERT_TRUE(
+      EPDFDoc_ImportPages(dest.layer, document(), nullptr, 0, 1, nullptr));
   ASSERT_TRUE(EPDFLayer_CommitTransaction(dest.layer));
   EXPECT_EQ(3, FPDF_GetPageCount(dest.layer));
   EXPECT_EQ(AllPagesFields(), ReadFields(dest.layer));
@@ -390,7 +409,8 @@ TEST_F(EPDFPpoEmbedderTest, CopiesOutOfALayerAsTheLayerReadsIt) {
 
   ScopedFPDFDocument dest(FPDF_CreateNewDocument());
   const int first_page = 0;
-  ASSERT_TRUE(EPDFDoc_ImportPages(dest.get(), src.layer, &first_page, 1, 0));
+  ASSERT_TRUE(
+      EPDFDoc_ImportPages(dest.get(), src.layer, &first_page, 1, 0, nullptr));
   const std::map<std::wstring, Field> expected = {
       {L"applicant.name", {L"Ann", 1, true}},
       {L"plan", {L"yearly", 1, true}},
@@ -401,16 +421,86 @@ TEST_F(EPDFPpoEmbedderTest, CopiesOutOfALayerAsTheLayerReadsIt) {
   EXPECT_EQ(expected, ReadFields(reopened.get()));
 }
 
+// The copies' pages are written at the numbers the caller chose, which their
+// annotations name as their page and a save keeps; 0 takes the next free
+// number, above the ones handed out.
+TEST_F(EPDFPpoEmbedderTest, CopiesTakeTheChosenNumbers) {
+  ASSERT_TRUE(OpenDocument("form_page_import.pdf"));
+  LayerDoc dest;
+  ASSERT_TRUE(OpenLayer("hello_world.pdf", &dest));
+  const uint32_t last = EPDFLayer_GetLastObjectNumber(dest.layer);
+  ASSERT_TRUE(EPDFLayer_RaiseLastObjectNumber(dest.layer, last + 2));
+  ASSERT_TRUE(EPDFLayer_BeginTransaction(dest.layer));
+  const uint32_t numbers[] = {last + 2, 0};
+  ASSERT_TRUE(
+      EPDFDoc_ImportPages(dest.layer, document(), nullptr, 0, 0, numbers));
+  ASSERT_TRUE(EPDFLayer_CommitTransaction(dest.layer));
+  EXPECT_EQ(3, FPDF_GetPageCount(dest.layer));
+  EXPECT_EQ(last + 2, EPDFDoc_GetPageObjectNumberByIndex(dest.layer, 0));
+  EXPECT_GT(EPDFDoc_GetPageObjectNumberByIndex(dest.layer, 1), last + 2);
+  EXPECT_EQ(last + 2, PageOfFirstAnnot(dest.layer, 0));
+  EXPECT_EQ(AllPagesFields(), ReadFields(dest.layer));
+
+  ScopedFPDFDocument reopened = SaveAndReopen(dest.layer);
+  ASSERT_TRUE(reopened);
+  EXPECT_EQ(last + 2, EPDFDoc_GetPageObjectNumberByIndex(reopened.get(), 0));
+  EXPECT_EQ(last + 2, PageOfFirstAnnot(reopened.get(), 0));
+  EXPECT_EQ(AllPagesFields(), ReadFields(reopened.get()));
+}
+
+// A number that isn't free, or one chosen twice, refuses the import before
+// anything is copied. A chosen number needs a layer transaction.
+TEST_F(EPDFPpoEmbedderTest, RefusesNumbersItCannotTake) {
+  ASSERT_TRUE(OpenDocument("form_page_import.pdf"));
+  LayerDoc dest;
+  ASSERT_TRUE(OpenLayer("hello_world.pdf", &dest));
+  const uint32_t last = EPDFLayer_GetLastObjectNumber(dest.layer);
+  ASSERT_TRUE(EPDFLayer_RaiseLastObjectNumber(dest.layer, last + 2));
+  const uint32_t page = EPDFDoc_GetPageObjectNumberByIndex(dest.layer, 0);
+  const uint32_t free_number[] = {last + 1, 0};
+  EXPECT_FALSE(
+      EPDFDoc_ImportPages(dest.layer, document(), nullptr, 0, 0, free_number));
+
+  ASSERT_TRUE(EPDFLayer_BeginTransaction(dest.layer));
+  const uint32_t twice[] = {last + 1, last + 1};
+  const uint32_t taken[] = {page, 0};
+  const uint32_t beyond[] = {0, last + 3};
+  EXPECT_FALSE(
+      EPDFDoc_ImportPages(dest.layer, document(), nullptr, 0, 0, twice));
+  EXPECT_FALSE(
+      EPDFDoc_ImportPages(dest.layer, document(), nullptr, 0, 0, taken));
+  EXPECT_FALSE(
+      EPDFDoc_ImportPages(dest.layer, document(), nullptr, 0, 0, beyond));
+  // Nothing was copied, not even a field: no number went past the raise.
+  EXPECT_EQ(1, FPDF_GetPageCount(dest.layer));
+  EXPECT_EQ(last + 2, EPDFLayer_GetLastObjectNumber(dest.layer));
+  EXPECT_TRUE(
+      EPDFDoc_ImportPages(dest.layer, document(), nullptr, 0, 1, free_number));
+  ASSERT_TRUE(EPDFLayer_CommitTransaction(dest.layer));
+  EXPECT_EQ(last + 1, EPDFDoc_GetPageObjectNumberByIndex(dest.layer, 1));
+
+  ScopedFPDFDocument plain(FPDF_CreateNewDocument());
+  const uint32_t chosen[] = {5, 0};
+  EXPECT_FALSE(
+      EPDFDoc_ImportPages(plain.get(), document(), nullptr, 0, 0, chosen));
+  EXPECT_EQ(0, FPDF_GetPageCount(plain.get()));
+}
+
 TEST_F(EPDFPpoEmbedderTest, RefusesBadArguments) {
   ASSERT_TRUE(OpenDocument("form_page_import.pdf"));
   ScopedFPDFDocument dest(FPDF_CreateNewDocument());
   const int out_of_range[] = {0, 2};
-  EXPECT_FALSE(EPDFDoc_ImportPages(dest.get(), document(), out_of_range, 2, 0));
+  EXPECT_FALSE(
+      EPDFDoc_ImportPages(dest.get(), document(), out_of_range, 2, 0, nullptr));
   const int negative = -1;
-  EXPECT_FALSE(EPDFDoc_ImportPages(dest.get(), document(), &negative, 1, 0));
-  EXPECT_FALSE(EPDFDoc_ImportPages(dest.get(), document(), &negative, 0, 0));
-  EXPECT_FALSE(EPDFDoc_ImportPages(document(), document(), nullptr, 0, 0));
-  EXPECT_FALSE(EPDFDoc_ImportPages(nullptr, document(), nullptr, 0, 0));
+  EXPECT_FALSE(
+      EPDFDoc_ImportPages(dest.get(), document(), &negative, 1, 0, nullptr));
+  EXPECT_FALSE(
+      EPDFDoc_ImportPages(dest.get(), document(), &negative, 0, 0, nullptr));
+  EXPECT_FALSE(
+      EPDFDoc_ImportPages(document(), document(), nullptr, 0, 0, nullptr));
+  EXPECT_FALSE(
+      EPDFDoc_ImportPages(nullptr, document(), nullptr, 0, 0, nullptr));
   // Nothing was copied.
   EXPECT_EQ(0, FPDF_GetPageCount(dest.get()));
   EXPECT_FALSE(AcroFormOf(dest.get()));
@@ -424,7 +514,8 @@ TEST_F(EPDFPpoEmbedderTest, SharesAFontDefinedTheSameWay) {
   ScopedFPDFDocument dest = NewTargetForm("Times-Roman");
   ASSERT_TRUE(EPDFForm_SetFieldName(document(), kPerson,
                                     GetFPDFWideString(L"person_2").get()));
-  ASSERT_TRUE(EPDFDoc_ImportPages(dest.get(), document(), nullptr, 0, 1));
+  ASSERT_TRUE(
+      EPDFDoc_ImportPages(dest.get(), document(), nullptr, 0, 1, nullptr));
 
   RetainPtr<const CPDF_Dictionary> fonts =
       AcroFormOf(dest.get())->GetDictFor("DR")->GetDictFor("Font");
@@ -440,7 +531,8 @@ TEST_F(EPDFPpoEmbedderTest, RenamesAFontWithOtherWidths) {
   ScopedFPDFDocument dest = NewTargetForm("Times-Roman", 200);
   ASSERT_TRUE(EPDFForm_SetFieldName(document(), kPerson,
                                     GetFPDFWideString(L"person_2").get()));
-  ASSERT_TRUE(EPDFDoc_ImportPages(dest.get(), document(), nullptr, 0, 1));
+  ASSERT_TRUE(
+      EPDFDoc_ImportPages(dest.get(), document(), nullptr, 0, 1, nullptr));
 
   RetainPtr<const CPDF_Dictionary> fonts =
       AcroFormOf(dest.get())->GetDictFor("DR")->GetDictFor("Font");
@@ -460,7 +552,8 @@ TEST_F(EPDFPpoEmbedderTest, RenamesTheFontOfAnAppearanceWithAComment) {
   ScopedFPDFDocument dest = NewTargetForm("Courier");
   ASSERT_TRUE(EPDFForm_SetFieldName(document(), kPerson,
                                     GetFPDFWideString(L"person_2").get()));
-  ASSERT_TRUE(EPDFDoc_ImportPages(dest.get(), document(), nullptr, 0, 1));
+  ASSERT_TRUE(
+      EPDFDoc_ImportPages(dest.get(), document(), nullptr, 0, 1, nullptr));
 
   EXPECT_EQ("/F1_1 % the field's font\n10 Tf 0 g",
             CopiedEmailAppearance(dest.get()));

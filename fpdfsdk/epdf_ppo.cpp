@@ -676,13 +676,32 @@ std::vector<uint32_t> PageIndices(const CPDF_Document* doc,
   return indices;
 }
 
+// Whether |dest| can write a page at each chosen number of |objnums|: free,
+// and no number chosen twice. 0 takes the next free number.
+bool CanTakePageNumbers(const CPDF_Document* dest,
+                        pdfium::span<const uint32_t> objnums) {
+  std::set<uint32_t> chosen;
+  for (uint32_t objnum : objnums) {
+    if (objnum == 0) {
+      continue;
+    }
+    if (!chosen.insert(objnum).second ||
+        !dest->CanAddIndirectObjectAt(objnum)) {
+      return false;
+    }
+  }
+  return true;
+}
+
 }  // namespace
 
-FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV EPDFDoc_ImportPages(FPDF_DOCUMENT dest_doc,
-                                                        FPDF_DOCUMENT src_doc,
-                                                        const int* page_indices,
-                                                        unsigned long length,
-                                                        int index) {
+FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV
+EPDFDoc_ImportPages(FPDF_DOCUMENT dest_doc,
+                    FPDF_DOCUMENT src_doc,
+                    const int* page_indices,
+                    unsigned long length,
+                    int index,
+                    const uint32_t* page_objnums) {
   CPDF_Document* dest = CPDFDocumentFromFPDFDocument(dest_doc);
   CPDF_Document* src = CPDFDocumentFromFPDFDocument(src_doc);
   if (!dest || !src || dest == src || (page_indices && length == 0)) {
@@ -698,6 +717,13 @@ FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV EPDFDoc_ImportPages(FPDF_DOCUMENT dest_doc,
   if (!valid || indices.empty()) {
     return false;
   }
+  // SAFETY: required from caller, one number per copied page.
+  const pdfium::span<const uint32_t> objnums =
+      page_objnums ? UNSAFE_BUFFERS(pdfium::span(page_objnums, indices.size()))
+                   : pdfium::span<const uint32_t>();
+  if (!CanTakePageNumbers(dest, objnums)) {
+    return false;
+  }
 
   const FieldPlan plan = PlanFields(src, indices);
   CPDF_PageExporter exporter(dest, src);
@@ -707,7 +733,7 @@ FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV EPDFDoc_ImportPages(FPDF_DOCUMENT dest_doc,
     exporter.MapObjectNumber(field,
                              dest->NewIndirect<CPDF_Dictionary>()->GetObjNum());
   }
-  if (!exporter.ExportPages(indices, index)) {
+  if (!exporter.ExportPages(indices, index, objnums)) {
     return false;
   }
   if (CPDF_Document::Extension* extension = dest->GetExtension()) {
