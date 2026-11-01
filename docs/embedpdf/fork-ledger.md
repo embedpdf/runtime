@@ -83,7 +83,8 @@ layer sees.
 **Where.** `cpdf_document_view_scope.{h,cpp}`, `CPDF_BaseDocument`, read entry points in
 `fpdfsdk/`. Every function in `epdf_annot.cpp` opens one before it walks the document's objects.
 **Guarded by.** `cpdf_base_document_unittest.cpp`, `cpdf_layer_document_unittest.cpp`,
-`EPDFAnnotEmbedderTest.ReadsResolveThroughTheLayer`.
+`EPDFAnnotEmbedderTest.ReadsResolveThroughTheLayer`,
+`EPDFPageLabelsEmbedderTest.WritesInALayerTransaction` (`FPDF_GetPageLabel`).
 **When upstream touches this.** A new entry point that walks objects beyond its own page opens a
 scope, whether it reads or writes: `FPDFPage_Flatten()` writes one page but reads every page's
 `/Annots`. Without a scope, a base page with layer `/Annots` crashes the view detector.

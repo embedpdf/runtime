@@ -719,8 +719,11 @@ FPDF_GetPageLabel(FPDF_DOCUMENT document,
     return 0;
   }
 
+  // EmbedPDF(view-scope): read through the document's view scope, so a
+  // layer's own /PageLabels counts.
+  ScopedFPDFDocumentView document_view(document);
   // CPDF_PageLabel can deal with NULL |document|.
-  CPDF_PageLabel label(CPDFDocumentFromFPDFDocument(document));
+  CPDF_PageLabel label(document_view.Get());
   std::optional<WideString> str = label.GetLabel(page_index);
   if (!str.has_value()) {
     return 0;
