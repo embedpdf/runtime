@@ -618,48 +618,53 @@ CPDF_AnnotFontSubset::BuildEphemeralFontResource(StagedFontResource staged) {
 CPDF_AnnotFontSubset::LayoutFont CPDF_AnnotFontSubset::CreateLayoutFont(
     CPDF_Document* doc,
     CFX_FontRegistry::FontId font_id) {
-  LayoutFont result;
   if (!doc || !CFX_FontRegistry::IsValidFont(font_id)) {
-    return result;
+    return LayoutFont();
   }
-
   std::unique_ptr<CFX_Font> font = CFX_FontRegistry::CreateFont(font_id);
-  if (!font || !font->HasAnyGlyphs()) {
-    return result;
+  if (!font) {
+    return LayoutFont();
   }
+  return CreateLayoutFontForProgram(
+      doc, font.get(), BaseFontNameForRegisteredFont(font_id, font.get()),
+      IdentityForRegisteredFont(font_id));
+}
 
-  auto char_codes_and_indices =
-      font->GetCharCodesAndIndices(pdfium::kMaximumSupplementaryCodePoint);
-  if (char_codes_and_indices.empty()) {
+// static
+CPDF_AnnotFontSubset::LayoutFont
+CPDF_AnnotFontSubset::CreateLayoutFontForProgram(
+    CPDF_Document* doc,
+    CFX_Font* program,
+    const ByteString& base_font_name,
+    const FaceIdentity& identity) {
+  LayoutFont result;
+  if (!doc || !program || !program->HasAnyGlyphs()) {
     return result;
   }
 
   // The layout font has the same shape as the resource that will be written,
   // so the charcodes it hands out (CIDs under Identity-H) are the ones the
   // appearance bytes carry. For a CID-keyed CFF that is the charset's CID.
-  const GlyphIdentity identity(font.get());
-  std::multimap<uint32_t, uint32_t> to_unicode;
+  // Every glyph has its width, shaping can draw glyphs the cmap doesn't
+  // reach (ligatures, alternates); there is no ToUnicode, the layout maps
+  // characters through the program itself.
+  const GlyphIdentity glyphs(program);
   std::map<uint32_t, uint32_t> widths;
-  for (const auto& item : char_codes_and_indices) {
-    std::optional<uint16_t> cid = identity.CidOf(item.glyph_index);
-    if (!cid.has_value()) {
-      continue;
+  RetainPtr<CFX_Face> face = program->GetFace();
+  const int glyph_count = face ? face->GetGlyphCount() : 0;
+  for (int gid = 0; gid < glyph_count; ++gid) {
+    std::optional<uint16_t> cid = glyphs.CidOf(gid);
+    if (cid.has_value() && !pdfium::Contains(widths, *cid)) {
+      widths[*cid] = program->GetGlyphWidth(gid);
     }
-    if (!pdfium::Contains(widths, *cid)) {
-      widths[*cid] = font->GetGlyphWidth(item.glyph_index);
-    }
-    to_unicode.emplace(*cid, item.char_code);
   }
-  if (widths.empty() || to_unicode.empty()) {
+  if (widths.empty()) {
     return result;
   }
 
-  const ByteString base_font_name =
-      BaseFontNameForRegisteredFont(font_id, font.get());
   StagedFontResource parts;
-  if (!BuildCompositeFontParts(font.get(), base_font_name, font->GetFontSpan(),
-                               IdentityForRegisteredFont(font_id), widths,
-                               to_unicode, &parts)) {
+  if (!BuildCompositeFontParts(program, base_font_name, program->GetFontSpan(),
+                               identity, widths, /*to_unicode=*/{}, &parts)) {
     return result;
   }
   // The streams go into a scratch holder of their own: CPDF_Font resolves

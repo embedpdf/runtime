@@ -621,6 +621,28 @@ EPDFAnnot_SetDefaultAppearanceRegisteredFont(FPDF_ANNOTATION annot,
                                              unsigned int B);
 
 // Experimental EmbedPDF Extension API.
+// Set the default appearance of a FreeText, Redact or Widget annotation to a
+// font program the document already holds, by the object number of its
+// stream (EPDFFontFaces_GetProgramObjNum()). /DA names an alias for it this
+// session; the appearance generated next installs its /DR entry. Fails for
+// a program the layout can't write new text with: not TrueType or OpenType,
+// no Unicode cmap, or a licence (OS/2 fsType) that doesn't allow editing.
+//
+//   annot          - handle to an annotation.
+//   program_objnum - the font program stream's object number.
+//   font_size      - the font size to be set.
+//   R, G, B        - the color to be set.
+//
+// Returns true on success.
+FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV
+EPDFAnnot_SetDefaultAppearanceDocumentFont(FPDF_ANNOTATION annot,
+                                           unsigned long program_objnum,
+                                           float font_size,
+                                           unsigned int R,
+                                           unsigned int G,
+                                           unsigned int B);
+
+// Experimental EmbedPDF Extension API.
 // Get the default appearance of a FreeText annotation.
 //
 //   annot    - handle to an annotation.
@@ -660,6 +682,26 @@ EPDFAnnot_GetDefaultAppearanceFontFace(FPDF_ANNOTATION annot,
                                        unsigned long buflen,
                                        int* weight,
                                        FPDF_BOOL* italic);
+
+// Experimental EmbedPDF Extension API.
+// Get the PostScript name of the font a FreeText, Redact or Widget
+// annotation's default appearance (/DA) names: the /BaseFont of the font
+// dictionary /DR holds for it (a Type0 font's descendant's), without its
+// subset tag, or the program's for an alias reserved by
+// EPDFAnnot_SetDefaultAppearanceDocumentFont().
+//
+//   annot  - handle to an annotation.
+//   buffer - receives the name's bytes and a trailing NUL; may be NULL to
+//            query the length.
+//   buflen - the size of |buffer| in bytes.
+//
+// Returns the name's length in bytes, including the trailing NUL, or 0 when
+// /DA names no font dictionary (a standard alias, a registered font's alias)
+// or the dictionary has no /BaseFont.
+FPDF_EXPORT unsigned long FPDF_CALLCONV
+EPDFAnnot_GetDefaultAppearanceFontPostScriptName(FPDF_ANNOTATION annot,
+                                                 char* buffer,
+                                                 unsigned long buflen);
 
 // Experimental EmbedPDF Extension API.
 // Set the text alignment (/Q) of a FreeText, Redact or Widget annotation. A

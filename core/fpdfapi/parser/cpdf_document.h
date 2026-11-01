@@ -139,6 +139,24 @@ class CPDF_Document : public Observable,
     epdf_attachment_ = std::move(attachment);
   }
 
+  // EmbedPDF(fonts): the document's font index (CPDF_DocumentFonts in
+  // core/fpdfdoc), made on first use: what each embedded font program is,
+  // and the session's font state. Destroyed before the parser.
+  class FontIndex {
+   public:
+    virtual ~FontIndex() = default;
+    // A layer's transaction ended, committed or aborted: |objnums| are every
+    // object number it wrote, created or hid, and the overlay epoch was
+    // |epoch_at_begin| when it began and is |epoch| now.
+    virtual void TransactionEnded(const std::set<uint32_t>& objnums,
+                                  uint64_t epoch_at_begin,
+                                  uint64_t epoch) {}
+  };
+  FontIndex* font_index() const { return font_index_.get(); }
+  void SetFontIndex(std::unique_ptr<FontIndex> index) {
+    font_index_ = std::move(index);
+  }
+
   // EmbedPDF(fonts): session-scoped provenance for a resource name this
   // document instance handed out for a registered runtime font (a /DA font
   // alias reserved before its /DR entry exists). Never written to the file; a
@@ -438,6 +456,8 @@ class CPDF_Document : public Observable,
   // EmbedPDF(signatures): destroyed before everything declared above it (the
   // parser included), after the extension and the stock font clearer.
   std::unique_ptr<Attachment> epdf_attachment_;
+  // EmbedPDF(fonts): see font_index(); destroyed before the attachment.
+  std::unique_ptr<FontIndex> font_index_;
 
   // Must be second to last.
   StockFontClearer stock_font_clearer_;

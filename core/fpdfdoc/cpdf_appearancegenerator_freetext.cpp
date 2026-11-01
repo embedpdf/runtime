@@ -18,7 +18,6 @@
 #include <vector>
 
 #include "constants/annotation_common.h"
-#include "core/fxcrt/stream_write_utils.h"
 #include "core/fpdfapi/font/cpdf_font.h"
 #include "core/fpdfapi/page/cpdf_docpagedata.h"
 #include "core/fpdfapi/parser/cpdf_array.h"
@@ -32,12 +31,14 @@
 #include "core/fpdfdoc/cpdf_appearancegenerator_internal.h"
 #include "core/fpdfdoc/cpdf_color_utils.h"
 #include "core/fpdfdoc/cpdf_defaultappearance.h"
+#include "core/fpdfdoc/cpdf_documentfonts.h"
 #include "core/fpdfdoc/cpdf_interactiveform.h"
 #include "core/fpdfdoc/cpdf_richtext.h"
 #include "core/fpdfdoc/cpdf_richtextlayout.h"
 #include "core/fpdfdoc/cpdf_richtextparser.h"
 #include "core/fxcrt/fx_string_wrappers.h"
 #include "core/fxcrt/fx_system.h"
+#include "core/fxcrt/stream_write_utils.h"
 #include "core/fxcrt/utf16.h"
 #include "core/fxge/cfx_fontregistry.h"
 
@@ -353,6 +354,8 @@ struct RichFreeTextInputs {
   ByteString font_name;               // its alias
   CFX_FontRegistry::FontId registered_font_id =
       CFX_FontRegistry::kInvalidFontId;
+  // The /DA alias resolved to a reserved document program, if it did.
+  DaFontResolution da_font;
   bool persistent = true;
   bool author_default_appearance = false;  // writer: body face -> /DA
 };
@@ -373,6 +376,7 @@ PrepareRichFreeTextAPInternal(CPDF_Document* doc,
       /*install_dr_entry=*/in.persistent,
       CPDF_AnnotFontMap::Owner::kAnnotation);
   CPDF_AnnotFontMap& map = *prepared->fonts;
+  in.da_font.ApplyTo(&map);
   if (!in.author_default_appearance &&
       in.document->source == CPDF_RichTextDocument::Source::kContents &&
       map.HasDefaultFont() && !map.DefaultFontIsStandard()) {
@@ -458,8 +462,8 @@ PrepareRichFreeTextAPInternal(CPDF_Document* doc,
     // request resolves here without text. Aliases are settled before the
     // content names them.
     const CPDF_RichTextStyle& body = in.document->body;
-    const int body_entry =
-        map.ResolveRichFace(body.family, body.weight, body.italic);
+    const int body_entry = map.ResolveRichFace(
+        body.family, body.weight, body.italic, WideStringView(), body.program);
     if (body_entry < 0) {
       return nullptr;
     }
@@ -531,6 +535,7 @@ bool GenerateRichFreeTextAP(APGenerationTarget* target,
   in.default_font = std::move(default_font);
   in.font_name = font_name;
   in.registered_font_id = da_font.registered_font_id;
+  in.da_font = da_font;
   in.persistent = target->IsPersistent();
   std::unique_ptr<CPDF_AppearanceGenerator::PreparedRichFreeTextAP> prepared =
       PrepareRichFreeTextAPInternal(doc, annot_dict, blend_name, std::move(in));
@@ -540,21 +545,20 @@ bool GenerateRichFreeTextAP(APGenerationTarget* target,
   return PublishRichFreeTextAPToTarget(target, annot_dict, std::move(prepared));
 }
 
-}  // namespace
-
-namespace appearance_generator {
-
-// The text body of a rich FreeText appearance (C note §5): one Tj per
-// word, relative Td per word, state operators only when they change,
-// ActualText around runs whose glyphs do not spell their text.
-void EmitRichTextBody(fxcrt::ostringstream& s,
-                      const CPDF_RichTextLayout::Result& layout,
-                      CPDF_AnnotFontMap& map,
-                      const CFX_FloatRect& area) {
+// The runs of |layout|, inside a text object: relative Td per string, state
+// operators only when they change, ActualText around runs whose glyphs do
+// not spell their text. A FreeText writes a string per word in its runs'
+// colours, as Acrobat does, and collects its decorations; a form field
+// writes a string per run in the colour set before it, as form fillers do.
+void EmitTextRuns(fxcrt::ostringstream& s,
+                  const CPDF_RichTextLayout::Result& layout,
+                  CPDF_AnnotFontMap& map,
+                  const CFX_FloatRect& area,
+                  bool field,
+                  std::vector<DecorationSegment>* decorations) {
   using GlyphRun = CPDF_RichTextLayout::GlyphRun;
   using ShapedGlyph = CPDF_RichTextLayout::ShapedGlyph;
 
-  s << "BT\n";
   int cur_entry = -1;
   float cur_size = -1;
   std::optional<FX_ARGB> cur_color;
@@ -562,7 +566,6 @@ void EmitRichTextBody(fxcrt::ostringstream& s,
   float cur_ts = 0;
   float cur_tz = 100;
   CFX_PointF origin(0, 0);  // the last Td, in the form's space
-  std::vector<DecorationSegment> decorations;
 
   for (const CPDF_RichTextLayout::Line& line : layout.lines) {
     const float baseline = area.top - line.baseline_y;
@@ -581,7 +584,7 @@ void EmitRichTextBody(fxcrt::ostringstream& s,
         cur_entry = run.font_entry;
         cur_size = size;
       }
-      if (!cur_color.has_value() || *cur_color != run.style.color) {
+      if (!field && (!cur_color.has_value() || *cur_color != run.style.color)) {
         s << RichColorOperator(run.style.color, /*fill=*/true);
         cur_color = run.style.color;
       }
@@ -627,14 +630,15 @@ void EmitRichTextBody(fxcrt::ostringstream& s,
         return (width * size / 1000.0f + run.style.letter_spacing) * scale;
       };
 
-      // Words: a space ends the word it follows, as in Acrobat's streams.
-      // Run positions are relative to the text area's left edge.
+      // Words: a space ends the word it follows, as in Acrobat's streams;
+      // a field's run is one string. Run positions are relative to the text
+      // area's left edge.
       const float run_left = area.left + run.x;
       float x = run_left;
       size_t i = 0;
       const size_t count = run.glyphs.size();
       while (i < count) {
-        size_t j = i;
+        size_t j = field ? count : i;
         while (j < count) {
           const bool space = is_space(run.glyphs[j]);
           ++j;
@@ -736,14 +740,14 @@ void EmitRichTextBody(fxcrt::ostringstream& s,
       // baseline, 0.16 · descent thick; line-through 0.39 · ascent above,
       // 0.04 · ascent thick; `word` skips the spaces.
       const uint8_t decoration = run.style.decoration;
-      if (decoration) {
+      if (decoration && decorations) {
         const float run_baseline = baseline + run.rise;
         const float descent = face.descent * size;
         const float ascent = face.ascent * size;
         if (decoration & CPDF_RichTextStyle::kUnderline) {
-          decorations.push_back({run_left, run_left + run.width,
-                                 run_baseline - 0.44f * descent,
-                                 0.16f * descent, run.style.color});
+          decorations->push_back({run_left, run_left + run.width,
+                                  run_baseline - 0.44f * descent,
+                                  0.16f * descent, run.style.color});
         }
         if (decoration & CPDF_RichTextStyle::kWordUnderline) {
           float wx = run_left;
@@ -752,9 +756,9 @@ void EmitRichTextBody(fxcrt::ostringstream& s,
           for (const ShapedGlyph& glyph : run.glyphs) {
             if (is_space(glyph)) {
               if (in_word) {
-                decorations.push_back({word_start, wx,
-                                       run_baseline - 0.44f * descent,
-                                       0.16f * descent, run.style.color});
+                decorations->push_back({word_start, wx,
+                                        run_baseline - 0.44f * descent,
+                                        0.16f * descent, run.style.color});
                 in_word = false;
               }
             } else if (!in_word) {
@@ -764,19 +768,32 @@ void EmitRichTextBody(fxcrt::ostringstream& s,
             wx += glyph.x_advance;
           }
           if (in_word) {
-            decorations.push_back({word_start, wx,
-                                   run_baseline - 0.44f * descent,
-                                   0.16f * descent, run.style.color});
+            decorations->push_back({word_start, wx,
+                                    run_baseline - 0.44f * descent,
+                                    0.16f * descent, run.style.color});
           }
         }
         if (decoration & CPDF_RichTextStyle::kLineThrough) {
-          decorations.push_back({run_left, run_left + run.width,
-                                 run_baseline + 0.39f * ascent, 0.04f * ascent,
-                                 run.style.color});
+          decorations->push_back({run_left, run_left + run.width,
+                                  run_baseline + 0.39f * ascent, 0.04f * ascent,
+                                  run.style.color});
         }
       }
     }
   }
+}
+
+}  // namespace
+
+namespace appearance_generator {
+
+void EmitRichTextBody(fxcrt::ostringstream& s,
+                      const CPDF_RichTextLayout::Result& layout,
+                      CPDF_AnnotFontMap& map,
+                      const CFX_FloatRect& area) {
+  std::vector<DecorationSegment> decorations;
+  s << "BT\n";
+  EmitTextRuns(s, layout, map, area, /*field=*/false, &decorations);
   s << "ET\n";
   std::optional<FX_ARGB> stroke_color;
   for (const DecorationSegment& segment : decorations) {
@@ -793,6 +810,13 @@ void EmitRichTextBody(fxcrt::ostringstream& s,
     RichNum(s, segment.x1) << " ";
     RichNum(s, segment.y) << " l S\n";
   }
+}
+
+void EmitFieldTextBody(fxcrt::ostringstream& s,
+                       const CPDF_RichTextLayout::Result& layout,
+                       CPDF_AnnotFontMap& map,
+                       const CFX_FloatRect& plate) {
+  EmitTextRuns(s, layout, map, plate, /*field=*/true, /*decorations=*/nullptr);
 }
 
 bool GenerateFreeTextAP(APGenerationTarget* target,
@@ -844,7 +868,8 @@ bool GenerateFreeTextAP(APGenerationTarget* target,
   RetainPtr<CPDF_Font> default_font =
       da_font.font_dict ? doc_page_data->GetFont(da_font.font_dict) : nullptr;
   if (!default_font &&
-      da_font.registered_font_id == CFX_FontRegistry::kInvalidFontId) {
+      da_font.registered_font_id == CFX_FontRegistry::kInvalidFontId &&
+      !da_font.document_program) {
     return false;
   }
 
@@ -1003,6 +1028,47 @@ bool CPDF_AppearanceGenerator::UpdateDefaultAppearanceRegisteredFont(
     return false;
   }
 
+  ByteString da_font_part = DefaultAppearanceFontPart(resource_key, font_size);
+  if (da_font_part.IsEmpty()) {
+    return false;
+  }
+  ByteString da_color_part = GenerateColorAP(color, PaintOperation::kFill);
+  da_color_part.TrimBack('\n');
+
+  annot_dict->SetNewFor<CPDF_String>("DA", da_color_part + " " + da_font_part);
+  return true;
+}
+
+bool CPDF_AppearanceGenerator::UpdateDefaultAppearanceDocumentFont(
+    CPDF_Document* doc,
+    CPDF_Dictionary* annot_dict,
+    uint32_t program_objnum,
+    float font_size,
+    const CFX_Color& color) {
+  if (!doc || !annot_dict || program_objnum == 0) {
+    return false;
+  }
+  CPDF_DocumentFonts* fonts = CPDF_DocumentFonts::For(doc);
+  // The program must be one the walk found, and one the layout can author
+  // with (the same test the font map applies before it writes with one).
+  bool can_author = false;
+  for (const CPDF_DocumentFonts::Face& face : fonts->CollectFaces()) {
+    for (const CPDF_DocumentFonts::Program& program : face.programs) {
+      if (program.objnum != program_objnum) {
+        continue;
+      }
+      can_author = program.maps_unicode && program.permission.has_value() &&
+                   (*program.permission ==
+                        CFX_FontRegistry::EmbeddingPermission::kInstallable ||
+                    *program.permission ==
+                        CFX_FontRegistry::EmbeddingPermission::kEditable);
+    }
+  }
+  ByteString resource_key;
+  if (!can_author ||
+      !fonts->ReserveProgramAlias(program_objnum, &resource_key)) {
+    return false;
+  }
   ByteString da_font_part = DefaultAppearanceFontPart(resource_key, font_size);
   if (da_font_part.IsEmpty()) {
     return false;

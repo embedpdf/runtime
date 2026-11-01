@@ -52,14 +52,28 @@ source_set("fxge") {
     "cfx_glyphbitmap.h",
     "cfx_glyphcache.cpp",
     "cfx_glyphcache.h",
+    # EmbedPDF(fonts): the code points a font maps, as ranges.
+    "cfx_codepointrange.cpp",
+    "cfx_codepointrange.h",
+    # EmbedPDF(fonts): a glyph's outline in font units, unscaled and unhinted.
+    "cfx_glyphoutline.cpp",
+    "cfx_glyphoutline.h",
     "cfx_graphstate.cpp",
     "cfx_graphstate.h",
     "cfx_graphstatedata.cpp",
     "cfx_graphstatedata.h",
+    # EmbedPDF(fonts): an OpenType font written from glyph outlines, the
+    # display program of a document font a browser can't load as it is.
+    "cfx_opentypewriter.cpp",
+    "cfx_opentypewriter.h",
     "cfx_path.cpp",
     "cfx_path.h",
     "cfx_renderdevice.cpp",
     "cfx_renderdevice.h",
+    # EmbedPDF(fonts): the sfnt container: writing one, and its tables
+    # realigned for a browser.
+    "cfx_sfnt.cpp",
+    "cfx_sfnt.h",
     "cfx_standardfont.cpp",
     "cfx_standardfont.h",
     "cfx_substfont.cpp",
@@ -295,6 +309,7 @@ source_set("test_support") {
 
 pdfium_unittest_source_set("unittests") {
   sources = [
+    "cfx_codepointrange_unittest.cpp",
     "cfx_color_unittest.cpp",
     "cfx_face_unittest.cpp",
     "cfx_folderfontinfo_unittest.cpp",

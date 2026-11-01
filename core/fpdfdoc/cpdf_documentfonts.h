@@ -1,0 +1,255 @@
+// Copyright 2026 CloudPDF LTD
+// SPDX-License-Identifier: Apache-2.0
+//
+// EmbedPDF: the fonts a document uses, found in its dictionaries without
+// loading a page, and the facts about each embedded program. Facts only: what
+// may be written with a font, or sent where, is the engine's decision.
+
+#ifndef CORE_FPDFDOC_CPDF_DOCUMENTFONTS_H_
+#define CORE_FPDFDOC_CPDF_DOCUMENTFONTS_H_
+
+#include <stddef.h>
+#include <stdint.h>
+
+#include <map>
+#include <optional>
+#include <set>
+#include <utility>
+#include <vector>
+
+#include "core/fpdfapi/parser/cpdf_document.h"
+#include "core/fxcrt/bytestring.h"
+#include "core/fxcrt/data_vector.h"
+#include "core/fxcrt/retain_ptr.h"
+#include "core/fxcrt/span.h"
+#include "core/fxcrt/unowned_ptr.h"
+#include "core/fxcrt/widestring.h"
+#include "core/fxge/cfx_codepointrange.h"
+#include "core/fxge/cfx_fontregistry.h"
+
+class CPDF_Dictionary;
+class CPDF_Stream;
+struct CPDF_FontFace;
+
+class CPDF_DocumentFonts final : public CPDF_Document::FontIndex {
+ public:
+  // What a font program is, from the font dictionary that holds it.
+  enum class Format : uint8_t {
+    kNone,         // nothing embedded: the PDF only names the font
+    kTrueType,     // /FontFile2, or /FontFile3 /OpenType with glyf outlines
+    kOpenTypeCFF,  // /FontFile3 /OpenType with CFF outlines
+    kCFF,          // /FontFile3 /Type1C or /CIDFontType0C: bare CFF
+    kType1,        // /FontFile
+    kType3,        // glyphs drawn by content streams: no program
+  };
+  enum class Embedded : uint8_t { kNone, kWhole, kSubset };
+
+  struct Program {
+    // The program stream's object number; 0 when there is no program, or
+    // when the stream is inline (it can't be addressed).
+    uint32_t objnum = 0;
+    Format format = Format::kNone;
+    Embedded embedded = Embedded::kNone;
+    // /BaseFont without its subset tag (a Type0 font's descendant's).
+    ByteString postscript_name;
+    // What the OS/2 fsType grants; nullopt when the program has no OS/2
+    // table to say (Type 1, bare CFF) or there is no program.
+    std::optional<CFX_FontRegistry::EmbeddingPermission> permission;
+    // The program loads, has glyphs and maps characters through a Unicode
+    // cmap: the layout can write any character it maps.
+    bool maps_unicode = false;
+    // An sfnt whose tables each start on a four-byte boundary, as the font
+    // format puts them. FreeType reads one whose tables don't; a browser
+    // refuses it.
+    bool tables_aligned = false;
+    // SHA-256 of the decoded program; empty without one.
+    DataVector<uint8_t> sha256;
+    // SHA-256 of what a browser loads for it: the program itself when it is
+    // an sfnt that maps characters through a Unicode cmap, with its tables
+    // realigned when they aren't (cfx_sfnt.h); else its display program
+    // (cpdf_displayprogram.h). Empty when a browser can't draw it.
+    DataVector<uint8_t> display_sha256;
+    // Line metrics as the layout reads them (em, descent positive); 0 when
+    // the program doesn't load.
+    float ascent = 0;
+    float descent = 0;
+  };
+
+  struct Face {
+    WideString family;
+    int weight = 400;
+    bool italic = false;
+    // One per program stream and display program, in the order the walk
+    // found them (a stream two dictionaries read differently is two);
+    // fonts without a program (not embedded, Type 3) add one entry per
+    // format.
+    std::vector<Program> programs;
+  };
+
+  explicit CPDF_DocumentFonts(CPDF_Document* doc);
+  ~CPDF_DocumentFonts() override;
+
+  // The document's index, made on first use.
+  static CPDF_DocumentFonts* For(CPDF_Document* doc);
+  // The document's index if it has one yet; null otherwise.
+  static CPDF_DocumentFonts* Find(const CPDF_Document* doc);
+
+  // Every face the document's fonts are, grouped by family, weight and
+  // italic. Found in /AcroForm /DR, fields' own /DR, every page's resources
+  // (inherited ones too), form XObjects, tiling patterns, soft masks, Type 3
+  // glyph resources and every state of every annotation appearance. Each
+  // dictionary is walked once; cycles stop. Programs are inspected once per
+  // stream version.
+  //
+  // On a layer, what each place (the AcroForm, each page) reaches is kept
+  // and walked again only after a transaction touches something it read
+  // (TransactionEnded), so a list after an edit walks the pages the edit
+  // changed. A plain document is walked whole every time: nothing says what
+  // changed.
+  std::vector<Face> CollectFaces();
+
+  // SHA-256 of the faces CollectFaces() returns, every fact of each in
+  // order: equal fingerprints, the same faces. Read before and after a write,
+  // it says whether the write changed the document's fonts.
+  DataVector<uint8_t> FacesFingerprint();
+
+  // How many places (the AcroForm, a page, or the whole of a plain
+  // document) have been walked: what an edit costs, for tests.
+  size_t places_walked() const { return places_walked_; }
+
+  // CPDF_Document::FontIndex:
+  void TransactionEnded(const std::set<uint32_t>& objnums,
+                        uint64_t epoch_at_begin,
+                        uint64_t epoch) override;
+
+  // A program found by the walk, by its stream's object number: its decoded
+  // bytes, the program as the layout reads it. Empty for any other number.
+  DataVector<uint8_t> ProgramData(uint32_t objnum);
+  // What a browser loads, by its SHA-256 (a Program::display_sha256 the walk
+  // found); empty for any other hash.
+  DataVector<uint8_t> DisplayProgramData(pdfium::span<const uint8_t> sha256);
+  // The scalars a browser draws with it, which are the ones the engine writes
+  // with it, as ranges in order; empty when it maps none or |sha256| isn't
+  // one the walk found.
+  std::vector<CFX_CodePointRange> DisplayProgramCoverage(
+      pdfium::span<const uint8_t> sha256);
+  // The program stream itself, for the writer; null when |objnum| isn't one.
+  RetainPtr<CPDF_Stream> ProgramStream(uint32_t objnum);
+  // What a browser loads for the program |font_dict| embeds, as that
+  // dictionary reads it: the display hash CollectFaces() lists for it. Empty
+  // when it embeds none or a browser can't draw it.
+  DataVector<uint8_t> DisplayHashOfFont(const CPDF_Dictionary* font_dict);
+  // What a browser loads for program stream |objnum| when every dictionary
+  // reads it alike (an sfnt with a Unicode cmap, as every document program
+  // the layout writes with is); empty for any other program.
+  DataVector<uint8_t> DisplayHashOfProgram(uint32_t objnum);
+
+  // A /DA font naming a document program: like a registered font's, the
+  // alias is this session's until an appearance installs the /DR entry.
+  // Reserve picks "EDocF<objnum>", suffixed when /DR holds the key already;
+  // false when |objnum| isn't a program the walk found.
+  struct ReservedProgram {
+    uint32_t objnum = 0;
+    ByteString base_font_name;  // without its subset tag
+    WideString family;
+    int weight = 400;
+    bool italic = false;
+  };
+  bool ReserveProgramAlias(uint32_t objnum, ByteString* alias);
+  std::optional<ReservedProgram> ProgramForAlias(const ByteString& alias) const;
+  // A program the walk found, as its font dictionary describes it (the first
+  // that names it); nullopt for any other number.
+  std::optional<ReservedProgram> DescribeProgram(uint32_t objnum);
+
+  // Characters an appearance drew with no font that has them (each a
+  // grapheme, drawn as its face's missing glyph), first seen first, at most
+  // kMaxMissingCharacters. The engine clears them before a write and reads
+  // them after it.
+  static constexpr size_t kMaxMissingCharacters = 256;
+  void NoteMissingCharacter(const WideString& grapheme);
+  const std::vector<WideString>& missing_characters() const {
+    return missing_characters_;
+  }
+  void ClearMissingCharacters() { missing_characters_.clear(); }
+
+ private:
+  // What the walk of one place found.
+  struct Place {
+    std::vector<RetainPtr<const CPDF_Dictionary>> fonts;
+    // Every indirect object the walk read, sorted: a transaction that
+    // touches one of them makes the place's walk stale.
+    std::vector<uint32_t> reads;
+  };
+
+  // What a browser loads in place of a program it can't load as it is.
+  struct Display {
+    DataVector<uint8_t> bytes;
+    DataVector<uint8_t> sha256;
+    std::vector<CFX_CodePointRange> coverage;
+  };
+
+  struct Inspected {
+    RetainPtr<const CPDF_Stream> stream;  // the version inspected
+    size_t raw_size = 0;
+    Program facts;
+    // The scalars its own cmap maps.
+    std::optional<std::vector<CFX_CodePointRange>> coverage;
+    // A Unicode sfnt a browser would refuse, its tables realigned: the same
+    // whichever dictionary reads it.
+    bool aligned_built = false;
+    std::optional<Display> aligned;
+    // Display programs by their SHA-256. Any other program is read through
+    // each font dictionary's encoding, widths and flags, so one stream can
+    // be drawn as more than one.
+    std::map<DataVector<uint8_t>, Display> displays;
+    // The display each font dictionary (by object number) reads the stream
+    // as; nullopt when it builds none. Forgotten when the dictionary
+    // changes; one that isn't an indirect object builds its display again
+    // each time.
+    std::map<uint32_t, std::optional<DataVector<uint8_t>>> display_of_dict;
+  };
+
+  // Every font dictionary the document's drawings can use, each once, in
+  // the order the walk meets them.
+  std::vector<RetainPtr<const CPDF_Dictionary>> FontDicts();
+  // Forgets the places that read any of |objnums|, and the inspections of
+  // programs among them.
+  void Forget(const std::set<uint32_t>& objnums);
+  void ForgetPlaces();
+
+  // The facts about |stream|, inspected once per version.
+  Program Inspect(RetainPtr<const CPDF_Stream> stream, Format format);
+  // The program |font| embeds as |font| (whose face is |face|) reads it, its
+  // display hash too; only its format when it embeds none.
+  Program ReadProgram(const CPDF_Dictionary* font, const CPDF_FontFace& face);
+  Inspected* FindInspected(uint32_t objnum);
+  // The decoded bytes of the stream |inspected| is.
+  DataVector<uint8_t> BytesOf(const Inspected& inspected);
+  // The scalars |inspected|'s own cmap maps, read once.
+  const std::vector<CFX_CodePointRange>& CmapCoverage(Inspected& inspected);
+  // The program a browser loads by |sha256|: its inspection, with |display|
+  // the display program it is, or null when it is the program as it is.
+  // Walks again when no current inspection has it.
+  Inspected* FindDisplay(pdfium::span<const uint8_t> sha256,
+                         const Display** display);
+  // |program|'s display hash, its display program built through
+  // |font_dict| (whose face is |face|) once per stream version when it needs
+  // one; empty for such a program without |font_dict|.
+  DataVector<uint8_t> DisplayHashOf(const Program& program,
+                                    const CPDF_Dictionary* font_dict,
+                                    const CPDF_FontFace& face);
+
+  UnownedPtr<CPDF_Document> const doc_;
+  // A layer's places, kept between lists: the AcroForm's, and each page's by
+  // its dictionary's object number.
+  std::optional<Place> form_place_;
+  std::map<uint32_t, Place> page_places_;
+  // The layer's overlay epoch the places are known to be current at.
+  uint64_t known_epoch_ = 0;
+  size_t places_walked_ = 0;
+  std::map<uint32_t, Inspected> inspected_;  // by program stream objnum
+  std::map<ByteString, ReservedProgram> program_aliases_;
+  std::vector<WideString> missing_characters_;
+};
+
+#endif  // CORE_FPDFDOC_CPDF_DOCUMENTFONTS_H_

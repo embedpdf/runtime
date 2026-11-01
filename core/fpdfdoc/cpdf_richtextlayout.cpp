@@ -13,10 +13,14 @@
 
 #include "core/fpdfapi/font/cpdf_font.h"
 #include "core/fpdfdoc/cpdf_annotfontmap.h"
+#include "core/fpdfdoc/cpvt_section.h"
+#include "core/fxcrt/cfx_bidiparagraph.h"
 #include "core/fxcrt/code_point_view.h"
 #include "core/fxcrt/fx_linebreak.h"
+#include "core/fxcrt/fx_system.h"
 #include "core/fxcrt/fx_unicode.h"
 #include "core/fxcrt/numerics/safe_conversions.h"
+#include "core/fxcrt/utf16.h"
 #include "core/fxge/cfx_face.h"
 #include "core/fxge/cfx_font.h"
 #include "hb-ot.h"  // nogncheck
@@ -38,7 +42,8 @@ constexpr float kSubRise = -0.15f;
 constexpr float kFallbackSize = 12.0f;
 constexpr float kEpsilon = 0.01f;
 
-// CPVT's auto font size ladder, kept for plain FreeText with a DA size of 0.
+// CPVT's auto font size ladder: plain FreeText and form fields with a DA
+// size of 0. A field of several lines tries its first quarter.
 constexpr std::array<float, 25> kAutoSizeSteps = {
     4,  6,  8,  9,  10, 12, 14, 18,  20,  25,  30,  35, 40,
     45, 50, 55, 60, 70, 80, 90, 100, 110, 120, 130, 144};
@@ -109,10 +114,6 @@ bool IsCommonScript(hb_script_t script) {
          script == HB_SCRIPT_UNKNOWN;
 }
 
-bool IsRtlScript(hb_script_t script) {
-  return hb_script_get_horizontal_direction(script) == HB_DIRECTION_RTL;
-}
-
 // Scripts whose shaping is a matter of default features only: the Latin
 // features Acrobat leaves off are turned off for them (C note §4.2).
 bool IsSimpleScript(hb_script_t script) {
@@ -176,16 +177,18 @@ struct ResolvedStyle {
   float drawn_size = 0;      // after sub/superscript scaling
   float rise = 0;            // pt
   bool has_size_override = false;
+  int face_entry = -1;  // the face, when it isn't resolved from the style
 };
 
-// One shaping unit: one font entry, one style, one script and direction,
-// covering [begin, end) of the segment's text.
+// One shaping unit: one font entry, one style, one script and one bidi
+// level, covering [begin, end) of the segment's text.
 struct Item {
   int entry = -1;
   int style_index = 0;
   size_t begin = 0;
   size_t end = 0;
   hb_script_t script = HB_SCRIPT_COMMON;
+  uint8_t level = 0;  // odd: shaped right to left
   bool rtl = false;
   std::vector<ShapedGlyph> glyphs;  // clusters are absolute segment indices
   float ascent = 0;                 // pt
@@ -198,6 +201,7 @@ struct Segment {
   WideString text;                 // without the hard break
   std::vector<int> style_of;       // per character
   std::vector<size_t> source_pos;  // per character: index in the paragraph
+  std::optional<CFX_BidiParagraph> bidi;
   std::vector<Item> items;
   int break_style = 0;  // the style at the hard break, for an empty line
   bool ends_with_hard_break = false;
@@ -225,6 +229,49 @@ std::vector<bool> CPDF_RichTextLayout::GraphemeStarts(const WideString& text) {
     after_zwj = IsZeroWidthJoiner(text[i]);
   }
   return starts;
+}
+
+// static
+CPDF_RichTextLayout::GraphemeMatch CPDF_RichTextLayout::MatchGrapheme(
+    CPDF_AnnotFontMap* fonts,
+    int face_entry,
+    WideStringView grapheme,
+    int weight,
+    bool italic) {
+  if (face_entry < 0) {
+    return {};
+  }
+  if (fonts->CoversText(face_entry, grapheme)) {
+    return {face_entry, true};
+  }
+  const int fallback = fonts->FindRichFallback(grapheme, weight, italic);
+  if (fallback >= 0) {
+    return {fallback, true};
+  }
+  // No font has it: the last resort draws it as its box. A grapheme that
+  // draws nothing stays with the face, which hides it.
+  const int last_resort =
+      IsInvisibleGrapheme(grapheme) ? -1 : fonts->FindLastResort();
+  return {last_resort >= 0 ? last_resort : face_entry, false};
+}
+
+// static
+bool CPDF_RichTextLayout::IsInvisibleGrapheme(WideStringView grapheme) {
+  for (char32_t cp : pdfium::CodePointView(grapheme)) {
+    const bool invisible =
+        cp < 0x20 || (cp >= 0x7F && cp <= 0x9F) || cp == 0x00AD ||
+        cp == 0x034F || cp == 0x061C || (cp >= 0x115F && cp <= 0x1160) ||
+        (cp >= 0x17B4 && cp <= 0x17B5) || (cp >= 0x180B && cp <= 0x180F) ||
+        (cp >= 0x200B && cp <= 0x200F) || (cp >= 0x202A && cp <= 0x202E) ||
+        (cp >= 0x2060 && cp <= 0x206F) || cp == 0x3164 ||
+        (cp >= 0xFE00 && cp <= 0xFE0F) || cp == 0xFEFF || cp == 0xFFA0 ||
+        (cp >= 0xFFF0 && cp <= 0xFFF8) || (cp >= 0x1BCA0 && cp <= 0x1BCA3) ||
+        (cp >= 0x1D173 && cp <= 0x1D17A) || (cp >= 0xE0000 && cp <= 0xE0FFF);
+    if (!invisible) {
+      return false;
+    }
+  }
+  return true;
 }
 
 // static
@@ -297,6 +344,14 @@ struct CPDF_RichTextLayout::Impl {
   std::map<int, std::unique_ptr<HbFont>> hb_fonts;
   std::map<int, CPDF_AnnotFontMap::RichFace> faces;
   bool degraded = false;
+  // A form field: widths in CPVT's arithmetic, so its lines break where
+  // CPVT's did.
+  bool field = false;
+
+  // |width| thousandths of an em at |size| pt.
+  float Scaled(int width, float size) const {
+    return field ? width * size * 0.001f : width * size / 1000.0f;
+  }
 
   const CPDF_AnnotFontMap::RichFace& FaceOf(int entry) {
     auto it = faces.find(entry);
@@ -318,23 +373,6 @@ struct CPDF_RichTextLayout::Impl {
     return fonts->RichGlyphFor(entry, static_cast<uint32_t>(ch));
   }
 
-  // Does |entry| have a glyph for every character of the grapheme at
-  // [begin, end)? Joiners and variation selectors may be missing.
-  bool Covers(int entry, const WideString& text, size_t begin, size_t end) {
-    // Scalars, not code units: a supplementary character is one grapheme
-    // of two units on a 16-bit wchar_t platform.
-    for (char32_t cp : pdfium::CodePointView(
-             text.AsStringView().Substr(begin, end - begin))) {
-      if (cp == 0x200D || IsVariationSelector(cp)) {
-        continue;
-      }
-      if (fonts->RichGlyphFor(entry, static_cast<uint32_t>(cp)) == 0) {
-        return false;
-      }
-    }
-    return true;
-  }
-
   // Shapes one item into glyphs with absolute clusters.
   void Shape(Item* item,
              const WideString& text,
@@ -347,23 +385,31 @@ struct CPDF_RichTextLayout::Impl {
     item->ascent = face.ascent * size;
     item->descent = face.descent * size;
     item->degraded = face.degraded;
-    item->rtl = IsRtlScript(item->script);
+    item->rtl = (item->level & 1) != 0;
 
     HbFont* hb = face.program ? HbFontOf(item->entry) : nullptr;
     if (!hb) {
       // Standard 14 (or a program HarfBuzz refused): one glyph per
-      // character through the font's encoding.
+      // character through the font's encoding; right to left, in reverse
+      // and mirrored, as HarfBuzz would.
       for (size_t i = item->begin; i < item->end; ++i) {
-        const uint32_t code = GlyphFor(item->entry, text[i]);
+        uint32_t ch = static_cast<uint32_t>(text[i]);
+        if (item->rtl) {
+          ch = hb_unicode_mirroring(hb_unicode_funcs_get_default(), ch);
+        }
+        const uint32_t code = GlyphFor(item->entry, static_cast<wchar_t>(ch));
         ShapedGlyph glyph;
         glyph.gid = code;
         glyph.cluster = pdfium::checked_cast<uint32_t>(i);
         const int width =
             face.pdf_font && code ? face.pdf_font->GetCharWidth(code) : 0;
-        glyph.x_advance = (width * size / 1000.0f + letter_spacing) * scale_x;
+        glyph.x_advance = (Scaled(width, size) + letter_spacing) * scale_x;
         item->glyphs.push_back(glyph);
       }
-      item->needs_actual_text = false;
+      if (item->rtl) {
+        std::reverse(item->glyphs.begin(), item->glyphs.end());
+      }
+      item->needs_actual_text = item->rtl;
       return;
     }
 
@@ -424,7 +470,7 @@ struct CPDF_RichTextLayout::Impl {
       // it exactly so the appearance needs no TJ adjustment.
       float advance = positions[i].x_advance * unit;
       const float pdf_width =
-          face.program->GetGlyphWidth(glyph.gid) * size / 1000.0f;
+          Scaled(face.program->GetGlyphWidth(glyph.gid), size);
       if (std::fabs(advance - pdf_width) * 1000.0f / size < 0.75f) {
         advance = pdf_width;
       }
@@ -467,12 +513,8 @@ struct CPDF_RichTextLayout::Impl {
     return width;
   }
 
-  // Ink width of the segment's text in [begin, end): trailing spaces do
-  // not count (Acrobat centres and wraps without them).
-  static float InkWidth(const Segment& segment, size_t begin, size_t end) {
-    while (end > begin && IsSpace(segment.text[end - 1])) {
-      --end;
-    }
+  // Width of the segment's text in [begin, end).
+  static float RangeWidth(const Segment& segment, size_t begin, size_t end) {
     float width = 0;
     for (const Item& item : segment.items) {
       if (item.end <= begin || item.begin >= end) {
@@ -482,6 +524,19 @@ struct CPDF_RichTextLayout::Impl {
           WidthOf(item, std::max(begin, item.begin), std::min(end, item.end));
     }
     return width;
+  }
+
+  // Where the ink of [begin, end) ends: trailing spaces do not count
+  // (Acrobat centres and wraps without them).
+  static size_t InkEnd(const Segment& segment, size_t begin, size_t end) {
+    while (end > begin && IsSpace(segment.text[end - 1])) {
+      --end;
+    }
+    return end;
+  }
+
+  static float InkWidth(const Segment& segment, size_t begin, size_t end) {
+    return RangeWidth(segment, begin, InkEnd(segment, begin, end));
   }
 
   static bool IsClusterBoundary(const Segment& segment, size_t pos) {
@@ -522,22 +577,28 @@ struct CPDF_RichTextLayout::Impl {
     }
   }
 
-  // Builds the items of a segment: runs of one style, split by script and
-  // by the face that covers each grapheme, then shaped.
-  void Itemize(Segment* segment, const std::vector<ResolvedStyle>& styles) {
+  // Builds the items of a segment of a paragraph that reads right to left
+  // when |rtl|: runs of one style, split by script, by bidi level and by the
+  // face that covers each grapheme, then shaped.
+  void Itemize(Segment* segment,
+               bool rtl,
+               const std::vector<ResolvedStyle>& styles) {
     const WideString& text = segment->text;
     const size_t length = text.GetLength();
     segment->items.clear();
+    segment->bidi.emplace(text, rtl);
     if (length == 0) {
       return;
     }
     const std::vector<bool> grapheme_starts = GraphemeStarts(text);
+    const std::vector<uint8_t>& levels = segment->bidi->levels();
 
-    // Per grapheme: style, script, entry.
+    // Per grapheme: style, script, level, entry.
     struct Piece {
       size_t begin, end;
       int style;
       hb_script_t script;
+      uint8_t level;
       int entry;
     };
     std::vector<Piece> pieces;
@@ -555,27 +616,20 @@ struct CPDF_RichTextLayout::Impl {
       }
       const int style = segment->style_of[begin];
       const CPDF_RichTextStyle& resolved = styles[style].style;
-      int entry = fonts->ResolveRichFace(resolved.family, resolved.weight,
-                                         resolved.italic);
-      if (entry >= 0 && !Covers(entry, text, begin, end)) {
-        // The grapheme's base scalar picks the fallback font.
-        uint32_t base = 0;
-        for (char32_t cp : pdfium::CodePointView(
-                 text.AsStringView().Substr(begin, end - begin))) {
-          if (base == 0 || !IsMark(static_cast<uint32_t>(cp))) {
-            base = static_cast<uint32_t>(cp);
-            if (!IsMark(base)) {
-              break;
-            }
-          }
-        }
-        const int fallback =
-            fonts->FindRichFallback(base, resolved.weight, resolved.italic);
-        if (fallback >= 0 && Covers(fallback, text, begin, end)) {
-          entry = fallback;
-        }
+      const WideStringView grapheme =
+          text.AsStringView().Substr(begin, end - begin);
+      const int face =
+          styles[style].face_entry >= 0
+              ? styles[style].face_entry
+              : fonts->ResolveRichFace(resolved.family, resolved.weight,
+                                       resolved.italic, WideStringView(),
+                                       resolved.program);
+      const GraphemeMatch match = MatchGrapheme(
+          fonts, face, grapheme, resolved.weight, resolved.italic);
+      if (!match.covered && !IsInvisibleGrapheme(grapheme)) {
+        fonts->NoteMissingCharacter(WideString(grapheme));
       }
-      pieces.push_back({begin, end, style, script, entry});
+      pieces.push_back({begin, end, style, script, levels[begin], match.entry});
       begin = end;
     }
     // A leading common-script piece takes the script that follows it.
@@ -588,7 +642,7 @@ struct CPDF_RichTextLayout::Impl {
     for (const Piece& piece : pieces) {
       Item* last = segment->items.empty() ? nullptr : &segment->items.back();
       if (last && last->style_index == piece.style &&
-          last->entry == piece.entry &&
+          last->entry == piece.entry && last->level == piece.level &&
           (last->script == piece.script || IsCommonScript(piece.script))) {
         last->end = piece.end;
         continue;
@@ -599,6 +653,7 @@ struct CPDF_RichTextLayout::Impl {
       item.begin = piece.begin;
       item.end = piece.end;
       item.script = piece.script;
+      item.level = piece.level;
       segment->items.push_back(std::move(item));
     }
     for (Item& item : segment->items) {
@@ -609,46 +664,73 @@ struct CPDF_RichTextLayout::Impl {
     }
   }
 
-  // The runs of a line covering [begin, end) of the segment.
-  std::vector<GlyphRun> RunsFor(const Segment& segment,
-                                size_t begin,
-                                size_t end,
-                                const std::vector<ResolvedStyle>& styles) {
-    std::vector<GlyphRun> runs;
-    for (const Item& item : segment.items) {
-      if (item.end <= begin || item.begin >= end) {
-        continue;
+  // The run drawing [begin, end) of |item| at bidi level |level|.
+  static GlyphRun RunOf(const Segment& segment,
+                        const Item& item,
+                        size_t begin,
+                        size_t end,
+                        uint8_t level,
+                        const ResolvedStyle& resolved) {
+    GlyphRun run;
+    run.font_entry = item.entry;
+    run.style = resolved.style;
+    run.style.size = resolved.drawn_size;
+    run.rise = resolved.rise;
+    run.text = segment.text.Substr(begin, end - begin);
+    run.text_begin = segment.source_pos[begin];
+    run.text_end = end < segment.source_pos.size()
+                       ? segment.source_pos[end]
+                       : segment.source_pos[end - 1] + 1;
+    run.rtl = item.rtl;
+    run.bidi_level = level;
+    run.ascent = item.ascent;
+    run.descent = item.descent;
+    run.needs_actual_text = item.needs_actual_text;
+    run.degraded = item.degraded;
+    for (const ShapedGlyph& glyph : item.glyphs) {
+      if (glyph.cluster >= begin && glyph.cluster < end) {
+        ShapedGlyph copy = glyph;
+        copy.cluster -= pdfium::checked_cast<uint32_t>(begin);
+        run.glyphs.push_back(copy);
+        run.width += glyph.x_advance;
       }
-      const size_t run_begin = std::max(begin, item.begin);
-      const size_t run_end = std::min(end, item.end);
-      const ResolvedStyle& resolved = styles[item.style_index];
-      GlyphRun run;
-      run.font_entry = item.entry;
-      run.style = resolved.style;
-      run.style.size = resolved.drawn_size;
-      run.rise = resolved.rise;
-      run.text = segment.text.Substr(run_begin, run_end - run_begin);
-      run.text_begin = segment.source_pos[run_begin];
-      run.text_end = run_end < segment.source_pos.size()
-                         ? segment.source_pos[run_end]
-                         : segment.source_pos[run_end - 1] + 1;
-      run.rtl = item.rtl;
-      run.bidi_level = item.rtl ? 1 : 0;
-      run.ascent = item.ascent;
-      run.descent = item.descent;
-      run.needs_actual_text = item.needs_actual_text;
-      run.degraded = item.degraded;
-      for (const ShapedGlyph& glyph : item.glyphs) {
-        if (glyph.cluster >= run_begin && glyph.cluster < run_end) {
-          ShapedGlyph copy = glyph;
-          copy.cluster -= pdfium::checked_cast<uint32_t>(run_begin);
-          run.glyphs.push_back(copy);
-          run.width += glyph.x_advance;
-        }
-      }
-      runs.push_back(std::move(run));
     }
-    return runs;
+    return run;
+  }
+
+  // The runs of a line covering [begin, end) of the segment, in the order
+  // they are drawn, left to right.
+  static std::vector<GlyphRun> RunsFor(
+      const Segment& segment,
+      size_t begin,
+      size_t end,
+      const std::vector<ResolvedStyle>& styles) {
+    // Whitespace ending the line takes the paragraph's level, so an item's
+    // last characters may run at another level than the rest of it.
+    const std::vector<uint8_t> levels = segment.bidi->LineLevels(begin, end);
+    std::vector<GlyphRun> runs;
+    std::vector<uint8_t> run_levels;
+    for (const Item& item : segment.items) {
+      const size_t item_end = std::min(end, item.end);
+      for (size_t run_begin = std::max(begin, item.begin);
+           run_begin < item_end;) {
+        const uint8_t level = levels[run_begin - begin];
+        size_t run_end = run_begin + 1;
+        while (run_end < item_end && levels[run_end - begin] == level) {
+          ++run_end;
+        }
+        runs.push_back(RunOf(segment, item, run_begin, run_end, level,
+                             styles[item.style_index]));
+        run_levels.push_back(level);
+        run_begin = run_end;
+      }
+    }
+    std::vector<GlyphRun> visual;
+    visual.reserve(runs.size());
+    for (size_t index : CFX_BidiParagraph::VisualOrder(run_levels)) {
+      visual.push_back(std::move(runs[index]));
+    }
+    return visual;
   }
 };
 
@@ -720,7 +802,7 @@ CPDF_RichTextLayout::Result CPDF_RichTextLayout::Arrange(
     std::vector<RequestText> requests;
     auto note = [&](const CPDF_RichTextStyle& style, const WideString& text) {
       const ByteString key = CPDF_AnnotFontMap::FaceRequestKey(
-          style.family, style.weight, style.italic);
+          style.family, style.weight, style.italic, style.program);
       auto it = std::ranges::find_if(
           requests, [&](const RequestText& r) { return r.key == key; });
       if (it == requests.end()) {
@@ -741,8 +823,8 @@ CPDF_RichTextLayout::Result CPDF_RichTextLayout::Arrange(
     }
     for (const RequestText& request : requests) {
       fonts_->ResolveRichFace(request.style.family, request.style.weight,
-                              request.style.italic,
-                              request.text.AsStringView());
+                              request.style.italic, request.text.AsStringView(),
+                              request.style.program);
     }
   }
 
@@ -820,12 +902,23 @@ CPDF_RichTextLayout::Result CPDF_RichTextLayout::Arrange(
       }
       segments.back().break_style = last_style;
 
+      // The direction the paragraph reads in: its dir, or its text's.
+      bool rtl = props.rtl;
+      if (options_.direction_from_text) {
+        WideString text;
+        for (const Segment& segment : segments) {
+          text += segment.text;
+        }
+        rtl = CFX_BidiParagraph::FirstStrongIsRtl(text.AsStringView())
+                  .value_or(false);
+      }
+
       // 3. Each segment: itemise, shape, break into lines.
       const float margin_left = std::max(0.0f, props.margin_left);
       const float margin_right = std::max(0.0f, props.margin_right);
       bool first_line_of_paragraph = true;
       for (Segment& segment : segments) {
-        impl.Itemize(&segment, styles);
+        impl.Itemize(&segment, rtl, styles);
         const size_t length = segment.text.GetLength();
         const std::vector<bool> opportunities =
             BreakOpportunities(segment.text);
@@ -890,9 +983,10 @@ CPDF_RichTextLayout::Result CPDF_RichTextLayout::Arrange(
           // 4. The line box (C note §4.4).
           if (line.runs.empty()) {
             const ResolvedStyle& at_break = styles[segment.break_style];
-            int entry = fonts_->ResolveRichFace(at_break.style.family,
-                                                at_break.style.weight,
-                                                at_break.style.italic);
+            int entry = fonts_->ResolveRichFace(
+                at_break.style.family, at_break.style.weight,
+                at_break.style.italic, WideStringView(),
+                at_break.style.program);
             const CPDF_AnnotFontMap::RichFace face = impl.FaceOf(entry);
             const float size = at_break.style.size;  // parent size
             line.ascent = face.ascent * size;
@@ -920,11 +1014,13 @@ CPDF_RichTextLayout::Result CPDF_RichTextLayout::Arrange(
             line.leading = kLeadingFactor * max_size;
           }
           // 5. Horizontal placement.
-          line.width = Impl::InkWidth(segment, pos, best);
+          const size_t ink_end = Impl::InkEnd(segment, pos, best);
+          line.width = Impl::RangeWidth(segment, pos, ink_end);
           const float slack = std::max(0.0f, avail - line.width);
+          // A paragraph whose dir is rtl names its sides from where it
+          // starts: left (the default) is its right side.
           Align align = props.align;
           if (props.rtl) {
-            std::reverse(line.runs.begin(), line.runs.end());
             if (align == Align::kLeft) {
               align = Align::kRight;
             } else if (align == Align::kRight) {
@@ -934,7 +1030,8 @@ CPDF_RichTextLayout::Result CPDF_RichTextLayout::Arrange(
           const bool justify_this_line = align == Align::kJustify &&
                                          best < length &&
                                          !line.ends_with_hard_break;
-          float start = margin_left + indent;
+          // The indent is on the side the paragraph starts from.
+          float start = margin_left + (rtl ? 0 : indent);
           switch (align) {
             case Align::kLeft:
             case Align::kJustify:
@@ -947,11 +1044,20 @@ CPDF_RichTextLayout::Result CPDF_RichTextLayout::Arrange(
               break;
           }
           if (justify_this_line) {
+            // The spaces between words stretch; the line's trailing ones
+            // hang.
+            const size_t ink_source_end =
+                segment.source_pos[pos] + (ink_end - pos);
+            auto stretches = [&](const GlyphRun& run,
+                                 const ShapedGlyph& glyph) {
+              return glyph.cluster < run.text.GetLength() &&
+                     IsSpace(run.text[glyph.cluster]) &&
+                     run.text_begin + glyph.cluster < ink_source_end;
+            };
             int spaces = 0;
             for (const GlyphRun& run : line.runs) {
               for (const ShapedGlyph& glyph : run.glyphs) {
-                if (glyph.cluster < run.text.GetLength() &&
-                    IsSpace(run.text[glyph.cluster])) {
+                if (stretches(run, glyph)) {
                   ++spaces;
                 }
               }
@@ -960,8 +1066,7 @@ CPDF_RichTextLayout::Result CPDF_RichTextLayout::Arrange(
               const float extra = slack / spaces;
               for (GlyphRun& run : line.runs) {
                 for (ShapedGlyph& glyph : run.glyphs) {
-                  if (glyph.cluster < run.text.GetLength() &&
-                      IsSpace(run.text[glyph.cluster])) {
+                  if (stretches(run, glyph)) {
                     glyph.x_advance += extra;
                     run.width += extra;
                   }
@@ -969,8 +1074,13 @@ CPDF_RichTextLayout::Result CPDF_RichTextLayout::Arrange(
               }
             }
           }
+          // The line's trailing spaces hang past its end: past the left
+          // edge when the paragraph reads right to left.
           line.start_x = start;
           float x = start;
+          if (rtl) {
+            x -= Impl::RangeWidth(segment, ink_end, best);
+          }
           for (GlyphRun& run : line.runs) {
             run.x = x;
             x += run.width;
@@ -1042,5 +1152,476 @@ CPDF_RichTextLayout::Result CPDF_RichTextLayout::Arrange(
     result.degraded = result.degraded || impl.degraded;
     return result;
   }
+  return result;
+}
+
+// ---- Form fields
+// --------------------------------------------------------------
+
+namespace {
+
+// A cluster of a field's text: what CPVT called a word.
+struct FieldUnit {
+  size_t begin = 0;  // in its segment's text
+  size_t end = 0;
+  float width = 0;
+  uint16_t code = 0;  // its first character, as CPVT's word breaking sees it
+  float ascent = 0;   // its font's at the size, as CPVT measures it
+  float descent = 0;  // negative
+};
+
+struct FieldLine {
+  int begin = -1;  // units; -1 for an empty section's one line
+  int end = -1;
+  float width = 0;
+  float ascent = 0;
+  float descent = 0;  // negative
+};
+
+// What a field's text breaks into at line breaks: CPVT's sections.
+struct FieldSection {
+  Segment segment;
+  std::vector<FieldUnit> units;
+  std::vector<FieldLine> lines;
+  std::vector<float> cell_x;  // a comb's: where each unit starts
+  float left = 0;  // the box its lines take, y down from the text's top
+  float top = 0;
+  float right = 0;
+  float bottom = 0;
+};
+
+struct FieldExtent {
+  float width = 0;   // the widest line
+  float height = 0;  // the lines' heights, summed
+};
+
+// CPVT's character for its word breaking: a code unit, so a supplementary
+// character is its high surrogate.
+uint16_t BreakCodeOf(wchar_t ch) {
+  const uint32_t code_point = static_cast<uint32_t>(ch);
+  if (pdfium::IsSupplementary(code_point)) {
+    return pdfium::SurrogatePair(static_cast<char32_t>(code_point)).high();
+  }
+  return static_cast<uint16_t>(code_point);
+}
+
+size_t Utf16LengthOf(WideStringView text) {
+  size_t length = 0;
+  for (char32_t code_point : pdfium::CodePointView(text)) {
+    length += pdfium::IsSupplementary(code_point) ? 2 : 1;
+  }
+  return length;
+}
+
+// The text's sections and characters as CPVT's SetText() takes them: line
+// breaks (CR, LF or both) start a section in a multi-line field and are
+// dropped in any other, a tab is a space, and the limit or the comb's cells
+// stop it. Characters (graphemes) are kept whole; a password's are '*'.
+std::vector<WideString> FieldSectionsOf(
+    const CPDF_RichTextLayout::Field& field) {
+  const WideString& text = field.text;
+  const std::vector<bool> starts = CPDF_RichTextLayout::GraphemeStarts(text);
+  std::vector<WideString> sections(1);
+  // What CPVT counts: the text taken, line breaks included, and what it
+  // kept, a break between sections included; the limit in code units, the
+  // cells in characters.
+  size_t taken_units = 0;
+  size_t taken_characters = 0;
+  size_t kept_units = 0;
+  size_t kept_characters = 0;
+  for (size_t begin = 0; begin < text.GetLength();) {
+    size_t end = begin + 1;
+    while (end < text.GetLength() && !starts[end]) {
+      ++end;
+    }
+    const WideStringView grapheme =
+        text.AsStringView().Substr(begin, end - begin);
+    const size_t units = Utf16LengthOf(grapheme);
+    if (field.limit > 0 && taken_units + units > field.limit) {
+      break;
+    }
+    if (field.cells > 0 && taken_characters >= field.cells) {
+      break;
+    }
+    const wchar_t first = text[begin];
+    if (first == L'\r' || first == L'\n') {
+      if (field.multiline) {
+        // CR LF is one break.
+        const wchar_t pair = first == L'\r' ? L'\n' : L'\r';
+        if (end < text.GetLength() && text[end] == pair) {
+          ++end;
+        }
+        sections.emplace_back();
+        ++kept_units;
+        ++kept_characters;
+      }
+    } else {
+      const bool full = (field.limit > 0 && kept_units + units > field.limit) ||
+                        (field.cells > 0 && kept_characters >= field.cells);
+      if (!full) {
+        if (field.password) {
+          sections.back() += L'*';
+        } else if (first == L'\t') {
+          sections.back() += L' ';
+        } else {
+          sections.back() += WideString(grapheme);
+        }
+        kept_units += units;
+        ++kept_characters;
+      }
+    }
+    taken_units += units;
+    ++taken_characters;
+    begin = end;
+  }
+  return sections;
+}
+
+// CPVT's SplitLines() over a section's units: the lines they break into
+// when |wrap| (before the word that would pass |typeset_width|, or before
+// the unit when one word is wider), and the box they take.
+FieldExtent SplitFieldLines(const std::vector<FieldUnit>& units,
+                            bool wrap,
+                            float typeset_width,
+                            float empty_ascent,
+                            float empty_descent,
+                            std::vector<FieldLine>* lines) {
+  if (units.empty()) {
+    if (lines) {
+      lines->push_back({-1, -1, 0, empty_ascent, empty_descent});
+    }
+    return {0, empty_ascent - empty_descent};
+  }
+  const int total = pdfium::checked_cast<int>(units.size());
+  int head = 0;
+  float max_x = 0;
+  float max_y = 0;
+  float line_width = 0;
+  float backup_width = 0;
+  float line_ascent = 0;
+  float backup_ascent = 0;
+  float line_descent = 0;
+  float backup_descent = 0;
+  int word_start = 0;
+  bool full_word = false;
+  int full_words = 0;
+  int char_index = 0;
+  bool opened = false;
+  auto add_line = [&](int tail) {
+    if (lines) {
+      lines->push_back({head, tail, line_width, line_ascent, line_descent});
+    }
+    max_y += line_ascent;
+    max_y -= line_descent;
+    max_x = std::max(line_width, max_x);
+  };
+  int i = 0;
+  while (i < total) {
+    const FieldUnit& unit = units[i];
+    const FieldUnit& previous = units[i > 0 ? i - 1 : i];
+    line_ascent = std::max(line_ascent, unit.ascent);
+    line_descent = std::min(line_descent, unit.descent);
+    if (!opened) {
+      if (CPVT_IsOpenStylePunctuation(unit.code)) {
+        opened = true;
+        full_word = true;
+      } else if (CPVT_NeedDivision(previous.code, unit.code)) {
+        full_word = true;
+      }
+    } else if (!CPVT_IsSpace(unit.code) &&
+               !CPVT_IsOpenStylePunctuation(unit.code)) {
+      opened = false;
+    }
+    if (full_word) {
+      full_word = false;
+      if (char_index > 0) {
+        ++full_words;
+      }
+      word_start = i;
+      backup_width = line_width;
+      backup_ascent = line_ascent;
+      backup_descent = line_descent;
+    }
+    ++char_index;
+    if (wrap && typeset_width > 0 && line_width + unit.width > typeset_width) {
+      if (full_words > 0) {
+        i = word_start;
+        line_width = backup_width;
+        line_ascent = backup_ascent;
+        line_descent = backup_descent;
+      }
+      if (char_index == 1) {
+        line_width = unit.width;
+        ++i;
+      }
+      add_line(i - 1);
+      head = i;
+      line_width = 0;
+      line_ascent = 0;
+      line_descent = 0;
+      char_index = 0;
+      full_words = 0;
+      full_word = false;
+    } else {
+      line_width += unit.width;
+      ++i;
+    }
+  }
+  if (head <= total - 1) {
+    add_line(total - 1);
+  }
+  return {max_x, max_y};
+}
+
+// Where a line |width| wide starts in |typeset_width|, by /Q.
+float FieldAlignmentOffset(int alignment, float typeset_width, float width) {
+  switch (alignment) {
+    case 1:
+      return (typeset_width - width) * 0.5f;
+    case 2:
+      return typeset_width - width;
+    default:
+      return 0.0f;
+  }
+}
+
+}  // namespace
+
+CPDF_RichTextLayout::Result CPDF_RichTextLayout::ArrangeField(
+    const Field& field,
+    const CFX_FloatRect& plate) {
+  Result result;
+  const float plate_width = plate.right - plate.left;
+  const float plate_height = plate.top - plate.bottom;
+  const std::vector<WideString> texts = FieldSectionsOf(field);
+  // A field reads in the direction of its first strong character.
+  WideString all_text;
+  for (const WideString& text : texts) {
+    all_text += text;
+  }
+  const bool rtl = CFX_BidiParagraph::FirstStrongIsRtl(all_text.AsStringView())
+                       .value_or(false);
+  const bool comb = field.cells > 0;
+
+  // The fonts' ascent and descent, as CPVT measures a line with them.
+  std::map<int, std::pair<int, int>> metrics;
+  auto metrics_of = [&](int entry) {
+    auto it = metrics.find(entry);
+    if (it == metrics.end()) {
+      RetainPtr<CPDF_Font> font = fonts_->GetPDFFont(entry);
+      it = metrics
+               .emplace(entry, font ? std::make_pair(font->GetTypeAscent(),
+                                                     font->GetTypeDescent())
+                                    : std::make_pair(0, 0))
+               .first;
+    }
+    return it->second;
+  };
+
+  // The sections, itemised and shaped at |size|, cut into units.
+  auto sections_at = [&](Impl* impl, float size) {
+    ResolvedStyle style;
+    style.style.size = size;
+    style.style.weight = field.weight;
+    style.style.italic = field.italic;
+    style.drawn_size = size;
+    style.face_entry = field.face_entry;
+    const std::vector<ResolvedStyle> styles = {style};
+    std::vector<FieldSection> sections(texts.size());
+    size_t source_pos = 0;
+    for (size_t s = 0; s < texts.size(); ++s) {
+      Segment& segment = sections[s].segment;
+      segment.text = texts[s];
+      segment.style_of.assign(segment.text.GetLength(), 0);
+      for (size_t i = 0; i < segment.text.GetLength(); ++i) {
+        segment.source_pos.push_back(source_pos++);
+      }
+      ++source_pos;  // the line break
+      impl->Itemize(&segment, rtl, styles);
+      const std::vector<bool> starts = GraphemeStarts(segment.text);
+      const size_t length = segment.text.GetLength();
+      for (size_t begin = 0; begin < length;) {
+        size_t end = begin + 1;
+        while (end < length &&
+               !(starts[end] && Impl::IsClusterBoundary(segment, end))) {
+          ++end;
+        }
+        FieldUnit unit;
+        unit.begin = begin;
+        unit.end = end;
+        unit.width = Impl::RangeWidth(segment, begin, end);
+        unit.code = BreakCodeOf(segment.text[begin]);
+        for (const Item& item : segment.items) {
+          if (begin >= item.begin && begin < item.end) {
+            const auto [ascent, descent] = metrics_of(item.entry);
+            unit.ascent = ascent * size * 0.001f;
+            unit.descent = descent * size * 0.001f;
+            break;
+          }
+        }
+        sections[s].units.push_back(unit);
+        begin = end;
+      }
+    }
+    return sections;
+  };
+  auto face_ascent = [&](float size) {
+    return metrics_of(field.face_entry).first * size * 0.001f;
+  };
+  auto face_descent = [&](float size) {
+    return metrics_of(field.face_entry).second * size * 0.001f;
+  };
+  const float typeset_width = std::max(plate_width, 0.0f);
+
+  // The size: the biggest step of the ladder the text fits in, searched as
+  // CPVT's std::lower_bound searches it.
+  float size = field.size;
+  if (FXSYS_IsFloatZero(size)) {
+    size = 0;
+    if (plate_width > 0) {
+      const size_t steps =
+          field.multiline ? kAutoSizeSteps.size() / 4 : kAutoSizeSteps.size();
+      auto too_big = [&](float candidate) {
+        Impl impl(fonts_, options_);
+        impl.field = true;
+        float width = 0;
+        float height = 0;
+        for (const FieldSection& section : sections_at(&impl, candidate)) {
+          const FieldExtent extent = SplitFieldLines(
+              section.units, field.multiline, typeset_width,
+              face_ascent(candidate), face_descent(candidate), nullptr);
+          width = std::max(extent.width, width);
+          height += extent.height;
+          if (FXSYS_IsFloatBigger(width, plate_width) ||
+              FXSYS_IsFloatBigger(height, plate_height)) {
+            return true;
+          }
+        }
+        return false;
+      };
+      size_t first = 0;
+      size_t count = steps;
+      while (count > 0) {
+        const size_t step = count / 2;
+        if (!too_big(kAutoSizeSteps[first + step])) {
+          first += step + 1;
+          count -= step + 1;
+        } else {
+          count = step;
+        }
+      }
+      size = first == steps ? kAutoSizeSteps[steps - 1]
+                            : kAutoSizeSteps[first == 0 ? 0 : first - 1];
+    }
+  }
+
+  Impl impl(fonts_, options_);
+  impl.field = true;
+  std::vector<FieldSection> sections = sections_at(&impl, size);
+  const std::vector<ResolvedStyle> styles = [&] {
+    ResolvedStyle style;
+    style.style.size = size;
+    style.drawn_size = size;
+    style.face_entry = field.face_entry;
+    return std::vector<ResolvedStyle>{style};
+  }();
+
+  // Each section's lines, placed as CPVT's RearrangeTypeset() and
+  // RearrangeCharArray() place them, the sections one under the other.
+  float position_y = 0;
+  float content_height = 0;
+  for (FieldSection& section : sections) {
+    if (comb) {
+      // Each unit in the middle of its cell, the cells filled from the
+      // left, the middle or the right; every baseline at the face's ascent.
+      const float node_width = plate_width / static_cast<float>(field.cells);
+      const int units = pdfium::checked_cast<int>(section.units.size());
+      const int cells = pdfium::checked_cast<int>(field.cells);
+      int start = 0;
+      if (field.alignment == 1) {
+        start = (cells - units) / 2;
+      } else if (field.alignment == 2) {
+        start = cells - units;
+      }
+      const float ascent = face_ascent(size);
+      float line_descent = face_descent(size);
+      float x = 0;
+      for (int i = 0; i < units && i < cells; ++i) {
+        const FieldUnit& unit = section.units[i];
+        // In double, as CPVT computes it.
+        x = static_cast<float>(node_width * (i + start + 0.5) -
+                               unit.width * 0.5f);
+        section.cell_x.push_back(x);
+        x += unit.width;
+        line_descent = std::min(line_descent, unit.descent);
+      }
+      section.lines = {
+          {units > 0 ? 0 : -1, units - 1, 0, ascent, line_descent}};
+      section.top = position_y;
+      section.right = x;
+      section.bottom = section.top + (ascent - line_descent);
+    } else {
+      const FieldExtent extent = SplitFieldLines(
+          section.units, field.multiline, typeset_width, face_ascent(size),
+          face_descent(size), &section.lines);
+      section.left =
+          FieldAlignmentOffset(field.alignment, typeset_width, extent.width);
+      section.right = section.left + extent.width;
+      section.top = position_y;
+      section.bottom = position_y + extent.height;
+    }
+    position_y += section.bottom - section.top;
+    content_height += section.bottom - section.top;
+  }
+
+  // A one-line field's text has its middle at the plate's middle.
+  const float offset_y =
+      field.centered ? (content_height - plate_height) / 2.0f : 0.0f;
+
+  for (FieldSection& section : sections) {
+    const Segment& segment = section.segment;
+    float line_top = 0;  // the baseline steps down from the section's top
+    for (const FieldLine& field_line : section.lines) {
+      Line line;
+      line.ascent = field_line.ascent;
+      line.descent = -field_line.descent;
+      line.width = field_line.width;
+      line_top += field_line.ascent;
+      line.baseline_y = (line_top + section.top) - offset_y;
+      line_top -= field_line.descent;
+      if (field_line.begin >= 0) {
+        if (comb) {
+          // A run per cell.
+          for (size_t i = 0; i < section.cell_x.size(); ++i) {
+            const FieldUnit& unit = section.units[i];
+            for (GlyphRun& run :
+                 Impl::RunsFor(segment, unit.begin, unit.end, styles)) {
+              run.x = section.cell_x[i];
+              line.runs.push_back(std::move(run));
+            }
+          }
+          line.start_x = line.runs.empty() ? 0 : line.runs.front().x;
+        } else {
+          const size_t begin = section.units[field_line.begin].begin;
+          const size_t end = section.units[field_line.end].end;
+          float x = FieldAlignmentOffset(field.alignment, typeset_width,
+                                         field_line.width);
+          line.start_x = (x - section.left) + section.left;
+          for (GlyphRun& run : Impl::RunsFor(segment, begin, end, styles)) {
+            run.x = (x - section.left) + section.left;
+            x += run.width;
+            line.runs.push_back(std::move(run));
+          }
+        }
+        for (const GlyphRun& run : line.runs) {
+          result.degraded = result.degraded || run.degraded;
+        }
+      }
+      result.lines.push_back(std::move(line));
+    }
+  }
+  result.content_height = content_height;
+  result.body_size = size;
+  result.degraded = result.degraded || impl.degraded;
   return result;
 }

@@ -11,10 +11,13 @@
 
 #include <memory>
 #include <optional>
+#include <vector>
 
 #include "core/fxcrt/bytestring.h"
+#include "core/fxcrt/data_vector.h"
 #include "core/fxcrt/retain_ptr.h"
 #include "core/fxcrt/span.h"
+#include "core/fxge/cfx_codepointrange.h"
 
 class CFX_Font;
 class IFX_SeekableReadStream;
@@ -55,9 +58,18 @@ class CFX_FontRegistry {
                              RetainPtr<IFX_SeekableReadStream> stream);
   static void ClearRegisteredFonts();
 
-  static bool AddFallbackFont(FontId font_id);
+  // Adds a registered font to the fallback fonts, in |tier|: lower tiers are
+  // tried first. Adding a font that is already one changes its tier only.
+  static bool AddFallbackFont(FontId font_id, int tier);
   static void ClearFallbackFonts();
   static bool HasFallbackFonts();
+
+  // The font new text draws a character with when neither its font nor any
+  // fallback has it: one box for every code point, so the character shows as
+  // missing and the text keeps it. kInvalidFontId clears it; false for an
+  // unknown id. Unlike the fallbacks, it never draws a page's own text.
+  static bool SetLastResortFont(FontId font_id);
+  static FontId GetLastResortFont();
 
   // EmbedPDF: permissions (§3.4 of the rich text plan).
   static std::optional<EmbeddingPermission> GetEmbeddingPermission(
@@ -72,6 +84,16 @@ class CFX_FontRegistry {
   // SHA-256 of the registered (instanced) bytes: the source identity a font
   // pool shares programs by. Empty for an unknown id.
   static pdfium::span<const uint8_t> GetSourceHash(FontId font_id);
+  // The registered program's bytes: exactly what the writer embeds and
+  // GetSourceHash() names (the static instance for a variable font). Empty
+  // for an unknown id.
+  static DataVector<uint8_t> GetProgramData(FontId font_id);
+  // What the registered program is (registration accepts kTrueType and
+  // kOpenTypeCFF only); kUnsupported for an unknown id.
+  static ProgramFormat GetProgramFormat(FontId font_id);
+  // The code points the program maps to a glyph, as ranges in order. Empty
+  // for an unknown id.
+  static pdfium::span<const CFX_CodePointRange> GetCoverage(FontId font_id);
   // True when the registered bytes are a static instance made from a
   // variable font at registration. A variable font that cannot be instanced
   // is refused, so every registered program is static.
@@ -100,6 +122,13 @@ class CFX_FontRegistry {
                                                 int weight,
                                                 bool italic,
                                                 bool for_authoring = false);
+  // The fallback fonts in the order FindFallbackFont() tries them for a
+  // style: tier by tier, lowest first; within a tier the closest weight and
+  // italic first, then the order they were added in. The first of them that
+  // maps a scalar is the one it returns.
+  static std::vector<FontId> GetFallbackOrder(int weight,
+                                              bool italic,
+                                              bool for_authoring);
   static std::unique_ptr<CFX_Font> CreateFont(FontId font_id);
 
   static void DestroyGlobals();

@@ -504,6 +504,7 @@ bool CPDF_LayerDocument::BeginTransaction() {
   CPDF_WriteGeneration::SetCurrent(transaction_->generation);
   transaction_->root_before = GetCachedRootDict();
   transaction_->info_before = GetCachedInfoDict();
+  transaction_->epoch_at_begin = overlay_epoch_;
   return true;
 }
 
@@ -541,6 +542,9 @@ bool CPDF_LayerDocument::CommitTransaction() {
   }
   last_transaction_stats_ = tx->stats;
   ++overlay_epoch_;
+  if (FontIndex* index = font_index()) {
+    index->TransactionEnded(tx->touched, tx->epoch_at_begin, overlay_epoch_);
+  }
   return true;
 }
 
@@ -569,6 +573,9 @@ bool CPDF_LayerDocument::AbortTransaction() {
   ForgetDerivedDataOf(unreachable);
   last_transaction_stats_ = tx->stats;
   ++overlay_epoch_;
+  if (FontIndex* index = font_index()) {
+    index->TransactionEnded(tx->touched, tx->epoch_at_begin, overlay_epoch_);
+  }
   // tx->written and tx->hidden are dropped with tx. Nothing is undone.
   return true;
 }

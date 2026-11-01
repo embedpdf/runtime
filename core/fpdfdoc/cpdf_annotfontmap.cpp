@@ -26,11 +26,11 @@
 #include "core/fpdfapi/parser/cpdf_stream.h"
 #include "core/fpdfapi/parser/cpdf_stream_acc.h"
 #include "core/fpdfdoc/cpdf_annotfontsubset.h"
+#include "core/fpdfdoc/cpdf_documentfonts.h"
 #include "core/fpdfdoc/cpdf_fontface.h"
 #include "core/fpdfdoc/cpdf_interactiveform.h"
 #include "core/fxcrt/check.h"
 #include "core/fxcrt/code_point_view.h"
-#include "core/fxcrt/fx_codepage.h"
 #include "core/fxcrt/fx_safe_types.h"
 #include "core/fxcrt/numerics/safe_conversions.h"
 #include "core/fxcrt/stl_util.h"
@@ -76,27 +76,6 @@ RetainPtr<CPDF_Dictionary> GetOrCreateDrFontDict(CPDF_Document* doc) {
 
 // ---- Rich text helpers ------------------------------------------------------
 
-// Family names compare without case, spaces, hyphens and underscores:
-// "Noto Sans" == "NotoSans" == "noto-sans".
-ByteString FamilyKey(const WideString& family) {
-  ByteString key;
-  for (wchar_t ch : family) {
-    if (ch == L' ' || ch == L'-' || ch == L'_' || ch == L'\'' || ch == L'"') {
-      continue;
-    }
-    if (ch < 0x80) {
-      key += static_cast<char>(std::tolower(static_cast<int>(ch)));
-    } else {
-      key += WideString(ch).ToUTF8();
-    }
-  }
-  return key;
-}
-
-ByteString FamilyKey(const ByteString& family) {
-  return FamilyKey(WideString::FromUTF8(family.AsStringView()));
-}
-
 // The standard-14 family a rich text family stands for, if any.
 enum class StandardFamily {
   kNone,
@@ -108,7 +87,7 @@ enum class StandardFamily {
 };
 
 StandardFamily StandardFamilyFor(const WideString& family) {
-  const ByteString key = FamilyKey(family);
+  const ByteString key = FontFamilyKey(family);
   if (key == "helvetica" || key == "arial" || key == "arialmt" ||
       key == "sansserif") {
     return StandardFamily::kHelvetica;
@@ -223,29 +202,6 @@ void StandardMetrics(const ByteString& base_font_name,
   *descent = std::abs(desc) / 1000.0f;
 }
 
-// hhea ascender/descender of an embedded program (Acrobat's choice for
-// TrueType and CFF, plan §6).
-void ProgramMetrics(const CFX_Font* font, float* ascent, float* descent) {
-  RetainPtr<CFX_Face> face = font ? font->GetFace() : nullptr;
-  const uint16_t upem = face ? face->GetUnitsPerEm() : 0;
-  if (!face || upem == 0) {
-    *ascent = 0.830f;
-    *descent = 0.170f;
-    return;
-  }
-  *ascent = static_cast<float>(face->GetAscender()) / upem;
-  *descent = static_cast<float>(-face->GetDescender()) / upem;
-  if (*ascent <= 0 || *descent < 0) {
-    *ascent = 0.830f;
-    *descent = 0.170f;
-  }
-}
-
-// "ABCDEF+NotoSans": a producer's subset, cut for the text it was used for.
-bool HasSubsetTag(const ByteString& base_font) {
-  return base_font.GetLength() > 7 && base_font[6] == '+';
-}
-
 struct DocumentProgramCandidate {
   RetainPtr<CPDF_Stream> stream;
   ByteString base_font_name;
@@ -336,6 +292,13 @@ std::vector<RetainPtr<const CPDF_Dictionary>> DocumentFontDicts(
   return dicts;
 }
 
+// Joiners and variation selectors draw nothing of their own: a font covers a
+// grapheme without them, as the layout skips them.
+bool NeedsGlyph(char32_t cp) {
+  return cp != 0x200D && !(cp >= 0xFE00 && cp <= 0xFE0F) &&
+         !(cp >= 0xE0100 && cp <= 0xE01EF);
+}
+
 bool PDFontSupportsUnicode(const RetainPtr<CPDF_Font>& font, uint16_t word) {
   if (!font) {
     return false;
@@ -398,13 +361,18 @@ CPDF_AnnotFontMap::CPDF_AnnotFontMap(
     font_id = CPDF_AnnotFontSubset::ResolveRegisteredFont(
         entry.font->GetFontDict().Get());
   }
+  // A registered font not authorized for editing (preview-and-print) never
+  // lays out new text: the /DA font stays the dictionary /DR holds.
+  if (font_id.has_value() && !CFX_FontRegistry::IsEditingAuthorized(*font_id)) {
+    font_id.reset();
+  }
   if (font_id.has_value()) {
     RetainPtr<CPDF_Font> registered_font = CreateRegisteredLayoutFont(*font_id);
     if (registered_font) {
       entry.font = std::move(registered_font);
       entry.registered_font_id = *font_id;
       entry.source = Source::kRegistered;
-      ProgramMetrics(entry.font->GetFont(), &entry.ascent, &entry.descent);
+      ProgramLineMetrics(entry.font->GetFont(), &entry.ascent, &entry.descent);
     }
   }
   if (entry.source == Source::kDocumentFontDict && entry.font) {
@@ -412,10 +380,24 @@ CPDF_AnnotFontMap::CPDF_AnnotFontMap(
       StandardMetrics(entry.font->GetBaseFontName(), entry.font.Get(),
                       &entry.ascent, &entry.descent);
     } else {
-      ProgramMetrics(entry.font->GetFont(), &entry.ascent, &entry.descent);
+      ProgramLineMetrics(entry.font->GetFont(), &entry.ascent, &entry.descent);
     }
   }
+  // A /DA font over a program that can author text lays new text out with
+  // that program's own cmap, as Acrobat does: a composite font's ToUnicode
+  // only names the characters drawn so far (what the writer installs for a
+  // document program), and a simple font's encoding reaches 256 codes at
+  // most (no Hebrew in a Mac Roman font whose program has it).
+  std::optional<DocumentProgramCandidate> candidate;
+  if (entry.source == Source::kDocumentFontDict && entry.font) {
+    candidate = CandidateFromFontDict(entry.font->GetFontDict().Get());
+  }
   fonts_.push_back(std::move(entry));
+  if (candidate.has_value()) {
+    UseDocumentProgramForDefault(std::move(candidate->stream),
+                                 candidate->base_font_name,
+                                 candidate->identity);
+  }
 }
 
 CPDF_AnnotFontMap::~CPDF_AnnotFontMap() {
@@ -751,89 +733,6 @@ ByteString CPDF_AnnotFontMap::GetPDFFontAlias(int32_t font_index) {
   return fonts_[font_index].alias;
 }
 
-int32_t CPDF_AnnotFontMap::GetWordFontIndex(uint16_t word,
-                                            FX_Charset charset,
-                                            int32_t font_index) {
-  if (SupportsWord(font_index, word)) {
-    return font_index;
-  }
-  if (SupportsWord(0, word)) {
-    return 0;
-  }
-
-  for (size_t i = 1; i < fonts_.size(); ++i) {
-    if (SupportsWord(pdfium::checked_cast<int32_t>(i), word)) {
-      return pdfium::checked_cast<int32_t>(i);
-    }
-  }
-
-  if (!allow_registered_fallbacks_ || !fonts_.front().font) {
-    return -1;
-  }
-
-  const int weight =
-      fonts_.front().font->GetFontWeight().value_or(pdfium::kFontWeightNormal);
-  const bool italic = fonts_.front().font->GetItalicAngle() != 0;
-  std::optional<CFX_FontRegistry::FontId> font_id =
-      CFX_FontRegistry::FindFallbackFont(word, weight, italic,
-                                         /*for_authoring=*/true);
-  if (!font_id.has_value()) {
-    return -1;
-  }
-
-  int32_t existing_font_index = FindExistingRegisteredFont(*font_id);
-  if (existing_font_index >= 0) {
-    return existing_font_index;
-  }
-
-  return AddRegisteredFallbackFont(*font_id);
-}
-
-int32_t CPDF_AnnotFontMap::CharCodeFromUnicode(int32_t font_index,
-                                               uint16_t word) {
-  RetainPtr<CPDF_Font> font = GetPDFFont(font_index);
-  if (!font) {
-    return -1;
-  }
-
-  uint32_t charcode = font->CharCodeFromUnicode(word);
-  if (charcode == CPDF_Font::kInvalidCharCode || (charcode == 0 && word != 0)) {
-    return -1;
-  }
-  if (fxcrt::IndexInBounds(fonts_, font_index)) {
-    FontEntry& entry = fonts_[font_index];
-    if (entry.registered_font_id != CFX_FontRegistry::kInvalidFontId) {
-      entry.glyph_to_unicode.emplace(charcode, word);
-    }
-  }
-  return pdfium::checked_cast<int32_t>(charcode);
-}
-
-FX_Charset CPDF_AnnotFontMap::CharSetFromUnicode(uint16_t word,
-                                                 FX_Charset old_charset) {
-  if (word < 0x7F) {
-    return FX_Charset::kANSI;
-  }
-  if (old_charset != FX_Charset::kDefault) {
-    return old_charset;
-  }
-  return CFX_Font::GetCharSetFromUnicode(word);
-}
-
-bool CPDF_AnnotFontMap::SupportsWord(int32_t font_index, uint16_t word) const {
-  if (!fxcrt::IndexInBounds(fonts_, font_index)) {
-    return false;
-  }
-  const FontEntry& entry = fonts_[font_index];
-  if (!entry.font) {
-    return false;
-  }
-  if (entry.registered_font_id != CFX_FontRegistry::kInvalidFontId) {
-    return CFX_FontRegistry::SupportsUnicode(entry.registered_font_id, word);
-  }
-  return PDFontSupportsUnicode(entry.font, word);
-}
-
 void CPDF_AnnotFontMap::ReleaseLayoutFonts() {
   // Rendering caches fonts in the document's page data. Release those cache
   // references before the scratch streams that their dictionaries reference.
@@ -879,7 +778,7 @@ int32_t CPDF_AnnotFontMap::AddRegisteredFallbackFont(
   entry.alias = AllocateAppearanceAlias(ResourceKeyForRegisteredFont(font_id));
   entry.registered_font_id = font_id;
   entry.source = Source::kRegistered;
-  ProgramMetrics(entry.font->GetFont(), &entry.ascent, &entry.descent);
+  ProgramLineMetrics(entry.font->GetFont(), &entry.ascent, &entry.descent);
   fonts_.push_back(std::move(entry));
   return pdfium::checked_cast<int32_t>(fonts_.size() - 1);
 }
@@ -901,9 +800,11 @@ void CPDF_AnnotFontMap::PinRichFace(const WideString& family,
 // static
 ByteString CPDF_AnnotFontMap::FaceRequestKey(const WideString& family,
                                              int weight,
-                                             bool italic) {
-  return ByteString::Format("%s|%d|%d", FamilyKey(family).c_str(),
-                            std::clamp(weight, 100, 900), italic ? 1 : 0);
+                                             bool italic,
+                                             uint32_t program) {
+  return ByteString::Format("%s|%d|%d|%u", FontFamilyKey(family).c_str(),
+                            std::clamp(weight, 100, 900), italic ? 1 : 0,
+                            program);
 }
 
 bool CPDF_AnnotFontMap::CoversText(int entry, WideStringView text) {
@@ -913,9 +814,8 @@ bool CPDF_AnnotFontMap::CoversText(int entry, WideStringView text) {
   // Scalars, not code units: on a 16-bit wchar_t platform a supplementary
   // character is a surrogate pair, and neither half has a glyph anywhere.
   for (char32_t cp : pdfium::CodePointView(text)) {
-    if (cp == 0x200D || (cp >= 0xFE00 && cp <= 0xFE0F) ||
-        (cp >= 0xE0100 && cp <= 0xE01EF)) {
-      continue;  // joiners and variation selectors, as the layout skips them
+    if (!NeedsGlyph(cp)) {
+      continue;
     }
     if (RichGlyphFor(entry, static_cast<uint32_t>(cp)) == 0) {
       return false;
@@ -927,13 +827,15 @@ bool CPDF_AnnotFontMap::CoversText(int entry, WideStringView text) {
 int CPDF_AnnotFontMap::ResolveRichFace(const WideString& family,
                                        int weight,
                                        bool italic,
-                                       WideStringView text) {
-  const ByteString request = FaceRequestKey(family, weight, italic);
+                                       WideStringView text,
+                                       uint32_t program) {
+  const ByteString request = FaceRequestKey(family, weight, italic, program);
   auto cached = resolved_faces_.find(request);
   if (cached != resolved_faces_.end()) {
     return cached->second;
   }
-  const int entry = ResolveRichFaceUncached(family, weight, italic, text);
+  const int entry =
+      ResolveRichFaceUncached(family, weight, italic, text, program);
   if (entry >= 0) {
     resolved_faces_[request] = entry;
   }
@@ -943,17 +845,26 @@ int CPDF_AnnotFontMap::ResolveRichFace(const WideString& family,
 int CPDF_AnnotFontMap::ResolveRichFaceUncached(const WideString& family,
                                                int weight,
                                                bool italic,
-                                               WideStringView text) {
+                                               WideStringView text,
+                                               uint32_t program) {
   weight = std::clamp(weight, 100, 900);
   bool degraded = false;
+
+  // A program the writer named is the face, whatever the family resolves to.
+  if (program != 0) {
+    const int entry = EntryForDocumentProgram(program);
+    if (entry >= 0) {
+      return entry;
+    }
+  }
 
   // 0. A face the caller pinned to an entry (the /DA font of a regenerated
   // plain box), if it can draw the text; a box's own font that lacks a
   // glyph the edit needs is not the edit's face.
-  const ByteString wanted_key = FamilyKey(family);
+  const ByteString wanted_key = FontFamilyKey(family);
   for (const PinnedFace& pinned : pinned_faces_) {
     if (pinned.weight == weight && pinned.italic == italic &&
-        FamilyKey(pinned.family) == wanted_key) {
+        FontFamilyKey(pinned.family) == wanted_key) {
       if (CoversText(pinned.entry, text)) {
         return pinned.entry;
       }
@@ -1007,23 +918,41 @@ int CPDF_AnnotFontMap::ResolveRichFaceUncached(const WideString& family,
   return entry;
 }
 
-int CPDF_AnnotFontMap::FindRichFallback(uint32_t unicode,
+int CPDF_AnnotFontMap::FindRichFallback(WideStringView grapheme,
                                         int weight,
                                         bool italic) {
   if (!allow_registered_fallbacks_) {
     return -1;
   }
-  std::optional<CFX_FontRegistry::FontId> font_id =
-      CFX_FontRegistry::FindFallbackFont(unicode, weight, italic,
-                                         /*for_authoring=*/true);
-  if (!font_id.has_value()) {
+  for (CFX_FontRegistry::FontId font_id : CFX_FontRegistry::GetFallbackOrder(
+           weight, italic, /*for_authoring=*/true)) {
+    const bool covers = std::ranges::all_of(
+        pdfium::CodePointView(grapheme), [font_id](char32_t cp) {
+          return !NeedsGlyph(cp) || CFX_FontRegistry::SupportsUnicode(
+                                        font_id, static_cast<uint32_t>(cp));
+        });
+    if (covers) {
+      return EntryForRegisteredFont(font_id);
+    }
+  }
+  return -1;
+}
+
+int CPDF_AnnotFontMap::FindLastResort() {
+  const CFX_FontRegistry::FontId font_id =
+      CFX_FontRegistry::GetLastResortFont();
+  if (!allow_registered_fallbacks_ ||
+      font_id == CFX_FontRegistry::kInvalidFontId ||
+      !CFX_FontRegistry::IsEditingAuthorized(font_id)) {
     return -1;
   }
-  int32_t existing = FindExistingRegisteredFont(*font_id);
-  if (existing >= 0) {
-    return existing;
-  }
-  return AddRegisteredFallbackFont(*font_id);
+  return EntryForRegisteredFont(font_id);
+}
+
+int CPDF_AnnotFontMap::EntryForRegisteredFont(
+    CFX_FontRegistry::FontId font_id) {
+  const int32_t existing = FindExistingRegisteredFont(font_id);
+  return existing >= 0 ? existing : AddRegisteredFallbackFont(font_id);
 }
 
 CPDF_AnnotFontMap::RichFace CPDF_AnnotFontMap::GetRichFace(int entry) const {
@@ -1193,7 +1122,7 @@ int CPDF_AnnotFontMap::FindDocumentProgram(const WideString& family,
   if (!doc_) {
     return -1;
   }
-  const ByteString wanted = FamilyKey(family);
+  const ByteString wanted = FontFamilyKey(family);
   if (wanted.IsEmpty()) {
     return -1;
   }
@@ -1203,7 +1132,7 @@ int CPDF_AnnotFontMap::FindDocumentProgram(const WideString& family,
     std::optional<DocumentProgramCandidate> candidate =
         CandidateFromFontDict(dict.Get());
     if (!candidate.has_value() ||
-        FamilyKey(candidate->identity.family) != wanted ||
+        FontFamilyKey(candidate->identity.family) != wanted ||
         !seen.insert(candidate->stream.Get()).second) {
       continue;
     }
@@ -1219,8 +1148,8 @@ int CPDF_AnnotFontMap::FindDocumentProgram(const WideString& family,
                      if (a.score != b.score) {
                        return a.score < b.score;
                      }
-                     return !HasSubsetTag(a.base_font_name) &&
-                            HasSubsetTag(b.base_font_name);
+                     return !HasFontSubsetTag(a.base_font_name) &&
+                            HasFontSubsetTag(b.base_font_name);
                    });
   for (DocumentProgramCandidate& candidate : candidates) {
     int entry = -1;
@@ -1245,21 +1174,63 @@ int CPDF_AnnotFontMap::FindDocumentProgram(const WideString& family,
   return -1;
 }
 
+int CPDF_AnnotFontMap::EntryForDocumentProgram(uint32_t objnum) {
+  for (size_t i = 0; i < fonts_.size(); ++i) {
+    if (fonts_[i].source == Source::kDocumentProgram &&
+        fonts_[i].program_stream &&
+        fonts_[i].program_stream->GetObjNum() == objnum) {
+      return static_cast<int>(i);
+    }
+  }
+  if (!doc_) {
+    return -1;
+  }
+  CPDF_DocumentFonts* document_fonts = CPDF_DocumentFonts::For(doc_);
+  std::optional<CPDF_DocumentFonts::ReservedProgram> described =
+      document_fonts->DescribeProgram(objnum);
+  RetainPtr<CPDF_Stream> stream = document_fonts->ProgramStream(objnum);
+  if (!described.has_value() || !stream) {
+    return -1;
+  }
+  return AddDocumentProgram(
+      std::move(stream), described->base_font_name,
+      {described->family.ToUTF8(), described->weight, described->italic});
+}
+
 int CPDF_AnnotFontMap::AddDocumentProgram(
     RetainPtr<CPDF_Stream> stream,
     const ByteString& base_font_name,
     const CPDF_AnnotFontSubset::FaceIdentity& identity) {
+  std::optional<FontEntry> entry =
+      MakeDocumentProgramEntry(std::move(stream), base_font_name, identity);
+  if (!entry.has_value()) {
+    return -1;
+  }
+  entry->alias = AllocateAppearanceAlias(
+      ByteString::Format("EDocF%u", entry->program_stream->GetObjNum()));
+  fonts_.push_back(std::move(*entry));
+  return static_cast<int>(fonts_.size() - 1);
+}
+
+std::optional<CPDF_AnnotFontMap::FontEntry>
+CPDF_AnnotFontMap::MakeDocumentProgramEntry(
+    RetainPtr<CPDF_Stream> stream,
+    const ByteString& base_font_name,
+    const CPDF_AnnotFontSubset::FaceIdentity& identity) {
+  if (!doc_ || !stream || stream->GetObjNum() == 0) {
+    return std::nullopt;
+  }
   auto* page_data = CPDF_DocPageData::FromDocument(doc_);
   RetainPtr<CPDF_StreamAcc> data = page_data->GetFontFileStreamAcc(stream);
   if (!data || data->GetSpan().empty()) {
-    return -1;
+    return std::nullopt;
   }
   // Eligibility on the bytes (C note §1.3): an sfnt we can emit, whose
   // licence allows authoring.
   if (CFX_FontRegistry::DetectProgramFormat(data->GetSpan()) ==
       CFX_FontRegistry::ProgramFormat::kUnsupported) {
     page_data->MaybePurgeFontFileStreamAcc(std::move(data));
-    return -1;
+    return std::nullopt;
   }
   auto program = std::make_unique<CFX_Font>();
   if (!program->LoadFaceZeroFromSpan(data->GetSpan(), /*force_vertical=*/false,
@@ -1272,27 +1243,120 @@ int CPDF_AnnotFontMap::AddDocumentProgram(
       // asked for explicitly, a Mac Roman-only cmap is refused too.
       !program->GetFace()->SelectCharMap(fxge::FontEncoding::kUnicode)) {
     page_data->MaybePurgeFontFileStreamAcc(std::move(data));
-    return -1;
+    return std::nullopt;
   }
   const CFX_FontRegistry::EmbeddingPermission permission =
       CFX_FontRegistry::ClassifyFsType(program->GetFace()->GetFsTypeFlags());
   if (permission != CFX_FontRegistry::EmbeddingPermission::kInstallable &&
       permission != CFX_FontRegistry::EmbeddingPermission::kEditable) {
     page_data->MaybePurgeFontFileStreamAcc(std::move(data));
-    return -1;  // preview-and-print: renders, never authors (no override)
+    return std::nullopt;  // preview-and-print: renders, never authors
   }
   FontEntry entry;
   entry.source = Source::kDocumentProgram;
-  entry.alias = AllocateAppearanceAlias(
-      ByteString::Format("EDocF%u", stream->GetObjNum()));
+  CPDF_AnnotFontSubset::LayoutFont layout_font =
+      CPDF_AnnotFontSubset::CreateLayoutFontForProgram(
+          doc_, program.get(), base_font_name, identity);
+  if (layout_font.scratch) {
+    layout_scratch_.push_back(std::move(layout_font.scratch));
+  }
+  entry.font = std::move(layout_font.font);
   entry.program = std::move(program);
   entry.program_data = std::move(data);
   entry.program_stream = std::move(stream);
   entry.base_font_name = base_font_name;
   entry.identity = identity;
-  ProgramMetrics(entry.program.get(), &entry.ascent, &entry.descent);
-  fonts_.push_back(std::move(entry));
-  return static_cast<int>(fonts_.size() - 1);
+  ProgramLineMetrics(entry.program.get(), &entry.ascent, &entry.descent);
+  return entry;
+}
+
+bool CPDF_AnnotFontMap::UseDocumentProgramForDefault(
+    RetainPtr<CPDF_Stream> program,
+    const ByteString& base_font_name,
+    const CPDF_AnnotFontSubset::FaceIdentity& identity) {
+  if (fonts_.empty()) {
+    return false;
+  }
+  std::optional<FontEntry> entry =
+      MakeDocumentProgramEntry(std::move(program), base_font_name, identity);
+  if (!entry.has_value()) {
+    return false;
+  }
+  entry->alias = fonts_.front().alias;
+  fonts_.front() = std::move(*entry);
+  return true;
+}
+
+CPDF_AnnotFontMap::EntryFacts CPDF_AnnotFontMap::DescribeEntry(
+    int entry) const {
+  EntryFacts facts;
+  if (!fxcrt::IndexInBounds(fonts_, entry)) {
+    return facts;
+  }
+  const FontEntry& font_entry = fonts_[entry];
+  facts.source = font_entry.source;
+  facts.degraded = font_entry.degraded;
+  switch (font_entry.source) {
+    case Source::kRegistered:
+      facts.registered_font_id = font_entry.registered_font_id;
+      facts.family = WideString::FromUTF8(
+          CFX_FontRegistry::GetFamilyName(font_entry.registered_font_id)
+              .AsStringView());
+      facts.weight =
+          CFX_FontRegistry::GetStyleWeight(font_entry.registered_font_id);
+      facts.italic =
+          CFX_FontRegistry::IsStyleItalic(font_entry.registered_font_id);
+      break;
+    case Source::kDocumentProgram:
+      facts.program_objnum = font_entry.program_stream
+                                 ? font_entry.program_stream->GetObjNum()
+                                 : 0;
+      facts.base_font_name = font_entry.base_font_name;
+      facts.family =
+          WideString::FromUTF8(font_entry.identity.family.AsStringView());
+      facts.weight = font_entry.identity.weight;
+      facts.italic = font_entry.identity.italic;
+      break;
+    case Source::kStandard14: {
+      facts.base_font_name = font_entry.base_font_name;
+      const CPDF_FontFace face = FaceOfBaseFontName(font_entry.base_font_name);
+      facts.family = face.family;
+      facts.weight = face.weight;
+      facts.italic = face.italic;
+      break;
+    }
+    case Source::kDocumentFontDict: {
+      RetainPtr<const CPDF_Dictionary> font_dict =
+          font_entry.font ? font_entry.font->GetFontDict() : nullptr;
+      if (!font_dict) {
+        break;
+      }
+      const CPDF_FontFace face = FaceOfFontDict(font_dict.Get());
+      facts.family = face.family;
+      facts.weight = face.weight;
+      facts.italic = face.italic;
+      facts.base_font_name = font_dict->GetNameFor("BaseFont");
+      facts.font_dict = font_dict;
+      RetainPtr<const CPDF_Dictionary> descriptor =
+          FontDescriptorOf(font_dict.Get());
+      for (const char* key : {"FontFile2", "FontFile3", "FontFile"}) {
+        RetainPtr<const CPDF_Stream> stream =
+            descriptor ? descriptor->GetStreamFor(key) : nullptr;
+        if (stream) {
+          facts.program_objnum = stream->GetObjNum();
+          break;
+        }
+      }
+      break;
+    }
+  }
+  return facts;
+}
+
+void CPDF_AnnotFontMap::NoteMissingCharacter(const WideString& grapheme) {
+  if (doc_) {
+    CPDF_DocumentFonts::For(doc_)->NoteMissingCharacter(grapheme);
+  }
 }
 
 int CPDF_AnnotFontMap::AddStandardFont(const ByteString& base_font_name) {

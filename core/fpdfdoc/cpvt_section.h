@@ -116,4 +116,12 @@ class CPVT_Section final {
   UnownedPtr<CPVT_VariableText> const vt_;
 };
 
+// EmbedPDF(fonts): CPVT's word breaking, which the shared layout breaks a
+// form field's lines with (CPDF_RichTextLayout::ArrangeField()): whether a
+// line may break between two characters, the punctuation that opens a word,
+// and the spaces that don't close one.
+bool CPVT_NeedDivision(uint16_t previous, uint16_t current);
+bool CPVT_IsOpenStylePunctuation(uint16_t word);
+bool CPVT_IsSpace(uint16_t word);
+
 #endif  // CORE_FPDFDOC_CPVT_SECTION_H_

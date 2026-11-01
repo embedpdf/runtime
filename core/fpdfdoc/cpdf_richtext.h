@@ -36,6 +36,12 @@ struct CPDF_RichTextStyle {
   Script script = Script::kNormal;
   float letter_spacing = 0.0f;  // pt
   float horz_scale = 1.0f;      // xfa-font-horizontal-scale / 100
+  // The document program (its stream's object number) the writer chose for
+  // this face, which the family alone can't tell from another program that
+  // describes itself the same way; 0 when the family decides. Never written
+  // to /RC or /DS, which name families only: the body's reaches the file as
+  // the /DA font.
+  uint32_t program = 0;
 };
 
 // What a run overrides. Unknown declarations are kept verbatim so a later
@@ -50,11 +56,15 @@ struct CPDF_RichTextStyleDelta {
   std::optional<CPDF_RichTextStyle::Script> script;
   std::optional<float> letter_spacing;
   std::optional<float> horz_scale;
+  std::optional<uint32_t> program;
   WideString unknown_declarations;  // "kerning-mode:pair;..." as written
 
   bool IsEmpty() const;
 };
 
+// |base| with |delta| over it. A program names one face: a delta that asks
+// for another family, weight or italic without naming a program of its own
+// leaves the base's.
 CPDF_RichTextStyle ApplyRichTextStyleDelta(
     const CPDF_RichTextStyle& base,
     const CPDF_RichTextStyleDelta& delta);

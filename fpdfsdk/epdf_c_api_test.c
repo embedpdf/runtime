@@ -112,6 +112,7 @@ int CheckEmbedPDFCApi(void) {
   CHK(EPDFAnnot_GetColor);
   CHK(EPDFAnnot_GetDefaultAppearance);
   CHK(EPDFAnnot_GetDefaultAppearanceFontFace);
+  CHK(EPDFAnnot_GetDefaultAppearanceFontPostScriptName);
   CHK(EPDFAnnot_GetDrawingRect);
   CHK(EPDFAnnot_GetEmbedMetadataBoolean);
   CHK(EPDFAnnot_GetEmbedMetadataJSON);
@@ -154,6 +155,7 @@ int CheckEmbedPDFCApi(void) {
   CHK(EPDFAnnot_SetCalloutLine);
   CHK(EPDFAnnot_SetColor);
   CHK(EPDFAnnot_SetDefaultAppearance);
+  CHK(EPDFAnnot_SetDefaultAppearanceDocumentFont);
   CHK(EPDFAnnot_SetDefaultAppearanceRegisteredFont);
   CHK(EPDFAnnot_SetEmbedMetadataBoolean);
   CHK(EPDFAnnot_SetEmbedMetadataJSON);
@@ -280,14 +282,59 @@ int CheckEmbedPDFCApi(void) {
   CHK(EPDFPage_FlattenAnnotations);
 
   // epdf_font.h
+  CHK(EPDFDoc_ClearMissingCharacters);
+  CHK(EPDFDoc_CountMissingCharacters);
+  CHK(EPDFDoc_GetFontDisplayProgramCoverage);
+  CHK(EPDFDoc_GetFontDisplayProgramData);
   CHK(EPDFDoc_GetFontEmbeddingPolicy);
+  CHK(EPDFDoc_GetFontProgramData);
+  CHK(EPDFDoc_GetFontsFingerprint);
+  CHK(EPDFDoc_GetMissingCharacter);
+  CHK(EPDFDoc_ResolveFonts);
   CHK(EPDFDoc_SetFontEmbeddingPolicy);
+  CHK(EPDFFontFaces_Close);
+  CHK(EPDFFontFaces_Count);
+  CHK(EPDFFontFaces_CountPrograms);
+  CHK(EPDFFontFaces_GetFamily);
+  CHK(EPDFFontFaces_GetProgramDisplayHash);
+  CHK(EPDFFontFaces_GetProgramEmbedded);
+  CHK(EPDFFontFaces_GetProgramEmbeddingPermission);
+  CHK(EPDFFontFaces_GetProgramFormat);
+  CHK(EPDFFontFaces_GetProgramHash);
+  CHK(EPDFFontFaces_GetProgramMetrics);
+  CHK(EPDFFontFaces_GetProgramObjNum);
+  CHK(EPDFFontFaces_GetProgramPostScriptName);
+  CHK(EPDFFontFaces_GetWeight);
+  CHK(EPDFFontFaces_IsItalic);
+  CHK(EPDFFontFaces_Load);
+  CHK(EPDFFontFaces_ProgramMapsUnicode);
+  CHK(EPDFFontResolution_Close);
+  CHK(EPDFFontResolution_CountMissingCharacters);
+  CHK(EPDFFontResolution_GetBaseFontName);
+  CHK(EPDFFontResolution_GetFallbacks);
+  CHK(EPDFFontResolution_GetFamily);
+  CHK(EPDFFontResolution_GetMissingCharacter);
+  CHK(EPDFFontResolution_GetProgramDisplayHash);
+  CHK(EPDFFontResolution_GetProgramObjNum);
+  CHK(EPDFFontResolution_GetRegisteredFont);
+  CHK(EPDFFontResolution_GetSource);
+  CHK(EPDFFontResolution_GetWeight);
+  CHK(EPDFFontResolution_IsDegraded);
+  CHK(EPDFFontResolution_IsItalic);
   CHK(EPDFFont_AddFallbackFont);
   CHK(EPDFFont_AuthorizeEditing);
   CHK(EPDFFont_ClearFallbackFonts);
   CHK(EPDFFont_ClearRegisteredFonts);
+  CHK(EPDFFont_GetCoverage);
   CHK(EPDFFont_GetEmbeddingPermission);
+  CHK(EPDFFont_GetFallbackOrder);
   CHK(EPDFFont_GetFamilyName);
+  CHK(EPDFFont_GetLastResortFont);
+  CHK(EPDFFont_GetMetrics);
+  CHK(EPDFFont_GetPostScriptName);
+  CHK(EPDFFont_GetProgramData);
+  CHK(EPDFFont_GetProgramFormat);
+  CHK(EPDFFont_GetProgramHash);
   CHK(EPDFFont_GetWeight);
   CHK(EPDFFont_IsEditingAuthorized);
   CHK(EPDFFont_IsInstanced);
@@ -295,6 +342,7 @@ int CheckEmbedPDFCApi(void) {
   CHK(EPDFFont_RegisterFont);
   CHK(EPDFFont_RegisterMemFont);
   CHK(EPDFFont_RegisterMemFont64);
+  CHK(EPDFFont_SetLastResortFont);
 
   // epdf_form.h
   CHK(EPDFForm_AttachWidget);

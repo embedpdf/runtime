@@ -175,6 +175,19 @@ bool NeedDivision(uint16_t prevWord, uint16_t curWord) {
 
 }  // namespace
 
+// EmbedPDF(fonts): CPVT's word breaking for the shared layout.
+bool CPVT_NeedDivision(uint16_t previous, uint16_t current) {
+  return NeedDivision(previous, current);
+}
+
+bool CPVT_IsOpenStylePunctuation(uint16_t word) {
+  return IsOpenStylePunctuation(word);
+}
+
+bool CPVT_IsSpace(uint16_t word) {
+  return IsSpace(word);
+}
+
 CPVT_Section::Line::Line(const CPVT_LineInfo& lineinfo)
     : line_info_(lineinfo) {}
 

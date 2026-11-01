@@ -17,7 +17,6 @@
 #include "core/fxcrt/widestring.h"
 
 #include "core/fpdfdoc/cpdf_annotfontsubset.h"
-#include "core/fpdfdoc/ipvt_fontmap.h"
 #include "core/fxcrt/bytestring.h"
 #include "core/fxcrt/retain_ptr.h"
 #include "core/fxcrt/unowned_ptr.h"
@@ -31,7 +30,7 @@ class CPDF_IndirectObjectHolder;
 class CPDF_Stream;
 class CPDF_StreamAcc;
 
-class CPDF_AnnotFontMap final : public IPVT_FontMap {
+class CPDF_AnnotFontMap final {
  public:
   // Whose text the appearance is, for the document's embedding policy (§2 of
   // the Phase C note): under the DEFAULT policy annotation text (FreeText,
@@ -52,7 +51,7 @@ class CPDF_AnnotFontMap final : public IPVT_FontMap {
                         CFX_FontRegistry::kInvalidFontId,
                     bool install_dr_entry = false,
                     Owner owner = Owner::kAnnotation);
-  ~CPDF_AnnotFontMap() override;
+  ~CPDF_AnnotFontMap();
 
   // Pick the /DR resource name a DA string uses for |font_id|: "ERegF<id>",
   // suffixed "_N" when a foreign entry already owns that key. Choose reads
@@ -158,14 +157,22 @@ class CPDF_AnnotFontMap final : public IPVT_FontMap {
   // next rung takes over for the whole request, so a subset never draws
   // glyph 0 for the characters it lacks. Registered and standard faces keep
   // the layout's per-glyph fallback (rung 4) for their own gaps.
+  //
+  // A |program| (a document program's object number) is the face exactly,
+  // before every rung: the writer chose it by the name the font list gives
+  // it, which the family can't tell from another program that describes
+  // itself alike. Like a registered face it keeps the per-glyph fallback for
+  // its gaps. A program that can't author text leaves the family to decide.
   int ResolveRichFace(const WideString& family,
                       int weight,
                       bool italic,
-                      WideStringView text = WideStringView());
+                      WideStringView text = WideStringView(),
+                      uint32_t program = 0);
   // The key ResolveRichFace caches by: what the layout groups text with.
   static ByteString FaceRequestKey(const WideString& family,
                                    int weight,
-                                   bool italic);
+                                   bool italic,
+                                   uint32_t program = 0);
   // Does |entry| map every base character of |text|? Joiners and variation
   // selectors are exempt, as in the layout. Empty text is covered.
   bool CoversText(int entry, WideStringView text);
@@ -175,9 +182,14 @@ class CPDF_AnnotFontMap final : public IPVT_FontMap {
   // subset name), so the rich layout keeps naming the /DA alias, exactly as
   // CPVT always did. A pinned face wins over every resolution step.
   void PinRichFace(const WideString& family, int weight, bool italic, int entry);
-  // A registered fallback font, authorised for authoring, covering
-  // |unicode|; -1 when there is none or fallbacks are not allowed.
-  int FindRichFallback(uint32_t unicode, int weight, bool italic);
+  // The first registered fallback font, in the order for the style
+  // (CFX_FontRegistry::GetFallbackOrder()), that has every character of
+  // |grapheme|; -1 when none does or fallbacks are not allowed.
+  int FindRichFallback(WideStringView grapheme, int weight, bool italic);
+  // The registered last-resort font (CFX_FontRegistry::GetLastResortFont()),
+  // which draws a grapheme no font has as its box; -1 when there is none or
+  // fallbacks are not allowed.
+  int FindLastResort();
   RichFace GetRichFace(int entry) const;
   // The glyph of |entry| for a scalar; 0 when the face lacks it. For a
   // standard-14 face this is the charcode (one glyph per character).
@@ -200,14 +212,47 @@ class CPDF_AnnotFontMap final : public IPVT_FontMap {
   void SetDefaultAppearanceEntry(int entry, const ByteString& alias);
   int GetDefaultAppearanceEntry() const { return da_entry_; }
 
-  // IPVT_FontMap:
-  RetainPtr<CPDF_Font> GetPDFFont(int32_t font_index) override;
-  ByteString GetPDFFontAlias(int32_t font_index) override;
-  int32_t GetWordFontIndex(uint16_t word,
-                           FX_Charset charset,
-                           int32_t font_index) override;
-  int32_t CharCodeFromUnicode(int32_t font_index, uint16_t word) override;
-  FX_Charset CharSetFromUnicode(uint16_t word, FX_Charset old_charset) override;
+  // Makes the /DA entry a program already in the document, under the alias
+  // the /DA string names: what a /DA font a session reserved for a document
+  // program draws with before its /DR entry exists. False, and the entry
+  // stays as it was, when the program can't author text (see
+  // FindDocumentProgram()).
+  bool UseDocumentProgramForDefault(
+      RetainPtr<CPDF_Stream> program,
+      const ByteString& base_font_name,
+      const CPDF_AnnotFontSubset::FaceIdentity& identity);
+
+  // What an entry is, for a resolver read: where its program comes from and
+  // which one it is.
+  struct EntryFacts {
+    Source source = Source::kStandard14;
+    CFX_FontRegistry::FontId registered_font_id =
+        CFX_FontRegistry::kInvalidFontId;
+    // kDocumentProgram's stream, and kDocumentFontDict's when it embeds one.
+    uint32_t program_objnum = 0;
+    // kDocumentFontDict's dictionary, which says how its program is read.
+    RetainPtr<const CPDF_Dictionary> font_dict;
+    // kStandard14: the standard name; else the font's /BaseFont.
+    ByteString base_font_name;
+    // The face it draws: its family, weight and italic.
+    WideString family;
+    int weight = 400;
+    bool italic = false;
+    bool degraded = false;
+  };
+  EntryFacts DescribeEntry(int entry) const;
+
+  // A grapheme drawn with no font that has it, for the write's report
+  // (CPDF_DocumentFonts::NoteMissingCharacter()).
+  void NoteMissingCharacter(const WideString& grapheme);
+
+  // The font |font_index| lays out with (for a registered font or a
+  // document program, a composite font over its program); null out of
+  // range.
+  RetainPtr<CPDF_Font> GetPDFFont(int32_t font_index);
+  // The resource name the appearance draws |font_index| with. Naming it
+  // makes its resource part of the appearance.
+  ByteString GetPDFFontAlias(int32_t font_index);
 
  private:
   struct FontEntry {
@@ -236,7 +281,6 @@ class CPDF_AnnotFontMap final : public IPVT_FontMap {
     std::unique_ptr<CPDF_AnnotFontSubset::GlyphIdentity> glyph_identity;
   };
 
-  bool SupportsWord(int32_t font_index, uint16_t word) const;
   ByteString AllocateAppearanceAlias(const ByteString& preferred) const;
   CPDF_AnnotFontSubset::Embedding EmbeddingForRegisteredFonts() const;
   void InstallDrEntry(const ByteString& alias,
@@ -247,10 +291,16 @@ class CPDF_AnnotFontMap final : public IPVT_FontMap {
       CFX_FontRegistry::FontId font_id);
   int32_t FindExistingRegisteredFont(CFX_FontRegistry::FontId font_id) const;
   int32_t AddRegisteredFallbackFont(CFX_FontRegistry::FontId font_id);
+  // The entry drawing with a registered font, added when it is the first.
+  int EntryForRegisteredFont(CFX_FontRegistry::FontId font_id);
   int ResolveRichFaceUncached(const WideString& family,
                               int weight,
                               bool italic,
-                              WideStringView text);
+                              WideStringView text,
+                              uint32_t program);
+  // The entry drawing with the document program |objnum|, added when it is
+  // the first; -1 when the walk didn't find it or it can't author text.
+  int EntryForDocumentProgram(uint32_t objnum);
   // The best-styled document program under |family| that is eligible and
   // covers |text|; -1 when none is.
   int FindDocumentProgram(const WideString& family,
@@ -260,6 +310,13 @@ class CPDF_AnnotFontMap final : public IPVT_FontMap {
   int AddDocumentProgram(RetainPtr<CPDF_Stream> stream,
                          const ByteString& base_font_name,
                          const CPDF_AnnotFontSubset::FaceIdentity& identity);
+  // The entry for a document program, when it can author text: an sfnt that
+  // loads, has glyphs and a Unicode cmap, and whose licence allows editing.
+  // Its layout font is what CPVT reads widths and charcodes from.
+  std::optional<FontEntry> MakeDocumentProgramEntry(
+      RetainPtr<CPDF_Stream> stream,
+      const ByteString& base_font_name,
+      const CPDF_AnnotFontSubset::FaceIdentity& identity);
   int AddStandardFont(const ByteString& base_font_name);
   const CPDF_AnnotFontSubset::GlyphIdentity* GlyphIdentityOf(FontEntry* entry);
 

@@ -68,11 +68,11 @@ class CPDF_AnnotFontSubset final {
     std::map<uint16_t, uint32_t> cid_to_gid_;
   };
 
-  // A registered font as CPVT lays text out with it. Its program and
-  // ToUnicode streams live in |scratch|, a holder of its own, never in the
-  // document: laying out allocates no document object number and leaves
-  // nothing behind. |scratch| must outlive |font| (it is declared first, so
-  // it is destroyed last).
+  // A registered font as the layout measures it: a composite font over its
+  // program. The program stream lives in |scratch|, a holder of its own,
+  // never in the document: laying out allocates no document object number
+  // and leaves nothing behind. |scratch| must outlive |font| (it is declared
+  // first, so it is destroyed last).
   struct LayoutFont {
     LayoutFont();
     LayoutFont(LayoutFont&& that) noexcept;
@@ -99,6 +99,14 @@ class CPDF_AnnotFontSubset final {
     bool italic = false;
   };
   static FaceIdentity IdentityForRegisteredFont(CFX_FontRegistry::FontId id);
+
+  // A layout font over any program the writer can emit (a document's own,
+  // when a widget's /DA font is one): the same shape CreateLayoutFont()
+  // builds for a registered font, named and identified as given.
+  static LayoutFont CreateLayoutFontForProgram(CPDF_Document* doc,
+                                               CFX_Font* program,
+                                               const ByteString& base_font_name,
+                                               const FaceIdentity& identity);
 
   // How much of the program a resource carries (§2 of the Phase C note).
   // The caller resolves the document's policy and the resource's owner into

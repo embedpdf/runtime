@@ -1099,7 +1099,7 @@ ByteString JsonParagraphProps(const CPDF_RichTextParagraphProps& props,
 
 bool CPDF_RichTextStyleDelta::IsEmpty() const {
   return !family && !weight && !italic && !size && !color && !decoration &&
-         !script && !letter_spacing && !horz_scale &&
+         !script && !letter_spacing && !horz_scale && !program &&
          unknown_declarations.IsEmpty();
 }
 
@@ -1133,6 +1133,14 @@ CPDF_RichTextStyle ApplyRichTextStyleDelta(
   }
   if (delta.horz_scale) {
     out.horz_scale = *delta.horz_scale;
+  }
+  // A program draws the base's face only: a run that restates that face
+  // keeps it, one in another face finds that face by its family.
+  if (delta.program) {
+    out.program = *delta.program;
+  } else if (out.weight != base.weight || out.italic != base.italic ||
+             FontFamilyKey(out.family) != FontFamilyKey(base.family)) {
+    out.program = 0;
   }
   return out;
 }

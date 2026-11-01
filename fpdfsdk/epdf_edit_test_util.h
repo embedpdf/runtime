@@ -45,6 +45,10 @@ std::string MakePdf(const std::vector<std::string>& objects);
 // A stream object body holding `data`.
 std::string Stream(const std::string& data);
 
+// A stream object body holding `data`, with `entries` in its dictionary
+// before /Length.
+std::string Stream(const std::string& entries, const std::string& data);
+
 // Every indirect object, by number, from 1 to the last, as text: streams with
 // their raw bytes, so two graphs compare by value.
 std::map<uint32_t, std::string> ObjectGraph(CPDF_Document* doc);

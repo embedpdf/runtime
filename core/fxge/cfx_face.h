@@ -19,6 +19,8 @@
 #include "core/fxcrt/observed_ptr.h"
 #include "core/fxcrt/retain_ptr.h"
 #include "core/fxcrt/span.h"
+#include "core/fxge/cfx_codepointrange.h"  // EmbedPDF(fonts)
+#include "core/fxge/cfx_glyphoutline.h"    // EmbedPDF(fonts)
 #include "core/fxge/fx_font.h"
 #include "core/fxge/fx_fontencoding.h"
 
@@ -125,6 +127,11 @@ class CFX_Face final : public Retainable, public Observable {
                                           int dest_width,
                                           bool is_vertical,
                                           const CFX_SubstFont* subst_font);
+  // EmbedPDF(fonts): |glyph_index| in font units, unscaled and unhinted, so
+  // another program can carry it exactly (cfx_glyphoutline.cpp). nullopt
+  // when the glyph doesn't load or isn't an outline.
+  std::optional<CFX_GlyphOutline> LoadUnscaledGlyphOutline(
+      uint32_t glyph_index);
   int GetGlyphTTWidth(uint32_t glyph_index) const;
   int GetGlyphWidth(uint32_t glyph_index,
                     int dest_width,
@@ -146,6 +153,9 @@ class CFX_Face final : public Retainable, public Observable {
   FX_RECT GetCharBBox(uint32_t code, int glyph_index);
 
   std::vector<CharCodeAndIndex> GetCharCodesAndIndices(char32_t max_char);
+  // EmbedPDF(fonts): the code points up to |max_char| the current charmap
+  // maps to a glyph, as ranges (cfx_codepointrange.cpp).
+  std::vector<CFX_CodePointRange> GetMappedCodePointRanges(char32_t max_char);
 
   CharMap GetCurrentCharMap() const;
   std::optional<fxge::FontEncoding> GetCurrentCharMapEncoding() const;

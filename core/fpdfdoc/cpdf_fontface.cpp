@@ -4,11 +4,15 @@
 #include "core/fpdfdoc/cpdf_fontface.h"
 
 #include <algorithm>
+#include <cctype>
 #include <optional>
 
 #include "core/fpdfapi/parser/cpdf_array.h"
 #include "core/fpdfapi/parser/cpdf_dictionary.h"
 #include "core/fpdfdoc/cpdf_annotfontmap.h"
+#include "core/fpdfdoc/cpdf_documentfonts.h"
+#include "core/fxge/cfx_face.h"
+#include "core/fxge/cfx_font.h"
 #include "core/fxge/cfx_fontregistry.h"
 #include "core/fxge/fx_font.h"
 
@@ -64,6 +68,59 @@ std::optional<CPDF_FontFace> StandardFontFace(const ByteString& name) {
     }
   }
   return std::nullopt;
+}
+
+ByteString FontFamilyKey(const WideString& family) {
+  ByteString key;
+  for (wchar_t ch : family) {
+    if (ch == L' ' || ch == L'-' || ch == L'_' || ch == L'\'' || ch == L'"') {
+      continue;
+    }
+    if (ch < 0x80) {
+      key += static_cast<char>(std::tolower(static_cast<int>(ch)));
+    } else {
+      key += WideString(ch).ToUTF8();
+    }
+  }
+  return key;
+}
+
+ByteString FontFamilyKey(const ByteString& family_utf8) {
+  return FontFamilyKey(WideString::FromUTF8(family_utf8.AsStringView()));
+}
+
+void ProgramLineMetrics(const CFX_Font* program,
+                        float* ascent,
+                        float* descent) {
+  RetainPtr<CFX_Face> face = program ? program->GetFace() : nullptr;
+  const uint16_t upem = face ? face->GetUnitsPerEm() : 0;
+  if (!face || upem == 0) {
+    *ascent = 0.830f;
+    *descent = 0.170f;
+    return;
+  }
+  *ascent = static_cast<float>(face->GetAscender()) / upem;
+  *descent = static_cast<float>(-face->GetDescender()) / upem;
+  if (*ascent <= 0 || *descent < 0) {
+    *ascent = 0.830f;
+    *descent = 0.170f;
+  }
+}
+
+bool HasFontSubsetTag(const ByteString& base_font) {
+  if (base_font.GetLength() <= 7 || base_font[6] != '+') {
+    return false;
+  }
+  for (size_t i = 0; i < 6; ++i) {
+    if (base_font[i] < 'A' || base_font[i] > 'Z') {
+      return false;
+    }
+  }
+  return true;
+}
+
+ByteString BaseFontNameWithoutSubsetTag(const ByteString& base_font) {
+  return HasFontSubsetTag(base_font) ? base_font.Substr(7) : base_font;
 }
 
 CPDF_FontFace FaceOfBaseFontName(ByteString base_font) {
@@ -163,6 +220,14 @@ CPDF_FontFace FaceOfDefaultAppearanceFont(
               CFX_FontRegistry::GetFamilyName(*registered).AsStringView()),
           CFX_FontRegistry::GetStyleWeight(*registered),
           CFX_FontRegistry::IsStyleItalic(*registered)};
+    }
+    // The same for a document program's alias (CPDF_DocumentFonts).
+    CPDF_DocumentFonts* document_fonts = CPDF_DocumentFonts::Find(doc);
+    std::optional<CPDF_DocumentFonts::ReservedProgram> program =
+        document_fonts ? document_fonts->ProgramForAlias(font_name)
+                       : std::nullopt;
+    if (program.has_value()) {
+      return CPDF_FontFace{program->family, program->weight, program->italic};
     }
   }
   if (std::optional<CPDF_FontFace> standard = StandardFontFace(font_name)) {

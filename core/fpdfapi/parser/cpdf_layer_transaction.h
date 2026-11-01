@@ -75,6 +75,10 @@ struct CPDF_LayerTransaction {
   RetainPtr<CPDF_Dictionary> root_before;
   RetainPtr<CPDF_Dictionary> info_before;
 
+  // EmbedPDF(fonts): the overlay epoch at begin, for the font index to tell
+  // what changed outside any transaction.
+  uint64_t epoch_at_begin = 0;
+
   CPDF_LayerTransactionStats stats;
 };
 
