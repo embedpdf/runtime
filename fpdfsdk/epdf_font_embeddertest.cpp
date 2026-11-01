@@ -19,6 +19,7 @@
 #include "core/fpdfapi/parser/cpdf_dictionary.h"
 #include "core/fpdfapi/parser/cpdf_document.h"
 #include "core/fpdfapi/parser/cpdf_name.h"
+#include "core/fpdfapi/parser/cpdf_number.h"
 #include "core/fpdfapi/parser/cpdf_reference.h"
 #include "core/fpdfapi/parser/cpdf_stream.h"
 #include "core/fpdfapi/parser/cpdf_stream_acc.h"
@@ -40,6 +41,8 @@
 #include "public/fpdf_edit.h"
 #include "testing/embedder_test.h"
 #include "testing/embedpdf_form_writes.h"
+#include "testing/embedpdf_layer_fixture.h"
+#include "testing/embedpdf_layer_mode.h"
 #include "testing/fx_string_testhelpers.h"
 #include "testing/gtest/include/gtest/gtest.h"
 #include "testing/utils/file_util.h"
@@ -306,13 +309,16 @@ class EPDFFontEmbedderTest : public EmbedderTest {
   uint32_t AttachAndFill(FPDF_ANNOTATION annot,
                          const wchar_t* name,
                          const std::wstring& value) {
+    // The annotation's own document: the harness's, or a layer a test opened.
+    FPDF_DOCUMENT document = FPDFDocumentFromCPDFDocument(
+        CPDFAnnotContextFromFPDFAnnotation(annot)->GetPage()->GetDocument());
     ScopedFPDFWideString field_name = GetFPDFWideString(name);
     const uint32_t field = EPDFForm_CreateField(
-        document(), 4 /* EPDF_FORMFIELD_FAMILY_TEXT */, field_name.get(), 0);
+        document, 4 /* EPDF_FORMFIELD_FAMILY_TEXT */, field_name.get(), 0);
     EXPECT_GT(field, 0u);
     EXPECT_TRUE(EPDFForm_AttachWidget(
-        document(), field, EPDFAnnot_GetObjectNumber(annot), nullptr, 0));
-    EXPECT_TRUE(embedpdf_test::FillTextField(document(), field, value));
+        document, field, EPDFAnnot_GetObjectNumber(annot), nullptr, 0));
+    EXPECT_TRUE(embedpdf_test::FillTextField(document, field, value));
     EXPECT_TRUE(EPDFAnnot_GenerateFormFieldAP(annot));
     return field;
   }
@@ -427,7 +433,7 @@ TEST_F(EPDFFontEmbedderTest, ListsADocumentProgramAndHandsOutItsBytes) {
       "Roboto", /*weight=*/400, /*italic=*/0, roboto.data(), roboto.size());
   ASSERT_NE(0u, roboto_id);
 
-  CreateEmptyDocument();
+  ASSERT_TRUE(OpenDocumentFromMemory(EmptyPdf()));
   ScopedFPDFPage page(FPDFPage_New(document(), 0, 400, 400));
   ASSERT_TRUE(page);
   AddRegisteredFontField(page.get(), roboto_id, L"name", 320.0f, L"hello");
@@ -503,7 +509,7 @@ TEST_F(EPDFFontEmbedderTest, RealignsAProgramABrowserWouldRefuse) {
                                  misaligned.data(), misaligned.size());
   ASSERT_NE(0u, font_id);
 
-  CreateEmptyDocument();
+  ASSERT_TRUE(OpenDocumentFromMemory(EmptyPdf()));
   ScopedFPDFPage page(FPDFPage_New(document(), 0, 400, 400));
   ASSERT_TRUE(page);
   AddRegisteredFontField(page.get(), font_id, L"name", 320.0f, L"hello");
@@ -585,7 +591,7 @@ TEST_F(EPDFFontEmbedderTest, WidgetWritesWithADocumentProgram) {
       "Roboto", /*weight=*/400, /*italic=*/0, roboto.data(), roboto.size());
   ASSERT_NE(0u, roboto_id);
 
-  CreateEmptyDocument();
+  ASSERT_TRUE(OpenDocumentFromMemory(EmptyPdf()));
   ScopedFPDFPage page(FPDFPage_New(document(), 0, 400, 400));
   ASSERT_TRUE(page);
   AddRegisteredFontField(page.get(), roboto_id, L"first", 320.0f, L"hello");
@@ -676,7 +682,7 @@ TEST_F(EPDFFontEmbedderTest, ResolvesTheFontsAWriteWouldUse) {
   ASSERT_NE(0u, droid_id);
   ASSERT_TRUE(EPDFFont_AddFallbackFont(droid_id, /*tier=*/0));
 
-  CreateEmptyDocument();
+  ASSERT_TRUE(OpenDocumentFromMemory(EmptyPdf()));
   ScopedFPDFWideString text0 = GetFPDFWideString(L"Hello \x4E2D");
   ScopedFPDFWideString text1 = GetFPDFWideString(L"Roboto here");
   ScopedFPDFWideString text2 = GetFPDFWideString(L"X");
@@ -738,7 +744,7 @@ TEST_F(EPDFFontEmbedderTest, ResolvesADocumentProgram) {
   const EPDF_FONT_ID roboto_id = EPDFFont_RegisterMemFont64(
       "Roboto", /*weight=*/400, /*italic=*/0, roboto.data(), roboto.size());
   ASSERT_NE(0u, roboto_id);
-  CreateEmptyDocument();
+  ASSERT_TRUE(OpenDocumentFromMemory(EmptyPdf()));
   ScopedFPDFPage page(FPDFPage_New(document(), 0, 400, 400));
   ASSERT_TRUE(page);
   AddRegisteredFontField(page.get(), roboto_id, L"name", 320.0f, L"hello");
@@ -802,7 +808,8 @@ TEST_F(EPDFFontEmbedderTest, FindsFontsWhereverADrawingUsesThem) {
       "/LastChar 0 /Widths [0] /Resources << /Font << /FG 15 0 R >> >> >>",
       "<< /Type /Font /Subtype /TrueType /BaseFont /Georgia >>",
   });
-  ScopedFPDFDocument doc(FPDF_LoadMemDocument(pdf.data(), pdf.size(), nullptr));
+  embedpdf_test::ScopedTestDocument doc(
+      embedpdf_test::LoadMemDocumentForTest(pdf.data(), pdf.size(), nullptr));
   ASSERT_TRUE(doc);
   EPDF_FONT_FACES faces = EPDFFontFaces_Load(doc.get());
   ASSERT_TRUE(faces);
@@ -982,6 +989,7 @@ TEST_F(EPDFFontEmbedderTest, AChangeOutsideATransactionIsSeen) {
 // time.
 TEST_F(EPDFFontEmbedderTest, APlainDocumentIsWalkedWholeEachTime) {
   const std::string pdf = ThreePagesOfFonts();
+  // Plain in layer mode too: a layer would say what changed.
   ScopedFPDFDocument doc(FPDF_LoadMemDocument(pdf.data(), pdf.size(), nullptr));
   ASSERT_TRUE(doc);
   const CPDF_DocumentFonts* index =
@@ -997,7 +1005,7 @@ TEST_F(EPDFFontEmbedderTest, APlainDocumentIsWalkedWholeEachTime) {
 // line breaks and zero width characters are never reported.
 TEST_F(EPDFFontEmbedderTest, FreeTextReportsCharactersNoFontHas) {
   ScopedRegisteredFonts scoped_fonts;
-  CreateEmptyDocument();
+  ASSERT_TRUE(OpenDocumentFromMemory(EmptyPdf()));
   ScopedFPDFPage page(FPDFPage_New(document(), 0, 400, 400));
   ASSERT_TRUE(page);
   ScopedFPDFAnnotation annot(
@@ -1030,7 +1038,7 @@ TEST_F(EPDFFontEmbedderTest, UnauthorizedRegisteredFontDoesNotTakeOverABox) {
             EPDFFont_GetEmbeddingPermission(font_id));
   ASSERT_TRUE(EPDFFont_AuthorizeEditing(font_id));
 
-  CreateEmptyDocument();
+  ASSERT_TRUE(OpenDocumentFromMemory(EmptyPdf()));
   ScopedFPDFPage page(FPDFPage_New(document(), 0, 400, 400));
   ASSERT_TRUE(page);
   ScopedFPDFAnnotation annot(
@@ -1162,7 +1170,8 @@ bool Covers(const std::vector<uint32_t>& ranges, uint32_t scalar) {
 // advances it lays them out with.
 void ExpectDisplayProgramDrawsTheKeptFont(const std::string& pdf,
                                           int expected_format) {
-  ScopedFPDFDocument doc(FPDF_LoadMemDocument(pdf.data(), pdf.size(), nullptr));
+  embedpdf_test::ScopedTestDocument doc(
+      embedpdf_test::LoadMemDocumentForTest(pdf.data(), pdf.size(), nullptr));
   ASSERT_TRUE(doc);
   EPDF_FONT_FACES faces = EPDFFontFaces_Load(doc.get());
   ASSERT_TRUE(faces);
@@ -1209,13 +1218,16 @@ void ExpectDisplayProgramDrawsTheKeptFont(const std::string& pdf,
 
   // The engine's view of the same font.
   CPDF_Document* pdf_doc = CPDFDocumentFromFPDFDocument(doc.get());
-  RetainPtr<CPDF_Dictionary> font_dict = pdf_doc->GetMutableRoot()
-                                             ->GetMutableDictFor("AcroForm")
-                                             ->GetMutableDictFor("DR")
-                                             ->GetMutableDictFor("Font")
-                                             ->GetMutableDictFor("FKept");
-  RetainPtr<CPDF_Font> font =
-      CPDF_DocPageData::FromDocument(pdf_doc)->GetFont(font_dict);
+  RetainPtr<const CPDF_Dictionary> font_dict = pdf_doc->GetRoot()
+                                                   ->GetDictFor("AcroForm")
+                                                   ->GetDictFor("DR")
+                                                   ->GetDictFor("Font")
+                                                   ->GetDictFor("FKept");
+  ASSERT_TRUE(font_dict);
+  // Read as the engine reads it: GetFont() takes a mutable dictionary but
+  // doesn't write it, and a mutable getter would copy it into a layer.
+  RetainPtr<CPDF_Font> font = CPDF_DocPageData::FromDocument(pdf_doc)->GetFont(
+      pdfium::WrapRetain(const_cast<CPDF_Dictionary*>(font_dict.Get())));
   ASSERT_TRUE(font);
   RetainPtr<CFX_Face> source_face = font->GetFont()->GetFace();
 
@@ -1265,8 +1277,8 @@ void ExpectDisplayProgramDrawsTheKeptFont(const std::string& pdf,
 
   // The same bytes from another opening of the same file, by the hash alone:
   // the document is walked to find it.
-  ScopedFPDFDocument again(
-      FPDF_LoadMemDocument(pdf.data(), pdf.size(), nullptr));
+  embedpdf_test::ScopedTestDocument again(
+      embedpdf_test::LoadMemDocumentForTest(pdf.data(), pdf.size(), nullptr));
   ASSERT_TRUE(again);
   std::vector<uint8_t> rebuilt(length);
   ASSERT_EQ(length, EPDFDoc_GetFontDisplayProgramData(again.get(), display_hash,
@@ -1284,7 +1296,8 @@ TEST_F(EPDFFontEmbedderTest, SimpleFieldFontWritesThroughItsProgram) {
   ASSERT_FALSE(roboto.empty());
   const std::string pdf = FormWithFieldFont(roboto, "FontFile2", nullptr,
                                             "Roboto-Regular", "TrueType");
-  ScopedFPDFDocument doc(FPDF_LoadMemDocument(pdf.data(), pdf.size(), nullptr));
+  embedpdf_test::ScopedTestDocument doc(
+      embedpdf_test::LoadMemDocumentForTest(pdf.data(), pdf.size(), nullptr));
   ASSERT_TRUE(doc);
   ScopedFPDFPage page(FPDF_LoadPage(doc.get(), 0));
   ASSERT_TRUE(page);
@@ -1322,6 +1335,56 @@ TEST_F(EPDFFontEmbedderTest, BuildsADisplayProgramForAType1Font) {
       EPDF_FONT_FORMAT_TYPE1);
 }
 
+namespace {
+
+// A simple font over FoxitFixed's bare CFF program, object 4: every character
+// |width| wide, described by font descriptor |descriptor|.
+std::string FoxitFixedFont(int width, int descriptor) {
+  std::string widths;
+  for (int code = 32; code <= 126; ++code) {
+    widths += std::to_string(width) + " ";
+  }
+  return "<< /Type /Font /Subtype /Type1 /BaseFont /FoxitFixed /FirstChar 32 "
+         "/LastChar 126 /Widths [" +
+         widths + "] /Encoding /WinAnsiEncoding /FontDescriptor " +
+         std::to_string(descriptor) + " 0 R >>";
+}
+
+constexpr char kFoxitFixedDescriptor[] =
+    "<< /Type /FontDescriptor /FontName /FoxitFixed /Flags 32 /FontBBox [0 "
+    "-250 1000 900] /ItalicAngle 0 /Ascent 900 /Descent -250 /CapHeight 700 "
+    "/StemV 80 /FontFile3 4 0 R >>";
+
+// A text field on page 3 whose /DA names |font_alias|.
+std::string FoxitFixedField(const char* name,
+                            const char* font_alias,
+                            int bottom) {
+  return std::string("<< /Type /Annot /Subtype /Widget /FT /Tx /T (") + name +
+         ") /Rect [10 " + std::to_string(bottom) + " 200 " +
+         std::to_string(bottom + 30) + "] /DA (/" + font_alias +
+         " 12 Tf 0 g) /P 3 0 R >>";
+}
+
+// The advance of |c| in the OpenType font |program|, in font units, or -1.
+int AdvanceOf(pdfium::span<const uint8_t> program, wchar_t c) {
+  auto font = std::make_unique<CFX_Font>();
+  if (!font->LoadFaceZeroFromSpan(program, /*force_vertical=*/false,
+                                  /*object_tag=*/0)) {
+    return -1;
+  }
+  RetainPtr<CFX_Face> face = font->GetFace();
+  if (!face->SelectCharMap(fxge::FontEncoding::kUnicode)) {
+    return -1;
+  }
+  const int glyph = face->GetCharIndex(c);
+  if (glyph <= 0 || face->LoadGlyph(glyph, /*scale=*/false) != 0) {
+    return -1;
+  }
+  return face->GetGlyphTTWidth(glyph);
+}
+
+}  // namespace
+
 // Two font dictionaries that share one bare CFF program but give it other
 // widths are two display programs: each draws at its own dictionary's
 // advances, under a hash of its own. The program is still one stream. A field
@@ -1330,26 +1393,6 @@ TEST_F(EPDFFontEmbedderTest,
        ADisplayProgramIsTheProgramAsItsDictionaryReadsIt) {
   std::vector<uint8_t> cff = LoadTestFont("fonts/foxit_fixed.cff");
   ASSERT_FALSE(cff.empty());
-  auto font = [](int width, int descriptor) {
-    std::string widths;
-    for (int code = 32; code <= 126; ++code) {
-      widths += std::to_string(width) + " ";
-    }
-    return "<< /Type /Font /Subtype /Type1 /BaseFont /FoxitFixed /FirstChar 32 "
-           "/LastChar 126 /Widths [" +
-           widths + "] /Encoding /WinAnsiEncoding /FontDescriptor " +
-           std::to_string(descriptor) + " 0 R >>";
-  };
-  const char kDescriptor[] =
-      "<< /Type /FontDescriptor /FontName /FoxitFixed /Flags 32 /FontBBox [0 "
-      "-250 1000 900] /ItalicAngle 0 /Ascent 900 /Descent -250 /CapHeight 700 "
-      "/StemV 80 /FontFile3 4 0 R >>";
-  auto field = [](const char* name, const char* font_alias, int bottom) {
-    return std::string("<< /Type /Annot /Subtype /Widget /FT /Tx /T (") + name +
-           ") /Rect [10 " + std::to_string(bottom) + " 200 " +
-           std::to_string(bottom + 30) + "] /DA (/" + font_alias +
-           " 12 Tf 0 g) /P 3 0 R >>";
-  };
   const std::string pdf = MakePdf({
       "<< /Type /Catalog /Pages 2 0 R /AcroForm << /Fields [9 0 R 10 0 R] "
       "/DR << /Font << /FNarrow 5 0 R /FWide 6 0 R >> >> >> >>",
@@ -1357,14 +1400,15 @@ TEST_F(EPDFFontEmbedderTest,
       "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 300 300] /Annots [9 0 R 10 "
       "0 R] >>",
       Stream("/Subtype /Type1C", std::string(cff.begin(), cff.end())),
-      font(600, 7),
-      font(900, 8),
-      kDescriptor,
-      kDescriptor,
-      field("narrow", "FNarrow", 200),
-      field("wide", "FWide", 100),
+      FoxitFixedFont(600, 7),
+      FoxitFixedFont(900, 8),
+      kFoxitFixedDescriptor,
+      kFoxitFixedDescriptor,
+      FoxitFixedField("narrow", "FNarrow", 200),
+      FoxitFixedField("wide", "FWide", 100),
   });
-  ScopedFPDFDocument doc(FPDF_LoadMemDocument(pdf.data(), pdf.size(), nullptr));
+  embedpdf_test::ScopedTestDocument doc(
+      embedpdf_test::LoadMemDocumentForTest(pdf.data(), pdf.size(), nullptr));
   ASSERT_TRUE(doc);
 
   EPDF_FONT_FACES faces = EPDFFontFaces_Load(doc.get());
@@ -1405,15 +1449,7 @@ TEST_F(EPDFFontEmbedderTest,
     const DataVector<uint8_t> hashed = CryptSha256Generate(display);
     EXPECT_EQ(display_hashes[i],
               std::vector<uint8_t>(hashed.begin(), hashed.end()));
-    auto display_font = std::make_unique<CFX_Font>();
-    ASSERT_TRUE(display_font->LoadFaceZeroFromSpan(
-        display, /*force_vertical=*/false, /*object_tag=*/0));
-    RetainPtr<CFX_Face> display_face = display_font->GetFace();
-    ASSERT_TRUE(display_face->SelectCharMap(fxge::FontEncoding::kUnicode));
-    const int glyph = display_face->GetCharIndex('A');
-    ASSERT_GT(glyph, 0);
-    ASSERT_EQ(0, display_face->LoadGlyph(glyph, /*scale=*/false));
-    EXPECT_EQ(expected_advance[i], display_face->GetGlyphTTWidth(glyph)) << i;
+    EXPECT_EQ(expected_advance[i], AdvanceOf(display, 'A')) << i;
     EXPECT_GT(EPDFDoc_GetFontDisplayProgramCoverage(
                   doc.get(), display_hashes[i].data(), nullptr, 0),
               0u);
@@ -1453,6 +1489,213 @@ TEST_F(EPDFFontEmbedderTest,
   }
 }
 
+namespace {
+
+// What the font list says of a family's first program.
+struct ListedProgram {
+  unsigned long objnum = 0;
+  std::vector<uint8_t> hash;
+  std::vector<uint8_t> display_hash;
+
+  bool operator==(const ListedProgram&) const = default;
+};
+
+ListedProgram ListedProgramOf(FPDF_DOCUMENT document,
+                              const std::wstring& family) {
+  ListedProgram listed;
+  EPDF_FONT_FACES faces = EPDFFontFaces_Load(document);
+  std::optional<FoundProgram> found = FindProgram(faces, family);
+  if (found.has_value()) {
+    listed.objnum =
+        EPDFFontFaces_GetProgramObjNum(faces, found->face, found->program);
+    unsigned char hash[32] = {};
+    if (EPDFFontFaces_GetProgramHash(faces, found->face, found->program,
+                                     hash)) {
+      listed.hash.assign(hash, hash + 32);
+    }
+    if (EPDFFontFaces_GetProgramDisplayHash(faces, found->face, found->program,
+                                            hash)) {
+      listed.display_hash.assign(hash, hash + 32);
+    }
+  }
+  EPDFFontFaces_Close(faces);
+  return listed;
+}
+
+// The display program |display_hash| of |document|, or nothing.
+std::vector<uint8_t> DisplayProgram(FPDF_DOCUMENT document,
+                                    const std::vector<uint8_t>& display_hash) {
+  const unsigned long length = EPDFDoc_GetFontDisplayProgramData(
+      document, display_hash.data(), nullptr, 0);
+  std::vector<uint8_t> program(length);
+  if (length > 0) {
+    EPDFDoc_GetFontDisplayProgramData(document, display_hash.data(),
+                                      program.data(), length);
+  }
+  return program;
+}
+
+// What resolve says the first field on page 0 would draw |family| with.
+struct ResolvedProgram {
+  int source = -1;
+  unsigned long objnum = 0;
+  std::vector<uint8_t> display_hash;
+
+  bool operator==(const ResolvedProgram&) const = default;
+};
+
+ResolvedProgram ResolveFirstField(FPDF_DOCUMENT document,
+                                  const wchar_t* family_name) {
+  ResolvedProgram resolved;
+  ScopedFPDFPage page(FPDF_LoadPage(document, 0));
+  ScopedFPDFAnnotation annot(page ? FPDFPage_GetAnnot(page.get(), 0) : nullptr);
+  if (!annot) {
+    return resolved;
+  }
+  ScopedFPDFWideString text = GetFPDFWideString(L"Hello");
+  ScopedFPDFWideString family = GetFPDFWideString(family_name);
+  FPDF_WIDESTRING texts[] = {text.get()};
+  FPDF_WIDESTRING families[] = {family.get()};
+  const int weights[] = {400};
+  const FPDF_BOOL italics[] = {false};
+  EPDF_FONT_RESOLUTION resolution = EPDFDoc_ResolveFonts(
+      document, annot.get(), 1, texts, families, weights, italics, nullptr);
+  if (!resolution) {
+    return resolved;
+  }
+  resolved.source = EPDFFontResolution_GetSource(resolution, 0);
+  resolved.objnum = EPDFFontResolution_GetProgramObjNum(resolution, 0);
+  unsigned char hash[32] = {};
+  if (EPDFFontResolution_GetProgramDisplayHash(resolution, 0, hash)) {
+    resolved.display_hash.assign(hash, hash + 32);
+  }
+  EPDFFontResolution_Close(resolution);
+  return resolved;
+}
+
+// Gives font |objnum| of |document| the width |width| for every character.
+void SetWidths(FPDF_DOCUMENT document, uint32_t objnum, int width) {
+  CPDF_Document* doc = CPDFDocumentFromFPDFDocument(document);
+  RetainPtr<CPDF_Dictionary> font =
+      ToDictionary(doc->GetMutableIndirectObject(objnum));
+  ASSERT_TRUE(font);
+  auto widths = font->SetNewFor<CPDF_Array>("Widths");
+  for (int code = 32; code <= 126; ++code) {
+    widths->AppendNew<CPDF_Number>(width);
+  }
+}
+
+}  // namespace
+
+// A font a write embeds on a layer reads the same once the layer is saved and
+// reopened over its base, as a session reopens its saved changes: the same
+// program, bytes and display program, and the field written in it resolves
+// as it did. Without the registered font, the field resolves to the program
+// the layer holds. Reading it there copies nothing into the layer.
+TEST_F(EPDFFontEmbedderTest, AFontWrittenOnALayerReadsTheSameReopened) {
+  ScopedRegisteredFonts scoped_fonts;
+  std::vector<uint8_t> roboto = LoadRoboto();
+  ASSERT_FALSE(roboto.empty());
+  const EPDF_FONT_ID roboto_id = EPDFFont_RegisterMemFont64(
+      "Roboto", /*weight=*/400, /*italic=*/0, roboto.data(), roboto.size());
+  ASSERT_NE(0u, roboto_id);
+
+  const std::string pdf = MakePdf({
+      "<< /Type /Catalog /Pages 2 0 R >>",
+      "<< /Type /Pages /Kids [3 0 R] /Count 1 >>",
+      "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 400 400] >>",
+  });
+  embedpdf_test::LayerFixture doc;
+  ASSERT_TRUE(doc.OpenBytes(std::vector<uint8_t>(pdf.begin(), pdf.end())));
+  ASSERT_TRUE(EPDFLayer_BeginTransaction(doc.layer));
+  {
+    ScopedFPDFPage page(FPDF_LoadPage(doc.layer, 0));
+    ASSERT_TRUE(page);
+    AddRegisteredFontField(page.get(), roboto_id, L"name", 320.0f, L"hello");
+  }
+  ASSERT_TRUE(EPDFLayer_CommitTransaction(doc.layer));
+  const ListedProgram written = ListedProgramOf(doc.layer, L"Roboto");
+  ASSERT_NE(0u, written.objnum);
+  ASSERT_FALSE(written.display_hash.empty());
+  const ResolvedProgram resolved = ResolveFirstField(doc.layer, L"Roboto");
+  ASSERT_NE(-1, resolved.source);
+
+  const std::vector<uint8_t> delta = doc.SaveDelta();
+  ASSERT_FALSE(delta.empty());
+  ASSERT_TRUE(doc.Reopen(delta));
+  const unsigned long ingested = EPDFLayer_GetPromotedObjectCount(doc.layer);
+
+  EXPECT_EQ(written, ListedProgramOf(doc.layer, L"Roboto"));
+  std::vector<uint8_t> bytes(roboto.size());
+  ASSERT_EQ(roboto.size(),
+            EPDFDoc_GetFontProgramData(doc.layer, written.objnum, bytes.data(),
+                                       bytes.size()));
+  EXPECT_EQ(roboto, bytes);
+  EXPECT_EQ(roboto, DisplayProgram(doc.layer, written.display_hash));
+  EXPECT_EQ(resolved, ResolveFirstField(doc.layer, L"Roboto"));
+
+  EPDFFont_ClearRegisteredFonts();
+  const ResolvedProgram kept = ResolveFirstField(doc.layer, L"Roboto");
+  EXPECT_EQ(EPDF_FONT_SOURCE_DOCUMENT_PROGRAM, kept.source);
+  EXPECT_EQ(written.objnum, kept.objnum);
+  EXPECT_EQ(written.display_hash, kept.display_hash);
+  EXPECT_EQ(ingested, EPDFLayer_GetPromotedObjectCount(doc.layer));
+}
+
+// A write to a font's dictionary on a layer gives the font the display
+// program its new dictionary reads, from a list during the write on; rolled
+// back, the old one is back. Once no dictionary reads a display program, its
+// hash finds nothing. Reading the fonts copies nothing into the layer.
+TEST_F(EPDFFontEmbedderTest, AWriteToAFontsWidthsGivesItANewDisplayProgram) {
+  std::vector<uint8_t> cff = LoadTestFont("fonts/foxit_fixed.cff");
+  ASSERT_FALSE(cff.empty());
+  const std::string pdf = MakePdf({
+      "<< /Type /Catalog /Pages 2 0 R /AcroForm << /Fields [7 0 R] /DR << "
+      "/Font << /FFixed 5 0 R >> >> >> >>",
+      "<< /Type /Pages /Kids [3 0 R] /Count 1 >>",
+      "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 300 300] /Annots [7 0 R] "
+      ">>",
+      Stream("/Subtype /Type1C", std::string(cff.begin(), cff.end())),
+      FoxitFixedFont(600, 6),
+      kFoxitFixedDescriptor,
+      FoxitFixedField("fixed", "FFixed", 200),
+  });
+  ScopedFPDFDocument layer = OpenLayerOver(pdf);
+  ASSERT_TRUE(layer);
+
+  const ListedProgram narrow = ListedProgramOf(layer.get(), L"FoxitFixed");
+  ASSERT_EQ(4u, narrow.objnum);
+  ASSERT_FALSE(narrow.display_hash.empty());
+  EXPECT_EQ(600,
+            AdvanceOf(DisplayProgram(layer.get(), narrow.display_hash), 'A'));
+  EXPECT_EQ(narrow.display_hash,
+            ResolveFirstField(layer.get(), L"FoxitFixed").display_hash);
+  EXPECT_EQ(0ul, EPDFLayer_GetPromotedObjectCount(layer.get()));
+
+  ASSERT_TRUE(EPDFLayer_BeginTransaction(layer.get()));
+  SetWidths(layer.get(), 5, 900);
+  const ListedProgram during = ListedProgramOf(layer.get(), L"FoxitFixed");
+  EXPECT_NE(narrow.display_hash, during.display_hash);
+  ASSERT_TRUE(EPDFLayer_AbortTransaction(layer.get()));
+  EXPECT_EQ(narrow, ListedProgramOf(layer.get(), L"FoxitFixed"));
+  EXPECT_TRUE(DisplayProgram(layer.get(), during.display_hash).empty());
+
+  ASSERT_TRUE(EPDFLayer_BeginTransaction(layer.get()));
+  SetWidths(layer.get(), 5, 900);
+  ASSERT_TRUE(EPDFLayer_CommitTransaction(layer.get()));
+  const ListedProgram wide = ListedProgramOf(layer.get(), L"FoxitFixed");
+  EXPECT_EQ(narrow.objnum, wide.objnum);
+  EXPECT_EQ(narrow.hash, wide.hash);
+  ASSERT_FALSE(wide.display_hash.empty());
+  EXPECT_NE(narrow.display_hash, wide.display_hash);
+  EXPECT_EQ(900,
+            AdvanceOf(DisplayProgram(layer.get(), wide.display_hash), 'A'));
+  EXPECT_EQ(wide.display_hash,
+            ResolveFirstField(layer.get(), L"FoxitFixed").display_hash);
+  // No dictionary reads the program 600 wide any more.
+  EXPECT_TRUE(DisplayProgram(layer.get(), narrow.display_hash).empty());
+}
+
 // A form field draws each cluster in the first font that has it: Hebrew
 // typed into a Helvetica field comes from the fallback, in bidi order, under
 // ActualText, and nothing is reported missing.
@@ -1466,7 +1709,7 @@ TEST_F(EPDFFontEmbedderTest, WidgetDrawsEachClusterInAFontThatHasIt) {
   ASSERT_NE(0u, arimo_id);
   ASSERT_TRUE(EPDFFont_AddFallbackFont(arimo_id, /*tier=*/0));
 
-  CreateEmptyDocument();
+  ASSERT_TRUE(OpenDocumentFromMemory(EmptyPdf()));
   ScopedFPDFPage page(FPDFPage_New(document(), 0, 400, 400));
   ScopedFPDFAnnotation annot(
       EPDFPage_CreateAnnot(page.get(), FPDF_ANNOT_WIDGET));
@@ -1506,7 +1749,7 @@ TEST_F(EPDFFontEmbedderTest, WidgetDrawsWhatNoFontHasWithTheLastResort) {
   ASSERT_NE(0u, box_id);
   ASSERT_TRUE(EPDFFont_SetLastResortFont(box_id));
 
-  CreateEmptyDocument();
+  ASSERT_TRUE(OpenDocumentFromMemory(EmptyPdf()));
   ScopedFPDFPage page(FPDFPage_New(document(), 0, 400, 400));
   ScopedFPDFAnnotation annot(
       EPDFPage_CreateAnnot(page.get(), FPDF_ANNOT_WIDGET));
@@ -1534,7 +1777,7 @@ TEST_F(EPDFFontEmbedderTest, WidgetDrawsWhatNoFontHasWithTheLastResort) {
 // A password field writes stars and nothing else: not the value, and no
 // ActualText that would carry it.
 TEST_F(EPDFFontEmbedderTest, PasswordFieldWritesOnlyStars) {
-  CreateEmptyDocument();
+  ASSERT_TRUE(OpenDocumentFromMemory(EmptyPdf()));
   ScopedFPDFPage page(FPDFPage_New(document(), 0, 400, 400));
   ScopedFPDFAnnotation annot(
       EPDFPage_CreateAnnot(page.get(), FPDF_ANNOT_WIDGET));
@@ -1635,7 +1878,8 @@ std::vector<uint32_t> AppearanceFontPrograms(FPDF_ANNOTATION annot) {
 TEST_F(EPDFFontEmbedderTest, ResolvesTheProgramARunNames) {
   ScopedRegisteredFonts scoped_fonts;
   const std::string pdf = TwoProgramsDescribedAlike();
-  ScopedFPDFDocument doc(FPDF_LoadMemDocument(pdf.data(), pdf.size(), nullptr));
+  embedpdf_test::ScopedTestDocument doc(
+      embedpdf_test::LoadMemDocumentForTest(pdf.data(), pdf.size(), nullptr));
   ASSERT_TRUE(doc);
   ScopedFPDFWideString text = GetFPDFWideString(L"Hello");
   ScopedFPDFWideString family = GetFPDFWideString(L"Mono");
@@ -1665,7 +1909,8 @@ TEST_F(EPDFFontEmbedderTest, ResolvesTheProgramARunNames) {
 TEST_F(EPDFFontEmbedderTest, RichTextDrawsTheProgramItsStyleNames) {
   ScopedRegisteredFonts scoped_fonts;
   const std::string pdf = TwoProgramsDescribedAlike();
-  ScopedFPDFDocument doc(FPDF_LoadMemDocument(pdf.data(), pdf.size(), nullptr));
+  embedpdf_test::ScopedTestDocument doc(
+      embedpdf_test::LoadMemDocumentForTest(pdf.data(), pdf.size(), nullptr));
   ASSERT_TRUE(doc);
   ScopedFPDFPage page(FPDF_LoadPage(doc.get(), 0));
   ASSERT_TRUE(page);

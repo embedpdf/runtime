@@ -17,6 +17,7 @@
 #include "public/cpp/fpdf_scopers.h"
 #include "public/fpdf_text.h"
 #include "testing/embedder_test.h"
+#include "testing/embedpdf_layer_mode.h"
 #include "testing/fx_string_testhelpers.h"
 #include "testing/gmock/include/gmock/gmock.h"
 
@@ -183,7 +184,8 @@ TEST_F(EPDFTextEmbedderTest, ActualTextInAFormIsInPageSpace) {
              "/Matrix [2 0 0 2 0 0] /Resources << /Font << /F1 5 0 R >> >>",
              std::string("BT /F1 12 Tf 10 25 Td ") + kSpan + " ET"),
   });
-  ScopedFPDFDocument doc(FPDF_LoadMemDocument(pdf.data(), pdf.size(), nullptr));
+  embedpdf_test::ScopedTestDocument doc(
+      embedpdf_test::LoadMemDocumentForTest(pdf.data(), pdf.size(), nullptr));
   ASSERT_TRUE(doc);
   ScopedFPDFPage page(FPDF_LoadPage(doc.get(), 0));
   ASSERT_TRUE(page);
@@ -267,7 +269,8 @@ TEST_F(EPDFTextEmbedderTest, ActualTextReadsAsWritten) {
       Stream(content),
       "<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>",
   });
-  ScopedFPDFDocument doc(FPDF_LoadMemDocument(pdf.data(), pdf.size(), nullptr));
+  embedpdf_test::ScopedTestDocument doc(
+      embedpdf_test::LoadMemDocumentForTest(pdf.data(), pdf.size(), nullptr));
   ASSERT_TRUE(doc);
   ScopedFPDFPage page(FPDF_LoadPage(doc.get(), 0));
   ASSERT_TRUE(page);

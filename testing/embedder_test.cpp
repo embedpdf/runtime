@@ -685,6 +685,30 @@ bool EmbedderTest::OpenDocumentWithOptions(const std::string& filename,
                             &form_handle_);
 }
 
+// EmbedPDF(layer-mode): what OpenDocumentWithOptions() does with a file's
+// contents, with `contents`.
+bool EmbedderTest::OpenDocumentFromMemory(std::string_view contents) {
+  if (contents.empty()) {
+    return false;
+  }
+  file_contents_.assign(contents.begin(), contents.end());
+
+  EXPECT_TRUE(!loader_);
+  loader_ = std::make_unique<TestLoader>(file_contents_);
+
+  file_access_ = {
+      .m_FileLen = pdfium::checked_cast<unsigned long>(file_contents_.size()),
+      .m_GetBlock = TestLoader::GetBlock,
+      .m_Param = loader_.get(),
+  };
+
+  fake_file_access_ = std::make_unique<FakeFileAccess>(&file_access_);
+  return OpenDocumentHelper("", LinearizeOption::kDefaultLinearize,
+                            JavaScriptOption::kEnableJavaScript,
+                            fake_file_access_.get(), &document_, &avail_,
+                            &form_handle_);
+}
+
 bool EmbedderTest::OpenDocumentHelper(const ByteString& password,
                                       LinearizeOption linearize_option,
                                       JavaScriptOption javascript_option,

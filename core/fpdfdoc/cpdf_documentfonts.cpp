@@ -463,9 +463,26 @@ void CPDF_DocumentFonts::Forget(const std::set<uint32_t>& objnums) {
     inspected_.erase(objnum);
   }
   for (auto& [objnum, inspected] : inspected_) {
+    std::set<DataVector<uint8_t>> read_by_changed;
     std::erase_if(inspected.display_of_dict, [&](const auto& entry) {
-      return objnums.contains(entry.first);
+      if (!objnums.contains(entry.first)) {
+        return false;
+      }
+      if (entry.second.has_value()) {
+        read_by_changed.insert(*entry.second);
+      }
+      return true;
     });
+    // A display only a changed dictionary read is no longer the document's,
+    // so its hash finds nothing.
+    for (const DataVector<uint8_t>& sha256 : read_by_changed) {
+      const bool still_read = std::ranges::any_of(
+          inspected.display_of_dict,
+          [&](const auto& entry) { return entry.second == sha256; });
+      if (!still_read) {
+        inspected.displays.erase(sha256);
+      }
+    }
   }
 }
 
