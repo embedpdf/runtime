@@ -628,8 +628,6 @@ TEST_F(EPDFViewEmbedderTest, SpecializedResampleLoopsMatchGeneralOnes) {
 }
 
 TEST_F(EPDFViewEmbedderTest, EPDFDocSetPageRotationByObjectNumber) {
-  constexpr char kRotatedPng[] = "rectangles_rotated";
-
   ASSERT_TRUE(OpenDocument("rectangles.pdf"));
 
   const unsigned int objnum = EPDFDoc_GetPageObjectNumberByIndex(document(), 0);
@@ -653,8 +651,8 @@ TEST_F(EPDFViewEmbedderTest, EPDFDocSetPageRotationByObjectNumber) {
     EXPECT_EQ(1, FPDFPage_GetRotation(page.get()));
     EXPECT_EQ(300, static_cast<int>(FPDF_GetPageWidth(page.get())));
     EXPECT_EQ(200, static_cast<int>(FPDF_GetPageHeight(page.get())));
-    ScopedFPDFBitmap bitmap = RenderLoadedPage(page.get());
-    CompareBitmapWithExpectationSuffix(bitmap.get(), kRotatedPng);
+    CompareDisplayList(RenderLoadedPageToDisplayList(page.get()),
+                       "rectangles_rotated");
   }
 
   ASSERT_TRUE(FPDF_SaveAsCopy(document(), this, 0));

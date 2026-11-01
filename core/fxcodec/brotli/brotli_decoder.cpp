@@ -11,6 +11,7 @@
 #include "core/fxcodec/image_predictors.h"
 #include "core/fxcrt/check.h"
 #include "core/fxcrt/data_vector.h"
+#include "core/fxcrt/epdf_tls.h"
 #include "core/fxcrt/fx_extension.h"
 #include "core/fxcrt/numerics/safe_conversions.h"
 #include "third_party/brotli/include/brotli/decode.h"
@@ -18,7 +19,9 @@
 namespace {
 
 constexpr size_t kMaxDecodeBytes = 1024 * 1024 * 1024;
-bool g_brotli_enabled = false;
+// EmbedPDF(thread-confined-globals): per thread, as library start-up runs on
+// every thread (rule per-thread-init) and sets it from that thread's config.
+EPDF_TLS bool g_brotli_enabled = false;
 
 struct BrotliDecoderStateDeleter {
   void operator()(struct BrotliDecoderStateStruct* ptr) const {

@@ -8,7 +8,6 @@
 #include "public/cpp/fpdf_scopers.h"
 #include "public/fpdfview.h"
 #include "testing/embedder_test.h"
-#include "testing/embedder_test_constants.h"
 #include "testing/gtest/include/gtest/gtest.h"
 
 class FPDFRenderPatternEmbedderTest : public EmbedderTest {};
@@ -48,8 +47,7 @@ TEST_F(FPDFRenderPatternEmbedderTest, LoadError547706) {
   ASSERT_TRUE(OpenDocument("bug_547706.pdf"));
   ScopedPage page = LoadScopedPage(0);
   ASSERT_TRUE(page);
-  ScopedFPDFBitmap bitmap = RenderLoadedPage(page.get());
-  CompareBitmap(bitmap.get(), pdfium::kBlankPage612By792Png);
+  CompareDisplayList(RenderLoadedPageToDisplayList(page.get()), "bug_547706");
 }
 
 TEST_F(FPDFRenderPatternEmbedderTest, ZeroTilingPatternStep509964646) {

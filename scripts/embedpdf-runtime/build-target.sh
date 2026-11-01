@@ -21,7 +21,11 @@ case "$TARGET" in
   wasm32)
     GN_TARGET_OS="emscripten"
     GN_TARGET_CPU="wasm"
-    EXTRA_ARGS=$'\nis_clang=false\nuse_custom_libcxx=false'
+    # No libyuv: emsdk 3.1.72's clang crashes on its WASM SIMD rows
+    # (I422ToARGBRow_WASMSIMD, from the Oct 27 2026 roll). PDFium keeps its
+    # own loops for pdf_use_libyuv=false; they write the same colors, and
+    # leave the unused byte of a BGRx pixel as it was instead of 0xFF.
+    EXTRA_ARGS=$'\nis_clang=false\nuse_custom_libcxx=false\npdf_use_libyuv=false'
     # build/ reads the macOS SDK whenever the host is a Mac (gn_logs.gni), but
     # PDFium's build_overrides/build.gni decides use_system_xcode only for mac
     # and iOS targets.
@@ -102,6 +106,8 @@ fi
 OUT="$SOURCE_DIR/out/embedpdf-runtime/$TARGET"
 mkdir -p "$OUT"
 
+# pdf_enable_brotli=false: /BrotliDecode needs a config at start-up, and
+# EPDF_InitThread passes none, so the decoder (about 165 KB) would never run.
 cat > "$OUT/args.gn" <<EOF
 is_debug=false
 treat_warnings_as_errors=false
@@ -114,6 +120,7 @@ pdf_is_standalone=true
 use_debug_fission=false
 pdf_is_complete_lib=$PDF_IS_COMPLETE_LIB
 pdf_use_partition_alloc=false
+pdf_enable_brotli=false
 embedpdf_thread_local_globals=$EMBEDPDF_TLS_GLOBALS
 symbol_level=0
 target_os="$GN_TARGET_OS"

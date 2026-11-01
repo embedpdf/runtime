@@ -90,3 +90,32 @@ TEST_F(CPDFCreatorEmbedderTest, SaveLinearizedInfo) {
 
   EXPECT_THAT(saved_doc, ::testing::HasSubstr("/Info"));
 }
+
+TEST_F(CPDFCreatorEmbedderTest, SingleSubsectionXrefWithFreeObjectLinkedList) {
+  ASSERT_TRUE(OpenDocument("xref_free_objects.pdf"));
+  ASSERT_TRUE(FPDF_SaveAsCopy(document(), this, 0));
+
+  // EmbedPDF(complete-xref): one subsection without gaps (upstream's TODO,
+  // crbug.com/42271313); objects 1, 3, 5 and 6 are free entries, linked from
+  // entry 0 in ascending order back to 0.
+  static constexpr char kExpectedXrefAndTrailerPrefix[] =
+      "xref\r\n"
+      "0 8\r\n"
+      "0000000001 65535 f\r\n"
+      "0000000003 00000 f\r\n"
+      "0000000017 00000 n\r\n"
+      "0000000005 00000 f\r\n"
+      "0000000066 00000 n\r\n"
+      "0000000006 00000 f\r\n"
+      "0000000000 00000 f\r\n"
+      "0000000122 00000 n\r\n"
+      "trailer\r\n";
+
+  EXPECT_THAT(GetString(), testing::HasSubstr(kExpectedXrefAndTrailerPrefix));
+
+  // Also make sure the saved PDF still loads.
+  ScopedSavedDoc saved_document = OpenScopedSavedDocument();
+  ASSERT_TRUE(saved_document);
+  ScopedSavedPage saved_page = LoadScopedSavedPage(0);
+  EXPECT_TRUE(saved_page);
+}
