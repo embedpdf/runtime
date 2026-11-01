@@ -1,0 +1,26 @@
+diff --git a/src/jp2.c b/src/jp2.c
+index 3d16d10..212bf27 100644
+--- a/src/jp2.c
++++ b/src/jp2.c
+@@ -1079,8 +1079,8 @@ static OPJ_BOOL opj_jp2_apply_pclr(opj_image_t *image,
+             assert(pcol == 0);
+             new_comps[i] = old_comps[cmp];
+         } else {
+-            assert(i == pcol);
+-            new_comps[pcol] = old_comps[cmp];
++            assert( i == pcol ); // probably wrong?
++            new_comps[i] = old_comps[cmp];
+         }
+ 
+         /* Palette mapping: */
+@@ -1118,8 +1118,8 @@ static OPJ_BOOL opj_jp2_apply_pclr(opj_image_t *image,
+                 dst[j] = src[j];
+             }
+         } else {
+-            assert(i == pcol);
+-            dst = new_comps[pcol].data;
++            assert( i == pcol ); // probably wrong?
++            dst = new_comps[i].data;
+             assert(dst);
+             for (j = 0; j < max; ++j) {
+                 /* The index */

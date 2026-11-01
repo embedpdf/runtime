@@ -10,6 +10,7 @@
 
 #include <algorithm>
 #include <array>
+#include <optional>
 #include <stack>
 #include <utility>
 
@@ -26,8 +27,7 @@
 #include "core/fpdfapi/parser/cpdf_string.h"
 #include "core/fxcrt/check.h"
 #include "core/fxcrt/check_op.h"
-#include "core/fxcrt/fx_random.h"
-#include "core/fxcrt/span_util.h"
+#include "core/fxcrt/epdf_secure_random.h"
 #include "core/fxcrt/stl_util.h"
 
 namespace {
@@ -64,7 +64,8 @@ bool CPDF_CryptoHandler::IsSignatureDictionary(
   return type == pdfium::form_fields::kSig || type == "DocTimeStamp";
 }
 
-DataVector<uint8_t> CPDF_CryptoHandler::EncryptContent(
+// EmbedPDF(save-security): nullopt when no AES IV can be drawn.
+std::optional<DataVector<uint8_t>> CPDF_CryptoHandler::EncryptContent(
     uint32_t objnum,
     uint32_t gennum,
     pdfium::span<const uint8_t> source) const {
@@ -103,7 +104,11 @@ DataVector<uint8_t> CPDF_CryptoHandler::EncryptContent(
     auto dest_data_span = dest_span.subspan(kIVSize, source_data_size);
     auto dest_padding_span = dest_span.subspan(kIVSize + source_data_size);
 
-    FX_Random::Fill(fxcrt::reinterpret_span<uint32_t>(dest_iv_span));
+    // EmbedPDF(save-security): the IV comes from the operating system's secure
+    // random source, not rand(). Without one, nothing is encrypted.
+    if (!EPDF_FillSecureRandom(dest_iv_span)) {
+      return std::nullopt;
+    }
     CRYPT_AESSetIV(aes_context_.get(), dest_iv_span);
     CRYPT_AESEncrypt(aes_context_.get(), dest_data_span,
                      source.first(source_data_size));

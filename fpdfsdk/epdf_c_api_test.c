@@ -27,6 +27,7 @@
 #include "public/epdf_outline.h"
 #include "public/epdf_pieceinfo.h"
 #include "public/epdf_png.h"
+#include "public/epdf_ppo.h"
 #include "public/epdf_progressive.h"
 #include "public/epdf_redact.h"
 #include "public/epdf_save.h"
@@ -219,6 +220,10 @@ int CheckEmbedPDFCApi(void) {
   CHK(EPDFDoc_GetAttachmentKey);
 
   // epdf_capture.h
+  CHK(EPDFAttachment_ExportCanonicalToOwnedBuffer);
+  CHK(EPDFAttachment_ExportRawToOwnedBuffer);
+  CHK(EPDFAttachment_ImportRaw);
+  CHK(EPDFDoc_ExportDictCanonicalToOwnedBuffer);
   CHK(EPDFDoc_ExportDictRawToOwnedBuffer);
   CHK(EPDFDoc_ImportDictRaw);
   CHK(EPDFForm_ExportFieldRawToOwnedBuffer);
@@ -226,10 +231,14 @@ int CheckEmbedPDFCApi(void) {
   CHK(EPDFOutline_ExportItemRawToOwnedBuffer);
   CHK(EPDFOutline_ImportItemRaw);
   CHK(EPDFPage_ExportAnnotsRawToOwnedBuffer);
+  CHK(EPDFPage_ExportRawToOwnedBuffer);
   CHK(EPDFPage_ImportAnnotsRaw);
+  CHK(EPDFPage_ImportRaw);
 
   // epdf_catalog.h
   CHK(EPDFCatalog_GetLanguage);
+  CHK(EPDFCatalog_GetMetadata);
+  CHK(EPDFCatalog_SetMetadata);
 
   // epdf_digest.h
   CHK(EPDF_DigestBuffer);
@@ -370,6 +379,7 @@ int CheckEmbedPDFCApi(void) {
   CHK(EPDFForm_GetFieldOptionLabel);
   CHK(EPDFForm_GetFieldOptionValue);
   CHK(EPDFForm_GetFieldOrigin);
+  CHK(EPDFForm_GetFieldPartialName);
   CHK(EPDFForm_GetFieldTopIndex);
   CHK(EPDFForm_GetFieldValueAt);
   CHK(EPDFForm_GetFieldValueKind);
@@ -542,6 +552,10 @@ int CheckEmbedPDFCApi(void) {
 
   // epdf_png.h
   CHK(EPDF_PNG_EncodeRGBA);
+
+  // epdf_ppo.h
+  CHK(EPDFDoc_GetImportFieldRoots);
+  CHK(EPDFDoc_ImportPages);
 
   // epdf_progressive.h
   CHK(EPDF_RenderPageBitmapWithMatrix_Start);

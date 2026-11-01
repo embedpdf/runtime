@@ -738,6 +738,15 @@ RetainPtr<CPDF_Dictionary> CPDF_Document::CreateNewPageAt(int iPage,
   return dict;
 }
 
+// EmbedPDF(epdf-api): backs EPDFPage_ImportRaw().
+bool CPDF_Document::InsertExistingPage(int iPage,
+                                       RetainPtr<CPDF_Dictionary> page_dict) {
+  if (!page_dict || !page_dict->GetObjNum()) {
+    return false;
+  }
+  return InsertNewPage(iPage, std::move(page_dict));
+}
+
 bool CPDF_Document::InsertDeletePDFPage(
     RetainPtr<CPDF_Dictionary> pages_dict,
     int pages_to_go,

@@ -9,6 +9,8 @@
 
 #include <stdint.h>
 
+#include <optional>
+
 #include "core/fxcrt/data_vector.h"
 #include "core/fxcrt/span.h"
 #include "core/fxcrt/unowned_ptr.h"
@@ -24,7 +26,9 @@ class CPDF_Encryptor {
                  uint32_t generation = 0);
   ~CPDF_Encryptor();
 
-  DataVector<uint8_t> Encrypt(pdfium::span<const uint8_t> src_data) const;
+  // EmbedPDF(save-security): nullopt when the content can't be encrypted.
+  std::optional<DataVector<uint8_t>> Encrypt(
+      pdfium::span<const uint8_t> src_data) const;
 
  private:
   UnownedPtr<const CPDF_CryptoHandler> const handler_;

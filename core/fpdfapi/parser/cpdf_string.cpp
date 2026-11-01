@@ -8,6 +8,7 @@
 
 #include <stdint.h>
 
+#include <optional>
 #include <utility>
 
 #include "core/fpdfapi/parser/cpdf_encryptor.h"
@@ -67,11 +68,15 @@ WideString CPDF_String::GetUnicodeText() const {
 bool CPDF_String::WriteTo(IFX_ArchiveStream* archive,
                           const CPDF_Encryptor* encryptor,
                           const CPDF_WriteContext* context) const {
-  DataVector<uint8_t> encrypted_data;
+  std::optional<DataVector<uint8_t>> encrypted_data;
   pdfium::span<const uint8_t> data = data_.unsigned_span();
   if (encryptor) {
+    // EmbedPDF(save-security): a string that can't be encrypted fails the save.
     encrypted_data = encryptor->Encrypt(data);
-    data = encrypted_data;
+    if (!encrypted_data) {
+      return false;
+    }
+    data = *encrypted_data;
   }
   ByteStringView raw(data);
   ByteString content =

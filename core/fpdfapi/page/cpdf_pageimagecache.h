@@ -36,6 +36,10 @@ class CPDF_PageImageCache {
   uint32_t GetTimeCount() const { return time_count_; }
   CPDF_Page* GetPage() const { return page_; }
 
+  // EmbedPDF(bug-fix): whether StartGetCachedBitmap() loads |image|. An image
+  // of another document is not the cache's: see CPDF_ImageLoader::Start().
+  bool Accepts(const CPDF_Image& image) const;
+
   bool StartGetCachedBitmap(RetainPtr<CPDF_Image> pImage,
                             const CPDF_Dictionary* pFormResources,
                             const CPDF_Dictionary* pPageResources,

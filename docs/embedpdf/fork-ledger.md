@@ -191,14 +191,38 @@ and encryption objects leaked into saves.
 `cpdf_object_stream_cache_unittest.cpp`.
 **When upstream touches this.** The creator's traversal and the parser's object stream access.
 
+### complete-xref
+**Rule.** A full save's cross-reference table is one subsection, from object 0 through the last
+number it writes. A number no written object holds is a free entry with generation 0; entry 0
+heads the list of free entries, each links to the next higher one, and the last links back to 0.
+Object numbers are never changed to close the holes.
+**Why.** ISO 32000-1 7.5.4: a file that was never updated has one subsection, numbered from 0.
+Editing sessions reserve numbers they may not use, and upstream gave the numbers between runs of
+written objects no entry at all. Acrobat can't judge a later revision's changes against such a
+table, so a signature over a rewritten file read as indeterminate after any edit
+(`HasSparseXref`). Object numbers are the engine's identities.
+**Where.** `CPDF_Creator::WriteDoc_Stage3`, the `kWriteXrefsNotIncremental81` stage.
+**Guarded by.** `EPDFObjectNumberEmbedderTest.FullSaveListsUnusedNumbersAsFree`.
+**When upstream touches this.** The full save's cross-reference writer: keep the one subsection
+and the free list. Update sections (incremental saves) stay sparse.
+
 ### save-security
 **Rule.** Pending encryption settings belong to the document, not to a global. AES-256 encryption
-and password probing are ours.
-**Why.** Saves on different threads must not share pending security state.
+and password probing are ours. The file key, the `/U` and `/O` salts and every AES IV come from
+`EPDF_FillSecureRandom`, the operating system's secure random source, never from `FX_Random` or
+`rand()`. When it fails, `EPDF_SetEncryption` or the save fails.
+**Why.** Saves on different threads must not share pending security state. `FX_Random` is a
+Mersenne Twister with a 32-bit seed (time, pid and a stack address outside Windows): the public
+salts give the seed away, and with it a file key, without the password.
 **Where.** `CPDF_Document` pending security, `fpdf_save.cpp`, `cpdf_security_handler.cpp`,
-`cpdf_crypto_handler.cpp`.
-**Guarded by.** Encrypted save embedder tests; the thread soak's encrypted save.
-**When upstream touches this.** The security handler and the save paths.
+`cpdf_crypto_handler.cpp`, `CPDF_Encryptor` and its callers in `cpdf_string.cpp` and
+`cpdf_stream.cpp`, `core/fxcrt/epdf_secure_random.{h,cpp}`.
+**Guarded by.** Encrypted save embedder tests (`EncryptedSavesShareNoKeyOrSalts`),
+`epdf_secure_random_unittest.cpp`; the thread soak's encrypted save.
+**When upstream touches this.** The security handler and the save paths. New key, salt or IV bytes
+use `EPDF_FillSecureRandom` and fail when it fails. Two upstream draws still use `FX_Random`, and
+neither is secret: the `/Perms` filler bytes (encrypted under the file key) and the R≥5 branch of
+`OnCreate` (the creator calls `OnCreate` only for R2 and R3).
 
 ## Content and pages
 

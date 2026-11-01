@@ -25,6 +25,7 @@
 #include "public/cpp/fpdf_scopers.h"
 #include "public/epdf_capture.h"
 #include "public/epdf_doc.h"
+#include "public/epdf_edit.h"
 #include "public/epdf_layer.h"
 #include "public/epdf_outline.h"
 #include "public/epdf_save.h"
@@ -331,10 +332,15 @@ class EPDFOutlineEmbedderTest : public EmbedderTest {
     return reopened;
   }
 
+  void RandomWrites(FPDF_DOCUMENT doc, bool layer);
+
   std::string plain_;
   std::string input_;
   std::string artifact_;
   EPDF_BASE_DOCUMENT base_ = nullptr;
+  // The next number a layer write creates an item at (OpenLayer() hands out
+  // numbers up to 40).
+  uint32_t next_number = 41;
 };
 
 TEST_F(EPDFOutlineEmbedderTest, ItemsAreNamedByNumber) {
@@ -549,11 +555,15 @@ TEST_F(EPDFOutlineEmbedderTest, SetActionReplacesTheDestination) {
   EXPECT_TRUE(RefOf(a.Get(), "A"));
   EXPECT_TRUE(FPDFBookmark_GetAction(EPDFOutline_GetItem(doc.get(), kA)));
 
-  // Another document's action is refused; none removes the target.
-  ScopedFPDFDocument other = OpenLayer();
+  // Another document's action is refused, also when its number names an
+  // object here (the action set above); none removes the target.
+  ScopedFPDFDocument other(
+      FPDF_LoadMemDocument(plain_.data(), plain_.size(), nullptr));
   ASSERT_TRUE(other);
   FPDF_ACTION foreign = GoTo(other.get(), kFirstPage);
   ASSERT_TRUE(foreign);
+  ASSERT_TRUE(
+      DictOf(doc.get(), CPDFDictionaryFromFPDFAction(foreign)->GetObjNum()));
   EXPECT_FALSE(EPDFOutline_SetAction(doc.get(), kB, foreign));
   ASSERT_TRUE(EPDFOutline_SetAction(doc.get(), kA, nullptr));
   a = DictOf(doc.get(), kA);
@@ -664,11 +674,119 @@ TEST_F(EPDFOutlineEmbedderTest, ADirectOutlineDictionaryIsNeverWritten) {
   EXPECT_FALSE(Create(doc.get(), 0, 0, L"x"));
 }
 
-// Random writes, checked after each one: the links and the counts are what
-// the tree says.
-TEST_F(EPDFOutlineEmbedderTest, RandomWritesKeepTheOutlineRight) {
-  ScopedFPDFDocument doc = OpenPlain();
+// A dictionary that isn't an item (a page, an action, a field, an
+// annotation, a page tree) ends the list a broken file links it into: the
+// readers don't show it, and no write takes it for an item or changes it.
+TEST_F(EPDFOutlineEmbedderTest, ADictionaryThatIsntAnItemEndsTheList) {
+  for (const char* other : {
+           "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 300 300] >>",
+           "<< /MediaBox [0 0 300 300] /Resources << >> >>",
+           "<< /S /URI /URI (https://example.com) /Next 7 0 R >>",
+           "<< /FT /Tx /T (name) /Parent 3 0 R >>",
+           "<< /Subtype /Text /Rect [0 0 10 10] >>",
+           "<< /Type /Pages /Kids [4 0 R] /Count 1 >>",
+       }) {
+    SCOPED_TRACE(other);
+    ScopedFPDFDocument doc = OpenPlain(MakeDocumentWith({
+        "<< /Type /Outlines /First 5 0 R /Last 5 0 R /Count 1 >>",
+        "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 300 300] >>",
+        "<< /Title (One) /Parent 3 0 R /Next 6 0 R >>",
+        other,
+    }));
+    ASSERT_TRUE(doc);
+    CPDF_Document* pdf = CPDFDocumentFromFPDFDocument(doc.get());
+    const std::string before = ObjectGraph(pdf)[6];
+    EXPECT_EQ("1:One", Tree(doc.get()));
+    EXPECT_FALSE(EPDFOutline_GetItem(doc.get(), 6));
+    EXPECT_FALSE(EPDFOutline_DeleteItem(doc.get(), 6));
+    EXPECT_FALSE(EPDFOutline_MoveItem(doc.get(), 6, 0, 0));
+    EXPECT_FALSE(Create(doc.get(), 6, 0, L"under it"));
+    ASSERT_TRUE(Create(doc.get(), 0, 5, L"Two"));
+    EXPECT_EQ(before, ObjectGraph(pdf)[6]);
+    EXPECT_EQ("2:One Two", Tree(doc.get()));
+    EXPECT_EQ("", Problems(doc.get()));
+    EXPECT_EQ(1, FPDF_GetPageCount(doc.get()));
+  }
+}
+
+// An /Outlines that isn't an outline's dictionary (here the page tree) is
+// no outline: the readers show none, and a create makes a new outline in
+// its place without touching what was linked there.
+TEST_F(EPDFOutlineEmbedderTest, AnOutlinesThatIsntAnOutlineIsNone) {
+  ScopedFPDFDocument doc = OpenPlain(MakePdf({
+      "<< /Type /Catalog /Pages 2 0 R /Outlines 2 0 R >>",
+      "<< /Type /Pages /Kids [3 0 R] /Count 1 >>",
+      "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 300 300] >>",
+  }));
   ASSERT_TRUE(doc);
+  CPDF_Document* pdf = CPDFDocumentFromFPDFDocument(doc.get());
+  const std::string pages = ObjectGraph(pdf)[2];
+  EXPECT_FALSE(FPDFBookmark_GetFirstChild(doc.get(), nullptr));
+  ASSERT_TRUE(Create(doc.get(), 0, 0, L"One"));
+  EXPECT_EQ(pages, ObjectGraph(pdf)[2]);
+  EXPECT_NE(2u, OutlinesOf(doc.get()));
+  EXPECT_EQ("1:One", Tree(doc.get()));
+  EXPECT_EQ(1, FPDF_GetPageCount(doc.get()));
+}
+
+// Lists a broken file shares are counted once: in an outline whose every
+// item lists the items before it as its children, each item counts once,
+// and counting costs a look at each (not one per list it is in).
+TEST_F(EPDFOutlineEmbedderTest, SharedListsAreCountedOnce) {
+  constexpr uint32_t kItems = 3000;
+  const uint32_t last = 4 + kItems;
+  std::vector<std::string> outline = {
+      "<< /Type /Outlines /First 5 0 R /Last " + std::to_string(last) +
+          " 0 R >>",
+      "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 300 300] >>",
+  };
+  for (uint32_t objnum = 5; objnum <= last; ++objnum) {
+    std::string item = "<< /Title (x) /Parent 3 0 R /First 5 0 R /Count 1";
+    if (objnum < last) {
+      item += " /Next " + std::to_string(objnum + 1) + " 0 R";
+    }
+    outline.push_back(item + " >>");
+  }
+  ScopedFPDFDocument doc = OpenPlain(MakeDocumentWith(outline));
+  ASSERT_TRUE(doc);
+  ASSERT_TRUE(Create(doc.get(), 0, last, L"After"));
+  EXPECT_EQ(static_cast<int>(kItems) + 1,
+            DictOf(doc.get(), 3)->GetIntegerFor("Count"));
+}
+
+// Reads of the outline go 128 levels deep; an item deeper than that is
+// neither found nor written by its number, and the one at the last level
+// still is.
+TEST_F(EPDFOutlineEmbedderTest, ItemsDeeperThanReadsGoAreLeftAlone) {
+  constexpr uint32_t kLevels = 130;
+  std::vector<std::string> outline = {
+      "<< /Type /Outlines /First 5 0 R /Last 5 0 R >>",
+      "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 300 300] >>",
+  };
+  for (uint32_t level = 0; level < kLevels; ++level) {
+    const uint32_t objnum = 5 + level;
+    std::string item = "<< /Title (x) /Parent " +
+                       std::to_string(level ? objnum - 1 : 3) + " 0 R";
+    if (level + 1 < kLevels) {
+      const std::string child = std::to_string(objnum + 1);
+      item += " /First " + child + " 0 R /Last " + child + " 0 R";
+    }
+    outline.push_back(item + " >>");
+  }
+  ScopedFPDFDocument doc = OpenPlain(MakeDocumentWith(outline));
+  ASSERT_TRUE(doc);
+  ScopedFPDFWideString title = GetFPDFWideString(L"y");
+  EXPECT_TRUE(EPDFOutline_GetItem(doc.get(), 5 + 127));
+  EXPECT_TRUE(EPDFOutline_SetTitle(doc.get(), 5 + 127, title.get()));
+  EXPECT_FALSE(EPDFOutline_GetItem(doc.get(), 5 + 128));
+  EXPECT_FALSE(EPDFOutline_SetTitle(doc.get(), 5 + 128, title.get()));
+  EXPECT_FALSE(EPDFOutline_DeleteItem(doc.get(), 5 + 128));
+}
+
+// Random writes, checked after each one: the links and the counts are what
+// the tree says. On a layer each write is a transaction, and one in five is
+// aborted, which must leave the outline as it was.
+void EPDFOutlineEmbedderTest::RandomWrites(FPDF_DOCUMENT doc, bool layer) {
   std::mt19937 random(20261018);
   auto pick = [&](const std::vector<uint32_t>& from) -> uint32_t {
     if (from.empty()) {
@@ -679,42 +797,65 @@ TEST_F(EPDFOutlineEmbedderTest, RandomWritesKeepTheOutlineRight) {
   };
   for (int step = 0; step < 300; ++step) {
     SCOPED_TRACE(step);
-    const std::vector<uint32_t> items = Items(doc.get());
+    const std::vector<uint32_t> items = Items(doc);
     const uint32_t item = pick(items);
     // A parent and a neighbour that may or may not fit: refusals must also
     // leave the outline right.
     const uint32_t parent = random() % 4 ? pick(items) : 0;
     std::vector<uint32_t> siblings;
     for (FPDF_BOOKMARK child = FPDFBookmark_GetFirstChild(
-             doc.get(),
-             parent ? EPDFOutline_GetItem(doc.get(), parent) : nullptr);
-         child; child = FPDFBookmark_GetNextSibling(doc.get(), child)) {
+             doc, parent ? EPDFOutline_GetItem(doc, parent) : nullptr);
+         child; child = FPDFBookmark_GetNextSibling(doc, child)) {
       siblings.push_back(EPDFOutline_GetObjectNumber(child));
     }
     const uint32_t after = random() % 3 ? pick(siblings) : 0;
+    const std::string before = Tree(doc);
+    if (layer) {
+      ASSERT_TRUE(EPDFLayer_BeginTransaction(doc));
+    }
     switch (random() % 5) {
       case 0:
       case 1:
-        Create(doc.get(), parent, after, L"new");
+        // A layer creates at numbers it holds; a plain document picks one.
+        Create(doc, parent, after, L"new", layer ? next_number++ : 0);
         break;
       case 2:
         if (item) {
-          EPDFOutline_MoveItem(doc.get(), item, parent, after);
+          EPDFOutline_MoveItem(doc, item, parent, after);
         }
         break;
       case 3:
         if (item && items.size() > 3) {
-          EPDFOutline_DeleteItem(doc.get(), item);
+          EPDFOutline_DeleteItem(doc, item);
         }
         break;
       case 4:
         if (item) {
-          EPDFOutline_SetOpen(doc.get(), item, random() % 2);
+          EPDFOutline_SetOpen(doc, item, random() % 2);
         }
         break;
     }
-    ASSERT_EQ("", Problems(doc.get()));
+    if (layer && random() % 5 == 0) {
+      ASSERT_TRUE(EPDFLayer_AbortTransaction(doc));
+      ASSERT_EQ(before, Tree(doc));
+    } else if (layer) {
+      ASSERT_TRUE(EPDFLayer_CommitTransaction(doc));
+    }
+    ASSERT_EQ("", Problems(doc));
   }
+}
+
+TEST_F(EPDFOutlineEmbedderTest, RandomWritesKeepTheOutlineRight) {
+  ScopedFPDFDocument doc = OpenPlain();
+  ASSERT_TRUE(doc);
+  RandomWrites(doc.get(), /*layer=*/false);
+}
+
+TEST_F(EPDFOutlineEmbedderTest, RandomWritesKeepALayersOutlineRight) {
+  ScopedFPDFDocument layer = OpenLayer();
+  ASSERT_TRUE(layer);
+  ASSERT_TRUE(EPDFLayer_RaiseLastObjectNumber(layer.get(), 400));
+  RandomWrites(layer.get(), /*layer=*/true);
 }
 
 // A write changes only what it must: appending an item touches the item
@@ -837,6 +978,31 @@ TEST_F(EPDFOutlineEmbedderTest, ImportFindsItsPlace) {
   ASSERT_TRUE(EPDFLayer_CommitTransaction(layer.get()));
   EXPECT_EQ("2:B Other", Tree(layer.get()));
   EXPECT_EQ("", Problems(layer.get()));
+}
+
+// What goes back into the outline is what the item's number holds once the
+// capture is in: a page that took the number after a save dropped the
+// deleted item never becomes an item.
+TEST_F(EPDFOutlineEmbedderTest, ImportRefusesWhenItsNumberHoldsSomethingElse) {
+  ScopedFPDFDocument layer = OpenLayer();
+  ASSERT_TRUE(layer);
+  ASSERT_TRUE(EPDFLayer_BeginTransaction(layer.get()));
+  ASSERT_EQ(20u, Create(layer.get(), 0, kC, L"New", 20));
+  ASSERT_TRUE(EPDFLayer_CommitTransaction(layer.get()));
+  ASSERT_TRUE(EPDFLayer_BeginTransaction(layer.get()));
+  const std::vector<uint8_t> capture = ExportItem(layer.get(), 20);
+  ASSERT_FALSE(capture.empty());
+  ASSERT_TRUE(EPDFOutline_DeleteItem(layer.get(), 20));
+  ASSERT_TRUE(EPDFLayer_CommitTransaction(layer.get()));
+
+  ScopedFPDFDocument reopened = Reopen(layer.get());
+  ASSERT_TRUE(reopened);
+  ASSERT_TRUE(EPDFLayer_RaiseLastObjectNumber(reopened.get(), 40));
+  ASSERT_TRUE(EPDFLayer_BeginTransaction(reopened.get()));
+  ASSERT_TRUE(EPDFPage_InsertBlankRaw(reopened.get(), 0, 100, 100, 20));
+  EXPECT_FALSE(ImportItem(reopened.get(), capture));
+  ASSERT_TRUE(EPDFLayer_CommitTransaction(reopened.get()));
+  EXPECT_EQ("4:A+1[A1] B C-1[C1]", Tree(reopened.get()));
 }
 
 TEST_F(EPDFOutlineEmbedderTest, CapturesNeedAnItemAndALayer) {

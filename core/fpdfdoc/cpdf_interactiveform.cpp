@@ -1116,13 +1116,8 @@ bool CPDF_InteractiveForm::CheckRequiredFields(
 std::unique_ptr<CFDF_Document> CPDF_InteractiveForm::ExportToFDF(
     const WideString& pdf_path,
     bool skip_empty_required) const {
-  std::vector<CPDF_FormField*> fields;
-  CFieldTree::Node* pRoot = field_tree_->GetRoot();
-  const size_t nCount = pRoot->CountFields();
-  for (size_t i = 0; i < nCount; ++i) {
-    fields.push_back(pRoot->GetFieldAtIndex(i));
-  }
-  return ExportToFDF(pdf_path, fields, true, skip_empty_required);
+  return ExportToFDF(pdf_path, /*fields=*/{}, /*bIncludeOrExclude=*/false,
+                     skip_empty_required);
 }
 
 // EmbedPDF(forms-model): exports can keep required fields that are empty.

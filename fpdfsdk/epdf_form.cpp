@@ -2973,6 +2973,22 @@ EPDFForm_SetFieldName(FPDF_DOCUMENT document,
   return true;
 }
 
+FPDF_EXPORT unsigned long FPDF_CALLCONV
+EPDFForm_GetFieldPartialName(FPDF_DOCUMENT document,
+                             uint32_t field_objnum,
+                             FPDF_WCHAR* buffer,
+                             unsigned long buflen) {
+  ScopedFPDFDocumentView document_view(document);
+  RetainPtr<const CPDF_Dictionary> field =
+      ResolveFieldDict(document_view.Get(), field_objnum);
+  if (!field || !field->KeyExist(pdfium::form_fields::kT)) {
+    return 0;
+  }
+  return Utf16EncodeMaybeCopyAndReturnLength(
+      field->GetUnicodeTextFor(pdfium::form_fields::kT),
+      UNSAFE_BUFFERS(SpanFromFPDFApiArgs(buffer, buflen)));
+}
+
 FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV
 EPDFForm_SetFieldFlags(FPDF_DOCUMENT document,
                        uint32_t field_objnum,

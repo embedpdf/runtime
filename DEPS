@@ -118,7 +118,7 @@ vars = {
   # Three lines of non-changing comments so that
   # the commit queue can handle CLs rolling code_coverage
   # and whatever else without interference from each other.
-  'code_coverage_revision': 'a81032f8d6f57774af865e502c5661cf24780ca2',
+  'code_coverage_revision': '084f00efb99dc9a1726ed68cc2e05d25bc52802b',
   # Three lines of non-changing comments so that
   # the commit queue can handle CLs rolling cpu_features
   # and whatever else without interference from each other.
@@ -154,7 +154,7 @@ vars = {
   # Three lines of non-changing comments so that
   # the commit queue can handle CLs rolling goldctl CIPD package version
   # and whatever else without interference from each other.
-  'goldctl_version': 'git_revision:63df9e9df52e8edfd3cd86b642ba79f440e96ecd',
+  'goldctl_version': 'git_revision:d528c7cb34ccc8dc701485b2ec6981044203bed5',
   # Three lines of non-changing comments so that
   # the commit queue can handle CLs rolling gtest
   # and whatever else without interference from each other.
@@ -174,7 +174,7 @@ vars = {
   # Three lines of non-changing comments so that
   # the commit queue can handle CLs rolling instrumented_lib
   # and whatever else without interference from each other.
-  'instrumented_lib_revision': '423262e4438b032c0ba5ea61f78a85ac3690298c',
+  'instrumented_lib_revision': '83128b60913a82a39d01055312687a27bb959b59',
   # Three lines of non-changing comments so that
   # the commit queue can handle CLs rolling jinja2
   # and whatever else without interference from each other.
@@ -228,7 +228,7 @@ vars = {
   # Three lines of non-changing comments so that
   # the commit queue can handle CLs rolling pdfium_tests
   # and whatever else without interference from each other.
-  'pdfium_tests_revision': '86219637fec25a23f5f87252b3bd156ff9ca848e',
+  'pdfium_tests_revision': 'f7a1d03ba45e874b7d3cdf722959a2b8ba4dbfa5',
   # Three lines of non-changing comments so that
   # the commit queue can handle CLs rolling result_adapter_revision
   # and whatever else without interference from each other.

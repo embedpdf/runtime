@@ -26,14 +26,25 @@ CPDF_FlateEncoder::CPDF_FlateEncoder(RetainPtr<const CPDF_Stream> pStream,
 
   bool bHasFilter = pStream->HasFilter();
   if (bHasFilter && !bFlateEncode) {
-    auto pDestAcc = pdfium::MakeRetain<CPDF_StreamAcc>(pStream);
-    pDestAcc->LoadAllDataFiltered();
-
-    data_ = acc_->GetSpan();
-    cloned_dict_ = ToDictionary(pStream->GetDict()->Clone());
-    cloned_dict_->RemoveFor("Filter");
-    DCHECK(!dict_);
-    return;
+    // EmbedPDF(bug-fix): a stream written unencoded (the metadata stream,
+    // which XMP readers look for in the file's bytes) is written decoded.
+    // Upstream decoded it, then wrote its encoded bytes without the filter
+    // that decodes them. Bytes that don't decode stay as they are, filter and
+    // all.
+    std::optional<DecoderArray> decoders = GetDecoderArray(pStream->GetDict());
+    std::optional<PDFDataDecodeResult> decoded;
+    if (decoders.has_value() && !decoders.value().empty()) {
+      decoded = PDF_DataDecode(acc_->GetSpan(), 0, false, decoders.value());
+    }
+    if (decoded.has_value() && decoded.value().image_encoding.IsEmpty() &&
+        !decoded.value().data.empty()) {
+      data_ = std::move(decoded.value().data);
+      cloned_dict_ = ToDictionary(pStream->GetDict()->Clone());
+      cloned_dict_->RemoveFor("Filter");
+      cloned_dict_->RemoveFor(pdfium::stream::kDecodeParms);
+      DCHECK(!dict_);
+      return;
+    }
   }
   if (bHasFilter || !bFlateEncode) {
     data_ = acc_->GetSpan();

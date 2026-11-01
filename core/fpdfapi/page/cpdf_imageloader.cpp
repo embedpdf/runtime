@@ -28,7 +28,12 @@ bool CPDF_ImageLoader::Start(const CPDF_ImageObject* pImage,
                              CPDF_ColorSpace::Family eFamily,
                              bool bLoadMask,
                              const CFX_Size& max_size_required) {
-  cache_ = pPageImageCache;
+  // EmbedPDF(bug-fix): the page image cache refuses an image of another
+  // document, and Finish() then read the cache's current entry: null (a crash)
+  // or the previous image's (nothing drawn). Such an image loads uncached.
+  cache_ = pPageImageCache && pPageImageCache->Accepts(*pImage->GetImage())
+               ? pPageImageCache
+               : nullptr;
   image_object_ = pImage;
   bool should_continue;
   if (cache_) {

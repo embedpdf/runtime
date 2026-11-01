@@ -141,6 +141,9 @@ class CPDF_Creator final : public CPDF_WriteContext {
   std::vector<uint32_t> NewObjectNumbers() const;
   bool WriteNewObjs();
   bool WriteIndirectObj(uint32_t objnum, const CPDF_Object* pObj);
+  // EmbedPDF(bug-fix): whether |objnum| is the document's metadata stream,
+  // kept in the clear by /EncryptMetadata false.
+  bool IsClearMetadata(uint32_t objnum) const;
   // EmbedPDF(layer-save): refuses an offset an entry can't hold.
   bool CheckEmittedOffset(FX_FILESIZE offset);
   // EmbedPDF(save-generations): the creator as CPDF_WriteContext, and

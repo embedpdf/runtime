@@ -246,6 +246,7 @@ source_set("fxge") {
     sources += [
       "skia/cfx_dibbase_skia.cpp",
       "skia/fx_skia_device.cpp",
+      "skia/fx_skia_device.h",
     ]
     public_deps += [ "//skia" ]
 
@@ -326,6 +327,7 @@ pdfium_unittest_source_set("unittests") {
     "dib/fx_dib_unittest.cpp",
     "fx_font_unittest.cpp",
   ]
+  data = [ "../../third_party/NotoSansCJK/NotoSansSC-Regular.subset.otf" ]
   deps = [
     ":fxge",
     ":test_support",
@@ -350,6 +352,10 @@ pdfium_unittest_source_set("unittests") {
 
   if (is_win) {
     sources += [ "win32/cfx_psrenderer_unittest.cpp" ]
+  }
+
+  if (pdf_use_agg) {
+    sources += [ "agg/cfx_agg_cliprgn_unittest.cpp" ]
   }
 
   if (pdf_enable_fontations) {

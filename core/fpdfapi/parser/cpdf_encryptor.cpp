@@ -20,7 +20,8 @@ CPDF_Encryptor::CPDF_Encryptor(const CPDF_CryptoHandler* pHandler,
   DCHECK(handler_);
 }
 
-DataVector<uint8_t> CPDF_Encryptor::Encrypt(
+// EmbedPDF(save-security): nullopt when the content can't be encrypted.
+std::optional<DataVector<uint8_t>> CPDF_Encryptor::Encrypt(
     pdfium::span<const uint8_t> src_data) const {
   if (src_data.empty()) {
     return DataVector<uint8_t>();

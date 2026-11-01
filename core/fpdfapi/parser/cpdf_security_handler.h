@@ -33,7 +33,8 @@ class CPDF_SecurityHandler final : public Retainable {
 
   // EmbedPDF(save-security): AES-256 with both passwords.
   // New method for AES-256 R=6 with both passwords.
-  // Returns true on success, false if LoadDict fails or revision is not 6.
+  // Returns true on success, false if LoadDict fails, the revision is not 6,
+  // or the secure random source can't give the key and salts.
   bool OnCreateWithPasswords(CPDF_Dictionary* pEncryptDict,
                              const ByteString& user_password,
                              const ByteString& owner_password);
@@ -96,8 +97,9 @@ class CPDF_SecurityHandler final : public Retainable {
                           const ByteString& password);
   void AES256_SetPerms(CPDF_Dictionary* pEncryptDict);
   // EmbedPDF(save-security): AES-256 with both passwords.
-  // Helper that sets U, UE, O, OE for R=6 with both user and owner passwords
-  void AES256_SetPasswords(CPDF_Dictionary* pEncryptDict,
+  // Helper that sets U, UE, O, OE for R=6 with both user and owner passwords.
+  // Returns false when the secure random source can't give the salts.
+  bool AES256_SetPasswords(CPDF_Dictionary* pEncryptDict,
                            const ByteString& user_password,
                            const ByteString& owner_password);
   bool CheckSecurity(const ByteString& password);

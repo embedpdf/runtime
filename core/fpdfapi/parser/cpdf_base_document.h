@@ -47,6 +47,11 @@ class CPDF_BaseDocument final : public CPDF_Document, public Retainable {
   // full pass over the file — unless the embedder supplied it through
   // SetKnownRawBaseSha256(). Reads all-zero when the file cannot be read.
   const std::array<uint8_t, 32>& GetRawBaseSha256() const;
+  // The same hash when it is known already (supplied, or worked out once),
+  // else null: never hashes the file.
+  const std::array<uint8_t, 32>* GetKnownRawBaseSha256() const {
+    return raw_base_sha256_ ? &*raw_base_sha256_ : nullptr;
+  }
   // A host that already hashed the exact bytes it handed us (a storage layer
   // verifying a download) need not pay for a second pass. Only an identity
   // claim: a wrong value makes this host's own artifacts fail to open on the
