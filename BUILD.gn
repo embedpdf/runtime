@@ -281,7 +281,7 @@ group("pdfium_public_headers") {
   ]
 }
 
-shared_library("pdfium") {
+component("pdfium") {
   output_name = "embedpdf"
   libs = []
   configs += [ ":pdfium_strict_config" ]
@@ -318,9 +318,6 @@ shared_library("pdfium") {
       "advapi32.lib",
       "gdi32.lib",
       "user32.lib",
-    ]
-    sources = [
-      "resources.rc",
     ]
   }
 
