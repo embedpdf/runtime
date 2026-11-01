@@ -22,6 +22,7 @@
 #include "core/fpdfapi/parser/cpdf_stream.h"
 #include "core/fpdfapi/parser/cpdf_string.h"
 #include "fpdfsdk/cpdfsdk_helpers.h"
+#include "fpdfsdk/epdf_edit_test_util.h"
 #include "fpdfsdk/epdf_object_copier.h"
 #include "public/epdf_annot.h"
 #include "public/epdf_form.h"
@@ -34,6 +35,7 @@
 #include "public/fpdf_save.h"
 #include "public/fpdfview.h"
 #include "testing/embedder_test.h"
+#include "testing/embedpdf_layer_mode.h"
 #include "testing/fx_string_testhelpers.h"
 #include "testing/test_loader.h"
 #include "testing/utils/file_util.h"
@@ -355,7 +357,7 @@ TEST_F(EPDFFlattenEmbedderTest, FlattenReadsAlreadyPromotedAnnotationState) {
 }
 
 TEST_F(EPDFFlattenEmbedderTest, FlattenDirectAnnotationByHandle) {
-  ScopedFPDFDocument document(FPDF_CreateNewDocument());
+  embedpdf_test::ScopedTestDocument document(NewTestDocument());
   ASSERT_TRUE(document);
   ScopedFPDFPage page(FPDFPage_New(document.get(), 0, 100, 100));
   ASSERT_TRUE(page);
@@ -436,7 +438,7 @@ TEST_F(EPDFFlattenEmbedderTest, FlattenAnnotationSetRejectsForeignAnnotation) {
   ASSERT_TRUE(page);
 
   // An annotation from ANOTHER document: the whole call fails, nothing moves.
-  ScopedFPDFDocument other(FPDF_CreateNewDocument());
+  embedpdf_test::ScopedTestDocument other(NewTestDocument());
   ScopedFPDFPage other_page(FPDFPage_New(other.get(), 0, 100, 100));
   ScopedFPDFAnnotation foreign(
       FPDFPage_CreateAnnot(other_page.get(), FPDF_ANNOT_SQUARE));
@@ -459,7 +461,7 @@ TEST_F(EPDFFlattenEmbedderTest, FlattenAnnotationSetRejectsForeignAnnotation) {
 TEST_F(EPDFFlattenEmbedderTest, ExportAnnotationsMatchesSourceCrop) {
   // Blank source page: a render of the exported page must equal a crop of
   // the source page rendered WITH annotations, pixel for pixel.
-  ScopedFPDFDocument doc(FPDF_CreateNewDocument());
+  embedpdf_test::ScopedTestDocument doc(NewTestDocument());
   ASSERT_TRUE(doc);
   ScopedFPDFPage page(FPDFPage_New(doc.get(), 0, 300, 300));
   ASSERT_TRUE(page);
@@ -552,7 +554,7 @@ TEST_F(EPDFFlattenEmbedderTest, ExportAnnotationsIsAllOrNothing) {
 TEST_F(EPDFFlattenEmbedderTest, ExportAnnotationsDeduplicatesSharedResources) {
   // Two annotations whose appearance streams reference the SAME indirect
   // font object: the exported document must carry that font once.
-  ScopedFPDFDocument doc(FPDF_CreateNewDocument());
+  embedpdf_test::ScopedTestDocument doc(NewTestDocument());
   ScopedFPDFPage page(FPDFPage_New(doc.get(), 0, 200, 200));
   ASSERT_TRUE(page);
   CPDF_Document* src = CPDFDocumentFromFPDFDocument(doc.get());
@@ -622,7 +624,7 @@ TEST_F(EPDFFlattenEmbedderTest, ExportAnnotationsDeduplicatesSharedResources) {
 }
 
 TEST_F(EPDFFlattenEmbedderTest, FlattenPaintsTheAppearanceDrawnInMemory) {
-  ScopedFPDFDocument doc(FPDF_CreateNewDocument());
+  embedpdf_test::ScopedTestDocument doc(NewTestDocument());
   ASSERT_TRUE(doc);
   CPDF_Document* pdf = CPDFDocumentFromFPDFDocument(doc.get());
   {
@@ -661,8 +663,8 @@ TEST_F(EPDFFlattenEmbedderTest, ExportPagesFlattenedPrintsAFieldDrawnInMemory) {
   const std::string path = PathService::GetTestFilePath("text_form.pdf");
   ASSERT_FALSE(path.empty());
   std::vector<uint8_t> bytes = GetFileContents(path.c_str());
-  ScopedFPDFDocument doc(
-      FPDF_LoadMemDocument64(bytes.data(), bytes.size(), nullptr));
+  embedpdf_test::ScopedTestDocument doc(embedpdf_test::LoadMemDocumentForTest(
+      bytes.data(), bytes.size(), nullptr));
   ASSERT_TRUE(doc);
   CPDF_Document* pdf = CPDFDocumentFromFPDFDocument(doc.get());
   // The text field has no appearance: the renderer draws its value in
@@ -727,7 +729,7 @@ TEST_F(EPDFFlattenEmbedderTest, ExportPagesFlattenedLeavesThePageActionsOut) {
 }
 
 TEST_F(EPDFFlattenEmbedderTest, ExportPagesFlattenedKeepsTheLayersPrintState) {
-  ScopedFPDFDocument doc(FPDF_CreateNewDocument());
+  embedpdf_test::ScopedTestDocument doc(NewTestDocument());
   ASSERT_TRUE(doc);
   CPDF_Document* pdf = CPDFDocumentFromFPDFDocument(doc.get());
 
@@ -877,7 +879,7 @@ TEST_F(EPDFFlattenEmbedderTest, InvisibleLeavesOutOnlyAnUnknownType) {
   };
   for (const Case& test : cases) {
     SCOPED_TRACE(testing::Message() << test.subtype << " /F " << test.flags);
-    ScopedFPDFDocument doc(FPDF_CreateNewDocument());
+    embedpdf_test::ScopedTestDocument doc(NewTestDocument());
     ASSERT_TRUE(doc);
     {
       ScopedFPDFPage blank(FPDFPage_New(doc.get(), 0, 200, 200));
@@ -916,7 +918,7 @@ TEST_F(EPDFFlattenEmbedderTest, InvisibleLeavesOutOnlyAnUnknownType) {
 
 TEST_F(EPDFFlattenEmbedderTest,
        ExportPagesFlattenedCopiesPagesInTheGivenOrder) {
-  ScopedFPDFDocument doc(FPDF_CreateNewDocument());
+  embedpdf_test::ScopedTestDocument doc(NewTestDocument());
   ASSERT_TRUE(doc);
   for (int i = 0; i < 3; ++i) {
     ScopedFPDFPage page(FPDFPage_New(doc.get(), i, 100.0 + 10 * i, 200));
@@ -966,7 +968,7 @@ TEST_F(EPDFFlattenEmbedderTest, ExportPagesFlattenedFromALayerWritesNothing) {
 }
 
 TEST_F(EPDFFlattenEmbedderTest, CopierFollowsReferencesByWhatTheyResolveTo) {
-  ScopedFPDFDocument doc(FPDF_CreateNewDocument());
+  embedpdf_test::ScopedTestDocument doc(NewTestDocument());
   ASSERT_TRUE(doc);
   CPDF_Document* pdf = CPDFDocumentFromFPDFDocument(doc.get());
   // An appearance drawn in memory numbers its fonts from 1 in a store of its

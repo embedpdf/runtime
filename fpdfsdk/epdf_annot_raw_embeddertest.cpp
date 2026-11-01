@@ -10,6 +10,7 @@
 #include "core/fpdfapi/parser/cpdf_name.h"
 #include "core/fpdfapi/parser/cpdf_string.h"
 #include "fpdfsdk/cpdfsdk_helpers.h"
+#include "fpdfsdk/epdf_edit_test_util.h"
 #include "public/cpp/fpdf_scopers.h"
 #include "public/epdf_annot.h"
 #include "public/epdf_view.h"
@@ -18,6 +19,7 @@
 #include "public/fpdf_ppo.h"
 #include "public/fpdfview.h"
 #include "testing/embedder_test.h"
+#include "testing/embedpdf_layer_mode.h"
 #include "testing/fx_string_testhelpers.h"
 #include "testing/gtest/include/gtest/gtest.h"
 
@@ -52,7 +54,7 @@ uint32_t PageNamedByFirstAnnot(FPDF_DOCUMENT doc, int page_index) {
 class EPDFAnnotRawEmbedderTest : public EmbedderTest {};
 
 TEST_F(EPDFAnnotRawEmbedderTest, FindsAnAnnotationByNameOnItsPage) {
-  ScopedFPDFDocument doc(FPDF_CreateNewDocument());
+  embedpdf_test::ScopedTestDocument doc(NewTestDocument());
   ASSERT_TRUE(doc);
   for (int index : {0, 1}) {
     ScopedFPDFPage page(FPDFPage_New(doc.get(), index, 612, 792));
@@ -86,7 +88,7 @@ TEST_F(EPDFAnnotRawEmbedderTest, FindsAnAnnotationByNameOnItsPage) {
 }
 
 TEST_F(EPDFAnnotRawEmbedderTest, FindsANameOnAnAnnotationWrittenInPlace) {
-  ScopedFPDFDocument doc(FPDF_CreateNewDocument());
+  embedpdf_test::ScopedTestDocument doc(NewTestDocument());
   ASSERT_TRUE(doc);
   ScopedFPDFPage page(FPDFPage_New(doc.get(), 0, 612, 792));
   ASSERT_TRUE(page);
@@ -102,7 +104,7 @@ TEST_F(EPDFAnnotRawEmbedderTest, FindsANameOnAnAnnotationWrittenInPlace) {
 }
 
 TEST_F(EPDFAnnotRawEmbedderTest, FindsAnAnnotationByObjectNumber) {
-  ScopedFPDFDocument doc(FPDF_CreateNewDocument());
+  embedpdf_test::ScopedTestDocument doc(NewTestDocument());
   ASSERT_TRUE(doc);
   ScopedFPDFPage page(FPDFPage_New(doc.get(), 0, 612, 792));
   ASSERT_TRUE(page);
@@ -134,7 +136,7 @@ TEST_F(EPDFAnnotRawEmbedderTest, FindsAnAnnotationByObjectNumber) {
 }
 
 TEST_F(EPDFAnnotRawEmbedderTest, FindsNothingWhereThereIsNothing) {
-  ScopedFPDFDocument doc(FPDF_CreateNewDocument());
+  embedpdf_test::ScopedTestDocument doc(NewTestDocument());
   ASSERT_TRUE(doc);
   ScopedFPDFPage page(FPDFPage_New(doc.get(), 0, 612, 792));
   ASSERT_TRUE(page);
@@ -149,7 +151,7 @@ TEST_F(EPDFAnnotRawEmbedderTest, FindsNothingWhereThereIsNothing) {
 // A new annotation names its page (/P), whichever call made it; a copy of the
 // page names the copy.
 TEST_F(EPDFAnnotRawEmbedderTest, NewAnnotationsNameTheirPage) {
-  ScopedFPDFDocument doc(FPDF_CreateNewDocument());
+  embedpdf_test::ScopedTestDocument doc(NewTestDocument());
   ASSERT_TRUE(doc);
   for (int index : {0, 1}) {
     ScopedFPDFPage page(FPDFPage_New(doc.get(), index, 612, 792));
@@ -171,7 +173,7 @@ TEST_F(EPDFAnnotRawEmbedderTest, NewAnnotationsNameTheirPage) {
   EXPECT_EQ(EPDFDoc_GetPageObjectNumberByIndex(doc.get(), 1),
             PageNamedByFirstAnnot(doc.get(), 1));
 
-  ScopedFPDFDocument copy(FPDF_CreateNewDocument());
+  embedpdf_test::ScopedTestDocument copy(NewTestDocument());
   ASSERT_TRUE(copy);
   const int second_page[] = {1};
   ASSERT_TRUE(

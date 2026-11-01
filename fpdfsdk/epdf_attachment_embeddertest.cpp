@@ -9,9 +9,11 @@
 #include <string>
 #include <vector>
 
+#include "fpdfsdk/epdf_edit_test_util.h"
 #include "public/epdf_save.h"
 #include "public/fpdf_save.h"
 #include "testing/embedder_test.h"
+#include "testing/embedpdf_layer_mode.h"
 #include "testing/fx_string_testhelpers.h"
 
 namespace {
@@ -74,7 +76,7 @@ class EPDFAttachmentEmbedderTest : public EmbedderTest {};
 // reported. (The size check was inverted: a larger buffer came back unfilled,
 // and a smaller one failed a CHECK.)
 TEST_F(EPDFAttachmentEmbedderTest, GetFileHonoursTheBufferContract) {
-  ScopedFPDFDocument doc(FPDF_CreateNewDocument());
+  embedpdf_test::ScopedTestDocument doc(NewTestDocument());
   ScopedFPDFWideString name = GetFPDFWideString(L"a.txt");
   FPDF_ATTACHMENT file = FPDFDoc_AddAttachment(doc.get(), name.get());
   ASSERT_TRUE(file);

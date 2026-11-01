@@ -14,6 +14,7 @@
 #include "core/fpdfapi/parser/cpdf_reference.h"
 #include "core/fpdfapi/parser/cpdf_string.h"
 #include "fpdfsdk/cpdfsdk_helpers.h"
+#include "fpdfsdk/epdf_edit_test_util.h"
 #include "public/cpp/fpdf_scopers.h"
 #include "public/epdf_doc.h"
 #include "public/epdf_layer.h"
@@ -22,6 +23,7 @@
 #include "public/fpdf_edit.h"
 #include "public/fpdf_save.h"
 #include "testing/embedder_test.h"
+#include "testing/embedpdf_layer_mode.h"
 #include "testing/fx_string_testhelpers.h"
 #include "testing/gtest/include/gtest/gtest.h"
 #include "testing/utils/file_util.h"
@@ -111,8 +113,8 @@ uint32_t PageLabelsObject(FPDF_DOCUMENT document) {
   return reference ? reference->GetRefObjNum() : 0;
 }
 
-ScopedFPDFDocument NewDocument(int page_count) {
-  ScopedFPDFDocument document(FPDF_CreateNewDocument());
+embedpdf_test::ScopedTestDocument NewDocument(int page_count) {
+  embedpdf_test::ScopedTestDocument document(NewTestDocument());
   for (int i = 0; i < page_count; ++i) {
     FPDF_ClosePage(FPDFPage_New(document.get(), i, 612, 792));
   }
@@ -134,13 +136,14 @@ const std::vector<std::wstring> kFileLabels = {L"i",   L"ii",  L"1", L"2",
 
 class EPDFPageLabelsEmbedderTest : public EmbedderTest {
  protected:
-  ScopedFPDFDocument SaveAndReopen(FPDF_DOCUMENT document) {
+  embedpdf_test::ScopedTestDocument SaveAndReopen(FPDF_DOCUMENT document) {
     ClearString();
     EXPECT_TRUE(FPDF_SaveAsCopy(document, this, 0));
     saved_.push_back(GetString());
     const std::string& bytes = saved_.back();
-    return ScopedFPDFDocument(FPDF_LoadMemDocument(
-        bytes.data(), static_cast<int>(bytes.size()), nullptr));
+    return embedpdf_test::ScopedTestDocument(
+        embedpdf_test::LoadMemDocumentForTest(bytes.data(), bytes.size(),
+                                              nullptr));
   }
 
   // page_labels.pdf as a layer over a frozen base.
@@ -205,7 +208,7 @@ TEST_F(EPDFPageLabelsEmbedderTest, AFileWithoutPageLabelsHasNoSections) {
 // the first entry and the entry that isn't a dictionary number by their
 // place, and an entry past the last page is left out.
 TEST_F(EPDFPageLabelsEmbedderTest, ReadsATreeAsPageLabelsDo) {
-  ScopedFPDFDocument document = NewDocument(7);
+  embedpdf_test::ScopedTestDocument document = NewDocument(7);
   CPDF_Document* doc = CPDFDocumentFromFPDFDocument(document.get());
   auto labels = doc->GetMutableRoot()->SetNewFor<CPDF_Dictionary>("PageLabels");
   auto kids = labels->SetNewFor<CPDF_Array>("Kids");
@@ -253,7 +256,7 @@ TEST_F(EPDFPageLabelsEmbedderTest, ReadsATreeAsPageLabelsDo) {
 }
 
 TEST_F(EPDFPageLabelsEmbedderTest, WritesSectionsThatLabelThePages) {
-  ScopedFPDFDocument document = NewDocument(6);
+  embedpdf_test::ScopedTestDocument document = NewDocument(6);
   const std::vector<Section> sections = {
       {0, EPDF_PAGE_LABEL_STYLE_LOWER_ROMAN, 1, L""},
       {2, EPDF_PAGE_LABEL_STYLE_DECIMAL, 1, L""},
@@ -274,7 +277,7 @@ TEST_F(EPDFPageLabelsEmbedderTest, WritesSectionsThatLabelThePages) {
   EXPECT_FALSE(nums->GetDictAt(1)->KeyExist("P"));
   EXPECT_EQ(7, nums->GetDictAt(5)->GetIntegerFor("St"));
 
-  ScopedFPDFDocument reopened = SaveAndReopen(document.get());
+  embedpdf_test::ScopedTestDocument reopened = SaveAndReopen(document.get());
   ASSERT_TRUE(reopened);
   EXPECT_EQ(sections, SectionsOf(reopened.get()));
   EXPECT_EQ(labels, LabelsOf(reopened.get()));

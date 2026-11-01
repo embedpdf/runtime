@@ -311,6 +311,7 @@ class EPDFContentRewriteEmbedderTest
       }
       doc_.reset(EPDFLayer_OpenLayer(base_.get(), nullptr, nullptr, nullptr));
     } else {
+      // Plain in layer mode too: the layer is the other case.
       doc_.reset(FPDF_LoadMemDocument64(bytes_.data(), bytes_.size(), nullptr));
     }
     return doc_.get();

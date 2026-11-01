@@ -109,6 +109,14 @@ std::string EmptyPdf() {
   });
 }
 
+embedpdf_test::ScopedTestDocument NewTestDocument() {
+  // The bytes outlive every document opened over them.
+  static const std::string* const empty = new std::string(EmptyPdf());
+  return embedpdf_test::ScopedTestDocument(
+      embedpdf_test::LoadMemDocumentForTest(empty->data(), empty->size(),
+                                            nullptr));
+}
+
 std::string Stream(const std::string& data) {
   return Stream("", data);
 }

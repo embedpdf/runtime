@@ -286,6 +286,7 @@ TEST_F(EPDFTransactionEmbedderTest, OnlyOnALayerAndOneAtATime) {
   EXPECT_FALSE(EPDFLayer_BeginTransaction(nullptr));
   EXPECT_FALSE(EPDFLayer_IsInTransaction(nullptr));
   const std::string plain_bytes = MakeDocument();
+  // Plain in layer mode too: a plain document takes no transaction.
   ScopedFPDFDocument plain(
       FPDF_LoadMemDocument(plain_bytes.data(), plain_bytes.size(), nullptr));
   ASSERT_TRUE(plain);

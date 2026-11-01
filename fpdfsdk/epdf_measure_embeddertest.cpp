@@ -22,6 +22,7 @@
 #include "core/fpdfdoc/cpdf_annotfontmap.h"
 #include "core/fpdfdoc/cpdf_appearancegenerator.h"
 #include "fpdfsdk/cpdfsdk_helpers.h"
+#include "fpdfsdk/epdf_edit_test_util.h"
 #include "public/cpp/fpdf_scopers.h"
 #include "public/epdf_annot.h"
 #include "public/epdf_font.h"
@@ -32,6 +33,7 @@
 #include "testing/embedder_test.h"
 #include "testing/embedder_test_environment.h"
 #include "testing/embedpdf_layer_fixture.h"
+#include "testing/embedpdf_layer_mode.h"
 #include "testing/fx_string_testhelpers.h"
 #include "testing/gtest/include/gtest/gtest.h"
 #include "testing/test_fonts.h"
@@ -102,7 +104,7 @@ Delta SaveDelta(FPDF_DOCUMENT doc) {
 class EPDFMeasureEmbedderTest : public EmbedderTest {
  protected:
   std::vector<uint8_t> Base(bool indirect = false) {
-    ScopedFPDFDocument doc(FPDF_CreateNewDocument());
+    embedpdf_test::ScopedTestDocument doc(NewTestDocument());
     ScopedFPDFPage page(FPDFPage_New(doc.get(), 0, 612, 792));
     ScopedFPDFAnnotation a(EPDFPage_CreateAnnot(page.get(), FPDF_ANNOT_LINE));
     ScopedFPDFAnnotation b(EPDFPage_CreateAnnot(page.get(), FPDF_ANNOT_LINE));
@@ -209,7 +211,7 @@ TEST_F(EPDFMeasureEmbedderTest, BadArgumentsAndRejectedWrites) {
 }
 
 TEST_F(EPDFMeasureEmbedderTest, NumberFormatsRoundTripAndAbsentVersusEmpty) {
-  CreateEmptyDocument();
+  ASSERT_TRUE(OpenDocumentFromMemory(EmptyPdf()));
   ScopedFPDFPage page(FPDFPage_New(document(), 0, 612, 792));
   ScopedFPDFAnnotation annot(EPDFPage_CreateAnnot(page.get(), FPDF_ANNOT_LINE));
   auto m = EPDFAnnot_AddMeasure(annot.get());
@@ -284,7 +286,7 @@ TEST_F(EPDFMeasureEmbedderTest, NumberFormatsRoundTripAndAbsentVersusEmpty) {
 }
 
 TEST_F(EPDFMeasureEmbedderTest, HandlesInvalidateAcrossTwoAnnotationHandles) {
-  CreateEmptyDocument();
+  ASSERT_TRUE(OpenDocumentFromMemory(EmptyPdf()));
   ScopedFPDFPage page(FPDFPage_New(document(), 0, 612, 792));
   ScopedFPDFAnnotation a(EPDFPage_CreateAnnot(page.get(), FPDF_ANNOT_LINE));
   ScopedFPDFAnnotation b(FPDFPage_GetAnnot(page.get(), 0));
@@ -312,7 +314,7 @@ TEST_F(EPDFMeasureEmbedderTest, HandlesInvalidateAcrossTwoAnnotationHandles) {
 }
 
 TEST_F(EPDFMeasureEmbedderTest, ViewportsFindLastAndInvalidateOnRemoval) {
-  CreateEmptyDocument();
+  ASSERT_TRUE(OpenDocumentFromMemory(EmptyPdf()));
   ScopedFPDFPage page(FPDFPage_New(document(), 0, 612, 792));
   auto a = EPDFPage_AddViewport(page.get(), &kBox);
   const FS_RECTF box{50, 300, 300, 50};
@@ -348,8 +350,8 @@ TEST_F(EPDFMeasureEmbedderTest, ViewportsFindLastAndInvalidateOnRemoval) {
 TEST_F(EPDFMeasureEmbedderTest,
        UnknownMeasureIsPreservedAndGeoSettersRejectBeforePromotion) {
   auto bytes = Base();
-  ScopedFPDFDocument doc(
-      FPDF_LoadMemDocument64(bytes.data(), bytes.size(), nullptr));
+  embedpdf_test::ScopedTestDocument doc(embedpdf_test::LoadMemDocumentForTest(
+      bytes.data(), bytes.size(), nullptr));
   ScopedFPDFPage page(FPDF_LoadPage(doc.get(), 0));
   ScopedFPDFAnnotation a(FPDFPage_GetAnnot(page.get(), 0));
   auto dict = CPDFAnnotContextFromFPDFAnnotation(a.get())
@@ -445,7 +447,7 @@ TEST_F(EPDFMeasureEmbedderTest, LayerReadsPromoteNothingAndPageWritesOnlyPage) {
 }
 
 TEST_F(EPDFMeasureEmbedderTest, LineAndShapeCaptionEntriesStaySeparate) {
-  CreateEmptyDocument();
+  ASSERT_TRUE(OpenDocumentFromMemory(EmptyPdf()));
   ScopedFPDFPage page(FPDFPage_New(document(), 0, 612, 792));
   ScopedFPDFAnnotation line(EPDFPage_CreateAnnot(page.get(), FPDF_ANNOT_LINE));
   ScopedFPDFAnnotation shape(
@@ -512,7 +514,7 @@ TEST_F(EPDFMeasureEmbedderTest, LineAndShapeCaptionEntriesStaySeparate) {
 }
 
 TEST_F(EPDFMeasureEmbedderTest, LineAppearanceLeadersInlineGapAndStableBounds) {
-  CreateEmptyDocument();
+  ASSERT_TRUE(OpenDocumentFromMemory(EmptyPdf()));
   ScopedFPDFPage page(FPDFPage_New(document(), 0, 612, 792));
   ScopedFPDFAnnotation a(EPDFPage_CreateAnnot(page.get(), FPDF_ANNOT_LINE));
   MakeLine(a.get());
@@ -550,7 +552,7 @@ TEST_F(EPDFMeasureEmbedderTest, LineAppearanceLeadersInlineGapAndStableBounds) {
 }
 
 TEST_F(EPDFMeasureEmbedderTest, ShortDistanceOmitsShaftAndBoundsCanShrink) {
-  CreateEmptyDocument();
+  ASSERT_TRUE(OpenDocumentFromMemory(EmptyPdf()));
   ScopedFPDFPage page(FPDFPage_New(document(), 0, 612, 792));
   ScopedFPDFAnnotation annot(EPDFPage_CreateAnnot(page.get(), FPDF_ANNOT_LINE));
   MakeLine(annot.get());
@@ -596,7 +598,7 @@ TEST_F(EPDFMeasureEmbedderTest, ShortDistanceOmitsShaftAndBoundsCanShrink) {
 
 TEST_F(EPDFMeasureEmbedderTest,
        ShapeCaptionCenterRoundTripsAndOnlyChangesVisualBounds) {
-  CreateEmptyDocument();
+  ASSERT_TRUE(OpenDocumentFromMemory(EmptyPdf()));
   ScopedFPDFPage page(FPDFPage_New(document(), 0, 612, 792));
   ScopedFPDFAnnotation a(EPDFPage_CreateAnnot(page.get(), FPDF_ANNOT_POLYGON));
   FS_POINTF points[] = {{100, 100}, {200, 100}, {200, 200}, {100, 200}};
@@ -637,7 +639,7 @@ TEST_F(EPDFMeasureEmbedderTest,
 }
 
 TEST_F(EPDFMeasureEmbedderTest, ShapeCaptionBoundsShrinkWhenMovedInward) {
-  CreateEmptyDocument();
+  ASSERT_TRUE(OpenDocumentFromMemory(EmptyPdf()));
   ScopedFPDFPage page(FPDFPage_New(document(), 0, 612, 792));
   ScopedFPDFAnnotation annot(
       EPDFPage_CreateAnnot(page.get(), FPDF_ANNOT_POLYGON));
@@ -766,8 +768,8 @@ TEST_F(EPDFMeasureEmbedderTest, ReadsAllAcrobatImperialMeasurements) {
 TEST_F(EPDFMeasureEmbedderTest,
        DirectMeasureWithSharedNestedFormatDetachesOnlyItsOwner) {
   auto bytes = Base();
-  ScopedFPDFDocument doc(
-      FPDF_LoadMemDocument64(bytes.data(), bytes.size(), nullptr));
+  embedpdf_test::ScopedTestDocument doc(embedpdf_test::LoadMemDocumentForTest(
+      bytes.data(), bytes.size(), nullptr));
   ScopedFPDFPage page(FPDF_LoadPage(doc.get(), 0));
   ScopedFPDFAnnotation a(FPDFPage_GetAnnot(page.get(), 0)),
       b(FPDFPage_GetAnnot(page.get(), 1));
@@ -807,7 +809,7 @@ TEST_F(EPDFMeasureEmbedderTest,
 
 TEST_F(EPDFMeasureEmbedderTest,
        SharedIndirectViewportTreeDetachesAndForeignEntriesSurvive) {
-  CreateEmptyDocument();
+  ASSERT_TRUE(OpenDocumentFromMemory(EmptyPdf()));
   ScopedFPDFPage page(FPDFPage_New(document(), 0, 612, 792));
   ScopedFPDFPage other(FPDFPage_New(document(), 1, 612, 792));
   auto first = EPDFPage_AddViewport(page.get(), &kBox);
@@ -867,7 +869,7 @@ TEST_F(EPDFMeasureEmbedderTest,
 }
 
 TEST_F(EPDFMeasureEmbedderTest, MissingOrMalformedConversionNeverBecomesOne) {
-  CreateEmptyDocument();
+  ASSERT_TRUE(OpenDocumentFromMemory(EmptyPdf()));
   ScopedFPDFPage page(FPDFPage_New(document(), 0, 612, 792));
   ScopedFPDFAnnotation a(EPDFPage_CreateAnnot(page.get(), FPDF_ANNOT_LINE));
   auto m = EPDFAnnot_AddMeasure(a.get());
@@ -907,7 +909,7 @@ TEST_F(EPDFMeasureEmbedderTest,
 }
 
 TEST_F(EPDFMeasureEmbedderTest, CaptionAppearanceGolden) {
-  CreateEmptyDocument();
+  ASSERT_TRUE(OpenDocumentFromMemory(EmptyPdf()));
   ScopedFPDFPage page(FPDFPage_New(document(), 0, 612, 500));
   const FS_POINTF start[] = {{60, 430},  {330, 430}, {60, 300},
                              {330, 300}, {60, 160},  {330, 160}};
@@ -966,7 +968,7 @@ TEST_F(EPDFMeasureEmbedderTest,
   auto id = EPDFFont_RegisterMemFont64("Roboto", 400, false, bytes.data(),
                                        bytes.size());
   ASSERT_NE(0u, id);
-  CreateEmptyDocument();
+  ASSERT_TRUE(OpenDocumentFromMemory(EmptyPdf()));
   ScopedFPDFPage page(FPDFPage_New(document(), 0, 612, 792));
   ScopedFPDFAnnotation a(EPDFPage_CreateAnnot(page.get(), FPDF_ANNOT_LINE));
   MakeLine(a.get());

@@ -20,6 +20,7 @@
 #include "core/fxcrt/bytestring.h"
 #include "core/fxcrt/retain_ptr.h"
 #include "fpdfsdk/cpdfsdk_helpers.h"
+#include "fpdfsdk/epdf_edit_test_util.h"
 #include "public/epdf_doc.h"
 #include "public/epdf_form.h"
 #include "public/epdf_layer.h"
@@ -29,6 +30,7 @@
 #include "public/fpdf_edit.h"
 #include "public/fpdf_javascript.h"
 #include "testing/embedder_test.h"
+#include "testing/embedpdf_layer_mode.h"
 #include "testing/fx_string_testhelpers.h"
 #include "testing/gtest/include/gtest/gtest.h"
 #include "testing/utils/file_util.h"
@@ -146,7 +148,7 @@ TEST_F(EPDFActionEmbedderTest, NamedJavaScriptIndexPairing) {
 }
 
 TEST_F(EPDFActionEmbedderTest, NextRenditionCycleAndMalformedEntry) {
-  ScopedFPDFDocument document(FPDF_CreateNewDocument());
+  embedpdf_test::ScopedTestDocument document(NewTestDocument());
   ASSERT_TRUE(document);
   CPDF_Document* doc = CPDFDocumentFromFPDFDocument(document.get());
   ASSERT_TRUE(doc);
@@ -223,7 +225,7 @@ TEST_F(EPDFActionEmbedderTest, DepthLimitMarksModelIncomplete) {
 }
 
 TEST_F(EPDFActionEmbedderTest, DocumentAndPageModelsAreDetached) {
-  ScopedFPDFDocument document(FPDF_CreateNewDocument());
+  embedpdf_test::ScopedTestDocument document(NewTestDocument());
   ASSERT_TRUE(document);
   ScopedFPDFPage page(FPDFPage_New(document.get(), 0, 300, 300));
   ASSERT_TRUE(page);
@@ -483,7 +485,7 @@ TEST_F(EPDFActionEmbedderTest, NodeUriPayloadFromRealDocument) {
 }
 
 TEST_F(EPDFActionEmbedderTest, NodeDestPayloadFromCreatedGoTo) {
-  ScopedFPDFDocument document(FPDF_CreateNewDocument());
+  embedpdf_test::ScopedTestDocument document(NewTestDocument());
   ASSERT_TRUE(document);
   ScopedFPDFPage page(FPDFPage_New(document.get(), 0, 612, 792));
   ASSERT_TRUE(page);
@@ -525,7 +527,7 @@ TEST_F(EPDFActionEmbedderTest, NodeDestPayloadFromCreatedGoTo) {
 }
 
 TEST_F(EPDFActionEmbedderTest, DestinationsByPageObjectNumber) {
-  ScopedFPDFDocument document(FPDF_CreateNewDocument());
+  embedpdf_test::ScopedTestDocument document(NewTestDocument());
   ASSERT_TRUE(document);
   ScopedFPDFPage first(FPDFPage_New(document.get(), 0, 612, 792));
   ScopedFPDFPage second(FPDFPage_New(document.get(), 1, 612, 792));
@@ -588,7 +590,7 @@ TEST_F(EPDFActionEmbedderTest, DestinationsByPageObjectNumber) {
 }
 
 TEST_F(EPDFActionEmbedderTest, CreateNamedWritesTheName) {
-  ScopedFPDFDocument document(FPDF_CreateNewDocument());
+  embedpdf_test::ScopedTestDocument document(NewTestDocument());
   ASSERT_TRUE(document);
 
   FPDF_ACTION next = EPDFAction_CreateNamed(document.get(), "NextPage");
@@ -604,7 +606,7 @@ TEST_F(EPDFActionEmbedderTest, CreateNamedWritesTheName) {
 }
 
 TEST_F(EPDFActionEmbedderTest, NodeFilePathAndNamePayloadsFromSyntheticDicts) {
-  ScopedFPDFDocument document(FPDF_CreateNewDocument());
+  embedpdf_test::ScopedTestDocument document(NewTestDocument());
   ASSERT_TRUE(document);
   CPDF_Document* doc = CPDFDocumentFromFPDFDocument(document.get());
   ASSERT_TRUE(doc);
@@ -655,7 +657,7 @@ TEST_F(EPDFActionEmbedderTest, NodeFilePathAndNamePayloadsFromSyntheticDicts) {
 }
 
 TEST_F(EPDFActionEmbedderTest, HideTargetPayloadsMixedForms) {
-  ScopedFPDFDocument document(FPDF_CreateNewDocument());
+  embedpdf_test::ScopedTestDocument document(NewTestDocument());
   ASSERT_TRUE(document);
   CPDF_Document* doc = CPDFDocumentFromFPDFDocument(document.get());
   ASSERT_TRUE(doc);
@@ -754,7 +756,7 @@ TEST_F(EPDFActionEmbedderTest, PartialHideTargetListIsWithheld) {
 }
 
 TEST_F(EPDFActionEmbedderTest, ResetFormThreeStates) {
-  ScopedFPDFDocument document(FPDF_CreateNewDocument());
+  embedpdf_test::ScopedTestDocument document(NewTestDocument());
   ASSERT_TRUE(document);
   CPDF_Document* doc = CPDFDocumentFromFPDFDocument(document.get());
   ASSERT_TRUE(doc);
@@ -877,14 +879,14 @@ TEST_F(EPDFActionEmbedderTest, PayloadByteBudgetOverflowDropsNode) {
 
 TEST_F(EPDFActionEmbedderTest, OpenActionDestinationForms) {
   // Absent /OpenAction: both readers answer null.
-  ScopedFPDFDocument empty(FPDF_CreateNewDocument());
+  embedpdf_test::ScopedTestDocument empty(NewTestDocument());
   ASSERT_TRUE(empty);
   EXPECT_FALSE(EPDFDoc_GetOpenActionDest(empty.get()));
   EXPECT_FALSE(EPDFDoc_GetOpenActionModel(empty.get()));
   EXPECT_FALSE(EPDFDoc_GetOpenActionDest(nullptr));
 
   // Destination form: the dest reads, the action model stays null.
-  ScopedFPDFDocument document(FPDF_CreateNewDocument());
+  embedpdf_test::ScopedTestDocument document(NewTestDocument());
   ASSERT_TRUE(document);
   ScopedFPDFPage page(FPDFPage_New(document.get(), 0, 612, 792));
   ASSERT_TRUE(page);
@@ -934,7 +936,7 @@ TEST_F(EPDFActionEmbedderTest, OpenActionDestinationForms) {
 }
 
 TEST_F(EPDFActionEmbedderTest, DestinationArrayJunkBeyondViewIsIgnored) {
-  ScopedFPDFDocument document(FPDF_CreateNewDocument());
+  embedpdf_test::ScopedTestDocument document(NewTestDocument());
   ASSERT_TRUE(document);
   ScopedFPDFPage page(FPDFPage_New(document.get(), 0, 612, 792));
   ASSERT_TRUE(page);
@@ -1004,7 +1006,7 @@ std::string GetSubmitURL(EPDF_ACTION_MODEL model, EPDF_ACTION_NODE_ID node) {
 
 // Each creator's action reads back through the action model as written.
 TEST_F(EPDFActionEmbedderTest, CreatorsReadBack) {
-  ScopedFPDFDocument document(FPDF_CreateNewDocument());
+  embedpdf_test::ScopedTestDocument document(NewTestDocument());
   ASSERT_TRUE(document);
   CPDF_Document* doc = CPDFDocumentFromFPDFDocument(document.get());
   RetainPtr<CPDF_Dictionary> field = doc->NewIndirect<CPDF_Dictionary>();
@@ -1099,7 +1101,7 @@ TEST_F(EPDFActionEmbedderTest, CreatorsReadBack) {
 // /Next: one action is the entry itself; several, an array, read back in
 // order. An action can't follow itself.
 TEST_F(EPDFActionEmbedderTest, SetNextChainsActions) {
-  ScopedFPDFDocument document(FPDF_CreateNewDocument());
+  embedpdf_test::ScopedTestDocument document(NewTestDocument());
   ASSERT_TRUE(document);
   auto script = [&](const wchar_t* source) {
     return EPDFAction_CreateJavaScript(document.get(),
@@ -1130,7 +1132,7 @@ TEST_F(EPDFActionEmbedderTest, SetNextChainsActions) {
   EXPECT_FALSE(CPDFDictionaryFromFPDFAction(first)->KeyExist("Next"));
 
   // An action of another document is refused.
-  ScopedFPDFDocument other(FPDF_CreateNewDocument());
+  embedpdf_test::ScopedTestDocument other(NewTestDocument());
   FPDF_ACTION foreign = EPDFAction_CreateJavaScript(
       other.get(), GetFPDFWideString(L"x();").get());
   EXPECT_FALSE(EPDFAction_SetNext(document.get(), first, &foreign, 1));

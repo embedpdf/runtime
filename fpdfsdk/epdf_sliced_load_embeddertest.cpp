@@ -48,6 +48,7 @@
 #include "public/fpdf_edit.h"
 #include "public/fpdfview.h"
 #include "testing/embedder_test.h"
+#include "testing/embedpdf_layer_mode.h"
 #include "testing/gtest/include/gtest/gtest.h"
 
 namespace {
@@ -244,13 +245,14 @@ class EPDFSlicedLoadEmbedderTest : public EmbedderTest {
   void ExpectSameEitherWay(const std::string& pdf) {
     Parsed expected;
     {
-      ScopedFPDFDocument doc(
-          FPDF_LoadMemDocument(pdf.data(), pdf.size(), nullptr));
+      embedpdf_test::ScopedTestDocument doc(
+          embedpdf_test::LoadMemDocumentForTest(pdf.data(), pdf.size(),
+                                                nullptr));
       ASSERT_TRUE(doc);
       expected = LoadInOneGo(doc.get(), 0);
     }
-    ScopedFPDFDocument doc(
-        FPDF_LoadMemDocument(pdf.data(), pdf.size(), nullptr));
+    embedpdf_test::ScopedTestDocument doc(
+        embedpdf_test::LoadMemDocumentForTest(pdf.data(), pdf.size(), nullptr));
     ASSERT_TRUE(doc);
     int slices = 0;
     ExpectSame(expected, LoadInSlices(doc.get(), 0, &slices));
@@ -354,7 +356,8 @@ TEST_F(EPDFSlicedLoadEmbedderTest, FormsWaitForTheContentThatPlacesThem) {
   const std::string pdf =
       OnePage("<< /XObject << /F 5 0 R >> >>", "/F Do 0 0 1 rg 0 0 10 10 re f",
               {Form("/BBox [0 0 100 100]", "1 0 0 rg 20 20 30 30 re f")});
-  ScopedFPDFDocument doc(FPDF_LoadMemDocument(pdf.data(), pdf.size(), nullptr));
+  embedpdf_test::ScopedTestDocument doc(
+      embedpdf_test::LoadMemDocumentForTest(pdf.data(), pdf.size(), nullptr));
   ASSERT_TRUE(doc);
   ScopedFPDFPage page(EPDFDoc_StartLoadPageByObjectNumber(
       doc.get(), ObjectNumberOf(doc.get(), 0), /*normalized=*/false));
@@ -378,7 +381,8 @@ TEST_F(EPDFSlicedLoadEmbedderTest, FormsWaitForTheContentThatPlacesThem) {
 TEST_F(EPDFSlicedLoadEmbedderTest, AHugeFormLoadsInSlices) {
   constexpr int kPaths = 20000;
   const std::string pdf = OneHugeForm(kPaths);
-  ScopedFPDFDocument doc(FPDF_LoadMemDocument(pdf.data(), pdf.size(), nullptr));
+  embedpdf_test::ScopedTestDocument doc(
+      embedpdf_test::LoadMemDocumentForTest(pdf.data(), pdf.size(), nullptr));
   ASSERT_TRUE(doc);
   ScopedFPDFPage page(EPDFDoc_StartLoadPageByObjectNumber(
       doc.get(), ObjectNumberOf(doc.get(), 0), /*normalized=*/false));
@@ -423,7 +427,8 @@ TEST_F(EPDFSlicedLoadEmbedderTest, BigContentDecodesInSlices) {
           " /Filter /FlateDecode >>\nstream\n" +
           std::string(compressed.begin(), compressed.end()) + "\nendstream",
   });
-  ScopedFPDFDocument doc(FPDF_LoadMemDocument(pdf.data(), pdf.size(), nullptr));
+  embedpdf_test::ScopedTestDocument doc(
+      embedpdf_test::LoadMemDocumentForTest(pdf.data(), pdf.size(), nullptr));
   ASSERT_TRUE(doc);
   ScopedFPDFPage page(EPDFDoc_StartLoadPageByObjectNumber(
       doc.get(), ObjectNumberOf(doc.get(), 0), /*normalized=*/false));
@@ -443,7 +448,8 @@ TEST_F(EPDFSlicedLoadEmbedderTest, BigContentDecodesInSlices) {
 TEST_F(EPDFSlicedLoadEmbedderTest, SlicesKeepToTheirBudget) {
   constexpr int kBudgetMs = 4;
   const std::string pdf = OneHugeForm(100000);
-  ScopedFPDFDocument doc(FPDF_LoadMemDocument(pdf.data(), pdf.size(), nullptr));
+  embedpdf_test::ScopedTestDocument doc(
+      embedpdf_test::LoadMemDocumentForTest(pdf.data(), pdf.size(), nullptr));
   ASSERT_TRUE(doc);
   ScopedFPDFPage page(EPDFDoc_StartLoadPageByObjectNumber(
       doc.get(), ObjectNumberOf(doc.get(), 0), /*normalized=*/false));
@@ -474,11 +480,12 @@ TEST_F(EPDFSlicedLoadEmbedderTest, ClosingMidLoadAbandonsIt) {
   const std::string pdf = OneHugeForm(5000);
   Parsed expected;
   {
-    ScopedFPDFDocument doc(
-        FPDF_LoadMemDocument(pdf.data(), pdf.size(), nullptr));
+    embedpdf_test::ScopedTestDocument doc(
+        embedpdf_test::LoadMemDocumentForTest(pdf.data(), pdf.size(), nullptr));
     expected = LoadInOneGo(doc.get(), 0);
   }
-  ScopedFPDFDocument doc(FPDF_LoadMemDocument(pdf.data(), pdf.size(), nullptr));
+  embedpdf_test::ScopedTestDocument doc(
+      embedpdf_test::LoadMemDocumentForTest(pdf.data(), pdf.size(), nullptr));
   ASSERT_TRUE(doc);
   const uint32_t objnum = ObjectNumberOf(doc.get(), 0);
   for (int steps : {0, 1, 3, 20}) {
@@ -495,7 +502,8 @@ TEST_F(EPDFSlicedLoadEmbedderTest, ClosingMidLoadAbandonsIt) {
 // A call that reads a page still loading finishes the load first.
 TEST_F(EPDFSlicedLoadEmbedderTest, CallsThatReadThePageFinishItsLoad) {
   const std::string pdf = OneHugeForm(3000);
-  ScopedFPDFDocument doc(FPDF_LoadMemDocument(pdf.data(), pdf.size(), nullptr));
+  embedpdf_test::ScopedTestDocument doc(
+      embedpdf_test::LoadMemDocumentForTest(pdf.data(), pdf.size(), nullptr));
   ASSERT_TRUE(doc);
   ScopedFPDFPage page(EPDFDoc_StartLoadPageByObjectNumber(
       doc.get(), ObjectNumberOf(doc.get(), 0), /*normalized=*/false));
@@ -529,7 +537,8 @@ TEST_F(EPDFSlicedLoadEmbedderTest, StartAndContinueRefuseWhatIsNoPage) {
       "/Contents 4 0 R /Resources << >> >>",
       Stream("0 0 1 rg 10 10 50 50 re f"),
   });
-  ScopedFPDFDocument doc(FPDF_LoadMemDocument(pdf.data(), pdf.size(), nullptr));
+  embedpdf_test::ScopedTestDocument doc(
+      embedpdf_test::LoadMemDocumentForTest(pdf.data(), pdf.size(), nullptr));
   ASSERT_TRUE(doc);
   EXPECT_FALSE(EPDFDoc_StartLoadPageByObjectNumber(nullptr, 3, false));
   EXPECT_FALSE(EPDFDoc_StartLoadPageByObjectNumber(doc.get(), 0, false));

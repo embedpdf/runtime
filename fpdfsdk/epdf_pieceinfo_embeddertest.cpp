@@ -7,6 +7,7 @@
 #include <string>
 #include <vector>
 
+#include "fpdfsdk/epdf_edit_test_util.h"
 #include "public/cpp/fpdf_scopers.h"
 #include "public/epdf_layer.h"
 #include "public/epdf_save.h"
@@ -16,6 +17,7 @@
 #include "public/fpdf_save.h"
 #include "public/fpdfview.h"
 #include "testing/embedder_test.h"
+#include "testing/embedpdf_layer_mode.h"
 #include "testing/fx_string_testhelpers.h"
 #include "testing/gtest/include/gtest/gtest.h"
 
@@ -197,7 +199,7 @@ std::string GetPieceInfoEntryAt(FPDF_DOCUMENT document,
 class EPDFPieceInfoEmbedderTest : public EmbedderTest {};
 
 TEST_F(EPDFPieceInfoEmbedderTest, CatalogTypedValuesSaveReloadAndLayerRead) {
-  CreateEmptyDocument();
+  ASSERT_TRUE(OpenDocumentFromMemory(EmptyPdf()));
   ScopedFPDFPage page(FPDFPage_New(document(), 0, 240, 100));
   ASSERT_TRUE(page);
 
@@ -341,7 +343,7 @@ TEST_F(EPDFPieceInfoEmbedderTest, CatalogTypedValuesSaveReloadAndLayerRead) {
 }
 
 TEST_F(EPDFPieceInfoEmbedderTest, CatalogGranularClearPreservesOtherData) {
-  CreateEmptyDocument();
+  ASSERT_TRUE(OpenDocumentFromMemory(EmptyPdf()));
   ScopedFPDFPage page(FPDFPage_New(document(), 0, 240, 100));
   ASSERT_TRUE(page);
 
@@ -375,7 +377,7 @@ TEST_F(EPDFPieceInfoEmbedderTest, CatalogGranularClearPreservesOtherData) {
 }
 
 TEST_F(EPDFPieceInfoEmbedderTest, TypedValuesSaveReloadAndImport) {
-  CreateEmptyDocument();
+  ASSERT_TRUE(OpenDocumentFromMemory(EmptyPdf()));
   ScopedFPDFPage page(FPDFPage_New(document(), 0, 240, 100));
   ASSERT_TRUE(page);
   const unsigned int page_object_number = EPDFPage_GetObjectNumber(page.get());
@@ -459,7 +461,7 @@ TEST_F(EPDFPieceInfoEmbedderTest, TypedValuesSaveReloadAndImport) {
       L"D:20260713093703+03'00'",
       GetPieceInfoLastModified(document(), page_object_number, "EMBD_Stamp"));
 
-  ScopedFPDFDocument imported(FPDF_CreateNewDocument());
+  embedpdf_test::ScopedTestDocument imported(NewTestDocument());
   ASSERT_TRUE(imported);
   static constexpr int kPageIndices[] = {0};
   ASSERT_TRUE(FPDF_ImportPagesByIndex(imported.get(), document(), kPageIndices,
@@ -511,7 +513,7 @@ TEST_F(EPDFPieceInfoEmbedderTest, TypedValuesSaveReloadAndImport) {
 }
 
 TEST_F(EPDFPieceInfoEmbedderTest, GranularClearPreservesOtherData) {
-  CreateEmptyDocument();
+  ASSERT_TRUE(OpenDocumentFromMemory(EmptyPdf()));
   ScopedFPDFPage page(FPDFPage_New(document(), 0, 240, 100));
   ASSERT_TRUE(page);
   const unsigned int page_object_number = EPDFPage_GetObjectNumber(page.get());

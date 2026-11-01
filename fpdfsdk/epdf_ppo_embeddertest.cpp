@@ -16,6 +16,7 @@
 #include "core/fpdfapi/parser/cpdf_reference.h"
 #include "core/fpdfapi/parser/cpdf_string.h"
 #include "fpdfsdk/cpdfsdk_helpers.h"
+#include "fpdfsdk/epdf_edit_test_util.h"
 #include "public/cpp/fpdf_scopers.h"
 #include "public/epdf_form.h"
 #include "public/epdf_layer.h"
@@ -25,6 +26,7 @@
 #include "public/fpdf_save.h"
 #include "public/fpdfview.h"
 #include "testing/embedder_test.h"
+#include "testing/embedpdf_layer_mode.h"
 #include "testing/fx_string_testhelpers.h"
 #include "testing/gtest/include/gtest/gtest.h"
 #include "testing/utils/file_util.h"
@@ -146,8 +148,9 @@ void SetSpaceWidth(CPDF_Dictionary* font, int width) {
 
 // A new one-page document with a form: a "person" field, |font| as /F1 and a
 // /DA of its own.
-ScopedFPDFDocument NewTargetForm(const ByteString& base_font, int width = 0) {
-  ScopedFPDFDocument dest(FPDF_CreateNewDocument());
+embedpdf_test::ScopedTestDocument NewTargetForm(const ByteString& base_font,
+                                                int width = 0) {
+  embedpdf_test::ScopedTestDocument dest(NewTestDocument());
   FPDF_ClosePage(FPDFPage_New(dest.get(), 0, 300, 300));
   CPDF_Document* doc = CPDFDocumentFromFPDFDocument(dest.get());
   RetainPtr<CPDF_Dictionary> font = NewFont(doc, base_font);
@@ -182,7 +185,7 @@ ByteString CopiedEmailAppearance(FPDF_DOCUMENT document) {
 class EPDFPpoEmbedderTest : public EmbedderTest {
  protected:
   // |document| saved in full and opened again.
-  ScopedFPDFDocument SaveAndReopen(FPDF_DOCUMENT document) {
+  embedpdf_test::ScopedTestDocument SaveAndReopen(FPDF_DOCUMENT document) {
     unsigned long size = 0;
     void* buffer =
         EPDF_SaveDocumentToOwnedBuffer(document, FPDF_NO_INCREMENTAL, &size);
@@ -191,8 +194,9 @@ class EPDFPpoEmbedderTest : public EmbedderTest {
                         static_cast<const char*>(buffer) + size);
     EPDF_FreeBuffer(buffer);
     const std::string& bytes = saved_.back();
-    return ScopedFPDFDocument(FPDF_LoadMemDocument(
-        bytes.data(), static_cast<int>(bytes.size()), nullptr));
+    return embedpdf_test::ScopedTestDocument(
+        embedpdf_test::LoadMemDocumentForTest(bytes.data(), bytes.size(),
+                                              nullptr));
   }
 
   struct LayerDoc {
@@ -251,7 +255,7 @@ TEST_F(EPDFPpoEmbedderTest, NamesTheTopLevelFieldsThePagesBring) {
 
 TEST_F(EPDFPpoEmbedderTest, BringsTheFieldsOfEveryPage) {
   ASSERT_TRUE(OpenDocument("form_page_import.pdf"));
-  ScopedFPDFDocument dest(FPDF_CreateNewDocument());
+  embedpdf_test::ScopedTestDocument dest(NewTestDocument());
   ASSERT_TRUE(
       EPDFDoc_ImportPages(dest.get(), document(), nullptr, 0, 0, nullptr));
   EXPECT_EQ(2, FPDF_GetPageCount(dest.get()));
@@ -279,14 +283,14 @@ TEST_F(EPDFPpoEmbedderTest, BringsTheFieldsOfEveryPage) {
   EXPECT_FALSE(person->KeyExist("DA"));
   EXPECT_FALSE(person->KeyExist("Q"));
 
-  ScopedFPDFDocument reopened = SaveAndReopen(dest.get());
+  embedpdf_test::ScopedTestDocument reopened = SaveAndReopen(dest.get());
   ASSERT_TRUE(reopened);
   EXPECT_EQ(AllPagesFields(), ReadFields(reopened.get()));
 }
 
 TEST_F(EPDFPpoEmbedderTest, BringsOnlyWhatIsAboveThePagesWidgets) {
   ASSERT_TRUE(OpenDocument("form_page_import.pdf"));
-  ScopedFPDFDocument dest(FPDF_CreateNewDocument());
+  embedpdf_test::ScopedTestDocument dest(NewTestDocument());
   const int second_page = 1;
   ASSERT_TRUE(
       EPDFDoc_ImportPages(dest.get(), document(), &second_page, 1, 0, nullptr));
@@ -304,14 +308,14 @@ TEST_F(EPDFPpoEmbedderTest, BringsOnlyWhatIsAboveThePagesWidgets) {
   EXPECT_EQ(L"person", person->GetUnicodeTextFor("T"));
   ASSERT_EQ(1u, person->GetArrayFor("Kids")->size());
 
-  ScopedFPDFDocument reopened = SaveAndReopen(dest.get());
+  embedpdf_test::ScopedTestDocument reopened = SaveAndReopen(dest.get());
   ASSERT_TRUE(reopened);
   EXPECT_EQ(expected, ReadFields(reopened.get()));
 }
 
 TEST_F(EPDFPpoEmbedderTest, PointsCopiedParentsAtTheCopies) {
   ASSERT_TRUE(OpenDocument("form_page_import.pdf"));
-  ScopedFPDFDocument dest(FPDF_CreateNewDocument());
+  embedpdf_test::ScopedTestDocument dest(NewTestDocument());
   // A page first, so the copies' numbers differ from the source's.
   FPDF_ClosePage(FPDFPage_New(dest.get(), 0, 300, 300));
   const int first_page = 0;
@@ -339,7 +343,7 @@ TEST_F(EPDFPpoEmbedderTest, PointsCopiedParentsAtTheCopies) {
 
 TEST_F(EPDFPpoEmbedderTest, AddsToAFormAndRenamesAFontItUses) {
   ASSERT_TRUE(OpenDocument("form_page_import.pdf"));
-  ScopedFPDFDocument dest = NewTargetForm("Courier");
+  embedpdf_test::ScopedTestDocument dest = NewTargetForm("Courier");
 
   // The caller renames the source's "person" first.
   EXPECT_FALSE(EPDFForm_SetFieldName(document(), kPerson,
@@ -378,7 +382,7 @@ TEST_F(EPDFPpoEmbedderTest, AddsToAFormAndRenamesAFontItUses) {
   EXPECT_EQ(L"email", email->GetUnicodeTextFor("T"));
   EXPECT_EQ("/F1_1 10 Tf 0 g", email->GetByteStringFor("DA"));
 
-  ScopedFPDFDocument reopened = SaveAndReopen(dest.get());
+  embedpdf_test::ScopedTestDocument reopened = SaveAndReopen(dest.get());
   ASSERT_TRUE(reopened);
   EXPECT_EQ(expected, ReadFields(reopened.get()));
 }
@@ -394,7 +398,7 @@ TEST_F(EPDFPpoEmbedderTest, CopiesIntoALayerInATransaction) {
   EXPECT_EQ(3, FPDF_GetPageCount(dest.layer));
   EXPECT_EQ(AllPagesFields(), ReadFields(dest.layer));
 
-  ScopedFPDFDocument reopened = SaveAndReopen(dest.layer);
+  embedpdf_test::ScopedTestDocument reopened = SaveAndReopen(dest.layer);
   ASSERT_TRUE(reopened);
   EXPECT_EQ(AllPagesFields(), ReadFields(reopened.get()));
 }
@@ -407,7 +411,7 @@ TEST_F(EPDFPpoEmbedderTest, CopiesOutOfALayerAsTheLayerReadsIt) {
                                     GetFPDFWideString(L"applicant").get()));
   ASSERT_TRUE(EPDFLayer_CommitTransaction(src.layer));
 
-  ScopedFPDFDocument dest(FPDF_CreateNewDocument());
+  embedpdf_test::ScopedTestDocument dest(NewTestDocument());
   const int first_page = 0;
   ASSERT_TRUE(
       EPDFDoc_ImportPages(dest.get(), src.layer, &first_page, 1, 0, nullptr));
@@ -416,7 +420,7 @@ TEST_F(EPDFPpoEmbedderTest, CopiesOutOfALayerAsTheLayerReadsIt) {
       {L"plan", {L"yearly", 1, true}},
   };
   EXPECT_EQ(expected, ReadFields(dest.get()));
-  ScopedFPDFDocument reopened = SaveAndReopen(dest.get());
+  embedpdf_test::ScopedTestDocument reopened = SaveAndReopen(dest.get());
   ASSERT_TRUE(reopened);
   EXPECT_EQ(expected, ReadFields(reopened.get()));
 }
@@ -441,7 +445,7 @@ TEST_F(EPDFPpoEmbedderTest, CopiesTakeTheChosenNumbers) {
   EXPECT_EQ(last + 2, PageOfFirstAnnot(dest.layer, 0));
   EXPECT_EQ(AllPagesFields(), ReadFields(dest.layer));
 
-  ScopedFPDFDocument reopened = SaveAndReopen(dest.layer);
+  embedpdf_test::ScopedTestDocument reopened = SaveAndReopen(dest.layer);
   ASSERT_TRUE(reopened);
   EXPECT_EQ(last + 2, EPDFDoc_GetPageObjectNumberByIndex(reopened.get(), 0));
   EXPECT_EQ(last + 2, PageOfFirstAnnot(reopened.get(), 0));
@@ -479,6 +483,7 @@ TEST_F(EPDFPpoEmbedderTest, RefusesNumbersItCannotTake) {
   ASSERT_TRUE(EPDFLayer_CommitTransaction(dest.layer));
   EXPECT_EQ(last + 1, EPDFDoc_GetPageObjectNumberByIndex(dest.layer, 1));
 
+  // Plain in layer mode too: a plain document takes no chosen numbers.
   ScopedFPDFDocument plain(FPDF_CreateNewDocument());
   const uint32_t chosen[] = {5, 0};
   EXPECT_FALSE(
@@ -488,7 +493,7 @@ TEST_F(EPDFPpoEmbedderTest, RefusesNumbersItCannotTake) {
 
 TEST_F(EPDFPpoEmbedderTest, RefusesBadArguments) {
   ASSERT_TRUE(OpenDocument("form_page_import.pdf"));
-  ScopedFPDFDocument dest(FPDF_CreateNewDocument());
+  embedpdf_test::ScopedTestDocument dest(NewTestDocument());
   const int out_of_range[] = {0, 2};
   EXPECT_FALSE(
       EPDFDoc_ImportPages(dest.get(), document(), out_of_range, 2, 0, nullptr));
@@ -511,7 +516,7 @@ TEST_F(EPDFPpoEmbedderTest, RefusesBadArguments) {
 TEST_F(EPDFPpoEmbedderTest, SharesAFontDefinedTheSameWay) {
   ASSERT_TRUE(OpenDocument("form_page_import.pdf"));
   // /F1 is Times-Roman in both, with the same keys.
-  ScopedFPDFDocument dest = NewTargetForm("Times-Roman");
+  embedpdf_test::ScopedTestDocument dest = NewTargetForm("Times-Roman");
   ASSERT_TRUE(EPDFForm_SetFieldName(document(), kPerson,
                                     GetFPDFWideString(L"person_2").get()));
   ASSERT_TRUE(
@@ -528,7 +533,7 @@ TEST_F(EPDFPpoEmbedderTest, RenamesAFontWithOtherWidths) {
   // The same Times-Roman, but its widths differ: 900 here, 200 there.
   CPDF_Document* src = CPDFDocumentFromFPDFDocument(document());
   SetSpaceWidth(ToDictionary(src->GetMutableIndirectObject(21)).Get(), 900);
-  ScopedFPDFDocument dest = NewTargetForm("Times-Roman", 200);
+  embedpdf_test::ScopedTestDocument dest = NewTargetForm("Times-Roman", 200);
   ASSERT_TRUE(EPDFForm_SetFieldName(document(), kPerson,
                                     GetFPDFWideString(L"person_2").get()));
   ASSERT_TRUE(
@@ -549,7 +554,7 @@ TEST_F(EPDFPpoEmbedderTest, RenamesTheFontOfAnAppearanceWithAComment) {
   CPDF_Document* src = CPDFDocumentFromFPDFDocument(document());
   ToDictionary(src->GetMutableIndirectObject(kEmail))
       ->SetNewFor<CPDF_String>("DA", "/F1 % the field's font\n10 Tf 0 g");
-  ScopedFPDFDocument dest = NewTargetForm("Courier");
+  embedpdf_test::ScopedTestDocument dest = NewTargetForm("Courier");
   ASSERT_TRUE(EPDFForm_SetFieldName(document(), kPerson,
                                     GetFPDFWideString(L"person_2").get()));
   ASSERT_TRUE(

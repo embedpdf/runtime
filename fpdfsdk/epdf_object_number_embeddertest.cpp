@@ -38,6 +38,7 @@
 #include "public/fpdf_save.h"
 #include "public/fpdfview.h"
 #include "testing/embedder_test.h"
+#include "testing/embedpdf_layer_mode.h"
 #include "testing/fx_string_testhelpers.h"
 #include "testing/gmock/include/gmock/gmock.h"
 #include "testing/gtest/include/gtest/gtest.h"
@@ -258,6 +259,7 @@ TEST_F(EPDFObjectNumberEmbedderTest, RaiseStopsAtTheParserLimit) {
 // A document that is not a layer has no last object number to raise and
 // takes no chosen numbers; creates without one work as before.
 TEST_F(EPDFObjectNumberEmbedderTest, PlainDocumentTakesNoChosenNumber) {
+  // Plain in layer mode too: the test is about a plain document.
   ScopedFPDFDocument doc(
       FPDF_LoadMemDocument(input_.data(), input_.size(), nullptr));
   ASSERT_TRUE(doc);
@@ -439,8 +441,9 @@ TEST_F(EPDFObjectNumberEmbedderTest, FullSaveListsUnusedNumbersAsFree) {
     EXPECT_EQ(row, entry(number));
   }
 
-  ScopedFPDFDocument reopened(
-      FPDF_LoadMemDocument64(saved.data(), saved.size(), nullptr));
+  embedpdf_test::ScopedTestDocument reopened(
+      embedpdf_test::LoadMemDocumentForTest(saved.data(), saved.size(),
+                                            nullptr));
   ASSERT_TRUE(reopened);
   EXPECT_FALSE(CPDFDocumentFromFPDFDocument(reopened.get())
                    ->GetParser()
@@ -456,8 +459,8 @@ TEST_F(EPDFObjectNumberEmbedderTest, FullSaveListsUnusedNumbersAsFree) {
   ClearString();
   ASSERT_TRUE(FPDF_SaveAsCopy(reopened.get(), this, FPDF_INCREMENTAL));
   const std::string updated = GetString();
-  ScopedFPDFDocument newer(
-      FPDF_LoadMemDocument64(updated.data(), updated.size(), nullptr));
+  embedpdf_test::ScopedTestDocument newer(embedpdf_test::LoadMemDocumentForTest(
+      updated.data(), updated.size(), nullptr));
   ASSERT_TRUE(newer);
   ScopedFPDFDocument older(EPDFDoc_OpenRevision(newer.get(), saved.size()));
   ASSERT_TRUE(older);

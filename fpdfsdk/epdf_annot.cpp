@@ -3521,8 +3521,10 @@ static RetainPtr<CPDF_Stream> ImportPageAsDrawing(CPDF_Document* dest_doc,
                                                   CPDF_Document* src_doc,
                                                   int page_index,
                                                   float opacity) {
-  RetainPtr<CPDF_Dictionary> src_page_dict =
-      src_doc->GetMutablePageDictionary(page_index);
+  // The source is only read (rule reads-dont-write): a mutable getter would
+  // copy a layer's page into the layer.
+  RetainPtr<const CPDF_Dictionary> src_page_dict =
+      src_doc->GetPageDictionary(page_index);
   if (!src_page_dict) {
     return nullptr;
   }
@@ -3586,8 +3588,9 @@ static RetainPtr<CPDF_Stream> ImportPageAsDrawing(CPDF_Document* dest_doc,
     return nullptr;
   }
 
-  // Build a Form XObject stream in the source document so that
-  // AnnotAppearanceExporter can deep-clone it with all resource dependencies.
+  // A Form XObject over the page's content and resources, which
+  // AnnotAppearanceExporter deep-clones with everything they refer to. It is
+  // no object of the source: adding it would write there.
   auto xobj_dict = pdfium::MakeRetain<CPDF_Dictionary>();
   xobj_dict->SetNewFor<CPDF_Name>(pdfium::annotation::kType, "XObject");
   xobj_dict->SetNewFor<CPDF_Name>(pdfium::annotation::kSubtype, "Form");
@@ -3599,16 +3602,12 @@ static RetainPtr<CPDF_Stream> ImportPageAsDrawing(CPDF_Document* dest_doc,
     xobj_dict->SetFor("Resources", src_resources->Clone());
   }
 
-  auto src_stream = src_doc->NewIndirect<CPDF_Stream>(std::move(xobj_dict));
+  auto src_stream = pdfium::MakeRetain<CPDF_Stream>(std::move(xobj_dict));
   src_stream->SetData(content_data);
 
   // Clone the stream (and all its resource references) into dest_doc.
   AnnotAppearanceExporter exporter(dest_doc, src_doc);
   RetainPtr<CPDF_Stream> cloned_stream = exporter.ExportFormXObject(src_stream);
-
-  // Clean up temporary object from source document.
-  src_doc->DeleteIndirectObject(src_stream->GetObjNum());
-
   if (!cloned_stream) {
     return nullptr;
   }

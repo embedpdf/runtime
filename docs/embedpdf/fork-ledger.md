@@ -121,7 +121,8 @@ edits, and the copy happens outside any transaction. On a frozen base it writes 
 `cpdf_annot.cpp`. Writes that read first: the field pruning in `fpdf_flatten.cpp` compares fields
 read const and takes an array mutable only when an entry goes.
 **Guarded by.** `cpdf_read_only_graph_guard_unittest.cpp`,
-`EPDFAnnotEmbedderTest.DrawingARedactionMarkWithoutAppearanceWritesNone`; layer mode's list of
+`EPDFAnnotEmbedderTest.DrawingARedactionMarkWithoutAppearanceWritesNone`,
+`EPDFStampResizeEmbedderTest.ADrawingFromALayersPageLeavesTheLayerAlone`; layer mode's list of
 tests that write (`testing/embedpdf_layer_mode_writers.txt`): a test that only reads must leave
 nothing in a layer.
 **When upstream touches this.** A new read path that calls `GetMutable*` or the appearance
@@ -498,7 +499,9 @@ layer over a frozen base. Like the engine, it sends the form-fill environment no
 doesn't draw with it. A document a test builds in memory goes through the layer too when the test
 opens it with `EmbedderTest::OpenDocumentFromMemory()`, or with
 `embedpdf_test::LoadMemDocumentForTest()` when it keeps the document itself; a test that writes
-into a new document starts from `EmptyPdf()`, since `CreateEmptyDocument()` never makes a layer.
+into a new document starts from `EmptyPdf()` (`NewTestDocument()` when it keeps the document), since
+`CreateEmptyDocument()` and `FPDF_CreateNewDocument()` never make a layer. A test about plain
+documents keeps one in layer mode too, and says why.
 **Why.** Upstream's embedder tests then run through the layer's read and write paths, so a new
 upstream feature is tested on a layer without anyone writing a layer test.
 **Where.** `testing/embedpdf_layer_mode.{h,cpp}`, the `EmbedPDF(layer-mode)` hooks in
