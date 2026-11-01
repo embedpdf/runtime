@@ -46,6 +46,8 @@ source_set("fpdfsdk") {
     # the lookups page captures share.
     "epdf_named_pages.cpp",
     "epdf_named_pages_helpers.h",
+    # EmbedPDF: page label sections (public/epdf_doc.h).
+    "epdf_page_labels.cpp",
     # EmbedPDF: digests (EPDF_DigestBuffer) and the hasher signatures share.
     "epdf_digest.cpp",
     "epdf_hasher.h",
@@ -285,6 +287,8 @@ pdfium_embeddertest_source_set("embeddertests") {
     "epdf_sliced_load_embeddertest.cpp",
     # EmbedPDF: covers the /Names /Pages and /Templates name-tree APIs.
     "epdf_named_pages_embeddertest.cpp",
+    # EmbedPDF: covers page label sections (EPDFDoc_*PageLabelSection*).
+    "epdf_page_labels_embeddertest.cpp",
     # EmbedPDF: covers pages copied with their form fields (public/epdf_ppo.h).
     "epdf_ppo_embeddertest.cpp",
     # EmbedPDF: a content rewrite keeps what it did not change.

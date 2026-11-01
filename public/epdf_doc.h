@@ -12,8 +12,8 @@ extern "C" {
 #endif  // __cplusplus
 
 // EmbedPDF's additions to public/fpdf_doc.h: document metadata and its trapped
-// status, destinations, named destinations and actions. The outline's
-// writers are in public/epdf_outline.h.
+// status, destinations, named destinations, actions and page label sections.
+// The outline's writers are in public/epdf_outline.h.
 
 // The trapped status of the document. See section 14.10.2.4 "Trapped" of the
 // ISO 32000-1:2008 spec.
@@ -390,6 +390,103 @@ EPDFAction_CreateURI(FPDF_DOCUMENT document, FPDF_BYTESTRING uri);
 // make sense is the caller's choice.
 FPDF_EXPORT FPDF_ACTION FPDF_CALLCONV
 EPDFAction_CreateNamed(FPDF_DOCUMENT document, FPDF_BYTESTRING name);
+
+// How a page label section numbers its pages (/S, ISO 32000-1 12.4.2).
+// No number: the label is the prefix alone. Also for a style PDFium
+// doesn't know, which it labels the same way.
+#define EPDF_PAGE_LABEL_STYLE_NONE 0
+// /D: 1, 2, 3.
+#define EPDF_PAGE_LABEL_STYLE_DECIMAL 1
+// /R: I, II, III.
+#define EPDF_PAGE_LABEL_STYLE_UPPER_ROMAN 2
+// /r: i, ii, iii.
+#define EPDF_PAGE_LABEL_STYLE_LOWER_ROMAN 3
+// /A: A to Z, then AA to ZZ.
+#define EPDF_PAGE_LABEL_STYLE_UPPER_LETTERS 4
+// /a: a to z, then aa to zz.
+#define EPDF_PAGE_LABEL_STYLE_LOWER_LETTERS 5
+
+// Experimental EmbedPDF Extension API.
+// The number of page label sections of |document| (/PageLabels). A section
+// labels the pages from its first page up to the next section's: each page
+// gets the section's prefix followed by its number in the section's style,
+// counting from the section's first number. The sections are read as
+// FPDF_GetPageLabel() labels the pages:
+//
+//   - an entry of the number tree starts a section at its key, the page
+//     index; keys out of order are taken in order, and of two entries with
+//     one key the later one counts;
+//   - an entry whose key isn't a page of the document is left out;
+//   - pages before the first entry, and an entry that isn't a dictionary,
+//     are numbered 1, 2, 3 by their place in the document, without a
+//     prefix.
+//
+// So the first section always starts at page 0. (For a tree whose keys are
+// out of order, or whose /Limits are wrong, FPDF_GetPageLabel() reads
+// differently; for a tree as ISO 32000 describes it, the readings are the
+// same.)
+//
+//   document - handle to the document.
+//
+// Returns the number of sections: 0 when the document has no /PageLabels,
+// and its pages no labels, or -1 for an invalid |document|.
+FPDF_EXPORT int FPDF_CALLCONV
+EPDFDoc_GetPageLabelSectionCount(FPDF_DOCUMENT document);
+
+// Experimental EmbedPDF Extension API.
+// Read page label section |index| of |document|.
+//
+//   document     - handle to the document.
+//   index        - the section, 0 <= index <
+//                  EPDFDoc_GetPageLabelSectionCount(), in page order.
+//   buffer       - receives the section's prefix (/P) as UTF-16LE with a NUL
+//                  terminator; may be NULL to query the size.
+//   buflen       - size of |buffer| in bytes.
+//   first_page   - receives the index of the section's first page; may be
+//                  NULL.
+//   style        - receives one of EPDF_PAGE_LABEL_STYLE_*; may be NULL.
+//   first_number - receives the number of the section's first page (/St,
+//                  1 when the entry gives none, as written even below 1);
+//                  may be NULL.
+//
+// Returns the number of bytes the prefix needs including the terminator (2
+// for no prefix; it is copied only when |buflen| holds it), or 0 for an
+// invalid |document| or |index|.
+FPDF_EXPORT unsigned long FPDF_CALLCONV
+EPDFDoc_GetPageLabelSectionAt(FPDF_DOCUMENT document,
+                              int index,
+                              FPDF_WCHAR* buffer,
+                              unsigned long buflen,
+                              int* first_page,
+                              int* style,
+                              int* first_number);
+
+// Experimental EmbedPDF Extension API.
+// Replace the page label sections of |document| with |count| sections: the
+// i-th starts at page |first_pages[i]|, numbers in style |styles[i]| (one of
+// EPDF_PAGE_LABEL_STYLE_*) from |first_numbers[i]|, and has the prefix
+// |prefixes[i]| (UTF-16LE, NUL-terminated; NULL or empty for none). NULL
+// |prefixes| gives no section a prefix.
+//
+// The first section starts at page 0, each one after the one before, and
+// every one at a page of the document. 0 |count| removes /PageLabels, and
+// with it the pages' labels.
+//
+// /PageLabels is written as one number tree of the sections, in that order:
+// into its own object when it is one, which keeps its number, else into the
+// catalog. A section's /S, /P and /St are written when they say something:
+// /St only when the first number isn't 1. Where the sections go is the
+// caller's: pages that move, come or go take no section along by themselves.
+//
+// Returns true when the sections were written; false, writing nothing, for an
+// invalid |document| or sections that break the rules above.
+FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV
+EPDFDoc_SetPageLabelSections(FPDF_DOCUMENT document,
+                             const int* first_pages,
+                             const int* styles,
+                             const int* first_numbers,
+                             const FPDF_WIDESTRING* prefixes,
+                             unsigned long count);
 
 #ifdef __cplusplus
 }  // extern "C"

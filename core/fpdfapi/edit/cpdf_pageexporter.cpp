@@ -18,14 +18,24 @@ CPDF_PageExporter::CPDF_PageExporter(CPDF_Document* dest_doc,
 CPDF_PageExporter::~CPDF_PageExporter() = default;
 
 bool CPDF_PageExporter::ExportPages(pdfium::span<const uint32_t> page_indices,
-                                    int index) {
+                                    int index,
+                                    pdfium::span<const uint32_t> page_objnums) {
+  // EmbedPDF(chosen-object-numbers): one number per page, or none.
+  if (!page_objnums.empty() && page_objnums.size() != page_indices.size()) {
+    return false;
+  }
   if (!Init()) {
     return false;
   }
 
   int curpage = index;
-  for (uint32_t pageIndex : page_indices) {
-    RetainPtr<CPDF_Dictionary> dest_page_dict = dest()->CreateNewPage(curpage);
+  for (size_t i = 0; i < page_indices.size(); ++i) {
+    const uint32_t pageIndex = page_indices[i];
+    // EmbedPDF(chosen-object-numbers): the copy at the caller's number.
+    const uint32_t objnum = page_objnums.empty() ? 0 : page_objnums[i];
+    RetainPtr<CPDF_Dictionary> dest_page_dict =
+        objnum ? dest()->CreateNewPageAt(curpage, objnum)
+               : dest()->CreateNewPage(curpage);
     RetainPtr<const CPDF_Dictionary> src_page_dict =
         src()->GetPageDictionary(pageIndex);
     if (!src_page_dict || !dest_page_dict) {

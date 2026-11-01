@@ -259,6 +259,9 @@ int CheckEmbedPDFCApi(void) {
   CHK(EPDFDest_CreateXYZByObjectNumber);
   CHK(EPDFDest_GetPageObjectNumber);
   CHK(EPDFDest_GetViewNullParams);
+  CHK(EPDFDoc_GetPageLabelSectionAt);
+  CHK(EPDFDoc_GetPageLabelSectionCount);
+  CHK(EPDFDoc_SetPageLabelSections);
   CHK(EPDFNamedDest_Remove);
   CHK(EPDFNamedDest_SetDest);
   CHK(EPDF_GetMetaKeyCount);
