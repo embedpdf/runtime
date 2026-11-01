@@ -55,14 +55,15 @@ source_set("fxge") {
     # EmbedPDF(fonts): the code points a font maps, as ranges.
     "cfx_codepointrange.cpp",
     "cfx_codepointrange.h",
-    # EmbedPDF(fonts): a glyph's unscaled outline, and an OpenType font
-    # written from outlines (a document font's display program).
+    # EmbedPDF(fonts): a glyph's outline in font units, unscaled and unhinted.
     "cfx_glyphoutline.cpp",
     "cfx_glyphoutline.h",
     "cfx_graphstate.cpp",
     "cfx_graphstate.h",
     "cfx_graphstatedata.cpp",
     "cfx_graphstatedata.h",
+    # EmbedPDF(fonts): an OpenType font written from glyph outlines, the
+    # display program of a document font a browser can't load as it is.
     "cfx_opentypewriter.cpp",
     "cfx_opentypewriter.h",
     "cfx_path.cpp",

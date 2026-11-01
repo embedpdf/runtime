@@ -1310,7 +1310,9 @@ bool CPDF_TextPage::ProcessMarkedContent(const TransformedTextObject& obj) {
     CFX_FloatRect char_box(rect);
     char_box.Translate(k * step, 0);
     temp_text_buf_.AppendChar(wc);
-    // EmbedPDF(text-geometry): not a real glyph, so no local origin.
+    // EmbedPDF(text-geometry, bug-fix): not a real glyph, so no local origin.
+    // The position and box are taken through the form's matrix into page
+    // space (see `form_matrix` above).
     temp_char_list_.push_back(CharInfo::Synthetic(
         CharType::kActualText, wc, form_matrix.Transform(text_obj->GetPos()),
         form_matrix.TransformRect(char_box), matrix, text_obj));

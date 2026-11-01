@@ -407,13 +407,24 @@ the same in every engine, WebAssembly (which has no system fonts) included.
 **Where.** `cfx_fontregistry` (ours), `cpdf_font*`, `cfx_fontmapper.cpp`. Upstream's embedder tests
 expect standard fonts from the test fonts, so the embedder test environment turns on
 `CFX_FontMapper::SetStandardFontsFromSystemForTesting()`; our tests of the rule turn it off.
+A document's fonts, their display programs and the resolver are ours (`cpdf_documentfonts`,
+`cpdf_displayprogram`, `cpdf_fontresolver`, `cfx_sfnt`, `cfx_opentypewriter`, `cfx_glyphoutline`,
+`cfx_codepointrange`, `cfx_bidiparagraph`). They reach into upstream files at three places:
+`CPDF_Document::FontIndex`, the document's hold on its font index; `CPVT_NeedDivision`,
+`CPVT_IsOpenStylePunctuation` and `CPVT_IsSpace` in `cpvt_section`, CPVT's own word breaking,
+which the rich text layout breaks a field's lines with; and `CFX_Face::LoadUnscaledGlyphOutline`
+and `GetMappedCodePointRanges`, defined in our `cfx_glyphoutline.cpp` and `cfx_codepointrange.cpp`.
 **Guarded by.** The font embedder tests; `cfx_fontmapper_unittest.cpp` and
-`EPDFViewEmbedderTest.StandardFontsDrawWithBuiltInFaces` for standard fonts.
+`EPDFViewEmbedderTest.StandardFontsDrawWithBuiltInFaces` for standard fonts;
+`epdf_font_embeddertest.cpp` and `epdf_richtextlayout_embeddertest.cpp` (`FieldMatchesCpvt` for
+the line breaks) for a document's fonts and the layout.
 **When upstream touches this.** Font loading and mapping. A new upstream test that expects the test
 fonts for a standard font passes as it is; one of ours that expects the built-in faces turns the
 switch off. Our font code calls FreeType directly (`CFX_Face::GetFsTypeFlags()`, CID-keyed CFF,
 the registry), so our builds keep `pdf_enable_freetype` on; a Fontations-only build would need
-Skrifa versions of them.
+Skrifa versions of them. When upstream changes CPVT's word breaking, the layout follows on purpose:
+a field breaks its lines where upstream's would. Keep `font_index_` declared after
+`epdf_attachment_` in `CPDF_Document`, so the index goes before the attachment and the parser.
 
 ### measurement
 **Rule.** Measurement dictionaries and dimension appearances.
