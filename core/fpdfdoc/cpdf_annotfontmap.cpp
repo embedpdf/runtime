@@ -1336,6 +1336,7 @@ CPDF_AnnotFontMap::EntryFacts CPDF_AnnotFontMap::DescribeEntry(
       facts.weight = face.weight;
       facts.italic = face.italic;
       facts.base_font_name = font_dict->GetNameFor("BaseFont");
+      facts.font_dict = font_dict;
       RetainPtr<const CPDF_Dictionary> descriptor =
           FontDescriptorOf(font_dict.Get());
       for (const char* key : {"FontFile2", "FontFile3", "FontFile"}) {

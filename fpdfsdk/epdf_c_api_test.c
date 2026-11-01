@@ -314,6 +314,7 @@ int CheckEmbedPDFCApi(void) {
   CHK(EPDFFontResolution_GetFallbacks);
   CHK(EPDFFontResolution_GetFamily);
   CHK(EPDFFontResolution_GetMissingCharacter);
+  CHK(EPDFFontResolution_GetProgramDisplayHash);
   CHK(EPDFFontResolution_GetProgramObjNum);
   CHK(EPDFFontResolution_GetRegisteredFont);
   CHK(EPDFFontResolution_GetSource);

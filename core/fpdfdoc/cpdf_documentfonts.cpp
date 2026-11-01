@@ -308,21 +308,7 @@ std::vector<CPDF_DocumentFonts::Face> CPDF_DocumentFonts::CollectFaces() {
     }
     Face& entry = faces[found->second];
 
-    auto [stream, format] = ProgramOf(font.Get());
-    const ByteString base_font = ProgramBaseFont(font.Get());
-    Program program;
-    if (stream) {
-      program = Inspect(stream, format);
-      program.embedded =
-          HasFontSubsetTag(base_font) ? Embedded::kSubset : Embedded::kWhole;
-    } else {
-      program.format = format;
-    }
-    program.postscript_name = BaseFontNameWithoutSubsetTag(base_font);
-    if (stream) {
-      program.display_sha256 = DisplayHashOf(program, font.Get(), face.family,
-                                             face.weight, face.italic);
-    }
+    Program program = ReadProgram(font.Get(), face);
     const bool known =
         std::ranges::any_of(entry.programs, [&](const Program& other) {
           return program.objnum != 0
@@ -536,6 +522,26 @@ CPDF_DocumentFonts::Program CPDF_DocumentFonts::Inspect(
   return facts;
 }
 
+CPDF_DocumentFonts::Program CPDF_DocumentFonts::ReadProgram(
+    const CPDF_Dictionary* font,
+    const CPDF_FontFace& face) {
+  auto [stream, format] = ProgramOf(font);
+  const ByteString base_font = ProgramBaseFont(font);
+  Program program;
+  if (stream) {
+    program = Inspect(stream, format);
+    program.embedded =
+        HasFontSubsetTag(base_font) ? Embedded::kSubset : Embedded::kWhole;
+  } else {
+    program.format = format;
+  }
+  program.postscript_name = BaseFontNameWithoutSubsetTag(base_font);
+  if (stream) {
+    program.display_sha256 = DisplayHashOf(program, font, face);
+  }
+  return program;
+}
+
 CPDF_DocumentFonts::Inspected* CPDF_DocumentFonts::FindInspected(
     uint32_t objnum) {
   if (objnum == 0) {
@@ -586,9 +592,7 @@ DataVector<uint8_t> CPDF_DocumentFonts::BytesOf(const Inspected& inspected) {
 DataVector<uint8_t> CPDF_DocumentFonts::DisplayHashOf(
     const Program& program,
     const CPDF_Dictionary* font_dict,
-    const WideString& family,
-    int weight,
-    bool italic) {
+    const CPDF_FontFace& face) {
   if (program.sha256.empty()) {
     return {};
   }
@@ -620,9 +624,12 @@ DataVector<uint8_t> CPDF_DocumentFonts::DisplayHashOf(
     return inspected.aligned.has_value() ? inspected.aligned->sha256
                                          : DataVector<uint8_t>();
   }
-  // Any other program is drawn as this dictionary reads it: its encoding,
+  // Any other program is drawn as a dictionary reads it: its encoding,
   // widths and flags go into the display program, so two dictionaries that
   // share a stream can need two.
+  if (!font_dict) {
+    return {};
+  }
   const uint32_t dict_objnum = font_dict->GetObjNum();
   if (dict_objnum != 0) {
     auto known = inspected.display_of_dict.find(dict_objnum);
@@ -632,8 +639,7 @@ DataVector<uint8_t> CPDF_DocumentFonts::DisplayHashOf(
   }
   std::optional<DataVector<uint8_t>> sha256;
   std::optional<CPDF_DisplayProgram> built =
-      BuildDisplayProgram(doc_, font_dict, program.postscript_name,
-                          CPDF_FontFace{family, weight, italic});
+      BuildDisplayProgram(doc_, font_dict, program.postscript_name, face);
   if (built.has_value()) {
     Display display;
     display.sha256 = CryptSha256Generate(built->bytes);
@@ -736,6 +742,25 @@ RetainPtr<CPDF_Stream> CPDF_DocumentFonts::ProgramStream(uint32_t objnum) {
     return nullptr;
   }
   return pdfium::WrapRetain(const_cast<CPDF_Stream*>(inspected->stream.Get()));
+}
+
+DataVector<uint8_t> CPDF_DocumentFonts::DisplayHashOfFont(
+    const CPDF_Dictionary* font_dict) {
+  if (!font_dict) {
+    return {};
+  }
+  return ReadProgram(font_dict, FaceOfFontDict(font_dict)).display_sha256;
+}
+
+DataVector<uint8_t> CPDF_DocumentFonts::DisplayHashOfProgram(uint32_t objnum) {
+  Inspected* inspected = FindInspected(objnum);
+  if (!inspected) {
+    return {};
+  }
+  // No dictionary to read it through: only a program every dictionary reads
+  // alike has one.
+  return DisplayHashOf(inspected->facts, /*font_dict=*/nullptr,
+                       CPDF_FontFace());
 }
 
 bool CPDF_DocumentFonts::ReserveProgramAlias(uint32_t objnum,

@@ -230,6 +230,8 @@ class CPDF_AnnotFontMap final {
         CFX_FontRegistry::kInvalidFontId;
     // kDocumentProgram's stream, and kDocumentFontDict's when it embeds one.
     uint32_t program_objnum = 0;
+    // kDocumentFontDict's dictionary, which says how its program is read.
+    RetainPtr<const CPDF_Dictionary> font_dict;
     // kStandard14: the standard name; else the font's /BaseFont.
     ByteString base_font_name;
     // The face it draws: its family, weight and italic.

@@ -688,6 +688,14 @@ EPDFFontResolution_GetProgramObjNum(EPDF_FONT_RESOLUTION resolution, int run) {
   return entry ? entry->face.program_objnum : 0;
 }
 
+FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV
+EPDFFontResolution_GetProgramDisplayHash(EPDF_FONT_RESOLUTION resolution,
+                                         int run,
+                                         unsigned char* sha256) {
+  const CPDF_FontResolver::ResolvedRun* entry = RunAt(resolution, run);
+  return entry && CopySha256(entry->display_sha256, sha256);
+}
+
 FPDF_EXPORT unsigned long FPDF_CALLCONV
 EPDFFontResolution_GetBaseFontName(EPDF_FONT_RESOLUTION resolution,
                                    int run,

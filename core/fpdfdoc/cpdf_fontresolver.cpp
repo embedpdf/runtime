@@ -13,8 +13,28 @@
 #include "core/fpdfapi/parser/cpdf_dictionary.h"
 #include "core/fpdfapi/parser/cpdf_document.h"
 #include "core/fpdfdoc/cpdf_appearancegenerator_internal.h"
+#include "core/fpdfdoc/cpdf_documentfonts.h"
 #include "core/fpdfdoc/cpdf_fontface.h"
 #include "core/fpdfdoc/cpdf_richtextlayout.h"
+
+namespace {
+
+// What a browser loads for the program |face| draws with: a document font's
+// program as its dictionary reads it, a document program as it is.
+DataVector<uint8_t> DisplayHashOf(CPDF_Document* doc,
+                                  const CPDF_AnnotFontMap::EntryFacts& face) {
+  if (face.source == CPDF_AnnotFontMap::Source::kDocumentFontDict) {
+    return CPDF_DocumentFonts::For(doc)->DisplayHashOfFont(
+        face.font_dict.Get());
+  }
+  if (face.source == CPDF_AnnotFontMap::Source::kDocumentProgram) {
+    return CPDF_DocumentFonts::For(doc)->DisplayHashOfProgram(
+        face.program_objnum);
+  }
+  return {};
+}
+
+}  // namespace
 
 // static
 CPDF_FontResolver::Result CPDF_FontResolver::Resolve(
@@ -88,6 +108,7 @@ CPDF_FontResolver::Result CPDF_FontResolver::Resolve(
                                           WideStringView(), run.program);
     ResolvedRun resolved;
     resolved.face = map.DescribeEntry(entry);
+    resolved.display_sha256 = DisplayHashOf(doc, resolved.face);
     resolved.fallbacks = CFX_FontRegistry::GetFallbackOrder(
         run.weight, run.italic, /*for_authoring=*/true);
     const std::vector<bool> starts =

@@ -27,7 +27,9 @@
 #include "core/fxge/cfx_codepointrange.h"
 #include "core/fxge/cfx_fontregistry.h"
 
+class CPDF_Dictionary;
 class CPDF_Stream;
+struct CPDF_FontFace;
 
 class CPDF_DocumentFonts final : public CPDF_Document::FontIndex {
  public:
@@ -133,6 +135,14 @@ class CPDF_DocumentFonts final : public CPDF_Document::FontIndex {
       pdfium::span<const uint8_t> sha256);
   // The program stream itself, for the writer; null when |objnum| isn't one.
   RetainPtr<CPDF_Stream> ProgramStream(uint32_t objnum);
+  // What a browser loads for the program |font_dict| embeds, as that
+  // dictionary reads it: the display hash CollectFaces() lists for it. Empty
+  // when it embeds none or a browser can't draw it.
+  DataVector<uint8_t> DisplayHashOfFont(const CPDF_Dictionary* font_dict);
+  // What a browser loads for program stream |objnum| when every dictionary
+  // reads it alike (an sfnt with a Unicode cmap, as every document program
+  // the layout writes with is); empty for any other program.
+  DataVector<uint8_t> DisplayHashOfProgram(uint32_t objnum);
 
   // A /DA font naming a document program: like a registered font's, the
   // alias is this session's until an appearance installs the /DR entry.
@@ -209,6 +219,9 @@ class CPDF_DocumentFonts final : public CPDF_Document::FontIndex {
 
   // The facts about |stream|, inspected once per version.
   Program Inspect(RetainPtr<const CPDF_Stream> stream, Format format);
+  // The program |font| embeds as |font| (whose face is |face|) reads it, its
+  // display hash too; only its format when it embeds none.
+  Program ReadProgram(const CPDF_Dictionary* font, const CPDF_FontFace& face);
   Inspected* FindInspected(uint32_t objnum);
   // The decoded bytes of the stream |inspected| is.
   DataVector<uint8_t> BytesOf(const Inspected& inspected);
@@ -220,12 +233,11 @@ class CPDF_DocumentFonts final : public CPDF_Document::FontIndex {
   Inspected* FindDisplay(pdfium::span<const uint8_t> sha256,
                          const Display** display);
   // |program|'s display hash, its display program built through
-  // |font_dict| once per stream version when it needs one.
+  // |font_dict| (whose face is |face|) once per stream version when it needs
+  // one; empty for such a program without |font_dict|.
   DataVector<uint8_t> DisplayHashOf(const Program& program,
                                     const CPDF_Dictionary* font_dict,
-                                    const WideString& family,
-                                    int weight,
-                                    bool italic);
+                                    const CPDF_FontFace& face);
 
   UnownedPtr<CPDF_Document> const doc_;
   // A layer's places, kept between lists: the AcroForm's, and each page's by

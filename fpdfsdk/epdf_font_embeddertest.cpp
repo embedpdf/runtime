@@ -729,7 +729,8 @@ TEST_F(EPDFFontEmbedderTest, ResolvesTheFontsAWriteWouldUse) {
 }
 
 // A family the document holds as a whole program, and nobody registered,
-// resolves to that program.
+// resolves to that program, which a browser loads under the hash the faces
+// list for it.
 TEST_F(EPDFFontEmbedderTest, ResolvesADocumentProgram) {
   ScopedRegisteredFonts scoped_fonts;
   std::vector<uint8_t> roboto = LoadRoboto();
@@ -746,6 +747,9 @@ TEST_F(EPDFFontEmbedderTest, ResolvesADocumentProgram) {
   ASSERT_TRUE(found.has_value());
   const unsigned long objnum =
       EPDFFontFaces_GetProgramObjNum(faces, found->face, found->program);
+  unsigned char listed_hash[32] = {};
+  ASSERT_TRUE(EPDFFontFaces_GetProgramDisplayHash(faces, found->face,
+                                                  found->program, listed_hash));
   EPDFFontFaces_Close(faces);
   EPDFFont_ClearRegisteredFonts();
 
@@ -761,6 +765,10 @@ TEST_F(EPDFFontEmbedderTest, ResolvesADocumentProgram) {
   EXPECT_EQ(EPDF_FONT_SOURCE_DOCUMENT_PROGRAM,
             EPDFFontResolution_GetSource(resolution, 0));
   EXPECT_EQ(objnum, EPDFFontResolution_GetProgramObjNum(resolution, 0));
+  unsigned char hash[32] = {};
+  ASSERT_TRUE(EPDFFontResolution_GetProgramDisplayHash(resolution, 0, hash));
+  EXPECT_EQ(std::vector<uint8_t>(listed_hash, listed_hash + 32),
+            std::vector<uint8_t>(hash, hash + 32));
   EPDFFontResolution_Close(resolution);
 }
 
@@ -1316,7 +1324,8 @@ TEST_F(EPDFFontEmbedderTest, BuildsADisplayProgramForAType1Font) {
 
 // Two font dictionaries that share one bare CFF program but give it other
 // widths are two display programs: each draws at its own dictionary's
-// advances, under a hash of its own. The program is still one stream.
+// advances, under a hash of its own. The program is still one stream. A field
+// in either font resolves to the display program its own dictionary reads.
 TEST_F(EPDFFontEmbedderTest,
        ADisplayProgramIsTheProgramAsItsDictionaryReadsIt) {
   std::vector<uint8_t> cff = LoadTestFont("fonts/foxit_fixed.cff");
@@ -1335,16 +1344,25 @@ TEST_F(EPDFFontEmbedderTest,
       "<< /Type /FontDescriptor /FontName /FoxitFixed /Flags 32 /FontBBox [0 "
       "-250 1000 900] /ItalicAngle 0 /Ascent 900 /Descent -250 /CapHeight 700 "
       "/StemV 80 /FontFile3 4 0 R >>";
+  auto field = [](const char* name, const char* font_alias, int bottom) {
+    return std::string("<< /Type /Annot /Subtype /Widget /FT /Tx /T (") + name +
+           ") /Rect [10 " + std::to_string(bottom) + " 200 " +
+           std::to_string(bottom + 30) + "] /DA (/" + font_alias +
+           " 12 Tf 0 g) /P 3 0 R >>";
+  };
   const std::string pdf = MakePdf({
-      "<< /Type /Catalog /Pages 2 0 R /AcroForm << /Fields [] /DR << /Font << "
-      "/FNarrow 5 0 R /FWide 6 0 R >> >> >> >>",
+      "<< /Type /Catalog /Pages 2 0 R /AcroForm << /Fields [9 0 R 10 0 R] "
+      "/DR << /Font << /FNarrow 5 0 R /FWide 6 0 R >> >> >> >>",
       "<< /Type /Pages /Kids [3 0 R] /Count 1 >>",
-      "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 300 300] >>",
+      "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 300 300] /Annots [9 0 R 10 "
+      "0 R] >>",
       Stream("/Subtype /Type1C", std::string(cff.begin(), cff.end())),
       font(600, 7),
       font(900, 8),
       kDescriptor,
       kDescriptor,
+      field("narrow", "FNarrow", 200),
+      field("wide", "FWide", 100),
   });
   ScopedFPDFDocument doc(FPDF_LoadMemDocument(pdf.data(), pdf.size(), nullptr));
   ASSERT_TRUE(doc);
@@ -1405,6 +1423,34 @@ TEST_F(EPDFFontEmbedderTest,
   const unsigned char unknown[32] = {};
   EXPECT_EQ(0u,
             EPDFDoc_GetFontDisplayProgramData(doc.get(), unknown, nullptr, 0));
+
+  // Each field draws its text in its own font: the same stream, read by its
+  // own dictionary.
+  ScopedFPDFPage page(FPDF_LoadPage(doc.get(), 0));
+  ASSERT_TRUE(page);
+  ScopedFPDFWideString text = GetFPDFWideString(L"Hello");
+  ScopedFPDFWideString family = GetFPDFWideString(L"FoxitFixed");
+  FPDF_WIDESTRING texts[] = {text.get()};
+  FPDF_WIDESTRING families[] = {family.get()};
+  const int weights[] = {400};
+  const FPDF_BOOL italics[] = {false};
+  const int programs[] = {0};
+  for (int i = 0; i < 2; ++i) {
+    ScopedFPDFAnnotation annot(FPDFPage_GetAnnot(page.get(), i));
+    ASSERT_TRUE(annot);
+    EPDF_FONT_RESOLUTION resolution = EPDFDoc_ResolveFonts(
+        doc.get(), annot.get(), 1, texts, families, weights, italics, programs);
+    ASSERT_TRUE(resolution);
+    EXPECT_EQ(EPDF_FONT_SOURCE_DOCUMENT_FONT,
+              EPDFFontResolution_GetSource(resolution, 0))
+        << i;
+    EXPECT_EQ(4u, EPDFFontResolution_GetProgramObjNum(resolution, 0)) << i;
+    unsigned char hash[32] = {};
+    ASSERT_TRUE(EPDFFontResolution_GetProgramDisplayHash(resolution, 0, hash))
+        << i;
+    EXPECT_EQ(display_hashes[i], std::vector<uint8_t>(hash, hash + 32)) << i;
+    EPDFFontResolution_Close(resolution);
+  }
 }
 
 // A form field draws each cluster in the first font that has it: Hebrew

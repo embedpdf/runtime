@@ -12,6 +12,7 @@
 #include <vector>
 
 #include "core/fpdfdoc/cpdf_annotfontmap.h"
+#include "core/fxcrt/data_vector.h"
 #include "core/fxcrt/widestring.h"
 #include "core/fxge/cfx_fontregistry.h"
 
@@ -35,6 +36,10 @@ class CPDF_FontResolver {
     // The entry the run's face resolves to: where its program comes from,
     // which one, the face it draws, and whether it substitutes the request.
     CPDF_AnnotFontMap::EntryFacts face;
+    // SHA-256 of what a browser loads for a document program or document
+    // font's program, as the dictionary the run draws with reads it (what
+    // CPDF_DocumentFonts::CollectFaces() lists for it); empty otherwise.
+    DataVector<uint8_t> display_sha256;
     // The registered fallback fonts in the order the layout tries them for
     // the run's style (authorized for editing only).
     std::vector<CFX_FontRegistry::FontId> fallbacks;

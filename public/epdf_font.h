@@ -448,6 +448,16 @@ EPDFFontResolution_GetRegisteredFont(EPDF_FONT_RESOLUTION resolution, int run);
 // and for EPDF_FONT_SOURCE_DOCUMENT_FONT when it embeds one; 0 otherwise.
 FPDF_EXPORT unsigned long FPDF_CALLCONV
 EPDFFontResolution_GetProgramObjNum(EPDF_FONT_RESOLUTION resolution, int run);
+// The SHA-256 of what a browser loads for that program into |sha256| (32
+// bytes), as the font dictionary the run draws with reads it: the hash
+// EPDFFontFaces_GetProgramDisplayHash() lists for it, which
+// EPDFDoc_GetFontDisplayProgramData() takes. Two dictionaries that read one
+// program stream differently give two. Returns false when the run draws with
+// no document program or a browser can't draw it.
+FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV
+EPDFFontResolution_GetProgramDisplayHash(EPDF_FONT_RESOLUTION resolution,
+                                         int run,
+                                         unsigned char* sha256);
 // The font's /BaseFont: the standard name for EPDF_FONT_SOURCE_STANDARD
 // ("Helvetica-Bold"). Bytes and a trailing NUL; returns the length
 // including the NUL, 0 when there is none; pass NULL/0 to query it.
