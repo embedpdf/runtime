@@ -1,0 +1,211 @@
+{{header}}
+{{object 1 0}} <<
+  /Type /Catalog
+  /Pages 2 0 R
+  /MarkInfo << /Marked true >>
+  /StructTreeRoot 10 0 R
+  /AcroForm << /Fields [20 0 R 21 0 R 22 0 R 23 0 R 24 0 R 25 0 R 26 0 R] >>
+>>
+endobj
+{{object 2 0}} <<
+  /Type /Pages
+  /Count 1
+  /Kids [3 0 R]
+>>
+endobj
+% The page lists its fields a, b, c, d, e, f, g; its structure reads c, a, b.
+{{object 3 0}} <<
+  /Type /Page
+  /Parent 2 0 R
+  /MediaBox [0 0 300 300]
+  /Tabs /S
+  /StructParents 5
+  /Contents 4 0 R
+  /Annots [20 0 R 21 0 R 22 0 R 23 0 R 24 0 R 25 0 R 26 0 R]
+>>
+endobj
+{{object 4 0}} <<
+  {{streamlen}}
+>>
+stream
+/P << /MCID 0 >> BDC
+EMC
+/Span << /MCID 1 >> BDC
+EMC
+endstream
+endobj
+% The structure tree. The root's /K is one element, not an array.
+{{object 10 0}} <<
+  /Type /StructTreeRoot
+  /K 11 0 R
+  /ParentTree 15 0 R
+  /ParentTreeNextKey 10
+>>
+endobj
+{{object 11 0}} <<
+  /Type /StructElem
+  /S /Document
+  /P 10 0 R
+  /K [12 0 R 13 0 R]
+>>
+endobj
+{{object 12 0}} <<
+  /Type /StructElem
+  /S /Sect
+  /P 11 0 R
+  /K [32 0 R 14 0 R 30 0 R]
+>>
+endobj
+{{object 13 0}} <<
+  /Type /StructElem
+  /S /Sect
+  /P 11 0 R
+  /K [31 0 R 33 0 R]
+>>
+endobj
+{{object 14 0}} <<
+  /Type /StructElem
+  /S /P
+  /P 12 0 R
+  /Pg 3 0 R
+  /K 0
+>>
+endobj
+% The parent tree, nested: two leaves under /Kids with their /Limits.
+{{object 15 0}} <<
+  /Kids [16 0 R 17 0 R]
+>>
+endobj
+{{object 16 0}} <<
+  /Limits [0 1]
+  /Nums [0 30 0 R 1 31 0 R]
+>>
+endobj
+{{object 17 0}} <<
+  /Limits [2 5]
+  /Nums [2 32 0 R 3 33 0 R 4 34 0 R 5 [14 0 R 30 0 R]]
+>>
+endobj
+% a: its object reference comes after a marked-content kid.
+{{object 30 0}} <<
+  /Type /StructElem
+  /S /Form
+  /P 12 0 R
+  /Pg 3 0 R
+  /K [1 << /Type /OBJR /Obj 20 0 R >>]
+>>
+endobj
+% b: /K is the object reference itself, not an array.
+{{object 31 0}} <<
+  /Type /StructElem
+  /S /Form
+  /P 13 0 R
+  /K << /Type /OBJR /Pg 3 0 R /Obj 21 0 R >>
+>>
+endobj
+% c
+{{object 32 0}} <<
+  /Type /StructElem
+  /S /Form
+  /P 12 0 R
+  /K [<< /Type /OBJR /Obj 22 0 R >>]
+>>
+endobj
+% e: the parent tree names this element, but it doesn't list e.
+{{object 33 0}} <<
+  /Type /StructElem
+  /S /Form
+  /P 13 0 R
+  /K []
+>>
+endobj
+% f: its element and a /Div are each other's parent, and never reach the root.
+{{object 34 0}} <<
+  /Type /StructElem
+  /S /Form
+  /P 35 0 R
+  /K [<< /Type /OBJR /Obj 25 0 R >> 35 0 R]
+>>
+endobj
+{{object 35 0}} <<
+  /Type /StructElem
+  /S /Div
+  /P 34 0 R
+  /K [34 0 R]
+>>
+endobj
+{{object 20 0}} <<
+  /Type /Annot
+  /Subtype /Widget
+  /FT /Tx
+  /T (a)
+  /Rect [10 270 110 290]
+  /P 3 0 R
+  /StructParent 0
+>>
+endobj
+{{object 21 0}} <<
+  /Type /Annot
+  /Subtype /Widget
+  /FT /Tx
+  /T (b)
+  /Rect [10 230 110 250]
+  /P 3 0 R
+  /StructParent 1
+>>
+endobj
+{{object 22 0}} <<
+  /Type /Annot
+  /Subtype /Widget
+  /FT /Tx
+  /T (c)
+  /Rect [10 190 110 210]
+  /P 3 0 R
+  /StructParent 2
+>>
+endobj
+% d: not tagged.
+{{object 23 0}} <<
+  /Type /Annot
+  /Subtype /Widget
+  /FT /Tx
+  /T (d)
+  /Rect [10 150 110 170]
+  /P 3 0 R
+>>
+endobj
+{{object 24 0}} <<
+  /Type /Annot
+  /Subtype /Widget
+  /FT /Tx
+  /T (e)
+  /Rect [10 110 110 130]
+  /P 3 0 R
+  /StructParent 3
+>>
+endobj
+{{object 25 0}} <<
+  /Type /Annot
+  /Subtype /Widget
+  /FT /Tx
+  /T (f)
+  /Rect [10 70 110 90]
+  /P 3 0 R
+  /StructParent 4
+>>
+endobj
+% g: a /StructParent the parent tree doesn't have.
+{{object 26 0}} <<
+  /Type /Annot
+  /Subtype /Widget
+  /FT /Tx
+  /T (g)
+  /Rect [10 30 110 50]
+  /P 3 0 R
+  /StructParent 9
+>>
+endobj
+{{xref}}
+{{trailer}}
+{{startxref}}
+%%EOF
