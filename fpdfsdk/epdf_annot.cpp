@@ -1523,6 +1523,13 @@ EPDFAnnot_GetBorderStyle(FPDF_ANNOTATION annot, float* width) {
     if (nStyle == CPDF_Annot::BorderStyle::kUnknown) {
       nStyle = CPDF_Annot::BorderStyle::kSolid;
     }
+    // A dashed border with an empty pattern draws a solid line (ISO 32000
+    // 8.4.3.6), so it reads solid, as a /Border with an empty dash array does.
+    RetainPtr<const CPDF_Array> pDashArray = pBSDict->GetArrayFor("D");
+    if (nStyle == CPDF_Annot::BorderStyle::kDashed && pDashArray &&
+        pDashArray->IsEmpty()) {
+      nStyle = CPDF_Annot::BorderStyle::kSolid;
+    }
     return static_cast<FPDF_ANNOT_BORDER_STYLE>(nStyle);
   }
 

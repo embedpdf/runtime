@@ -306,7 +306,9 @@ EPDFAnnot_SetNoColor(FPDF_ANNOTATION annot, FPDFANNOT_COLORTYPE type);
 
 // Experimental EmbedPDF Extension API.
 // Get the border style and width of an annotation. This function handles both
-// the modern /BS dictionary and the legacy /Border array.
+// the modern /BS dictionary and the legacy /Border array. A border is dashed
+// when it draws dashes: a dashed /BS whose /D is an empty array, like a
+// /Border whose dash array is empty, draws a solid line and reads solid.
 //
 //   annot  - handle to an annotation.
 //   width  - receives the border width; can be NULL.
