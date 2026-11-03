@@ -144,6 +144,39 @@ std::vector<uint8_t> LoadRobotoVariableAbcFontData() {
   return GetFileContents(font_path.c_str());
 }
 
+// A variable Noto Sans whose named instances have no PostScript names.
+std::vector<uint8_t> LoadNotoSansVariableAbcFontData() {
+  std::string font_path = PathService::GetThirdPartyFilePath(
+      "harfbuzz/src/test/subset/data/fonts/NotoSans-VF.abc.ttf");
+  if (font_path.empty()) {
+    ADD_FAILURE() << "Failed to find NotoSans-VF.abc test font";
+    return {};
+  }
+  return GetFileContents(font_path.c_str());
+}
+
+std::vector<uint8_t> LoadTestFontData(const char* name) {
+  std::string font_path = PathService::GetThirdPartyFilePath(
+      std::string("test_fonts/test_fonts/") + name);
+  if (font_path.empty()) {
+    ADD_FAILURE() << "Failed to find " << name;
+    return {};
+  }
+  return GetFileContents(font_path.c_str());
+}
+
+// A registered font's PostScript name, as its embedded /BaseFont spells it.
+std::string PostScriptNameOf(EPDF_FONT_ID font_id) {
+  const unsigned long length = EPDFFont_GetPostScriptName(font_id, nullptr, 0);
+  if (length == 0) {
+    return std::string();
+  }
+  std::string name(length, '\0');
+  EPDFFont_GetPostScriptName(font_id, name.data(), length);
+  name.resize(length - 1);
+  return name;
+}
+
 std::vector<uint8_t> LoadCffLatinFontData() {
   // A small OpenType/CFF font (no CIDFont operators) with A, B, C.
   std::string font_path = PathService::GetThirdPartyFilePath(
@@ -2471,7 +2504,9 @@ TEST_F(EPDFAnnotEmbedderTest, NoSubsettingFontEmbedsWholeProgram) {
   RetainPtr<const CPDF_Dictionary> font_dict =
       GetAppearanceFontDict(annot.get(), RegisteredFontAlias(font_id));
   ASSERT_TRUE(font_dict);
-  EXPECT_EQ("Roboto", font_dict->GetNameFor("BaseFont"));  // no subset tag
+  // Its PostScript name, not the family it was registered under; whole, so
+  // no subset tag.
+  EXPECT_EQ("Roboto-Regular", font_dict->GetNameFor("BaseFont"));
   std::vector<uint8_t> program = EmbeddedFontProgram(font_dict.Get());
   EXPECT_EQ(no_subsetting.size(), program.size());
   EXPECT_TRUE(AppearanceFontMapsUnicode(font_dict.Get(), 'A'));
@@ -2500,6 +2535,11 @@ TEST_F(EPDFAnnotEmbedderTest, VariableFontIsInstancedAtRegistration) {
   EXPECT_TRUE(EPDFFont_IsInstanced(regular));
   EXPECT_TRUE(EPDFFont_IsInstanced(bold));
   EXPECT_FALSE(EPDFFont_IsInstanced(static_font));
+  // Each instance is named as the font names that instance: name 6, which an
+  // instance keeps from the variable font, is the default instance's.
+  EXPECT_EQ("RobotoRoman-Regular", PostScriptNameOf(regular));
+  EXPECT_EQ("RobotoRoman-Bold", PostScriptNameOf(bold));
+  EXPECT_EQ("Roboto-Regular", PostScriptNameOf(static_font));
   EXPECT_EQ(32u, CFX_FontRegistry::GetSourceHash(regular).size());
   EXPECT_NE(
       std::vector<uint8_t>(CFX_FontRegistry::GetSourceHash(regular).begin(),
@@ -2553,6 +2593,87 @@ TEST_F(EPDFAnnotEmbedderTest, VariableFontIsInstancedAtRegistration) {
       GetType0FontDescriptor(font_dict.Get());
   ASSERT_TRUE(descriptor);
   EXPECT_EQ(700, descriptor->GetIntegerFor("FontWeight"));
+  EXPECT_EQ("+RobotoRoman-Bold", font_dict->GetNameFor("BaseFont").Substr(6));
+}
+
+// A variable font whose named instances have no PostScript names: an instance
+// is the family prefix and the instance's style, and a weight no instance
+// sits at is the prefix and the weight (Adobe Technical Note #5902).
+TEST_F(EPDFAnnotEmbedderTest, VariableFontInstanceWithoutItsOwnName) {
+  ScopedRegisteredFonts scoped_fonts;
+  std::vector<uint8_t> vf = LoadNotoSansVariableAbcFontData();
+  ASSERT_FALSE(vf.empty());
+  EPDF_FONT_ID bold = EPDFFont_RegisterMemFont64(
+      "Noto Sans", /*weight=*/700, /*italic=*/0, vf.data(), vf.size());
+  EPDF_FONT_ID between = EPDFFont_RegisterMemFont64(
+      "Noto Sans", /*weight=*/450, /*italic=*/0, vf.data(), vf.size());
+  ASSERT_NE(0u, bold);
+  ASSERT_NE(0u, between);
+  EXPECT_EQ("NotoSans-Bold", PostScriptNameOf(bold));
+  EXPECT_EQ("NotoSans_450wght", PostScriptNameOf(between));
+}
+
+// Two weights of one family are two fonts by name: each /BaseFont is its
+// program's PostScript name and each subset has its own tag (ISO 32000-2
+// 9.6.3, 9.6.4), while the family they were registered under stays their
+// /FontFamily. Arimo's two files number the glyphs of "Hello" alike, so a tag
+// of the glyphs alone would be one tag.
+TEST_F(EPDFAnnotEmbedderTest, TwoWeightsOfOneFamilyAreTwoFontsByName) {
+  ScopedRegisteredFonts scoped_fonts;
+  std::vector<uint8_t> regular_data = LoadTestFontData("Arimo-Regular.ttf");
+  std::vector<uint8_t> bold_data = LoadTestFontData("Arimo-Bold.ttf");
+  ASSERT_FALSE(regular_data.empty());
+  ASSERT_FALSE(bold_data.empty());
+  EPDF_FONT_ID regular =
+      EPDFFont_RegisterMemFont64("Arimo", /*weight=*/400, /*italic=*/0,
+                                 regular_data.data(), regular_data.size());
+  EPDF_FONT_ID bold =
+      EPDFFont_RegisterMemFont64("Arimo", /*weight=*/700, /*italic=*/0,
+                                 bold_data.data(), bold_data.size());
+  ASSERT_NE(0u, regular);
+  ASSERT_NE(0u, bold);
+  EXPECT_EQ("Arimo-Regular", PostScriptNameOf(regular));
+  EXPECT_EQ("Arimo-Bold", PostScriptNameOf(bold));
+
+  embedpdf_test::ScopedTestDocument doc(NewTestDocument());
+  ScopedFPDFPage page(FPDFPage_New(doc.get(), 0, 400, 400));
+  auto write = [&](EPDF_FONT_ID font_id,
+                   float top) -> RetainPtr<const CPDF_Dictionary> {
+    ScopedFPDFAnnotation annot(
+        FPDFPage_CreateAnnot(page.get(), FPDF_ANNOT_FREETEXT));
+    const FS_RECTF rect{50.0f, top, 350.0f, top - 60.0f};
+    if (!annot || !FPDFAnnot_SetRect(annot.get(), &rect)) {
+      return nullptr;
+    }
+    ScopedFPDFWideString contents = GetFPDFWideString(L"Hello");
+    if (!FPDFAnnot_SetStringValue(annot.get(), "Contents", contents.get()) ||
+        !EPDFAnnot_SetDefaultAppearanceRegisteredFont(annot.get(), font_id,
+                                                      18.0f, 0, 0, 0) ||
+        !EPDFAnnot_GenerateAppearance(annot.get())) {
+      return nullptr;
+    }
+    return GetAppearanceFontDict(annot.get(), RegisteredFontAlias(font_id));
+  };
+  RetainPtr<const CPDF_Dictionary> regular_font = write(regular, 350.0f);
+  RetainPtr<const CPDF_Dictionary> bold_font = write(bold, 250.0f);
+  ASSERT_TRUE(regular_font);
+  ASSERT_TRUE(bold_font);
+
+  const ByteString regular_name = regular_font->GetNameFor("BaseFont");
+  const ByteString bold_name = bold_font->GetNameFor("BaseFont");
+  EXPECT_EQ("+Arimo-Regular", regular_name.Substr(6));
+  EXPECT_EQ("+Arimo-Bold", bold_name.Substr(6));
+  EXPECT_NE(regular_name.First(6), bold_name.First(6));
+  RetainPtr<const CPDF_Dictionary> regular_descriptor =
+      GetType0FontDescriptor(regular_font.Get());
+  RetainPtr<const CPDF_Dictionary> bold_descriptor =
+      GetType0FontDescriptor(bold_font.Get());
+  ASSERT_TRUE(regular_descriptor);
+  ASSERT_TRUE(bold_descriptor);
+  EXPECT_EQ(regular_name, regular_descriptor->GetNameFor("FontName"));
+  EXPECT_EQ(bold_name, bold_descriptor->GetNameFor("FontName"));
+  EXPECT_EQ(L"Arimo", regular_descriptor->GetUnicodeTextFor("FontFamily"));
+  EXPECT_EQ(L"Arimo", bold_descriptor->GetUnicodeTextFor("FontFamily"));
 }
 
 namespace {
@@ -2791,7 +2912,9 @@ TEST_F(EPDFAnnotEmbedderTest, RegisteredCffFontEmitsCidFontType0) {
   EXPECT_EQ('T', bytes[2]);
   EXPECT_EQ('O', bytes[3]);
   EXPECT_LT(bytes.size(), cff.size());  // CFF subsetting is compiled in
-  EXPECT_TRUE(font_dict->GetNameFor("BaseFont").Contains("+CffLatin"));
+  // Its PostScript name, not the family it was registered under.
+  EXPECT_EQ("gpos1_2_font1", PostScriptNameOf(font_id));
+  EXPECT_EQ("+gpos1_2_font1", font_dict->GetNameFor("BaseFont").Substr(6));
   EXPECT_TRUE(AppearanceFontMapsUnicode(font_dict.Get(), 'A'));
 
   ScopedFPDFBitmap bitmap =

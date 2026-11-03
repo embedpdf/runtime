@@ -7,8 +7,10 @@
 #include "core/fxge/cfx_fontregistry.h"
 
 #include <algorithm>
+#include <cmath>
 #include <limits>
 #include <memory>
+#include <optional>
 #include <utility>
 #include <vector>
 
@@ -79,9 +81,103 @@ CFX_FontRegistry::EmbeddingPermission ClassifyFsTypeImpl(uint16_t fs_type) {
 // the annotation writer subsets is static.
 enum class Instancing { kNotVariable, kInstanced, kFailed };
 
+// A name table entry, in English when it has one; empty when it has none.
+ByteString OpenTypeName(hb_face_t* face, hb_ot_name_id_t name_id) {
+  if (name_id == HB_OT_NAME_ID_INVALID) {
+    return ByteString();
+  }
+  unsigned int length =
+      hb_ot_name_get_utf8(face, name_id, HB_LANGUAGE_INVALID, nullptr, nullptr);
+  if (length == 0) {
+    return ByteString();
+  }
+  std::vector<char> text(length + 1);
+  unsigned int size = length + 1;
+  hb_ot_name_get_utf8(face, name_id, HB_LANGUAGE_INVALID, &size, text.data());
+  return ByteString(ByteStringView(text.data(), size));
+}
+
+// The letters and digits of |name|, as a PostScript name may hold them.
+ByteString PostScriptCharacters(const ByteString& name) {
+  ByteString out;
+  for (char ch : name) {
+    if ((ch >= 'A' && ch <= 'Z') || (ch >= 'a' && ch <= 'z') ||
+        (ch >= '0' && ch <= '9')) {
+      out += ch;
+    }
+  }
+  return out;
+}
+
+// The named instance at |coords| (one per axis, in fvar order), if the font
+// has one there.
+std::optional<unsigned int> NamedInstanceAt(hb_face_t* face,
+                                            const std::vector<float>& coords) {
+  const unsigned int instances = hb_ot_var_get_named_instance_count(face);
+  for (unsigned int i = 0; i < instances; ++i) {
+    std::vector<float> instance(coords.size());
+    unsigned int count = pdfium::checked_cast<unsigned int>(instance.size());
+    if (hb_ot_var_named_instance_get_design_coords(
+            face, i, &count, instance.data()) == coords.size() &&
+        std::ranges::equal(instance, coords, [](float a, float b) {
+          return std::abs(a - b) < 0.001f;
+        })) {
+      return i;
+    }
+  }
+  return std::nullopt;
+}
+
+// The PostScript name of the instance at |coords|, as Adobe Technical Note
+// #5902 names instances: the named instance's own PostScript name; else the
+// family prefix (name 25, else the typographic family, else the family) and
+// the named instance's style; else the prefix and the weight. The instance
+// keeps the variable font's name table, whose name 6 is the default
+// instance's, so it can't name itself. Empty when the font names nothing.
+ByteString InstancePostScriptName(hb_face_t* face,
+                                  const std::vector<float>& coords) {
+  const std::optional<unsigned int> named = NamedInstanceAt(face, coords);
+  if (named.has_value()) {
+    ByteString own = OpenTypeName(
+        face, hb_ot_var_named_instance_get_postscript_name_id(face, *named));
+    if (!own.IsEmpty()) {
+      return own;
+    }
+  }
+  ByteString prefix = PostScriptCharacters(
+      OpenTypeName(face, static_cast<hb_ot_name_id_t>(25)));
+  if (prefix.IsEmpty()) {
+    prefix = PostScriptCharacters(
+        OpenTypeName(face, HB_OT_NAME_ID_TYPOGRAPHIC_FAMILY));
+  }
+  if (prefix.IsEmpty()) {
+    prefix =
+        PostScriptCharacters(OpenTypeName(face, HB_OT_NAME_ID_FONT_FAMILY));
+  }
+  if (prefix.IsEmpty()) {
+    return ByteString();
+  }
+  if (named.has_value()) {
+    const ByteString style = PostScriptCharacters(OpenTypeName(
+        face, hb_ot_var_named_instance_get_subfamily_name_id(face, *named)));
+    return style.IsEmpty() ? prefix : prefix + "-" + style;
+  }
+  // No named instance there: only `wght` moves off its default.
+  std::vector<hb_ot_var_axis_info_t> axes(coords.size());
+  unsigned int axis_count = pdfium::checked_cast<unsigned int>(axes.size());
+  hb_ot_var_get_axis_infos(face, 0, &axis_count, axes.data());
+  for (unsigned int i = 0; i < axis_count; ++i) {
+    if (axes[i].tag == HB_TAG('w', 'g', 'h', 't')) {
+      return prefix + ByteString::Format("_%ldwght", std::lround(coords[i]));
+    }
+  }
+  return prefix;
+}
+
 Instancing InstanceVariableFont(pdfium::span<const uint8_t> data,
                                 int requested_weight,
-                                DataVector<uint8_t>* result) {
+                                DataVector<uint8_t>* result,
+                                ByteString* instance_name) {
   hb_blob_t* blob =
       hb_blob_create(reinterpret_cast<const char*>(data.data()),
                      pdfium::checked_cast<unsigned int>(data.size()),
@@ -101,14 +197,24 @@ Instancing InstanceVariableFont(pdfium::span<const uint8_t> data,
     if (input) {
       hb_subset_input_keep_everything(input);
       hb_subset_input_pin_all_axes_to_default(input, face);
+      // Where the instance sits, one coordinate per axis in fvar order.
+      std::vector<hb_ot_var_axis_info_t> axes(hb_ot_var_get_axis_count(face));
+      unsigned int axis_count = pdfium::checked_cast<unsigned int>(axes.size());
+      hb_ot_var_get_axis_infos(face, 0, &axis_count, axes.data());
+      std::vector<float> coords;
+      for (const hb_ot_var_axis_info_t& axis : axes) {
+        coords.push_back(axis.default_value);
+      }
       if (requested_weight >= 100 && requested_weight <= 900) {
-        hb_ot_var_axis_info_t axis;
-        if (hb_ot_var_find_axis_info(face, HB_TAG('w', 'g', 'h', 't'), &axis) &&
-            axis.min_value <= requested_weight &&
-            requested_weight <= axis.max_value) {
-          hb_subset_input_pin_axis_location(
-              input, face, HB_TAG('w', 'g', 'h', 't'),
-              static_cast<float>(requested_weight));
+        for (size_t i = 0; i < axes.size(); ++i) {
+          if (axes[i].tag == HB_TAG('w', 'g', 'h', 't') &&
+              axes[i].min_value <= requested_weight &&
+              requested_weight <= axes[i].max_value) {
+            hb_subset_input_pin_axis_location(
+                input, face, HB_TAG('w', 'g', 'h', 't'),
+                static_cast<float>(requested_weight));
+            coords[i] = static_cast<float>(requested_weight);
+          }
         }
       }
       hb_face_t* instance = hb_subset_or_fail(face, input);
@@ -118,6 +224,7 @@ Instancing InstanceVariableFont(pdfium::span<const uint8_t> data,
         const char* bytes = hb_blob_get_data(out, &length);
         if (bytes && length > 0) {
           result->assign(bytes, bytes + length);
+          *instance_name = InstancePostScriptName(face, coords);
           outcome = Instancing::kInstanced;
         }
         hb_blob_destroy(out);
@@ -269,7 +376,8 @@ CFX_FontRegistry::FontId RegisterLoadedFontSource(
   // one that cannot be instanced is refused rather than kept variable.
   bool instanced = false;
   DataVector<uint8_t> instanced_data;
-  switch (InstanceVariableFont(data, weight, &instanced_data)) {
+  ByteString instance_name;
+  switch (InstanceVariableFont(data, weight, &instanced_data, &instance_name)) {
     case Instancing::kNotVariable:
       break;
     case Instancing::kFailed:
@@ -301,8 +409,12 @@ CFX_FontRegistry::FontId RegisterLoadedFontSource(
   registered_font->no_subsetting = (fs_type & kFsTypeNoSubsetting) != 0;
   registered_font->instanced = instanced;
   registered_font->source_hash = CryptSha256Generate(data);
+  // /BaseFont is the program's own PostScript name (ISO 32000-2 9.6.3,
+  // 9.7.4), never the family it is registered under, so two weights of one
+  // family are two fonts by name too: the family is its identity in the
+  // descriptor's /FontFamily. An instance takes the name of the instance.
   registered_font->base_font_name = NormalizeBaseFontName(
-      family_name.IsEmpty() ? font->GetBaseFontName() : family_name);
+      instance_name.IsEmpty() ? font->GetBaseFontName() : instance_name);
   // The persistent identity (descriptor /FontFamily, rich text families):
   // the family given, else the font's own family from its name table
   // ("Roboto", never the PostScript "Roboto-Regular"), so a later session

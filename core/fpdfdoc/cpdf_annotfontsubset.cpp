@@ -117,11 +117,14 @@ void EnsureMinimumPdfVersion16(CPDF_Document* doc) {
 
 ByteString MakeSubsetBaseFontName(
     const ByteString& base_font_name,
+    pdfium::span<const uint8_t> program_hash,
     const CPDF_AnnotFontSubset::GlyphUnicodeMap& glyph_to_unicode) {
-  // EmbedPDF: a deterministic six-letter PDF subset tag is enough to keep
-  // subsets distinguishable for readers/debugging. A theoretical hash collision
-  // is harmless because each AP resource dictionary still points at its own
-  // embedded subset font object.
+  // EmbedPDF: a deterministic six-letter PDF subset tag. Different subsets in
+  // one file get different tags (ISO 32000-2 9.6.4), so it hashes the program
+  // as well as the glyphs it holds: two weights that hold the same characters
+  // number their glyphs alike. A theoretical hash collision is harmless
+  // because each AP resource dictionary still points at its own embedded
+  // subset font object.
   uint32_t hash = 2166136261u;
   auto mix = [&hash](uint32_t value) {
     for (int i = 0; i < 4; ++i) {
@@ -130,6 +133,9 @@ ByteString MakeSubsetBaseFontName(
     }
   };
 
+  for (uint8_t byte : program_hash) {
+    mix(byte);
+  }
   for (const auto& [glyph_id, unicode] : glyph_to_unicode) {
     mix(glyph_id);
     mix(unicode);
@@ -744,7 +750,9 @@ CPDF_AnnotFontSubset::StageRegisteredFontResource(
   const ByteString subset_font_name =
       subset_font_data.empty()
           ? base_font_name
-          : MakeSubsetBaseFontName(base_font_name, filtered_glyph_to_unicode);
+          : MakeSubsetBaseFontName(base_font_name,
+                                   CFX_FontRegistry::GetSourceHash(font_id),
+                                   filtered_glyph_to_unicode);
   StagedFontResource staged;
   if (!BuildCompositeFontParts(font.get(), subset_font_name, font_data,
                                IdentityForRegisteredFont(font_id), widths,
