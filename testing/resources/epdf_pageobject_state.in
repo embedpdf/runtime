@@ -1,0 +1,77 @@
+{{header}}
+{{object 1 0}} << /Type /Catalog /Pages 2 0 R >>
+endobj
+{{object 2 0}} << /Type /Pages /Kids [3 0 R] /Count 1 >>
+endobj
+{{object 3 0}} <<
+  /Type /Page /Parent 2 0 R /MediaBox [0 0 100 100]
+  /Resources <<
+    /ExtGState << /Half 5 0 R /Mask 11 0 R >>
+    /XObject << /Im 6 0 R /Plain 8 0 R /Group 9 0 R /Isolated 10 0 R >>
+    /Shading << /Sh 7 0 R >>
+  >>
+  /Contents 4 0 R
+>>
+endobj
+{{object 4 0}} << {{streamlen}} >>
+stream
+q /Half gs 4 w 1 j 7 M 10 10 20 20 re B Q
+q /Half gs 10 0 0 10 40 10 cm /Im Do Q
+q /Half gs /Sh sh Q
+/Plain Do
+/Group Do
+/Isolated Do
+q /Mask gs 10 60 20 20 re f Q
+endstream
+endobj
+{{object 5 0}} << /Type /ExtGState /ca 0.25 /CA 0.75 /BM /Multiply >>
+endobj
+{{object 6 0}} <<
+  /Type /XObject /Subtype /Image /Width 1 /Height 1
+  /ColorSpace /DeviceRGB /BitsPerComponent 8 /Filter /ASCIIHexDecode
+  {{streamlen}}
+>>
+stream
+FF0000>
+endstream
+endobj
+{{object 7 0}} <<
+  /ShadingType 2 /ColorSpace /DeviceRGB /Coords [0 0 100 0]
+  /Function << /FunctionType 2 /Domain [0 1] /C0 [1 0 0] /C1 [0 0 1] /N 1 >>
+  /Extend [true true]
+>>
+endobj
+{{object 8 0}} <<
+  /Type /XObject /Subtype /Form /BBox [0 0 100 100] /Resources << >>
+  {{streamlen}}
+>>
+stream
+10 40 20 20 re f
+endstream
+endobj
+{{object 9 0}} <<
+  /Type /XObject /Subtype /Form /BBox [0 0 100 100] /Resources << >>
+  /Group << /S /Transparency /I false >>
+  {{streamlen}}
+>>
+stream
+40 40 20 20 re f
+endstream
+endobj
+{{object 10 0}} <<
+  /Type /XObject /Subtype /Form /BBox [0 0 100 100] /Resources << >>
+  /Group << /S /Transparency /I true >>
+  {{streamlen}}
+>>
+stream
+70 40 20 20 re f
+endstream
+endobj
+{{object 11 0}} <<
+  /Type /ExtGState /SMask << /S /Alpha /G 10 0 R >>
+>>
+endobj
+{{xref}}
+{{trailer}}
+{{startxref}}
+%%EOF
