@@ -943,6 +943,9 @@ TEST_F(EPDFMeasureEmbedderTest, CaptionAppearanceGolden) {
     FS_RECTF rect{x - 1, 101, x + 121, 29};
     ASSERT_TRUE(FPDFAnnot_SetRect(a.get(), &rect));
     ASSERT_TRUE(EPDFAnnot_SetVertices(a.get(), points, 4));
+    // Black: a shape without /C has no stroke.
+    ASSERT_TRUE(
+        FPDFAnnot_SetColor(a.get(), FPDFANNOT_COLORTYPE_Color, 0, 0, 0, 255));
     SetText(a.get(), "Contents", i ? L"14.85 m" : L"13.57 m²");
     FS_POINTF center{x + 150, 70};
     ASSERT_TRUE(
