@@ -2870,6 +2870,35 @@ FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV EPDFAnnot_IsValid(FPDF_ANNOTATION annot) {
   return !!CPDFAnnotContextFromFPDFAnnotation(annot);
 }
 
+namespace {
+
+// A subtype EPDFAnnot_SetSubtype() can change from and to: one the
+// annotation API creates, other than the two that belong to a structure
+// beside their page (a widget to its field, a popup to its parent).
+bool IsRetypableSubtype(FPDF_ANNOTATION_SUBTYPE subtype) {
+  return FPDFAnnot_IsSupportedSubtype(subtype) &&
+         subtype != FPDF_ANNOT_WIDGET && subtype != FPDF_ANNOT_POPUP;
+}
+
+}  // namespace
+
+FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV
+EPDFAnnot_SetSubtype(FPDF_ANNOTATION annot, FPDF_ANNOTATION_SUBTYPE subtype) {
+  ScopedFPDFAnnotationView annot_view(annot);
+  RetainPtr<CPDF_Dictionary> dict =
+      GetMutableAnnotDictFromFPDFAnnotation(annot);
+  if (!dict || !IsRetypableSubtype(FPDFAnnot_GetSubtype(annot)) ||
+      !IsRetypableSubtype(subtype)) {
+    return false;
+  }
+  // The name only: the caller draws the new appearance, and every other
+  // entry stays as the annotation had it.
+  dict->SetNewFor<CPDF_Name>(pdfium::annotation::kSubtype,
+                             CPDF_Annot::AnnotSubtypeToString(
+                                 static_cast<CPDF_Annot::Subtype>(subtype)));
+  return true;
+}
+
 FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV EPDFAnnot_SetName(FPDF_ANNOTATION annot,
                                                       FPDF_BYTESTRING name) {
   ScopedFPDFAnnotationView annot_view(annot);
