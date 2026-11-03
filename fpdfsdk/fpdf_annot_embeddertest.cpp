@@ -580,8 +580,9 @@ TEST_F(FPDFAnnotEmbedderTest, ExtractInkMultiple) {
     EXPECT_EQ(475.336121f, rect.right);
     EXPECT_EQ(681.535034f, rect.top);
   }
-  // EmbedPDF(own-appearance-generator): our ink appearance strokes with round
-  // caps and joins and fits its box to the stroke; the dump is ours.
+  // EmbedPDF(own-appearance-generator): our ink appearance draws Acrobat's
+  // fitted curves with round caps and fits its box to the stroke; the dump is
+  // ours.
   CompareDisplayList(RenderLoadedPageWithFlagsToDisplayList(page, FPDF_ANNOT),
                      "annotation_ink_multiple");
   UnloadPageNoEvents(page);

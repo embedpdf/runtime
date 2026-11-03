@@ -236,6 +236,8 @@ pdfium_embeddertest_source_set("embeddertests") {
     "epdf_form_embeddertest.cpp",
     # EmbedPDF: covers the annotation API (public/epdf_annot.h).
     "epdf_annot_embeddertest.cpp",
+    # EmbedPDF: covers ink appearances against Acrobat's (cpdf_ink_curves.h).
+    "epdf_ink_appearance_embeddertest.cpp",
     # EmbedPDF: covers attachments (public/epdf_attachment.h).
     "epdf_attachment_embeddertest.cpp",
     # EmbedPDF: covers a document's fonts, the resolver read and the

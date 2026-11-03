@@ -819,8 +819,9 @@ TEST_F(EPDFAnnotEmbedderTest, GenerateInkAppearanceSetsRectToWhatItPaints) {
                                   /*border_width=*/6.0f));
 
   // Whatever /Rect was, too wide or too tight, it becomes what the strokes
-  // paint: the points 50..120 x 50..90 and half the width (round caps and
-  // joins), the same on every redraw.
+  // paint: the curve through the points 50..120 x 50..90, which rises to
+  // 90.1728 past the middle one, and half the width (round caps), the same on
+  // every redraw.
   const FS_RECTF wide{/*left=*/0.0f, /*top=*/200.0f, /*right=*/200.0f,
                       /*bottom=*/0.0f};
   const FS_RECTF tight{/*left=*/50.0f, /*top=*/90.0f, /*right=*/120.0f,
@@ -832,7 +833,7 @@ TEST_F(EPDFAnnotEmbedderTest, GenerateInkAppearanceSetsRectToWhatItPaints) {
       FS_RECTF rect;
       ASSERT_TRUE(FPDFAnnot_GetRect(annot.get(), &rect));
       EXPECT_FLOAT_EQ(47.0f, rect.left) << "iteration " << i;
-      EXPECT_FLOAT_EQ(93.0f, rect.top) << "iteration " << i;
+      EXPECT_FLOAT_EQ(93.172844f, rect.top) << "iteration " << i;
       EXPECT_FLOAT_EQ(123.0f, rect.right) << "iteration " << i;
       EXPECT_FLOAT_EQ(47.0f, rect.bottom) << "iteration " << i;
     }
@@ -844,7 +845,7 @@ TEST_F(EPDFAnnotEmbedderTest, GenerateInkAppearanceSetsRectToWhatItPaints) {
   FS_RECTF thinner;
   ASSERT_TRUE(FPDFAnnot_GetRect(annot.get(), &thinner));
   EXPECT_FLOAT_EQ(49.0f, thinner.left);
-  EXPECT_FLOAT_EQ(91.0f, thinner.top);
+  EXPECT_FLOAT_EQ(91.172844f, thinner.top);
   EXPECT_FLOAT_EQ(121.0f, thinner.right);
   EXPECT_FLOAT_EQ(49.0f, thinner.bottom);
 }
@@ -1008,11 +1009,17 @@ TEST_F(EPDFAnnotEmbedderTest, WidthZeroDrawsAHairline) {
         FPDFAnnot_SetColor(annot, FPDFANNOT_COLORTYPE_Color, 255, 0, 0, 255));
     ASSERT_TRUE(FPDFAnnot_SetBorder(annot, 0, 0, 0));
     ASSERT_TRUE(EPDFAnnot_GenerateAppearance(annot));
+  }
+  for (FPDF_ANNOTATION annot : {line.get(), polyline.get()}) {
     const std::wstring look = GetNormalAppearance(annot);
     EXPECT_THAT(look, HasSubstr(L"1 0 0 RG"));
     EXPECT_THAT(look, HasSubstr(L"0 w "));
     EXPECT_THAT(look, HasSubstr(L" l S\n"));
   }
+  // Ink writes as Acrobat does, an operator a line, its curves stroked.
+  const std::wstring ink_look = GetNormalAppearance(ink.get());
+  EXPECT_THAT(ink_look, HasSubstr(L"1 0 0 RG\n0 w\n1 J\n"));
+  EXPECT_THAT(ink_look, HasSubstr(L" c\nS\n"));
   // The open arrow is as long as a 1 pt line's: 9 pt.
   EXPECT_THAT(GetNormalAppearance(line.get()),
               HasSubstr(L"-7.79423 4.5 m 0 0 l -7.79423 -4.5 l S\n"));

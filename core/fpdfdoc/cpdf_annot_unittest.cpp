@@ -180,6 +180,9 @@ TEST_F(CPDFAnnotWithPageModuleTest,
   auto ink_list = pdfium::MakeRetain<CPDF_Array>();
   ink_list->Append(CreateQuadPointArrayFromVector({1, 1, 9, 9}));
   annot_dict->SetFor("InkList", std::move(ink_list));
+  // Black: ink with no /C has no stroke and paints nothing.
+  annot_dict->SetFor(pdfium::annotation::kC,
+                     CreateQuadPointArrayFromVector({0, 0, 0}));
 
   CPDF_Annot annot(annot_dict, &doc);
   EXPECT_EQ(CFX_FloatRect(0, 0, 10, 10),

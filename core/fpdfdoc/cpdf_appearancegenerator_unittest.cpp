@@ -311,6 +311,8 @@ TEST_F(CPDFGenerateAPTest, GenerateEphemeralInkAPDoesNotInflateAnnotRect) {
   auto ink_list = pdfium::MakeRetain<CPDF_Array>();
   ink_list->Append(MakeNumberArray({1, 1, 9, 9}));
   annot_dict->SetFor("InkList", std::move(ink_list));
+  // Black: ink with no /C has no stroke and paints nothing.
+  annot_dict->SetFor(pdfium::annotation::kC, MakeNumberArray({0, 0, 0}));
 
   const CFX_FloatRect original_rect =
       annot_dict->GetRectFor(pdfium::annotation::kRect);
