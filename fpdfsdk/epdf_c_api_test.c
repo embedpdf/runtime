@@ -172,6 +172,7 @@ int CheckEmbedPDFCApi(void) {
   CHK(EPDFAnnot_SetMKText);
   CHK(EPDFAnnot_SetMKTextPosition);
   CHK(EPDFAnnot_SetName);
+  CHK(EPDFAnnot_SetNoColor);
   CHK(EPDFAnnot_SetNumberValue);
   CHK(EPDFAnnot_SetOpacity);
   CHK(EPDFAnnot_SetOverlayText);

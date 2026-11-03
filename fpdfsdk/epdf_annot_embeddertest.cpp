@@ -882,6 +882,202 @@ TEST_F(EPDFAnnotEmbedderTest, GenerateInkAppearanceSetsRectToWhatItPaints) {
   EXPECT_FLOAT_EQ(49.0f, thinner.bottom);
 }
 
+TEST_F(EPDFAnnotEmbedderTest, SetNoColorWritesAnEmptyColorArray) {
+  embedpdf_test::ScopedTestDocument doc(NewTestDocument());
+  ASSERT_TRUE(doc);
+  ScopedFPDFPage page(FPDFPage_New(doc.get(), 0, 100, 100));
+  ASSERT_TRUE(page);
+  ScopedFPDFAnnotation annot(
+      FPDFPage_CreateAnnot(page.get(), FPDF_ANNOT_SQUARE));
+  ASSERT_TRUE(annot);
+  CPDF_AnnotContext* context = CPDFAnnotContextFromFPDFAnnotation(annot.get());
+  ASSERT_TRUE(context);
+
+  ASSERT_TRUE(FPDFAnnot_SetColor(annot.get(), FPDFANNOT_COLORTYPE_Color, 255, 0,
+                                 0, 255));
+  ASSERT_TRUE(EPDFAnnot_SetNoColor(annot.get(), FPDFANNOT_COLORTYPE_Color));
+  RetainPtr<const CPDF_Array> color = context->GetAnnotDict()->GetArrayFor("C");
+  ASSERT_TRUE(color);
+  EXPECT_TRUE(color->IsEmpty());
+
+  // No colour reads as none, like a /C left out.
+  unsigned int r = 0;
+  unsigned int g = 0;
+  unsigned int b = 0;
+  EXPECT_FALSE(
+      EPDFAnnot_GetColor(annot.get(), FPDFANNOT_COLORTYPE_Color, &r, &g, &b));
+
+  // An overlay colour belongs to a redaction alone.
+  EXPECT_FALSE(
+      EPDFAnnot_SetNoColor(annot.get(), FPDFANNOT_COLORTYPE_OverlayColor));
+}
+
+// Acrobat draws no stroke for a /C left out or empty (ISO 32000: "no colour;
+// transparent"). The fill stays where the stroke's middle would be.
+TEST_F(EPDFAnnotEmbedderTest, NoStrokeColorKeepsTheFillInTheStrokesPlace) {
+  embedpdf_test::ScopedTestDocument doc(NewTestDocument());
+  ASSERT_TRUE(doc);
+  ScopedFPDFPage page(FPDFPage_New(doc.get(), 0, 200, 200));
+  ASSERT_TRUE(page);
+
+  auto make = [&](FPDF_ANNOTATION_SUBTYPE subtype) {
+    ScopedFPDFAnnotation annot(FPDFPage_CreateAnnot(page.get(), subtype));
+    const FS_RECTF rect{/*left=*/10, /*top=*/60, /*right=*/60, /*bottom=*/10};
+    EXPECT_TRUE(FPDFAnnot_SetRect(annot.get(), &rect));
+    EXPECT_TRUE(FPDFAnnot_SetColor(
+        annot.get(), FPDFANNOT_COLORTYPE_InteriorColor, 0, 0, 255, 255));
+    EXPECT_TRUE(FPDFAnnot_SetBorder(annot.get(), 0, 0, /*border_width=*/4));
+    return annot;
+  };
+
+  ScopedFPDFAnnotation square = make(FPDF_ANNOT_SQUARE);
+  ScopedFPDFAnnotation circle = make(FPDF_ANNOT_CIRCLE);
+  ScopedFPDFAnnotation polygon = make(FPDF_ANNOT_POLYGON);
+  static constexpr FS_POINTF kVertices[] = {{10, 10}, {60, 10}, {35, 60}};
+  ASSERT_TRUE(
+      EPDFAnnot_SetVertices(polygon.get(), kVertices, std::size(kVertices)));
+
+  for (FPDF_ANNOTATION annot : {square.get(), circle.get(), polygon.get()}) {
+    // Left out, then empty.
+    for (bool empty : {false, true}) {
+      if (empty) {
+        ASSERT_TRUE(EPDFAnnot_SetNoColor(annot, FPDFANNOT_COLORTYPE_Color));
+      }
+      ASSERT_TRUE(EPDFAnnot_GenerateAppearance(annot));
+      const std::wstring look = GetNormalAppearance(annot);
+      EXPECT_THAT(look, Not(HasSubstr(L"RG"))) << "empty: " << empty;
+      EXPECT_THAT(look, Not(HasSubstr(L" w "))) << "empty: " << empty;
+      EXPECT_THAT(look, HasSubstr(L"f\n")) << "empty: " << empty;
+    }
+  }
+
+  // The square's fill is the box inset by half the 4 pt width.
+  EXPECT_THAT(GetNormalAppearance(square.get()),
+              HasSubstr(L"12 12 46 46 re f\n"));
+
+  // A stroke colour brings the outline back, over the same fill.
+  ASSERT_TRUE(
+      EPDFAnnot_SetColor(square.get(), FPDFANNOT_COLORTYPE_Color, 255, 0, 0));
+  ASSERT_TRUE(EPDFAnnot_GenerateAppearance(square.get()));
+  const std::wstring outlined = GetNormalAppearance(square.get());
+  EXPECT_THAT(outlined, HasSubstr(L"1 0 0 RG"));
+  EXPECT_THAT(outlined, HasSubstr(L"12 12 46 46 re b\n"));
+
+  // At width 0 the outline goes and the fill takes the whole box.
+  ASSERT_TRUE(FPDFAnnot_SetBorder(square.get(), 0, 0, 0));
+  ASSERT_TRUE(EPDFAnnot_GenerateAppearance(square.get()));
+  EXPECT_THAT(GetNormalAppearance(square.get()),
+              HasSubstr(L"10 10 50 50 re f\n"));
+}
+
+// A line with no stroke colour keeps only its filled endings, sized by its
+// width; with no fill either, it paints nothing.
+TEST_F(EPDFAnnotEmbedderTest, NoStrokeColorLineKeepsItsFilledEndings) {
+  embedpdf_test::ScopedTestDocument doc(NewTestDocument());
+  ASSERT_TRUE(doc);
+  ScopedFPDFPage page(FPDFPage_New(doc.get(), 0, 200, 200));
+  ASSERT_TRUE(page);
+  ScopedFPDFAnnotation line(FPDFPage_CreateAnnot(page.get(), FPDF_ANNOT_LINE));
+  ASSERT_TRUE(line);
+  const FS_POINTF start{20, 20};
+  const FS_POINTF end{150, 120};
+  ASSERT_TRUE(EPDFAnnot_SetLine(line.get(), &start, &end));
+  ASSERT_TRUE(EPDFAnnot_SetLineEndings(line.get(), FPDF_ANNOT_LE_OpenArrow,
+                                       FPDF_ANNOT_LE_ClosedArrow));
+  ASSERT_TRUE(FPDFAnnot_SetBorder(line.get(), 0, 0, 2));
+  ASSERT_TRUE(FPDFAnnot_SetColor(line.get(), FPDFANNOT_COLORTYPE_InteriorColor,
+                                 0, 0, 255, 255));
+  ASSERT_TRUE(EPDFAnnot_SetNoColor(line.get(), FPDFANNOT_COLORTYPE_Color));
+
+  ASSERT_TRUE(EPDFAnnot_GenerateAppearance(line.get()));
+  std::wstring look = GetNormalAppearance(line.get());
+  // No segment, no open arrow: nothing is stroked.
+  EXPECT_THAT(look, Not(HasSubstr(L"S\n")));
+  EXPECT_THAT(look, Not(HasSubstr(L"RG")));
+  // The closed arrow is filled, 9 times the 2 pt width long.
+  EXPECT_THAT(look, HasSubstr(L" l f\n"));
+  EXPECT_THAT(look, HasSubstr(L"-15.5885 9 l -15.5885 -9 l f\n"));
+
+  CPDF_AnnotContext* context = CPDFAnnotContextFromFPDFAnnotation(line.get());
+  ASSERT_TRUE(context);
+  context->GetMutableAnnotDict()->RemoveFor("IC");
+  ASSERT_TRUE(EPDFAnnot_GenerateAppearance(line.get()));
+  look = GetNormalAppearance(line.get());
+  EXPECT_THAT(look, Not(HasSubstr(L" f\n")));
+  EXPECT_THAT(look, Not(HasSubstr(L"S\n")));
+}
+
+// Width 0 is the thinnest line the device draws (ISO 32000 8.4.3.2): Acrobat
+// gives a line, a polyline and ink a hairline there, with endings the size a
+// 1 pt line has.
+TEST_F(EPDFAnnotEmbedderTest, WidthZeroDrawsAHairline) {
+  embedpdf_test::ScopedTestDocument doc(NewTestDocument());
+  ASSERT_TRUE(doc);
+  ScopedFPDFPage page(FPDFPage_New(doc.get(), 0, 200, 200));
+  ASSERT_TRUE(page);
+
+  ScopedFPDFAnnotation line(FPDFPage_CreateAnnot(page.get(), FPDF_ANNOT_LINE));
+  ASSERT_TRUE(line);
+  const FS_POINTF start{20, 20};
+  const FS_POINTF end{150, 120};
+  ASSERT_TRUE(EPDFAnnot_SetLine(line.get(), &start, &end));
+  ASSERT_TRUE(EPDFAnnot_SetLineEndings(line.get(), FPDF_ANNOT_LE_None,
+                                       FPDF_ANNOT_LE_OpenArrow));
+
+  ScopedFPDFAnnotation polyline(
+      FPDFPage_CreateAnnot(page.get(), FPDF_ANNOT_POLYLINE));
+  ASSERT_TRUE(polyline);
+  static constexpr FS_POINTF kVertices[] = {{20, 20}, {80, 120}, {150, 40}};
+  ASSERT_TRUE(
+      EPDFAnnot_SetVertices(polyline.get(), kVertices, std::size(kVertices)));
+
+  ScopedFPDFAnnotation ink(FPDFPage_CreateAnnot(page.get(), FPDF_ANNOT_INK));
+  ASSERT_TRUE(ink);
+  ASSERT_EQ(0,
+            FPDFAnnot_AddInkStroke(ink.get(), kVertices, std::size(kVertices)));
+
+  for (FPDF_ANNOTATION annot : {line.get(), polyline.get(), ink.get()}) {
+    ASSERT_TRUE(
+        FPDFAnnot_SetColor(annot, FPDFANNOT_COLORTYPE_Color, 255, 0, 0, 255));
+    ASSERT_TRUE(FPDFAnnot_SetBorder(annot, 0, 0, 0));
+    ASSERT_TRUE(EPDFAnnot_GenerateAppearance(annot));
+    const std::wstring look = GetNormalAppearance(annot);
+    EXPECT_THAT(look, HasSubstr(L"1 0 0 RG"));
+    EXPECT_THAT(look, HasSubstr(L"0 w "));
+    EXPECT_THAT(look, HasSubstr(L" l S\n"));
+  }
+  // The open arrow is as long as a 1 pt line's: 9 pt.
+  EXPECT_THAT(GetNormalAppearance(line.get()),
+              HasSubstr(L"-7.79423 4.5 m 0 0 l -7.79423 -4.5 l S\n"));
+}
+
+// Ink is all stroke: with no stroke colour it paints nothing, and its /Rect
+// stays on its points.
+TEST_F(EPDFAnnotEmbedderTest, NoStrokeColorInkPaintsNothing) {
+  embedpdf_test::ScopedTestDocument doc(NewTestDocument());
+  ASSERT_TRUE(doc);
+  ScopedFPDFPage page(FPDFPage_New(doc.get(), 0, 200, 200));
+  ASSERT_TRUE(page);
+  ScopedFPDFAnnotation ink(FPDFPage_CreateAnnot(page.get(), FPDF_ANNOT_INK));
+  ASSERT_TRUE(ink);
+  static constexpr FS_POINTF kStroke[] = {
+      {50.0f, 50.0f}, {80.0f, 90.0f}, {120.0f, 60.0f}};
+  ASSERT_EQ(0, FPDFAnnot_AddInkStroke(ink.get(), kStroke, std::size(kStroke)));
+  ASSERT_TRUE(FPDFAnnot_SetBorder(ink.get(), 0, 0, 6));
+  ASSERT_TRUE(EPDFAnnot_SetNoColor(ink.get(), FPDFANNOT_COLORTYPE_Color));
+
+  ASSERT_TRUE(EPDFAnnot_GenerateAppearance(ink.get()));
+  const std::wstring look = GetNormalAppearance(ink.get());
+  EXPECT_THAT(look, Not(HasSubstr(L"S\n")));
+  EXPECT_THAT(look, Not(HasSubstr(L" m ")));
+  FS_RECTF rect;
+  ASSERT_TRUE(FPDFAnnot_GetRect(ink.get(), &rect));
+  EXPECT_FLOAT_EQ(50.0f, rect.left);
+  EXPECT_FLOAT_EQ(90.0f, rect.top);
+  EXPECT_FLOAT_EQ(120.0f, rect.right);
+  EXPECT_FLOAT_EQ(50.0f, rect.bottom);
+}
+
 TEST_F(EPDFAnnotEmbedderTest, LineRectHoldsItsArrowhead) {
   embedpdf_test::ScopedTestDocument doc(NewTestDocument());
   ASSERT_TRUE(doc);
@@ -895,6 +1091,8 @@ TEST_F(EPDFAnnotEmbedderTest, LineRectHoldsItsArrowhead) {
   ASSERT_TRUE(EPDFAnnot_SetLineEndings(annot.get(), FPDF_ANNOT_LE_None,
                                        FPDF_ANNOT_LE_ClosedArrow));
   ASSERT_TRUE(FPDFAnnot_SetBorder(annot.get(), 0.0f, 0.0f, 2.0f));
+  ASSERT_TRUE(
+      FPDFAnnot_SetColor(annot.get(), FPDFANNOT_COLORTYPE_Color, 0, 0, 0, 255));
   // A /Rect at the two points would clip the arrowhead and the line's width.
   const FS_RECTF points{/*left=*/100, /*top=*/500, /*right=*/320,
                         /*bottom=*/400};
@@ -926,6 +1124,8 @@ TEST_F(EPDFAnnotEmbedderTest, LineRectIsWhatItsStrokePaints) {
   const FS_POINTF level_end{300, 400};
   ASSERT_TRUE(EPDFAnnot_SetLine(level.get(), &level_start, &level_end));
   ASSERT_TRUE(FPDFAnnot_SetBorder(level.get(), 0.0f, 0.0f, 4.0f));
+  ASSERT_TRUE(
+      EPDFAnnot_SetColor(level.get(), FPDFANNOT_COLORTYPE_Color, 0, 0, 0));
   ASSERT_TRUE(EPDFAnnot_GenerateAppearance(level.get()));
   FS_RECTF rect;
   ASSERT_TRUE(FPDFAnnot_GetRect(level.get(), &rect));
@@ -943,6 +1143,8 @@ TEST_F(EPDFAnnotEmbedderTest, LineRectIsWhatItsStrokePaints) {
   const FS_POINTF slanted_end{300, 550};
   ASSERT_TRUE(EPDFAnnot_SetLine(slanted.get(), &slanted_start, &slanted_end));
   ASSERT_TRUE(FPDFAnnot_SetBorder(slanted.get(), 0.0f, 0.0f, 4.0f));
+  ASSERT_TRUE(
+      EPDFAnnot_SetColor(slanted.get(), FPDFANNOT_COLORTYPE_Color, 0, 0, 0));
   ASSERT_TRUE(EPDFAnnot_GenerateAppearance(slanted.get()));
   ASSERT_TRUE(FPDFAnnot_GetRect(slanted.get(), &rect));
   EXPECT_NEAR(98.8f, rect.left, 1e-4);
@@ -965,6 +1167,8 @@ TEST_F(EPDFAnnotEmbedderTest, PolylineKneePastTheMiterLimitIsBeveled) {
   ASSERT_TRUE(
       EPDFAnnot_SetVertices(annot.get(), kVertices, std::size(kVertices)));
   ASSERT_TRUE(FPDFAnnot_SetBorder(annot.get(), 0.0f, 0.0f, 4.0f));
+  ASSERT_TRUE(
+      EPDFAnnot_SetColor(annot.get(), FPDFANNOT_COLORTYPE_Color, 0, 0, 0));
   ASSERT_TRUE(EPDFAnnot_GenerateAppearance(annot.get()));
   FS_RECTF rect;
   ASSERT_TRUE(FPDFAnnot_GetRect(annot.get(), &rect));
@@ -1075,6 +1279,8 @@ TEST_F(EPDFAnnotEmbedderTest, DrawingRectIsWhereTheAppearanceIsDrawn) {
   ASSERT_TRUE(EPDFAnnot_SetLineEndings(line.get(), FPDF_ANNOT_LE_None,
                                        FPDF_ANNOT_LE_ClosedArrow));
   ASSERT_TRUE(FPDFAnnot_SetBorder(line.get(), 0.0f, 0.0f, 2.0f));
+  ASSERT_TRUE(
+      EPDFAnnot_SetColor(line.get(), FPDFANNOT_COLORTYPE_Color, 0, 0, 0));
   const FS_RECTF tight{/*left=*/100, /*top=*/400, /*right=*/300,
                        /*bottom=*/400};
   ASSERT_TRUE(FPDFAnnot_SetRect(line.get(), &tight));
@@ -1133,6 +1339,8 @@ TEST_F(EPDFAnnotEmbedderTest, CloudyPolygonRectHoldsItsBumps) {
       EPDFAnnot_SetVertices(annot.get(), kVertices, std::size(kVertices)));
   ASSERT_TRUE(FPDFAnnot_SetBorder(annot.get(), 0.0f, 0.0f, 2.0f));
   ASSERT_TRUE(EPDFAnnot_SetBorderEffect(annot.get(), 1.0f));
+  ASSERT_TRUE(
+      EPDFAnnot_SetColor(annot.get(), FPDFANNOT_COLORTYPE_Color, 0, 0, 0));
   const FS_RECTF points{/*left=*/100, /*top=*/250, /*right=*/300,
                         /*bottom=*/100};
   ASSERT_TRUE(FPDFAnnot_SetRect(annot.get(), &points));
@@ -5978,6 +6186,8 @@ TEST_F(EPDFAnnotEmbedderTest, CloudyBumpsReachPastTheBoxIntoRect) {
       ASSERT_TRUE(
           EPDFAnnot_SetBorderStyle(annot.get(), FPDF_ANNOT_BS_SOLID, 2.0f));
       ASSERT_TRUE(EPDFAnnot_SetBorderEffect(annot.get(), 1.0f));
+      ASSERT_TRUE(
+          EPDFAnnot_SetColor(annot.get(), FPDFANNOT_COLORTYPE_Color, 0, 0, 0));
       ASSERT_TRUE(EPDFAnnot_GenerateAppearance(annot.get()));
 
       // /Rect takes in the bumps, and /RD, in rectangle order, leads back to
@@ -7265,6 +7475,8 @@ TEST_F(EPDFAnnotEmbedderTest, BorderStyleResolutionUsesISOPrecedence) {
   ScopedFPDFAnnotation annot(
       FPDFPage_CreateAnnot(page.get(), FPDF_ANNOT_CIRCLE));
   ASSERT_TRUE(annot);
+  ASSERT_TRUE(
+      EPDFAnnot_SetColor(annot.get(), FPDFANNOT_COLORTYPE_Color, 0, 0, 0));
 
   CPDF_AnnotContext* context = CPDFAnnotContextFromFPDFAnnotation(annot.get());
   ASSERT_TRUE(context);
@@ -7359,6 +7571,8 @@ TEST_F(EPDFAnnotEmbedderTest, DashedBorderDrawsItsDashOrTheDefault) {
                         /*bottom=*/10.0f};
     EXPECT_TRUE(FPDFAnnot_SetRect(annot.get(), &rect));
     EXPECT_TRUE(EPDFAnnot_SetBorderStyle(annot.get(), style, 2.0f));
+    EXPECT_TRUE(
+        EPDFAnnot_SetColor(annot.get(), FPDFANNOT_COLORTYPE_Color, 0, 0, 0));
     if (!dash.empty()) {
       EXPECT_TRUE(EPDFAnnot_SetBorderDashPattern(annot.get(), dash.data(),
                                                  dash.size()));

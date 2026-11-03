@@ -1208,6 +1208,25 @@ EPDFAnnot_ClearColor(FPDF_ANNOTATION annot, FPDFANNOT_COLORTYPE type) {
   return true;
 }
 
+FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV
+EPDFAnnot_SetNoColor(FPDF_ANNOTATION annot, FPDFANNOT_COLORTYPE type) {
+  ScopedFPDFAnnotationView annot_view(annot);
+  RetainPtr<CPDF_Dictionary> dict =
+      GetMutableAnnotDictFromFPDFAnnotation(annot);
+  if (!dict) {
+    return false;
+  }
+
+  // OverlayColor (OC) is only valid for Redact annotations.
+  if (type == FPDFANNOT_COLORTYPE_OverlayColor &&
+      FPDFAnnot_GetSubtype(annot) != FPDF_ANNOT_REDACT) {
+    return false;
+  }
+
+  dict->SetNewFor<CPDF_Array>(GetColorKeyForType(type));
+  return true;
+}
+
 FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV EPDFAnnot_SetOpacity(FPDF_ANNOTATION annot,
                                                          float opacity) {
   ScopedFPDFAnnotationView annot_view(annot);

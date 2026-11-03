@@ -292,6 +292,19 @@ FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV
 EPDFAnnot_ClearColor(FPDF_ANNOTATION annot, FPDFANNOT_COLORTYPE type);
 
 // Experimental EmbedPDF Extension API.
+// Write the color of an annotation as an empty array, which ISO 32000 defines
+// as no color (transparent). Unlike EPDFAnnot_ClearColor, which removes the
+// entry, this states "none" in a way every reader agrees on: a viewer that
+// redraws a shape with no /C at all may give it a default color.
+//
+//   annot    - handle to an annotation.
+//   type     - type of the color to be set to none.
+//
+// Returns true if successful.
+FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV
+EPDFAnnot_SetNoColor(FPDF_ANNOTATION annot, FPDFANNOT_COLORTYPE type);
+
+// Experimental EmbedPDF Extension API.
 // Get the border style and width of an annotation. This function handles both
 // the modern /BS dictionary and the legacy /Border array.
 //
