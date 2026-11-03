@@ -80,6 +80,7 @@ void MakeLine(FPDF_ANNOTATION annot) {
   FS_POINTF a{100, 100}, b{300, 100};
   ASSERT_TRUE(FPDFAnnot_SetRect(annot, &rect));
   ASSERT_TRUE(EPDFAnnot_SetLine(annot, &a, &b));
+  ASSERT_TRUE(EPDFAnnot_SetColor(annot, FPDFANNOT_COLORTYPE_Color, 0, 0, 0));
   SetText(annot, "Contents", L"3.45 m");
 }
 struct Delta {

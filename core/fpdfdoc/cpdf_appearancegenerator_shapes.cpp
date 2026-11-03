@@ -55,6 +55,7 @@ using appearance_generator::GetColorStringWithDefault;
 using appearance_generator::GetDashPatternString;
 using appearance_generator::GetPaintOperatorString;
 using appearance_generator::GetShapeRotationInfo;
+using appearance_generator::GetStrokeColorString;
 using appearance_generator::IsFinitePoint;
 using appearance_generator::kButtLenFactor;
 using appearance_generator::kGSDictName;
@@ -70,6 +71,14 @@ namespace {
 constexpr float kArrowAngle = FXSYS_PI / 6.0f;
 
 constexpr float kArrowLenFactor = 9.0f;
+
+// The operator that paints a closed circle, square or diamond ending.
+const char* ClosedEndingOperator(bool filled, bool stroked) {
+  if (!stroked) {
+    return "f\n";
+  }
+  return filled ? "B\n" : "S\n";
+}
 
 struct CloudyBorderInfo {
   bool is_cloudy = false;
@@ -116,8 +125,11 @@ void GenerateLineEndings(fxcrt::ostringstream& ap,
     return;
   }
 
-  // Get styles needed for drawing the endings
+  // Get styles needed for drawing the endings. A hairline (/W 0) still gets
+  // the endings a 1 pt line has, as Acrobat draws them.
   const float border_w = GetBorderWidth(annot_dict);
+  const float ending_w = border_w > 0 ? border_w : 1.0f;
+  const bool has_stroke = GetStrokeColorString(annot_dict).has_value();
   RetainPtr<const CPDF_Array> interior_color = annot_dict->GetArrayFor("IC");
   const bool has_fill = interior_color && !interior_color->IsEmpty();
 
@@ -126,6 +138,15 @@ void GenerateLineEndings(fxcrt::ostringstream& ap,
                       const CFX_PointF& tip, const CFX_PointF& unit_dir) {
     if (ending == CPDF_Annot::LineEnding::kNone ||
         ending == CPDF_Annot::LineEnding::kUnknown) {
+      return;
+    }
+    // Without a stroke colour only a filled closed ending paints.
+    const bool fillable = ending == CPDF_Annot::LineEnding::kClosedArrow ||
+                          ending == CPDF_Annot::LineEnding::kRClosedArrow ||
+                          ending == CPDF_Annot::LineEnding::kCircle ||
+                          ending == CPDF_Annot::LineEnding::kSquare ||
+                          ending == CPDF_Annot::LineEnding::kDiamond;
+    if (!has_stroke && !(fillable && has_fill)) {
       return;
     }
 
@@ -158,26 +179,27 @@ void GenerateLineEndings(fxcrt::ostringstream& ap,
       switch (ending) {
         case CPDF_Annot::LineEnding::kClosedArrow:
         case CPDF_Annot::LineEnding::kRClosedArrow:
-          EmitArrowPath(ap, border_w, ArrowStyle::kClosed, has_fill);
+          EmitArrowPath(ap, ending_w, ArrowStyle::kClosed, has_fill,
+                        has_stroke);
           break;
         case CPDF_Annot::LineEnding::kOpenArrow:
         case CPDF_Annot::LineEnding::kROpenArrow:
-          EmitArrowPath(ap, border_w, ArrowStyle::kOpen, /*do_fill=*/false);
+          EmitArrowPath(ap, ending_w, ArrowStyle::kOpen, /*do_fill=*/false);
           break;
         case CPDF_Annot::LineEnding::kCircle:
-          EmitCirclePath(ap, border_w, has_fill);
+          EmitCirclePath(ap, ending_w, has_fill, has_stroke);
           break;
         case CPDF_Annot::LineEnding::kSquare:
-          EmitSquarePath(ap, border_w, has_fill);
+          EmitSquarePath(ap, ending_w, has_fill, has_stroke);
           break;
         case CPDF_Annot::LineEnding::kDiamond:
-          EmitDiamondPath(ap, border_w, has_fill);
+          EmitDiamondPath(ap, ending_w, has_fill, has_stroke);
           break;
         case CPDF_Annot::LineEnding::kButt:
-          EmitButtOrSlashPath(ap, border_w, kButtLenFactor);
+          EmitButtOrSlashPath(ap, ending_w, kButtLenFactor);
           break;
         case CPDF_Annot::LineEnding::kSlash:
-          EmitButtOrSlashPath(ap, border_w, kSlashLenFactor);
+          EmitButtOrSlashPath(ap, ending_w, kSlashLenFactor);
           break;
         default:
           break;
@@ -361,10 +383,11 @@ bool GenerateDimensionLineAP(APGenerationTarget* target,
   }
   fxcrt::ostringstream ap;
   ap << "/" << kGSDictName << " gs\n";
-  auto color = annot->GetArrayFor("C");
+  const std::optional<ByteString> stroke_color = GetStrokeColorString(annot);
   auto interior = annot->GetArrayFor("IC");
-  ap << GetColorStringWithDefault(color.Get(), CFX_Color::MakeRGB(0, 0, 0),
-                                  PaintOperation::kStroke);
+  if (stroke_color) {
+    ap << *stroke_color;
+  }
   if (interior && !interior->IsEmpty()) {
     ap << GetColorStringWithDefault(interior.Get(), {}, PaintOperation::kFill);
   }
@@ -372,7 +395,8 @@ bool GenerateDimensionLineAP(APGenerationTarget* target,
     WritePoint(ap, from) << " m ";
     WritePoint(ap, to) << " l S\n";
   };
-  if (border > 0) {
+  // Without a stroke colour the lines go and the filled endings stay.
+  if (border > 0 && stroke_color) {
     WriteFloat(ap, border) << " w " << GetDashPatternString(annot);
     if (label.outside_arrows) {
       const float stub = 20 * border;
@@ -394,6 +418,8 @@ bool GenerateDimensionLineAP(APGenerationTarget* target,
     for (const auto& connector : label.connector) {
       segment(connector.from, connector.to);
     }
+  }
+  if (border > 0) {
     GenerateLineEndings(ap, {line.start, line.end}, annot,
                         label.outside_arrows);
   }
@@ -435,7 +461,8 @@ ByteString ReadLineEndingToken(const CPDF_Array* le, size_t idx) {
 void EmitArrowPath(fxcrt::ostringstream& out,
                    float stroke_w,
                    ArrowStyle style,
-                   bool do_fill) {
+                   bool do_fill,
+                   bool stroked) {
   const float len = kArrowLenFactor * stroke_w;
   const float a = kArrowAngle;  // 30°
   const float x = -len * std::cos(a);
@@ -449,11 +476,15 @@ void EmitArrowPath(fxcrt::ostringstream& out,
 
   // ClosedArrow / RClosedArrow
   out << "0 0 m " << x << " " << y << " l " << x << " " << -y << " l "
-      << (do_fill ? "b\n"      // fill + stroke
-                  : "h S\n");  // just close and stroke (no fill)
+      << (!stroked  ? "f\n"      // fill only
+          : do_fill ? "b\n"      // fill + stroke
+                    : "h S\n");  // just close and stroke (no fill)
 }
 
-void EmitCirclePath(fxcrt::ostringstream& out, float stroke_w, bool filled) {
+void EmitCirclePath(fxcrt::ostringstream& out,
+                    float stroke_w,
+                    bool filled,
+                    bool stroked) {
   const float r = (stroke_w * 5.0f) / 2.0f;
   // This is a standard approximation for drawing a circle with Bezier curves.
   constexpr float kL = 0.5523f;
@@ -463,19 +494,27 @@ void EmitCirclePath(fxcrt::ostringstream& out, float stroke_w, bool filled) {
       << " c " << -d << " " << r << " " << -r << " " << d << " " << -r
       << " 0 c " << -r << " " << -d << " " << -d << " " << -r << " 0 " << -r
       << " c " << d << " " << -r << " " << r << " " << -d << " " << r << " 0 c "
-      << (filled ? "B\n" : "S\n");
+      << ClosedEndingOperator(filled, stroked);
 }
 
-void EmitSquarePath(fxcrt::ostringstream& out, float stroke_w, bool filled) {
+void EmitSquarePath(fxcrt::ostringstream& out,
+                    float stroke_w,
+                    bool filled,
+                    bool stroked) {
   const float h = (stroke_w * 6.0f) / 2.0f;
   out << -h << " " << -h << " m " << h << " " << -h << " l " << h << " " << h
-      << " l " << -h << " " << h << " l h " << (filled ? "B\n" : "S\n");
+      << " l " << -h << " " << h << " l h "
+      << ClosedEndingOperator(filled, stroked);
 }
 
-void EmitDiamondPath(fxcrt::ostringstream& out, float stroke_w, bool filled) {
+void EmitDiamondPath(fxcrt::ostringstream& out,
+                     float stroke_w,
+                     bool filled,
+                     bool stroked) {
   const float h = (stroke_w * 6.0f) / 2.0f;
   out << "0 " << -h << " m " << h << " 0 l "
-      << "0 " << h << " l " << -h << " 0 l h " << (filled ? "B\n" : "S\n");
+      << "0 " << h << " l " << -h << " 0 l h "
+      << ClosedEndingOperator(filled, stroked);
 }
 
 void EmitButtOrSlashPath(fxcrt::ostringstream& out,
@@ -496,12 +535,14 @@ bool GenerateCircleAP(APGenerationTarget* target,
                                           CFX_Color::MakeTransparent(),
                                           PaintOperation::kFill);
 
-  app_stream << GetColorStringWithDefault(
-      annot_dict->GetArrayFor(pdfium::annotation::kC).Get(),
-      CFX_Color::MakeRGB(0, 0, 0), PaintOperation::kStroke);
+  const std::optional<ByteString> stroke_color =
+      GetStrokeColorString(annot_dict);
+  if (stroke_color) {
+    app_stream << *stroke_color;
+  }
 
   float border_width = GetBorderWidth(annot_dict);
-  bool is_stroke_rect = border_width > 0;
+  bool is_stroke_rect = stroke_color && border_width > 0;
   CloudyBorderInfo cloudy_info = GetCloudyBorderInfo(annot_dict);
 
   if (is_stroke_rect) {
@@ -521,7 +562,9 @@ bool GenerateCircleAP(APGenerationTarget* target,
     GenerateCloudyEllipsePath(app_stream, draw_rect, cloudy_info.intensity,
                               border_width);
   } else {
-    if (is_stroke_rect) {
+    // The outline's middle sits half its width inside /Rect, painted or not:
+    // a fill without its stroke keeps the stroke's place, as Acrobat draws it.
+    if (border_width > 0) {
       draw_rect.Deflate(border_width / 2, border_width / 2);
     }
 
@@ -576,12 +619,14 @@ bool GeneratePolygonAP(APGenerationTarget* target,
                                    CFX_Color::MakeTransparent(),
                                    PaintOperation::kFill);
 
-  app << GetColorStringWithDefault(
-      annot_dict->GetArrayFor(pdfium::annotation::kC).Get(),
-      CFX_Color::MakeRGB(0, 0, 0), PaintOperation::kStroke);
+  const std::optional<ByteString> stroke_color =
+      GetStrokeColorString(annot_dict);
+  if (stroke_color) {
+    app << *stroke_color;
+  }
 
   const float border_w = GetBorderWidth(annot_dict);
-  const bool do_stroke = border_w > 0;
+  const bool do_stroke = stroke_color && border_w > 0;
   CloudyBorderInfo cloudy_info = GetCloudyBorderInfo(annot_dict);
 
   if (do_stroke) {
@@ -661,18 +706,17 @@ bool GenerateLineAP(APGenerationTarget* target,
     ap << GetColorStringWithDefault(interior_color.Get(), {},
                                     PaintOperation::kFill);
   }
-  ap << GetColorStringWithDefault(
-      annot_dict->GetArrayFor(pdfium::annotation::kC).Get(),
-      CFX_Color::MakeRGB(0, 0, 0), PaintOperation::kStroke);
 
-  const float border_w = GetBorderWidth(annot_dict);
-  if (border_w > 0) {
-    ap << border_w << " w " << GetDashPatternString(annot_dict);
+  // Draw the main line segment. Width 0 is the thinnest line the device
+  // draws (ISO 32000 8.4.3.2), the hairline Acrobat gives a line at /W 0.
+  const std::optional<ByteString> stroke_color =
+      GetStrokeColorString(annot_dict);
+  if (stroke_color) {
+    ap << *stroke_color << std::max(GetBorderWidth(annot_dict), 0.0f) << " w "
+       << GetDashPatternString(annot_dict);
+    ap << points[0].x << " " << points[0].y << " m " << points[1].x << " "
+       << points[1].y << " l S\n";
   }
-
-  // Draw the main line segment.
-  ap << points[0].x << " " << points[0].y << " m " << points[1].x << " "
-     << points[1].y << " l S\n";
 
   // Draw the endings.
   GenerateLineEndings(ap, points, annot_dict);
@@ -708,21 +752,19 @@ bool GeneratePolyLineAP(APGenerationTarget* target,
     ap << GetColorStringWithDefault(interior_color.Get(), {},
                                     PaintOperation::kFill);
   }
-  ap << GetColorStringWithDefault(
-      annot_dict->GetArrayFor(pdfium::annotation::kC).Get(),
-      CFX_Color::MakeRGB(0, 0, 0), PaintOperation::kStroke);
 
-  const float border_w = GetBorderWidth(annot_dict);
-  if (border_w > 0) {
-    ap << border_w << " w " << GetDashPatternString(annot_dict);
+  // Draw the main polyline path, a hairline at /W 0 as a line's is.
+  const std::optional<ByteString> stroke_color =
+      GetStrokeColorString(annot_dict);
+  if (stroke_color) {
+    ap << *stroke_color << std::max(GetBorderWidth(annot_dict), 0.0f) << " w "
+       << GetDashPatternString(annot_dict);
+    ap << points[0].x << " " << points[0].y << " m ";
+    for (size_t i = 1; i < points.size(); ++i) {
+      ap << points[i].x << " " << points[i].y << " l ";
+    }
+    ap << "S\n";
   }
-
-  // Draw the main polyline path.
-  ap << points[0].x << " " << points[0].y << " m ";
-  for (size_t i = 1; i < points.size(); ++i) {
-    ap << points[i].x << " " << points[i].y << " l ";
-  }
-  ap << "S\n";
 
   // Draw the endings.
   GenerateLineEndings(ap, points, annot_dict);
@@ -753,24 +795,23 @@ bool GenerateInkAP(APGenerationTarget* target,
     return false;
   }
 
-  float border_width = GetBorderWidth(annot_dict);
-  const bool is_stroke = border_width > 0;
-  if (!is_stroke) {
-    return false;
-  }
+  // Ink is all stroke: with no stroke colour it paints nothing but keeps its
+  // points. Width 0 is a hairline, as Acrobat draws it.
+  const std::optional<ByteString> stroke_color =
+      GetStrokeColorString(annot_dict);
 
   fxcrt::ostringstream app_stream;
   app_stream << "/" << kGSDictName << " gs ";
-  app_stream << GetColorStringWithDefault(
-      annot_dict->GetArrayFor(pdfium::annotation::kC).Get(),
-      CFX_Color::MakeRGB(0, 0, 0), PaintOperation::kStroke);
+  if (stroke_color) {
+    app_stream << *stroke_color;
 
-  app_stream << border_width << " w ";
+    app_stream << std::max(GetBorderWidth(annot_dict), 0.0f) << " w ";
 
-  app_stream << "1 J ";  // Rounded Line Caps
-  app_stream << "1 j ";  // Rounded Line Joins (for the corners in the middle)
+    app_stream << "1 J ";  // Rounded Line Caps
+    app_stream << "1 j ";  // Rounded Line Joins (for the corners in the middle)
 
-  app_stream << GetDashPatternString(annot_dict);
+    app_stream << GetDashPatternString(annot_dict);
+  }
 
   std::vector<CFX_PointF> points;
   for (size_t i = 0; i < ink_list->size(); i++) {
@@ -780,20 +821,21 @@ bool GenerateInkAP(APGenerationTarget* target,
       continue;
     }
 
-    const float x0 = coordinates_array->GetFloatAt(0);
-    const float y0 = coordinates_array->GetFloatAt(1);
-    app_stream << x0 << " " << y0 << " m ";
-    points.push_back({x0, y0});
-
-    // Start loop at the second point (index 2) ---
-    // The 'm' command already moves to the first point.
+    const size_t first = points.size();
+    points.push_back(
+        {coordinates_array->GetFloatAt(0), coordinates_array->GetFloatAt(1)});
     for (size_t j = 2; j < coordinates_array->size(); j += 2) {
-      const float x = coordinates_array->GetFloatAt(j);
-      const float y = coordinates_array->GetFloatAt(j + 1);
-      app_stream << x << " " << y << " l ";
-      points.push_back({x, y});
+      points.push_back({coordinates_array->GetFloatAt(j),
+                        coordinates_array->GetFloatAt(j + 1)});
     }
-
+    if (!stroke_color) {
+      continue;
+    }
+    // The 'm' moves to the stroke's first point; every later one is an 'l'.
+    app_stream << points[first].x << " " << points[first].y << " m ";
+    for (size_t j = first + 1; j < points.size(); ++j) {
+      app_stream << points[j].x << " " << points[j].y << " l ";
+    }
     app_stream << "S\n";
   }
 
@@ -820,12 +862,14 @@ bool GenerateSquareAP(APGenerationTarget* target,
                                           CFX_Color::MakeTransparent(),
                                           PaintOperation::kFill);
 
-  app_stream << GetColorStringWithDefault(
-      annot_dict->GetArrayFor(pdfium::annotation::kC).Get(),
-      CFX_Color::MakeRGB(0, 0, 0), PaintOperation::kStroke);
+  const std::optional<ByteString> stroke_color =
+      GetStrokeColorString(annot_dict);
+  if (stroke_color) {
+    app_stream << *stroke_color;
+  }
 
   float border_width = GetBorderWidth(annot_dict);
-  const bool is_stroke_rect = border_width > 0;
+  const bool is_stroke_rect = stroke_color && border_width > 0;
   CloudyBorderInfo cloudy_info = GetCloudyBorderInfo(annot_dict);
 
   if (is_stroke_rect) {
@@ -845,7 +889,9 @@ bool GenerateSquareAP(APGenerationTarget* target,
     GenerateCloudyRectanglePath(app_stream, draw_rect, cloudy_info.intensity,
                                 border_width);
   } else {
-    if (is_stroke_rect) {
+    // The outline's middle sits half its width inside /Rect, painted or not:
+    // a fill without its stroke keeps the stroke's place, as Acrobat draws it.
+    if (border_width > 0) {
       draw_rect.Deflate(border_width / 2, border_width / 2);
     }
     app_stream << draw_rect.left << " " << draw_rect.bottom << " "

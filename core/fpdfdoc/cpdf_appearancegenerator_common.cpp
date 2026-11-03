@@ -519,6 +519,22 @@ ByteString GetColorStringWithDefault(const CPDF_Array* color_array,
   return GenerateColorAP(default_color, operation);
 }
 
+// The stroke colour operator for /C, or none when /C names no colour: left
+// out, or the empty array ISO 32000 defines as "no colour; transparent".
+// Acrobat draws neither with a stroke, so the shape keeps only its fill.
+std::optional<ByteString> GetStrokeColorString(const CPDF_Dictionary* dict) {
+  RetainPtr<const CPDF_Array> color_array =
+      dict->GetArrayFor(pdfium::annotation::kC);
+  if (!color_array) {
+    return std::nullopt;
+  }
+  const CFX_Color color = fpdfdoc::CFXColorFromArray(*color_array);
+  if (color.nColorType == CFX_Color::Type::kTransparent) {
+    return std::nullopt;
+  }
+  return GenerateColorAP(color, PaintOperation::kStroke);
+}
+
 float GetBorderWidth(const CPDF_Dictionary* dict) {
   RetainPtr<const CPDF_Dictionary> border_style_dict = dict->GetDictFor("BS");
   if (border_style_dict) {

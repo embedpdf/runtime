@@ -157,6 +157,7 @@ ByteString GenerateBorderAP(const CFX_FloatRect& rect,
 ByteString GetColorStringWithDefault(const CPDF_Array* color_array,
                                      const CFX_Color& default_color,
                                      PaintOperation operation);
+std::optional<ByteString> GetStrokeColorString(const CPDF_Dictionary* dict);
 float GetBorderWidth(const CPDF_Dictionary* dict);
 ByteString GetDashPatternString(const CPDF_Dictionary* dict);
 ByteString GetPaintOperatorString(bool is_stroke_rect, bool is_fill_rect);
@@ -260,13 +261,25 @@ bool GenerateStrikeOutAP(APGenerationTarget* target,
 
 // cpdf_appearancegenerator_shapes.cpp
 ByteString ReadLineEndingToken(const CPDF_Array* le, size_t idx);
+// `stroked` false fills a closed ending without outlining it: a line with no
+// stroke colour keeps only its filled endings.
 void EmitArrowPath(fxcrt::ostringstream& out,
                    float stroke_w,
                    ArrowStyle style,
-                   bool do_fill);
-void EmitCirclePath(fxcrt::ostringstream& out, float stroke_w, bool filled);
-void EmitSquarePath(fxcrt::ostringstream& out, float stroke_w, bool filled);
-void EmitDiamondPath(fxcrt::ostringstream& out, float stroke_w, bool filled);
+                   bool do_fill,
+                   bool stroked = true);
+void EmitCirclePath(fxcrt::ostringstream& out,
+                    float stroke_w,
+                    bool filled,
+                    bool stroked = true);
+void EmitSquarePath(fxcrt::ostringstream& out,
+                    float stroke_w,
+                    bool filled,
+                    bool stroked = true);
+void EmitDiamondPath(fxcrt::ostringstream& out,
+                     float stroke_w,
+                     bool filled,
+                     bool stroked = true);
 void EmitButtOrSlashPath(fxcrt::ostringstream& out,
                          float stroke_w,
                          float len_factor);
