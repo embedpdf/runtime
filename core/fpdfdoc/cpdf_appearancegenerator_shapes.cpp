@@ -31,6 +31,7 @@
 #include "core/fpdfdoc/cpdf_appearancegenerator_internal.h"
 #include "core/fpdfdoc/cpdf_cloudy_border.h"
 #include "core/fpdfdoc/cpdf_defaultappearance.h"
+#include "core/fpdfdoc/cpdf_ink_curves.h"
 #include "core/fpdfdoc/cpdf_richtext.h"
 #include "core/fpdfdoc/cpdf_richtextlayout.h"
 #include "core/fxcrt/fx_string_wrappers.h"
@@ -431,6 +432,51 @@ bool GenerateDimensionLineAP(APGenerationTarget* target,
                                     points);
 }
 
+// An ink curve's number as Acrobat writes it: to four decimals, without
+// trailing zeros (0.5, 527.6667).
+void WriteInkNumber(fxcrt::ostringstream& stream, double value) {
+  if (!std::isfinite(value)) {
+    stream << "0";
+    return;
+  }
+  ByteString text = ByteString::Format("%.4f", value);
+  text.TrimBack('0');
+  text.TrimBack('.');
+  stream << (text == "-0" ? ByteString("0") : text);
+}
+
+void WriteInkPoint(fxcrt::ostringstream& stream, double x, double y) {
+  WriteInkNumber(stream, x);
+  stream << " ";
+  WriteInkNumber(stream, y);
+}
+
+// One point of ink is Acrobat's dot: a circle of radius 0.5 about it, four
+// quarter arcs from its top, clockwise, closed for the fill.
+void WriteInkDot(fxcrt::ostringstream& stream, const CFX_PointF& center) {
+  constexpr double kRadius = 0.5;
+  // How far each arc's handles reach along its tangents, as Acrobat writes.
+  constexpr double kHandle = 0.2778;
+  const double x = center.x;
+  const double y = center.y;
+  WriteInkPoint(stream, x, y + kRadius);
+  stream << " m\n";
+  const double arcs[4][6] = {
+      {x + kHandle, y + kRadius, x + kRadius, y + kHandle, x + kRadius, y},
+      {x + kRadius, y - kHandle, x + kHandle, y - kRadius, x, y - kRadius},
+      {x - kHandle, y - kRadius, x - kRadius, y - kHandle, x - kRadius, y},
+      {x - kRadius, y + kHandle, x - kHandle, y + kRadius, x, y + kRadius}};
+  for (const auto& arc : arcs) {
+    WriteInkPoint(stream, arc[0], arc[1]);
+    stream << " ";
+    WriteInkPoint(stream, arc[2], arc[3]);
+    stream << " ";
+    WriteInkPoint(stream, arc[4], arc[5]);
+    stream << " c\n";
+  }
+  stream << "h\n";
+}
+
 }  // namespace
 
 namespace appearance_generator {
@@ -800,20 +846,25 @@ bool GenerateInkAP(APGenerationTarget* target,
   const std::optional<ByteString> stroke_color =
       GetStrokeColorString(annot_dict);
 
+  // The stroke as Acrobat sets it: the colour, the width unless it is the
+  // default 1, and round caps. No join: the curves meet smoothly.
   fxcrt::ostringstream app_stream;
-  app_stream << "/" << kGSDictName << " gs ";
+  app_stream << "/" << kGSDictName << " gs\n";
   if (stroke_color) {
     app_stream << *stroke_color;
-
-    app_stream << std::max(GetBorderWidth(annot_dict), 0.0f) << " w ";
-
-    app_stream << "1 J ";  // Rounded Line Caps
-    app_stream << "1 j ";  // Rounded Line Joins (for the corners in the middle)
-
+    const float width = std::max(GetBorderWidth(annot_dict), 0.0f);
+    if (width != 1.0f) {
+      WriteInkNumber(app_stream, width);
+      app_stream << " w\n";
+    }
+    app_stream << "1 J\n";
     app_stream << GetDashPatternString(annot_dict);
   }
 
+  // Each stroke is drawn as Acrobat draws it (cpdf_ink_curves.h): fitted
+  // cubics, or a dot for a stroke of one point.
   std::vector<CFX_PointF> points;
+  bool dot_fill_set = false;
   for (size_t i = 0; i < ink_list->size(); i++) {
     RetainPtr<const CPDF_Array> coordinates_array = ink_list->GetArrayAt(i);
     // An ink stroke needs at least one point to start.
@@ -822,19 +873,39 @@ bool GenerateInkAP(APGenerationTarget* target,
     }
 
     const size_t first = points.size();
-    points.push_back(
-        {coordinates_array->GetFloatAt(0), coordinates_array->GetFloatAt(1)});
-    for (size_t j = 2; j < coordinates_array->size(); j += 2) {
+    for (size_t j = 0; j + 1 < coordinates_array->size(); j += 2) {
       points.push_back({coordinates_array->GetFloatAt(j),
                         coordinates_array->GetFloatAt(j + 1)});
     }
     if (!stroke_color) {
       continue;
     }
-    // The 'm' moves to the stroke's first point; every later one is an 'l'.
-    app_stream << points[first].x << " " << points[first].y << " m ";
-    for (size_t j = first + 1; j < points.size(); ++j) {
-      app_stream << points[j].x << " " << points[j].y << " l ";
+    const pdfium::span<const CFX_PointF> stroke =
+        pdfium::span<const CFX_PointF>(points).subspan(first);
+    const std::vector<InkCubic> curves = FitInkStroke(stroke);
+    if (curves.empty()) {
+      // Acrobat fills the dot without setting a fill colour (black under a
+      // stroke of width 1 or more covers it); ours is the stroke's colour, so
+      // a thinner dot has no black middle.
+      if (!dot_fill_set) {
+        app_stream << GetColorStringWithDefault(
+            annot_dict->GetArrayFor(pdfium::annotation::kC).Get(), {},
+            PaintOperation::kFill);
+        dot_fill_set = true;
+      }
+      WriteInkDot(app_stream, stroke.front());
+      app_stream << "B\n";
+      continue;
+    }
+    WriteInkPoint(app_stream, stroke.front().x, stroke.front().y);
+    app_stream << " m\n";
+    for (const InkCubic& curve : curves) {
+      WriteInkPoint(app_stream, curve.control1.x, curve.control1.y);
+      app_stream << " ";
+      WriteInkPoint(app_stream, curve.control2.x, curve.control2.y);
+      app_stream << " ";
+      WriteInkPoint(app_stream, curve.end.x, curve.end.y);
+      app_stream << " c\n";
     }
     app_stream << "S\n";
   }
