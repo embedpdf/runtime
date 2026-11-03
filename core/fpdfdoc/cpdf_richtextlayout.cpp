@@ -248,6 +248,12 @@ CPDF_RichTextLayout::GraphemeMatch CPDF_RichTextLayout::MatchGrapheme(
   if (fallback >= 0) {
     return {fallback, true};
   }
+  // Latin a face doesn't have (Noto Sans Hebrew has none) is never a box: the
+  // standard face that stands in for the face draws it.
+  const int standard = fonts->FindStandardFallback(face_entry, grapheme);
+  if (standard >= 0) {
+    return {standard, true};
+  }
   // No font has it: the last resort draws it as its box. A grapheme that
   // draws nothing stays with the face, which hides it.
   const int last_resort =
