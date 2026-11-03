@@ -948,6 +948,30 @@ FPDF_EXPORT int FPDF_CALLCONV EPDFPage_PromoteInlineAnnotsRaw(FPDF_DOCUMENT doc,
 FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV EPDFAnnot_IsValid(FPDF_ANNOTATION annot);
 
 // Experimental EmbedPDF Extension API.
+// Change an annotation's kind in place: write its /Subtype and nothing else.
+// It keeps its dictionary, object number, place in /Annots and every other
+// entry. /AP is left as it is, so draw the new kind with
+// EPDFAnnot_GenerateAppearance(). Which kinds may become which is the
+// caller's decision; ISO 32000-2 describes some subtypes with one table of
+// entries (the four text markup subtypes; Square and Circle), and only those
+// share all of them.
+//
+// A widget belongs to its form field and a popup to its parent, so neither
+// changes kind, and no annotation becomes one. FPDFAnnot_GetSubtype() reads
+// the new subtype at once; a form-fill environment's page view loaded before
+// the change keeps the old one until the page is loaded again, as after
+// FPDFPage_CreateAnnot().
+//
+//   annot   - handle to an annotation.
+//   subtype - the new subtype.
+//
+// Returns true on success; false for a null or invalid handle, or when the
+// current or the new subtype is one FPDFAnnot_IsSupportedSubtype() refuses,
+// a widget or a popup.
+FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV
+EPDFAnnot_SetSubtype(FPDF_ANNOTATION annot, FPDF_ANNOTATION_SUBTYPE subtype);
+
+// Experimental EmbedPDF Extension API.
 // Set the /Name entry of an annotation: the icon name of a text, file
 // attachment, or sound annotation, or a stamp's identifier (ISO 32000-2
 // tables 175, 184, 187, 188). Any name is accepted — the predefined sets

@@ -183,6 +183,7 @@ int CheckEmbedPDFCApi(void) {
   CHK(EPDFAnnot_SetRotate);
   CHK(EPDFAnnot_SetStampDrawing);
   CHK(EPDFAnnot_SetStampOpacity);
+  CHK(EPDFAnnot_SetSubtype);
   CHK(EPDFAnnot_SetTextAlignment);
   CHK(EPDFAnnot_SetVertices);
   CHK(EPDFAnnot_UpdateAppearanceToRect);

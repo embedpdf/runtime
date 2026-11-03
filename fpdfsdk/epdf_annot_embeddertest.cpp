@@ -7472,6 +7472,93 @@ TEST_F(EPDFAnnotEmbedderTest, SetNameAcceptsAnyNameAndKeepsAppearance) {
   EXPECT_STREQ(kAcrobatId, buf.data());
 }
 
+TEST_F(EPDFAnnotEmbedderTest, SetSubtypeChangesTheKindInPlace) {
+  embedpdf_test::ScopedTestDocument doc(NewTestDocument());
+  ASSERT_TRUE(doc);
+  ScopedFPDFPage page(FPDFPage_New(doc.get(), 0, 400, 400));
+  ASSERT_TRUE(page);
+
+  ScopedFPDFAnnotation mark(
+      FPDFPage_CreateAnnot(page.get(), FPDF_ANNOT_HIGHLIGHT));
+  ASSERT_TRUE(mark);
+  const FS_QUADPOINTSF quad{50, 330, 250, 330, 50, 310, 250, 310};
+  ASSERT_TRUE(FPDFAnnot_AppendAttachmentPoints(mark.get(), &quad));
+  const FS_RECTF rect{50.0f, 330.0f, 250.0f, 310.0f};
+  ASSERT_TRUE(FPDFAnnot_SetRect(mark.get(), &rect));
+  ASSERT_TRUE(FPDFAnnot_SetColor(mark.get(), FPDFANNOT_COLORTYPE_Color, 0, 0,
+                                 255, 255));
+  ScopedFPDFWideString contents = GetFPDFWideString(L"Check this");
+  ASSERT_TRUE(FPDFAnnot_SetStringValue(mark.get(), "Contents", contents.get()));
+  ASSERT_TRUE(EPDFAnnot_GenerateAppearance(mark.get()));
+  const std::wstring highlight_ap = GetNormalAppearance(mark.get());
+
+  ScopedFPDFAnnotation widget(
+      FPDFPage_CreateAnnot(page.get(), FPDF_ANNOT_WIDGET));
+  ASSERT_TRUE(widget);
+  ScopedFPDFAnnotation popup(
+      FPDFPage_CreateAnnot(page.get(), FPDF_ANNOT_POPUP));
+  ASSERT_TRUE(popup);
+  const int count = FPDFPage_GetAnnotCount(page.get());
+  const int index = FPDFPage_GetAnnotIndex(page.get(), mark.get());
+  ASSERT_GE(index, 0);
+
+  // Refusals: no handle, a subtype the annotation API doesn't create, and a
+  // widget or a popup, either way.
+  EXPECT_FALSE(EPDFAnnot_SetSubtype(nullptr, FPDF_ANNOT_SQUIGGLY));
+  EXPECT_FALSE(EPDFAnnot_SetSubtype(mark.get(), FPDF_ANNOT_UNKNOWN));
+  EXPECT_FALSE(EPDFAnnot_SetSubtype(mark.get(), FPDF_ANNOT_SOUND));
+  EXPECT_FALSE(EPDFAnnot_SetSubtype(mark.get(), FPDF_ANNOT_WIDGET));
+  EXPECT_FALSE(EPDFAnnot_SetSubtype(mark.get(), FPDF_ANNOT_POPUP));
+  EXPECT_FALSE(EPDFAnnot_SetSubtype(widget.get(), FPDF_ANNOT_SQUARE));
+  EXPECT_FALSE(EPDFAnnot_SetSubtype(popup.get(), FPDF_ANNOT_TEXT));
+  EXPECT_EQ(FPDF_ANNOT_HIGHLIGHT, FPDFAnnot_GetSubtype(mark.get()));
+  EXPECT_EQ(FPDF_ANNOT_WIDGET, FPDFAnnot_GetSubtype(widget.get()));
+  EXPECT_EQ(FPDF_ANNOT_POPUP, FPDFAnnot_GetSubtype(popup.get()));
+
+  // The name only: the same annotation in the same place, every entry kept,
+  // the old drawing too.
+  ASSERT_TRUE(EPDFAnnot_SetSubtype(mark.get(), FPDF_ANNOT_SQUIGGLY));
+  EXPECT_EQ(FPDF_ANNOT_SQUIGGLY, FPDFAnnot_GetSubtype(mark.get()));
+  EXPECT_EQ(count, FPDFPage_GetAnnotCount(page.get()));
+  EXPECT_EQ(index, FPDFPage_GetAnnotIndex(page.get(), mark.get()));
+  EXPECT_EQ(1u, FPDFAnnot_CountAttachmentPoints(mark.get()));
+  {
+    unsigned int r = 0, g = 0, b = 0;
+    ASSERT_TRUE(
+        EPDFAnnot_GetColor(mark.get(), FPDFANNOT_COLORTYPE_Color, &r, &g, &b));
+    EXPECT_EQ(255u, b);
+    const unsigned long len =
+        FPDFAnnot_GetStringValue(mark.get(), "Contents", nullptr, 0);
+    ASSERT_GT(len, 0u);
+    std::vector<FPDF_WCHAR> buf = GetFPDFWideStringBuffer(len);
+    FPDFAnnot_GetStringValue(mark.get(), "Contents", buf.data(), len);
+    EXPECT_EQ(L"Check this", GetPlatformWString(buf.data()));
+  }
+  EXPECT_EQ(highlight_ap, GetNormalAppearance(mark.get()));
+
+  // Drawn again, it draws as its new kind; a new handle reads the new kind.
+  ASSERT_TRUE(EPDFAnnot_GenerateAppearance(mark.get()));
+  EXPECT_NE(highlight_ap, GetNormalAppearance(mark.get()));
+  {
+    ScopedFPDFAnnotation again(FPDFPage_GetAnnot(page.get(), index));
+    ASSERT_TRUE(again);
+    EXPECT_EQ(FPDF_ANNOT_SQUIGGLY, FPDFAnnot_GetSubtype(again.get()));
+  }
+
+  // Round trip through a save.
+  ASSERT_TRUE(FPDFPage_GenerateContent(page.get()));
+  ClearString();
+  ASSERT_TRUE(FPDF_SaveAsCopy(doc.get(), this, 0));
+  ScopedSavedDoc saved_doc = OpenScopedSavedDocument();
+  ASSERT_TRUE(saved_doc);
+  ScopedFPDFPage saved_page(FPDF_LoadPage(saved_doc.get(), 0));
+  ASSERT_TRUE(saved_page);
+  ASSERT_EQ(count, FPDFPage_GetAnnotCount(saved_page.get()));
+  ScopedFPDFAnnotation reloaded(FPDFPage_GetAnnot(saved_page.get(), index));
+  ASSERT_TRUE(reloaded);
+  EXPECT_EQ(FPDF_ANNOT_SQUIGGLY, FPDFAnnot_GetSubtype(reloaded.get()));
+}
+
 TEST_F(EPDFAnnotEmbedderTest, GenerateFileAttachmentAppearance) {
   embedpdf_test::ScopedTestDocument doc(NewTestDocument());
   ASSERT_TRUE(doc);
@@ -7815,6 +7902,65 @@ TEST_F(EPDFAnnotEmbedderTest, LayerRemoveAnnotByNamePromotesOnlyThePage) {
   EXPECT_TRUE(EPDFLayer_IsObjectPromoted(doc.layer, page_num));
   EXPECT_FALSE(EPDFLayer_IsObjectPromoted(doc.layer, named));
   EXPECT_FALSE(EPDFLayer_IsObjectPromoted(doc.layer, other));
+}
+
+TEST_F(EPDFAnnotEmbedderTest, LayerSetSubtypeKeepsTheObjectAndAborts) {
+  LayerFixture doc;
+  ASSERT_TRUE(doc.OpenFresh(kTwoAnnots));
+  int index = -1;
+  uint32_t obj_num = 0;
+  {
+    ScopedFPDFPage page(FPDF_LoadPage(doc.layer, 0));
+    ASSERT_TRUE(page);
+    for (int i = 0; i < FPDFPage_GetAnnotCount(page.get()); ++i) {
+      ScopedFPDFAnnotation annot(FPDFPage_GetAnnot(page.get(), i));
+      ASSERT_TRUE(annot);
+      if (FPDFAnnot_GetSubtype(annot.get()) == FPDF_ANNOT_HIGHLIGHT) {
+        index = i;
+        break;
+      }
+    }
+    ASSERT_GE(index, 0);
+    obj_num = AnnotObjNumAt(page.get(), index);
+    ASSERT_NE(0u, obj_num);
+
+    // An aborted transaction leaves the highlight as it was.
+    ASSERT_TRUE(EPDFLayer_BeginTransaction(doc.layer));
+    {
+      ScopedFPDFAnnotation annot(FPDFPage_GetAnnot(page.get(), index));
+      ASSERT_TRUE(annot);
+      ASSERT_TRUE(EPDFAnnot_SetSubtype(annot.get(), FPDF_ANNOT_UNDERLINE));
+      EXPECT_EQ(FPDF_ANNOT_UNDERLINE, FPDFAnnot_GetSubtype(annot.get()));
+    }
+    ASSERT_TRUE(EPDFLayer_AbortTransaction(doc.layer));
+    {
+      ScopedFPDFAnnotation annot(FPDFPage_GetAnnot(page.get(), index));
+      ASSERT_TRUE(annot);
+      EXPECT_EQ(FPDF_ANNOT_HIGHLIGHT, FPDFAnnot_GetSubtype(annot.get()));
+    }
+
+    // A committed one keeps the object: its number and its place.
+    ASSERT_TRUE(EPDFLayer_BeginTransaction(doc.layer));
+    {
+      ScopedFPDFAnnotation annot(FPDFPage_GetAnnot(page.get(), index));
+      ASSERT_TRUE(annot);
+      ASSERT_TRUE(EPDFAnnot_SetSubtype(annot.get(), FPDF_ANNOT_UNDERLINE));
+    }
+    ASSERT_TRUE(EPDFLayer_CommitTransaction(doc.layer));
+    EXPECT_EQ(obj_num, AnnotObjNumAt(page.get(), index));
+    EXPECT_TRUE(EPDFLayer_IsObjectPromoted(doc.layer, obj_num));
+  }
+
+  // The saved delta carries it.
+  std::vector<uint8_t> delta = doc.SaveDelta();
+  ASSERT_FALSE(delta.empty());
+  ASSERT_TRUE(doc.Reopen(std::move(delta)));
+  ScopedFPDFPage page(FPDF_LoadPage(doc.layer, 0));
+  ASSERT_TRUE(page);
+  ScopedFPDFAnnotation annot(FPDFPage_GetAnnot(page.get(), index));
+  ASSERT_TRUE(annot);
+  EXPECT_EQ(FPDF_ANNOT_UNDERLINE, FPDFAnnot_GetSubtype(annot.get()));
+  EXPECT_EQ(obj_num, AnnotObjNumAt(page.get(), index));
 }
 
 TEST_F(EPDFAnnotEmbedderTest, LayerRemoveAnnotByIndexPromotesOnlyThePage) {
