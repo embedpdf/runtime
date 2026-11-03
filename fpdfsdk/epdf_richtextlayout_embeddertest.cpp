@@ -10,6 +10,7 @@
 #include <vector>
 
 #include "core/fpdfapi/font/cpdf_font.h"
+#include "core/fpdfapi/parser/cpdf_dictionary.h"
 #include "core/fpdfapi/parser/cpdf_document.h"
 #include "core/fpdfdoc/cpdf_annotfontmap.h"
 #include "core/fpdfdoc/cpdf_documentfonts.h"
@@ -118,6 +119,12 @@ class EPDFRichTextLayoutEmbedderTest : public EmbedderTest {
     paragraph.props = props;
     paragraph.runs.push_back({text, {}});
     document.paragraphs.push_back(std::move(paragraph));
+    return Arrange(document, width, options);
+  }
+
+  std::vector<Line> Arrange(const CPDF_RichTextDocument& document,
+                            float width = kBoxWidth,
+                            CPDF_RichTextLayout::Options options = {}) {
     fonts_ = std::make_unique<CPDF_AnnotFontMap>(
         CPDFDocumentFromFPDFDocument(doc_.get()),
         /*default_font=*/nullptr, ByteString(),
@@ -351,6 +358,82 @@ TEST_F(EPDFRichTextLayoutEmbedderTest, LastResortDrawsWhatNoFontHas) {
   ASSERT_EQ(1u, lines.size());
   ASSERT_EQ(1u, lines[0].runs.size());
   EXPECT_EQ(arimo_, FontOf(lines[0].runs[0]));
+}
+
+// Latin a face has none of, when no fallback has it either, is drawn in the
+// standard face that stands in for the face, in its style, never as boxes:
+// Noto Sans Khmer has no Latin, so Helvetica draws it, Helvetica-Bold in
+// the bold run. What no standard face has still takes the last resort, and
+// a standard face that drew nothing leaves no font in the resources.
+TEST_F(EPDFRichTextLayoutEmbedderTest, StandardFaceDrawsLatinTheFaceLacks) {
+  const std::string path = TestFont("NotoSansKhmer-Regular.ttf");
+  const EPDF_FONT_ID khmer = Register("Noto Sans Khmer", path);
+  ASSERT_NE(0u, khmer);
+  const std::vector<uint8_t> data = GetFileContents(path.c_str());
+  const EPDF_FONT_ID khmer_bold =
+      EPDFFont_RegisterMemFont64("Noto Sans Khmer", /*weight=*/700,
+                                 /*italic=*/0, data.data(), data.size());
+  ASSERT_NE(0u, khmer_bold);
+  const EPDF_FONT_ID box = Register(
+      "Last Resort", PathService::GetTestFilePath("fonts/last_resort.ttf"));
+  ASSERT_NE(0u, box);
+  ASSERT_TRUE(EPDFFont_SetLastResortFont(box));
+
+  // Each character and the font that draws it, in order.
+  auto drawn = [&](const std::vector<Line>& lines) {
+    std::wstring out;
+    for (const Line& line : lines) {
+      for (const GlyphRun& run : line.runs) {
+        const CPDF_AnnotFontMap::EntryFacts facts =
+            fonts_->DescribeEntry(run.font_entry);
+        const std::wstring font =
+            facts.registered_font_id == khmer        ? L"Khmer"
+            : facts.registered_font_id == khmer_bold ? L"KhmerBold"
+            : facts.registered_font_id == box        ? L"Box"
+            : facts.source == CPDF_AnnotFontMap::Source::kStandard14
+                ? WideString::FromASCII(facts.base_font_name.AsStringView())
+                      .c_str()
+                : L"?";
+        for (size_t i = 0; i < run.text.GetLength(); ++i) {
+          out += run.text[i];
+          out += L":" + font + L" ";
+        }
+      }
+    }
+    return out;
+  };
+
+  CPDF_RichTextDocument document;
+  document.body.family = L"Noto Sans Khmer";
+  document.body.size = kSize;
+  CPDF_RichTextParagraph paragraph;
+  paragraph.runs.push_back({L"Hi \x1780", {}});
+  CPDF_RichTextStyleDelta bold;
+  bold.weight = 700;
+  paragraph.runs.push_back({L" Yo", bold});
+  document.paragraphs.push_back(std::move(paragraph));
+  EXPECT_EQ(
+      L"H:Helvetica i:Helvetica  :Khmer \x1780:Khmer  :KhmerBold "
+      L"Y:Helvetica-Bold o:Helvetica-Bold ",
+      drawn(Arrange(document)));
+  EXPECT_TRUE(DocumentFonts()->missing_characters().empty());
+
+  // A character no standard face has: the box, and no standard font.
+  DocumentFonts()->ClearMissingCharacters();
+  EXPECT_EQ(L"\x4E2D:Box ", drawn(Arrange(L"\x4E2D", /*rtl=*/false, kBoxWidth,
+                                          "Noto Sans Khmer")));
+  EXPECT_EQ(std::vector<WideString>{L"\x4E2D"},
+            DocumentFonts()->missing_characters());
+  RetainPtr<CPDF_Dictionary> resources =
+      fonts_->CreateEphemeralFontResourceDict();
+  ASSERT_TRUE(resources);
+  CPDF_DictionaryLocker locker(resources);
+  for (const auto& [alias, font] : locker) {
+    RetainPtr<const CPDF_Dictionary> font_dict =
+        ToDictionary(font->GetDirect());
+    ASSERT_TRUE(font_dict) << alias;
+    EXPECT_NE("Type1", font_dict->GetNameFor("Subtype")) << alias;
+  }
 }
 
 namespace {

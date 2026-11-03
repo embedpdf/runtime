@@ -186,6 +186,12 @@ class CPDF_AnnotFontMap final {
   // (CFX_FontRegistry::GetFallbackOrder()), that has every character of
   // |grapheme|; -1 when none does or fallbacks are not allowed.
   int FindRichFallback(WideStringView grapheme, int weight, bool italic);
+  // The standard face that stands in for the face |face_entry| draws (its
+  // own standard family, Arial being Helvetica, else Helvetica, in its weight
+  // and italic), when it has every character of |grapheme|: so Latin always
+  // has a font, whatever the face lacks. -1 when it doesn't have them, or is
+  // the face itself. Added as an entry only when it has them.
+  int FindStandardFallback(int face_entry, WideStringView grapheme);
   // The registered last-resort font (CFX_FontRegistry::GetLastResortFont()),
   // which draws a grapheme no font has as its box; -1 when there is none or
   // fallbacks are not allowed.
@@ -318,6 +324,9 @@ class CPDF_AnnotFontMap final {
       const ByteString& base_font_name,
       const CPDF_AnnotFontSubset::FaceIdentity& identity);
   int AddStandardFont(const ByteString& base_font_name);
+  // A standard font as AddStandardFont() writes it (Type1, WinAnsi but for
+  // the symbolic two), not yet an entry; null without a document.
+  RetainPtr<CPDF_Font> NewStandardFont(const ByteString& base_font_name);
   const CPDF_AnnotFontSubset::GlyphIdentity* GlyphIdentityOf(FontEntry* entry);
 
   UnownedPtr<CPDF_Document> const doc_;
@@ -338,6 +347,9 @@ class CPDF_AnnotFontMap final {
   };
   std::vector<PinnedFace> pinned_faces_;
   std::map<ByteString, int> resolved_faces_;  // FaceRequestKey -> entry
+  // The standard fonts FindStandardFallback() asked about, by /BaseFont: a
+  // font is an entry only once it draws something.
+  std::map<ByteString, RetainPtr<CPDF_Font>> standard_fallback_probes_;
   std::vector<FontEntry> fonts_;
 };
 

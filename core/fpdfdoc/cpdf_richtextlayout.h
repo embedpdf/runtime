@@ -136,7 +136,9 @@ class CPDF_RichTextLayout {
 
   // The font a grapheme draws with when its run's face is |face_entry|: the
   // face, when it maps every character of the grapheme; else the first
-  // fallback font, in the order for the style, that maps every character.
+  // fallback font, in the order for the style, that maps every character;
+  // else the standard face that stands in for the face, when it has them
+  // (CPDF_AnnotFontMap::FindStandardFallback()).
   // |covered| is false when none does: the grapheme draws as the last-resort
   // font's box, or as the face's missing glyph when there is no last resort
   // or the grapheme draws nothing. Joiners and variation selectors don't

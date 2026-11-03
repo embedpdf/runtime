@@ -943,6 +943,40 @@ int CPDF_AnnotFontMap::FindRichFallback(WideStringView grapheme,
   return -1;
 }
 
+int CPDF_AnnotFontMap::FindStandardFallback(int face_entry,
+                                            WideStringView grapheme) {
+  if (!fxcrt::IndexInBounds(fonts_, face_entry)) {
+    return -1;
+  }
+  // The standard face the face resolution's rungs 3 and 4 would draw it in.
+  const EntryFacts face = DescribeEntry(face_entry);
+  StandardFamily standard = StandardFamilyFor(face.family);
+  if (standard == StandardFamily::kNone) {
+    standard = StandardFamily::kHelvetica;
+  }
+  const ByteString base_font_name =
+      StandardBaseFontName(standard, face.weight, face.italic);
+  if (base_font_name.IsEmpty() || (face.source == Source::kStandard14 &&
+                                   face.base_font_name == base_font_name)) {
+    return -1;
+  }
+  RetainPtr<CPDF_Font>& probe = standard_fallback_probes_[base_font_name];
+  if (!probe) {
+    probe = NewStandardFont(base_font_name);
+  }
+  for (char32_t cp : pdfium::CodePointView(grapheme)) {
+    if (NeedsGlyph(cp) &&
+        (cp > 0xFFFF ||
+         !PDFontSupportsUnicode(probe, static_cast<uint16_t>(cp)))) {
+      return -1;
+    }
+  }
+  // The /DA font can be this very standard face under another encoding: the
+  // entry found must draw the grapheme too.
+  const int entry = AddStandardFont(base_font_name);
+  return entry >= 0 && CoversText(entry, grapheme) ? entry : -1;
+}
+
 int CPDF_AnnotFontMap::FindLastResort() {
   const CFX_FontRegistry::FontId font_id =
       CFX_FontRegistry::GetLastResortFont();
@@ -1382,16 +1416,7 @@ int CPDF_AnnotFontMap::AddStandardFont(const ByteString& base_font_name) {
       return static_cast<int>(i);
     }
   }
-  // A direct dictionary of our own (the AP resource is a clone of it), so no
-  // document object is touched before Publish.
-  auto font_dict = pdfium::MakeRetain<CPDF_Dictionary>();
-  font_dict->SetNewFor<CPDF_Name>("Type", "Font");
-  font_dict->SetNewFor<CPDF_Name>("Subtype", "Type1");
-  font_dict->SetNewFor<CPDF_Name>("BaseFont", base_font_name);
-  if (base_font_name != "Symbol" && base_font_name != "ZapfDingbats") {
-    font_dict->SetNewFor<CPDF_Name>("Encoding", "WinAnsiEncoding");
-  }
-  RetainPtr<CPDF_Font> font = CPDF_Font::Create(doc_, font_dict, nullptr);
+  RetainPtr<CPDF_Font> font = NewStandardFont(base_font_name);
   if (!font) {
     return -1;
   }
@@ -1404,4 +1429,21 @@ int CPDF_AnnotFontMap::AddStandardFont(const ByteString& base_font_name) {
                   &entry.descent);
   fonts_.push_back(std::move(entry));
   return static_cast<int>(fonts_.size() - 1);
+}
+
+RetainPtr<CPDF_Font> CPDF_AnnotFontMap::NewStandardFont(
+    const ByteString& base_font_name) {
+  if (!doc_ || base_font_name.IsEmpty()) {
+    return nullptr;
+  }
+  // A direct dictionary of our own (the AP resource is a clone of it), so no
+  // document object is touched before Publish.
+  auto font_dict = pdfium::MakeRetain<CPDF_Dictionary>();
+  font_dict->SetNewFor<CPDF_Name>("Type", "Font");
+  font_dict->SetNewFor<CPDF_Name>("Subtype", "Type1");
+  font_dict->SetNewFor<CPDF_Name>("BaseFont", base_font_name);
+  if (base_font_name != "Symbol" && base_font_name != "ZapfDingbats") {
+    font_dict->SetNewFor<CPDF_Name>("Encoding", "WinAnsiEncoding");
+  }
+  return CPDF_Font::Create(doc_, font_dict, nullptr);
 }
