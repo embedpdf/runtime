@@ -4353,6 +4353,13 @@ TEST_F(EPDFAnnotEmbedderTest, TextFieldDrawsItsBorderStyle) {
   EXPECT_THAT(look, HasSubstr(L"] 0 d"));
   EXPECT_THAT(look, Not(HasSubstr(L" re s")));
 
+  // An empty pattern is a solid line (ISO 32000 8.4.3.6).
+  bs->SetNewFor<CPDF_Array>("D");
+  ASSERT_TRUE(EPDFAnnot_GenerateFormFieldAP(annot.get()));
+  look = GetNormalAppearance(annot.get());
+  EXPECT_THAT(look, HasSubstr(L" re s"));
+  EXPECT_THAT(look, Not(HasSubstr(L"] 0 d")));
+
   bs->SetNewFor<CPDF_Name>("S", "U");
   ASSERT_TRUE(EPDFAnnot_GenerateFormFieldAP(annot.get()));
   look = GetNormalAppearance(annot.get());
@@ -7599,6 +7606,73 @@ TEST_F(EPDFAnnotEmbedderTest, DashedBorderDrawsItsDashOrTheDefault) {
   EXPECT_FALSE(appearance_of(FPDF_ANNOT_SQUARE, FPDF_ANNOT_BS_SOLID, {4, 1})
                    .Find("] 0 d")
                    .has_value());
+}
+
+// An empty dash array is a solid line (ISO 32000 8.4.3.6), in /BS /D as in
+// /Border: the border draws no dash and reads solid. A /D left out is the
+// default dash, [3].
+TEST_F(EPDFAnnotEmbedderTest, AnEmptyDashPatternIsASolidLine) {
+  embedpdf_test::ScopedTestDocument doc(NewTestDocument());
+  ASSERT_TRUE(doc);
+  ScopedFPDFPage page(FPDFPage_New(doc.get(), 0, 200, 200));
+  ASSERT_TRUE(page);
+
+  for (int subtype : {FPDF_ANNOT_SQUARE, FPDF_ANNOT_CIRCLE, FPDF_ANNOT_LINE,
+                      FPDF_ANNOT_INK}) {
+    SCOPED_TRACE(subtype);
+    ScopedFPDFAnnotation annot(FPDFPage_CreateAnnot(page.get(), subtype));
+    ASSERT_TRUE(annot);
+    const FS_RECTF rect{/*left=*/10.0f, /*top=*/90.0f, /*right=*/90.0f,
+                        /*bottom=*/10.0f};
+    ASSERT_TRUE(FPDFAnnot_SetRect(annot.get(), &rect));
+    ASSERT_TRUE(
+        EPDFAnnot_SetColor(annot.get(), FPDFANNOT_COLORTYPE_Color, 0, 0, 0));
+    if (subtype == FPDF_ANNOT_LINE) {
+      const FS_POINTF start{20, 20};
+      const FS_POINTF end{80, 80};
+      ASSERT_TRUE(EPDFAnnot_SetLine(annot.get(), &start, &end));
+    } else if (subtype == FPDF_ANNOT_INK) {
+      static constexpr FS_POINTF kStroke[] = {{20, 20}, {50, 80}, {80, 30}};
+      ASSERT_EQ(
+          0, FPDFAnnot_AddInkStroke(annot.get(), kStroke, std::size(kStroke)));
+    }
+    ASSERT_TRUE(EPDFAnnot_SetBorderStyle(annot.get(), FPDF_ANNOT_BS_DASHED, 2));
+    RetainPtr<CPDF_Dictionary> annot_dict =
+        CPDFAnnotContextFromFPDFAnnotation(annot.get())->GetMutableAnnotDict();
+    RetainPtr<CPDF_Dictionary> bs = annot_dict->GetMutableDictFor("BS");
+    ASSERT_TRUE(bs);
+
+    // No /D: the default dash.
+    EXPECT_EQ(FPDF_ANNOT_BS_DASHED,
+              EPDFAnnot_GetBorderStyle(annot.get(), nullptr));
+    ASSERT_TRUE(EPDFAnnot_GenerateAppearance(annot.get()));
+    EXPECT_TRUE(GetNormalAppearanceStreamBytes(annot.get())
+                    .Find("[3 ] 0 d")
+                    .has_value());
+
+    // An empty /D: solid.
+    bs->SetNewFor<CPDF_Array>("D");
+    EXPECT_EQ(FPDF_ANNOT_BS_SOLID,
+              EPDFAnnot_GetBorderStyle(annot.get(), nullptr));
+    EXPECT_EQ(0u, EPDFAnnot_GetBorderDashPatternCount(annot.get()));
+    ASSERT_TRUE(EPDFAnnot_GenerateAppearance(annot.get()));
+    EXPECT_FALSE(
+        GetNormalAppearanceStreamBytes(annot.get()).Find("] 0 d").has_value());
+
+    // A /Border whose dash array is empty, without /BS: solid too.
+    annot_dict->RemoveFor("BS");
+    RetainPtr<CPDF_Array> border =
+        annot_dict->SetNewFor<CPDF_Array>(pdfium::annotation::kBorder);
+    border->AppendNew<CPDF_Number>(0);
+    border->AppendNew<CPDF_Number>(0);
+    border->AppendNew<CPDF_Number>(2);
+    border->AppendNew<CPDF_Array>();
+    EXPECT_EQ(FPDF_ANNOT_BS_SOLID,
+              EPDFAnnot_GetBorderStyle(annot.get(), nullptr));
+    ASSERT_TRUE(EPDFAnnot_GenerateAppearance(annot.get()));
+    EXPECT_FALSE(
+        GetNormalAppearanceStreamBytes(annot.get()).Find("] 0 d").has_value());
+  }
 }
 
 TEST_F(EPDFAnnotEmbedderTest, SetNameAcceptsAnyNameAndKeepsAppearance) {

@@ -66,6 +66,16 @@ std::vector<float> DashValues(const CPDF_Array* dash_array) {
   return values;
 }
 
+// A dashed /BS's pattern (ISO 32000 table 168): its /D, or the default [3]
+// when it names none. An empty /D is a solid line (8.4.3.6): no pattern.
+std::vector<float> BorderStyleDash(const CPDF_Dictionary* border_style_dict) {
+  RetainPtr<const CPDF_Array> dash_array = border_style_dict->GetArrayFor("D");
+  if (!dash_array) {
+    return {kDefaultDash};
+  }
+  return DashValues(dash_array.Get());
+}
+
 // The dash operator for |values|; empty when there are none.
 ByteString DashOperator(const std::vector<float>& values) {
   if (values.empty()) {
@@ -302,10 +312,12 @@ BorderStyleInfo GetBorderStyleInfo(const CPDF_Dictionary* border_style_dict) {
     }
   }
 
-  std::vector<float> dash =
-      DashValues(border_style_dict->GetArrayFor("D").Get());
+  // A dashed border with an empty pattern draws a solid line.
+  std::vector<float> dash = BorderStyleDash(border_style_dict);
   if (!dash.empty()) {
     border_style_info.dash_pattern = std::move(dash);
+  } else if (border_style_info.style == BorderStyle::kDash) {
+    border_style_info.style = BorderStyle::kSolid;
   }
 
   return border_style_info;
@@ -551,20 +563,16 @@ float GetBorderWidth(const CPDF_Dictionary* dict) {
   return 1.0f;
 }
 
-// The dash operator a border draws with: a dashed /BS draws its /D, or the
-// default dash when it names none; a /Border draws its own dash array.
+// The dash operator a border draws with, as ISO 32000 reads it: a dashed /BS
+// draws its /D, or the default dash when it names none, and nothing (a solid
+// line) for an empty one; a /Border draws its own dash array.
 ByteString GetDashPatternString(const CPDF_Dictionary* dict) {
   RetainPtr<const CPDF_Dictionary> border_style_dict = dict->GetDictFor("BS");
   if (border_style_dict) {
     if (border_style_dict->GetByteStringFor("S") != "D") {
       return ByteString();
     }
-    std::vector<float> dash =
-        DashValues(border_style_dict->GetArrayFor("D").Get());
-    if (dash.empty()) {
-      dash.push_back(kDefaultDash);
-    }
-    return DashOperator(dash);
+    return DashOperator(BorderStyleDash(border_style_dict.Get()));
   }
 
   RetainPtr<const CPDF_Array> border_array =
