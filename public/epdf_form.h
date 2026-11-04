@@ -641,7 +641,8 @@ EPDFForm_CreateField(FPDF_DOCUMENT document,
 // merged field). For checkbox/radio fields |on_state| names the widget's
 // checked appearance state and must be non-empty; for other families pass
 // NULL. Adoption wires /Parent + /Kids, seeds toggle /AP states and /AS,
-// and bakes the family-correct appearance stream. Adopting into a legacy
+// and bakes the family-correct appearance stream (a signature field's: its
+// box, EPDFAnnot_GenerateFormFieldAP()). Adopting into a legacy
 // MERGED field first splits it (the field keeps its object number; the
 // previously merged widget becomes a new kid annotation, whose /P names its
 // page - widget identity changes, field identity never does). |split_objnum| is

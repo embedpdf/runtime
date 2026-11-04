@@ -51,6 +51,12 @@ class CPDF_AppearanceGenerator {
                                               FormType type,
                                               const WideString& value_override);
 
+  // A widget that shows only its box, a signature field's or one in no
+  // field: its background (/MK /BG) and border (/MK /BC, /BS) as a text
+  // field draws them, as a new normal appearance.
+  static void GenerateBoxFormAP(CPDF_Document* doc,
+                                CPDF_Dictionary* annot_dict);
+
   // A check box's Off and on appearances: the box, and when on, the symbol
   // its /MK /CA names (a check by default) in its /DA colour (black by
   // default).
