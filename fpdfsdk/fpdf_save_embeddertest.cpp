@@ -166,19 +166,25 @@ TEST_F(FPDFSaveEmbedderTest, SaveLinearizedDoc) {
     original_md5[i] = HashBitmap(bitmap.get());
   }
 
+  // EmbedPDF(layer-mode): the whole file, as layer mode loads it. Loading the
+  // pages never fetched the metadata stream (26), and a save before this
+  // leaves it out while the catalog still refers to it.
+  SetWholeFileAvailable();
   EXPECT_TRUE(FPDF_SaveAsCopy(document(), this, 0));
   EXPECT_THAT(GetString(), StartsWith("%PDF-1.6\r\n"));
   EXPECT_THAT(GetString(), HasSubstr("/Root "));
   EXPECT_THAT(GetString(), HasSubstr("/Info "));
   EXPECT_THAT(GetString(), HasSubstr("/Size 37"));
+  EXPECT_THAT(GetString(), HasSubstr("/Metadata 26 0 R"));
+  EXPECT_THAT(GetString(), HasSubstr("\r\n26 0 obj\r\n"));
   EXPECT_THAT(GetString(), HasSubstr("35 0 obj"));
   EXPECT_THAT(GetString(), HasSubstr("36 0 obj"));
   EXPECT_THAT(GetString(), Not(HasSubstr("37 0 obj")));
   EXPECT_THAT(GetString(), Not(HasSubstr("38 0 obj")));
-  // EmbedPDF(complete-xref): one subsection; 26 and 28 (the linearization
-  // dictionary), which the save doesn't reach, are free entries in it.
-  EXPECT_THAT(GetString(), HasSubstr("xref\r\n0 37\r\n0000000026 65535 f\r\n"));
-  EXPECT_EQ(7912u, GetString().size());
+  // EmbedPDF(complete-xref): one subsection; 28 (the linearization
+  // dictionary), which the save doesn't reach, is its free entry.
+  EXPECT_THAT(GetString(), HasSubstr("xref\r\n0 37\r\n0000000028 65535 f\r\n"));
+  EXPECT_EQ(10982u, GetString().size());
 
   // Make sure new document renders the same as the old one.
   ScopedSavedDoc saved_document = OpenScopedSavedDocument();

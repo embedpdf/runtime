@@ -723,7 +723,13 @@ bool EmbedderTest::OpenDocumentHelper(const ByteString& password,
                                 network_simulator->GetFileAccess()));
   FPDF_AVAIL avail_ptr = avail->get();
   FPDF_DOCUMENT document_ptr = nullptr;
-  if (FPDFAvail_IsLinearized(avail_ptr) == PDF_LINEARIZED) {
+  // EmbedPDF(layer-mode): in layer mode a linearized file opens through the
+  // layer like any other file, unless the test asks for linearized loading.
+  const bool load_linearized =
+      FPDFAvail_IsLinearized(avail_ptr) == PDF_LINEARIZED &&
+      (linearize_option == LinearizeOption::kMustLinearize ||
+       !embedpdf_test::IsLayerModeEnabled());
+  if (load_linearized) {
     int32_t nRet = PDF_DATA_NOTAVAIL;
     while (nRet == PDF_DATA_NOTAVAIL) {
       network_simulator->SetRequestedDataAvailable();
