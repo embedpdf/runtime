@@ -494,7 +494,8 @@ EPDFAnnot_GetRichContent(FPDF_ANNOTATION annot,
 
 // Experimental EmbedPDF Extension API.
 // The rich text of a FreeText annotation (/RC over /DS and /DA), of another
-// markup annotation's comment (/RC), or of a rich text field (/RV), as UTF-8
+// markup annotation's comment (/RC over the reader's defaults, whatever its
+// /DA says), or of a rich text field (/RV over /DA), as UTF-8
 // JSON: {"source":"rc"|"contents","body":{...},
 // "paragraphs":[{"align","dir","runs":[{"text","style":{deltas}}]}],
 // "diagnostics":[{"code","detail"}]}. When there is no rich text the document
@@ -535,8 +536,8 @@ EPDFAnnot_SetRichTextJSON(FPDF_ANNOTATION annot, FPDF_BYTESTRING json_utf8);
 
 // Experimental EmbedPDF Extension API (rich text, Phase D).
 // Import raw XHTML (the XFA rich text subset, e.g. another producer's /RC)
-// over the annotation's DA and DS defaults; same effects and failures as
-// EPDFAnnot_SetRichTextJSON(). Malformed XML returns false.
+// over the defaults EPDFAnnot_GetRichTextJSON() reads it over; same effects
+// and failures as EPDFAnnot_SetRichTextJSON(). Malformed XML returns false.
 FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV
 EPDFAnnot_SetRichTextXHTML(FPDF_ANNOTATION annot, FPDF_WIDESTRING xhtml);
 

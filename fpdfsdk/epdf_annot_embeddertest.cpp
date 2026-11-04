@@ -4288,6 +4288,55 @@ TEST_F(EPDFAnnotEmbedderTest, SetRichTextJSONRefusesKindsThatArentMarkup) {
   }
 }
 
+// A redact's /DA styles its overlay text, not its comment: a comment that
+// states no style reads in the reader's defaults, written by JSON or
+// imported from XHTML, and the overlay keeps its /DA.
+TEST_F(EPDFAnnotEmbedderTest, RedactCommentReadsOverTheReadersDefaults) {
+  embedpdf_test::ScopedTestDocument doc(NewTestDocument());
+  ScopedFPDFPage page(FPDFPage_New(doc.get(), 0, 400, 400));
+  ScopedFPDFAnnotation annot(
+      FPDFPage_CreateAnnot(page.get(), FPDF_ANNOT_REDACT));
+  ASSERT_TRUE(annot);
+  const FS_RECTF rect{50.0f, 320.0f, 200.0f, 280.0f};
+  ASSERT_TRUE(FPDFAnnot_SetRect(annot.get(), &rect));
+  ASSERT_TRUE(EPDFAnnot_SetDefaultAppearance(annot.get(), FPDF_FONT_COURIER,
+                                             10.0f, 255, 0, 0));
+  const std::string reader_body =
+      "\"body\":{\"family\":\"\",\"weight\":400,\"italic\":false,"
+      "\"size\":12,\"color\":\"#000000\",";
+
+  ASSERT_TRUE(EPDFAnnot_SetRichTextJSON(
+      annot.get(),
+      "{\"paragraphs\":[{\"runs\":[{\"text\":\"Approved by \"},"
+      "{\"text\":\"legal\",\"style\":{\"weight\":700}}]}]}"));
+  const CPDF_Dictionary* dict =
+      CPDFAnnotContextFromFPDFAnnotation(annot.get())->GetAnnotDict();
+  EXPECT_TRUE(dict->GetUnicodeTextFor("RC").Contains(
+      L"xfa:spec=\"2.0.2\"><p dir=\"ltr\">Approved by "));
+  std::string json = GetRichTextJson(annot.get());
+  EXPECT_NE(std::string::npos, json.find("\"source\":\"rc\"")) << json;
+  EXPECT_NE(std::string::npos, json.find(reader_body)) << json;
+
+  ScopedFPDFWideString xhtml = GetFPDFWideString(
+      L"<body xmlns=\"http://www.w3.org/1999/xhtml\"><p>Imported</p></body>");
+  ASSERT_TRUE(EPDFAnnot_SetRichTextXHTML(annot.get(), xhtml.get()));
+  EXPECT_TRUE(dict->GetUnicodeTextFor("RC").Contains(
+      L"xfa:spec=\"2.0.2\"><p dir=\"ltr\">Imported</p>"));
+  json = GetRichTextJson(annot.get());
+  EXPECT_NE(std::string::npos, json.find(reader_body)) << json;
+
+  FPDF_STANDARD_FONT font = FPDF_FONT_UNKNOWN;
+  float font_size = 0;
+  unsigned int r = 0;
+  unsigned int g = 0;
+  unsigned int b = 0;
+  ASSERT_TRUE(EPDFAnnot_GetDefaultAppearance(annot.get(), &font, &font_size, &r,
+                                             &g, &b));
+  EXPECT_EQ(FPDF_FONT_COURIER, font);
+  EXPECT_EQ(10.0f, font_size);
+  EXPECT_EQ(255u, r);
+}
+
 TEST_F(EPDFAnnotEmbedderTest, SetRichTextJSONWithRegisteredBodyFont) {
   ScopedRegisteredFonts scoped_fonts;
   std::vector<uint8_t> roboto = LoadRobotoFontData();
