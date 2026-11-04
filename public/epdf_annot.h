@@ -1626,10 +1626,14 @@ FPDF_EXPORT int FPDF_CALLCONV EPDFAnnot_GetMKRotation(FPDF_ANNOTATION annot);
 //             symbol /MK /CA names in the /DA colour. A push button: its
 //             background and border, and its caption (/MK /CA) centred in
 //             the /DA font and colour; an icon (/MK /I) is not drawn.
+//   - /Sig, and a widget in no field -> its box: the background and border
+//             as a text field draws them. It replaces whatever the widget
+//             shows, a signature drawn into it included.
 //
 //   annot - handle to a widget annotation.
 //
-// Returns true on success, false if the annotation is not a form field.
+// Returns true on success, false for another subtype or a field type it
+// doesn't draw.
 FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV
 EPDFAnnot_GenerateFormFieldAP(FPDF_ANNOTATION annot);
 

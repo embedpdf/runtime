@@ -4605,7 +4605,7 @@ FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV
 EPDFAnnot_GenerateFormFieldAP(FPDF_ANNOTATION annot) {
   ScopedFPDFAnnotationView annot_view(annot);
   CPDF_AnnotContext* pContext = CPDFAnnotContextFromFPDFAnnotation(annot);
-  if (!pContext) {
+  if (!pContext || FPDFAnnot_GetSubtype(annot) != FPDF_ANNOT_WIDGET) {
     return false;
   }
 
@@ -4631,8 +4631,10 @@ EPDFAnnot_GenerateFormFieldAP(FPDF_ANNOTATION annot) {
     pLookup = pLookup->GetDictFor("Parent");
   }
 
-  if (ft.IsEmpty()) {
-    return false;
+  // A signature field's widget and one in no field show only their box.
+  if (ft.IsEmpty() || ft == "Sig") {
+    CPDF_AppearanceGenerator::GenerateBoxFormAP(pDoc, pAnnotDict.Get());
+    return true;
   }
 
   uint32_t ff = 0;

@@ -253,21 +253,18 @@ ByteString GenerateListBoxAP(const CPDF_Dictionary* annot_dict,
   return ByteString(body_stream);
 }
 
-void GenerateTextFieldFormAP(fxcrt::ostringstream& app_stream,
-                             const CPDF_Dictionary* annot_dict,
-                             const CFX_FloatRect& bbox,
-                             const DefaultAppearanceInfo& da_info,
-                             CPDF_AnnotFontMap& map,
-                             const CPDF_RichTextLayout::Options& options,
-                             const WideString* value_override) {
-  const AppearanceCharacteristics mk =
-      GetAppearanceCharacteristics(annot_dict->GetDictFor("MK"));
+// A field's background and border, in isolated graphics state: what a text
+// field draws under its text, and all a signature field's box is. A solid
+// border is a stroked rectangle; the other styles draw as a combo box's and
+// a list box's do.
+void WriteFieldBox(fxcrt::ostringstream& app_stream,
+                   const AppearanceCharacteristics& mk,
+                   const BorderStyleInfo& bs,
+                   const CFX_FloatRect& bbox) {
   const bool has_bg =
       mk.background_color.nColorType != CFX_Color::Type::kTransparent;
   const bool has_bc =
       mk.border_color.nColorType != CFX_Color::Type::kTransparent;
-
-  const BorderStyleInfo bs = GetBorderStyleInfo(annot_dict->GetDictFor("BS"));
   const float bw = bs.width;
   const float half_bw = bw / 2.0f;
 
@@ -276,12 +273,6 @@ void GenerateTextFieldFormAP(fxcrt::ostringstream& app_stream,
     stroke_rect.Deflate(half_bw, half_bw);
   }
 
-  CFX_FloatRect body_rect = bbox;
-  body_rect.Deflate(2.0f * bw, bw);
-
-  // Background + border in isolated graphics state. A solid border is a
-  // stroked rectangle; the other styles draw as a combo box's and a list
-  // box's do.
   app_stream << "q\n";
   if (has_bg) {
     app_stream << GenerateColorAP(mk.background_color, PaintOperation::kFill);
@@ -297,6 +288,24 @@ void GenerateTextFieldFormAP(fxcrt::ostringstream& app_stream,
     app_stream << GenerateBorderAP(bbox, bs, mk.border_color);
   }
   app_stream << "Q\n";
+}
+
+void GenerateTextFieldFormAP(fxcrt::ostringstream& app_stream,
+                             const CPDF_Dictionary* annot_dict,
+                             const CFX_FloatRect& bbox,
+                             const DefaultAppearanceInfo& da_info,
+                             CPDF_AnnotFontMap& map,
+                             const CPDF_RichTextLayout::Options& options,
+                             const WideString* value_override) {
+  const AppearanceCharacteristics mk =
+      GetAppearanceCharacteristics(annot_dict->GetDictFor("MK"));
+  const BorderStyleInfo bs = GetBorderStyleInfo(annot_dict->GetDictFor("BS"));
+  const float bw = bs.width;
+
+  CFX_FloatRect body_rect = bbox;
+  body_rect.Deflate(2.0f * bw, bw);
+
+  WriteFieldBox(app_stream, mk, bs, bbox);
 
   // Text content in isolated graphics state with proper clipping
   app_stream << "/Tx BMC\nq\n";
@@ -986,6 +995,25 @@ CPDF_AppearanceGenerator::GenerateEphemeralFormAP(
   }
   return GeneratedAP{std::move(target.ephemeral_fonts),
                      std::move(target.normal_stream)};
+}
+
+// static
+void CPDF_AppearanceGenerator::GenerateBoxFormAP(CPDF_Document* doc,
+                                                 CPDF_Dictionary* annot_dict) {
+  const AppearanceCharacteristics mk =
+      GetAppearanceCharacteristics(annot_dict->GetDictFor("MK"));
+  const BorderStyleInfo bs = GetBorderStyleInfo(annot_dict->GetDictFor("BS"));
+  const AnnotationDimensionsAndColor dims =
+      GetAnnotationDimensionsAndColor(annot_dict);
+
+  fxcrt::ostringstream content;
+  WriteFieldBox(content, mk, bs, dims.bbox);
+  // A new stream, as a check box's are: the old /N may be another widget's
+  // too, or a drawing someone placed in this one.
+  const uint32_t normal_obj_num =
+      CreateFormXObjectStream(doc, content, dims.bbox, dims.matrix);
+  annot_dict->GetOrCreateDictFor(pdfium::annotation::kAP)
+      ->SetNewFor<CPDF_Reference>("N", doc, normal_obj_num);
 }
 
 // static

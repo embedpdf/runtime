@@ -1478,6 +1478,88 @@ TEST_F(EPDFFormEmbedderTest, AttachWidgetsFormsARadioGroup) {
   UnloadPage(page);
 }
 
+TEST_F(EPDFFormEmbedderTest, AttachToSignatureFieldDrawsItsBox) {
+  ASSERT_TRUE(OpenDocument("hello_world.pdf"));
+  FPDF_PAGE page = LoadPage(0);
+  ASSERT_TRUE(page);
+
+  const uint32_t field = EPDFForm_CreateField(
+      document(), EPDF_FORMFIELD_FAMILY_SIGNATURE,
+      GetFPDFWideString(L"approval").get(), 0);
+  ASSERT_GT(field, 0u);
+  const uint32_t widget = CreateWidgetAnnot(page, 20, 200, 180, 240);
+  ASSERT_GT(widget, 0u);
+  {
+    ScopedFPDFAnnotation annot(EPDFPage_GetAnnotByObjectNumber(page, widget));
+    ASSERT_TRUE(annot);
+    ASSERT_TRUE(EPDFAnnot_SetMKColor(annot.get(), EPDF_MK_COLOR_BG, 255, 0, 0));
+    ASSERT_TRUE(EPDFAnnot_SetMKColor(annot.get(), EPDF_MK_COLOR_BC, 0, 0, 255));
+  }
+  ASSERT_TRUE(EPDFForm_AttachWidget(document(), field, widget, nullptr, 0));
+
+  // The box: the background filled, the border stroked inside it.
+  const std::wstring box = GetEffectiveWidgetAppearance(document(), widget);
+  EXPECT_NE(std::wstring::npos, box.find(L"1 0 0 rg"));
+  EXPECT_NE(std::wstring::npos, box.find(L"re f*"));
+  EXPECT_NE(std::wstring::npos, box.find(L"0 0 1 RG"));
+  EXPECT_NE(std::wstring::npos, box.find(L"re s"));
+  UnloadPage(page);
+}
+
+TEST_F(EPDFFormEmbedderTest, SignatureFieldBoxRedrawsInItsNewStyle) {
+  ASSERT_TRUE(OpenDocument("hello_world.pdf"));
+  FPDF_PAGE page = LoadPage(0);
+  ASSERT_TRUE(page);
+
+  const uint32_t field = EPDFForm_CreateField(
+      document(), EPDF_FORMFIELD_FAMILY_SIGNATURE,
+      GetFPDFWideString(L"approval").get(), 0);
+  ASSERT_GT(field, 0u);
+  const uint32_t widget = CreateWidgetAnnot(page, 20, 200, 180, 240);
+  ASSERT_GT(widget, 0u);
+  ASSERT_TRUE(EPDFForm_AttachWidget(document(), field, widget, nullptr, 0));
+  // No colours: an empty box.
+  EXPECT_EQ(std::wstring::npos,
+            GetEffectiveWidgetAppearance(document(), widget).find(L"rg"));
+
+  ScopedFPDFAnnotation annot(EPDFPage_GetAnnotByObjectNumber(page, widget));
+  ASSERT_TRUE(annot);
+  ASSERT_TRUE(EPDFAnnot_SetMKColor(annot.get(), EPDF_MK_COLOR_BG, 0, 255, 0));
+  ASSERT_TRUE(EPDFAnnot_GenerateFormFieldAP(annot.get()));
+  EXPECT_NE(std::wstring::npos,
+            GetEffectiveWidgetAppearance(document(), widget).find(L"0 1 0 rg"));
+  UnloadPage(page);
+}
+
+TEST_F(EPDFFormEmbedderTest, WidgetInNoFieldDrawsItsBox) {
+  ASSERT_TRUE(OpenDocument("hello_world.pdf"));
+  FPDF_PAGE page = LoadPage(0);
+  ASSERT_TRUE(page);
+
+  const uint32_t widget = CreateWidgetAnnot(page, 20, 200, 180, 240);
+  ASSERT_GT(widget, 0u);
+  ScopedFPDFAnnotation annot(EPDFPage_GetAnnotByObjectNumber(page, widget));
+  ASSERT_TRUE(annot);
+  ASSERT_TRUE(EPDFAnnot_SetMKColor(annot.get(), EPDF_MK_COLOR_BG, 0, 0, 255));
+  ASSERT_TRUE(EPDFAnnot_GenerateFormFieldAP(annot.get()));
+  EXPECT_NE(std::wstring::npos,
+            GetEffectiveWidgetAppearance(document(), widget).find(L"0 0 1 rg"));
+  UnloadPage(page);
+}
+
+TEST_F(EPDFFormEmbedderTest, GenerateFormFieldAPRefusesAnotherSubtype) {
+  ASSERT_TRUE(OpenDocument("hello_world.pdf"));
+  FPDF_PAGE page = LoadPage(0);
+  ASSERT_TRUE(page);
+
+  ScopedFPDFAnnotation square(EPDFPage_CreateAnnot(page, FPDF_ANNOT_SQUARE));
+  ASSERT_TRUE(square);
+  EXPECT_FALSE(EPDFAnnot_GenerateFormFieldAP(square.get()));
+  EXPECT_FALSE(EPDFAnnot_HasAppearanceStream(square.get(),
+                                             FPDF_ANNOT_APPEARANCEMODE_NORMAL));
+  UnloadPage(page);
+}
+
 TEST_F(EPDFFormEmbedderTest, AttachToLegacyMergedFieldKeepsFieldId) {
   ASSERT_TRUE(OpenDocument("toggle_fields.pdf"));
   FPDF_PAGE page = LoadPage(0);

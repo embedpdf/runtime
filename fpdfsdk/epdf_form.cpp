@@ -2450,6 +2450,9 @@ void BakeWidgetAppearance(CPDF_Document* doc,
       CPDF_AppearanceGenerator::GenerateFormAP(
           doc, widget, CPDF_AppearanceGenerator::kListBox);
       break;
+    case 7:  // signature: its box, until a signature is drawn into it
+      CPDF_AppearanceGenerator::GenerateBoxFormAP(doc, widget);
+      break;
     default:
       break;
   }
