@@ -43,7 +43,6 @@ class CPDF_PageImageCache {
   bool StartGetCachedBitmap(RetainPtr<CPDF_Image> pImage,
                             const CPDF_Dictionary* pFormResources,
                             const CPDF_Dictionary* pPageResources,
-                            bool bStdCS,
                             CPDF_ColorSpace::Family eFamily,
                             bool bLoadMask,
                             const CFX_Size& max_size_required);
@@ -71,7 +70,6 @@ class CPDF_PageImageCache {
         CPDF_PageImageCache* pPageImageCache,
         const CPDF_Dictionary* pFormResources,
         const CPDF_Dictionary* pPageResources,
-        bool bStdCS,
         CPDF_ColorSpace::Family eFamily,
         bool bLoadMask,
         const CFX_Size& max_size_required);

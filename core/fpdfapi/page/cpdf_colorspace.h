@@ -126,8 +126,7 @@ class CPDF_ColorSpace : public Retainable, public Observable {
                                   int pixels,
                                   int image_width,
                                   int image_height,
-                                  bool bTransMask) const;
-  virtual void EnableStdConversion(bool bEnabled);
+                                  bool is_transparency_mask) const;
   virtual bool IsNormal() const;
 
   // Returns `this` as a CPDF_PatternCS* if `this` is a pattern.
@@ -149,7 +148,6 @@ class CPDF_ColorSpace : public Retainable, public Observable {
   // components count.
   void SetComponentsForStockCS(uint32_t nComponents);
 
-  bool IsStdConversionEnabled() const { return std_conversion_ != 0; }
   bool HasSameArray(const CPDF_Object* pObj) const { return array_ == pObj; }
 
  private:
@@ -160,7 +158,6 @@ class CPDF_ColorSpace : public Retainable, public Observable {
       ByteStringView bsFamilyName);
 
   const Family family_;
-  uint32_t std_conversion_ = 0;
   uint32_t components_ = 0;
   RetainPtr<const CPDF_Array> array_;
 };

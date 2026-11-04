@@ -136,7 +136,7 @@ class CPDF_CalGray final : public CPDF_ColorSpace {
                           int pixels,
                           int image_width,
                           int image_height,
-                          bool bTransMask) const override;
+                          bool is_transparency_mask) const override;
 
  private:
   static constexpr float kDefaultGamma = 1.0f;
@@ -161,7 +161,7 @@ class CPDF_CalRGB final : public CPDF_ColorSpace {
                           int pixels,
                           int image_width,
                           int image_height,
-                          bool bTransMask) const override;
+                          bool is_transparency_mask) const override;
   uint32_t v_Load(CPDF_Document* doc,
                   const CPDF_Array* pArray,
                   std::set<const CPDF_Object*>* pVisited) override;
@@ -195,7 +195,7 @@ class CPDF_LabCS final : public CPDF_ColorSpace {
                           int pixels,
                           int image_width,
                           int image_height,
-                          bool bTransMask) const override;
+                          bool is_transparency_mask) const override;
   uint32_t v_Load(CPDF_Document* doc,
                   const CPDF_Array* pArray,
                   std::set<const CPDF_Object*>* pVisited) override;
@@ -224,7 +224,7 @@ class CPDF_ICCBasedCS final : public CPDF_BasedCS {
                           int pixels,
                           int image_width,
                           int image_height,
-                          bool bTransMask) const override;
+                          bool is_transparency_mask) const override;
   bool IsNormal() const override;
   uint32_t v_Load(CPDF_Document* doc,
                   const CPDF_Array* pArray,
@@ -641,10 +641,9 @@ void CPDF_ColorSpace::TranslateImageLine(pdfium::span<uint8_t> dest_span,
                                          int pixels,
                                          int image_width,
                                          int image_height,
-                                         bool bTransMask) const {
-  // Only applies to CMYK colorspaces. None of the colorspaces that use this
-  // generic base implementation are CMYK.
-  CHECK(!bTransMask);
+                                         bool is_transparency_mask) const {
+  // Transparency masks are only used with CMYK colorspaces, not base CS.
+  CHECK(!is_transparency_mask);
 
   uint8_t* dest_buf = dest_span.data();
   const uint8_t* src_buf = src_span.data();
@@ -661,14 +660,6 @@ void CPDF_ColorSpace::TranslateImageLine(pdfium::span<uint8_t> dest_span,
       *dest_buf++ = static_cast<int32_t>(rgb.red * 255);
     }
   });
-}
-
-void CPDF_ColorSpace::EnableStdConversion(bool bEnabled) {
-  if (bEnabled) {
-    std_conversion_++;
-  } else if (std_conversion_) {
-    std_conversion_--;
-  }
 }
 
 bool CPDF_ColorSpace::IsNormal() const {
@@ -730,8 +721,9 @@ void CPDF_CalGray::TranslateImageLine(pdfium::span<uint8_t> dest_span,
                                       int pixels,
                                       int image_width,
                                       int image_height,
-                                      bool bTransMask) const {
-  CHECK(!bTransMask);  // Only applies to CMYK colorspaces.
+                                      bool is_transparency_mask) const {
+  // Transparency masks are only used with CMYK colorspaces, not CalGray.
+  CHECK(!is_transparency_mask);
 
   auto gray_span = src_span.first(static_cast<size_t>(pixels));
   auto rgb_span = fxcrt::reinterpret_span<FX_RGB_STRUCT<uint8_t>>(dest_span);
@@ -813,8 +805,9 @@ void CPDF_CalRGB::TranslateImageLine(pdfium::span<uint8_t> dest_span,
                                      int pixels,
                                      int image_width,
                                      int image_height,
-                                     bool bTransMask) const {
-  CHECK(!bTransMask);  // Only applies to CMYK colorspaces.
+                                     bool is_transparency_mask) const {
+  // Transparency masks are only used with CMYK colorspaces, not CalRGB.
+  CHECK(!is_transparency_mask);
   fxcodec::ReverseRGB(dest_span, src_span, pixels);
 }
 
@@ -904,8 +897,9 @@ void CPDF_LabCS::TranslateImageLine(pdfium::span<uint8_t> dest_span,
                                     int pixels,
                                     int image_width,
                                     int image_height,
-                                    bool bTransMask) const {
-  CHECK(!bTransMask);  // Only applies to CMYK colorspaces.
+                                    bool is_transparency_mask) const {
+  // Transparency masks are only used with CMYK colorspaces, not Lab.
+  CHECK(!is_transparency_mask);
 
   auto bgr_span = fxcrt::reinterpret_span<FX_BGR_STRUCT<uint8_t>>(dest_span);
   auto lab_span =
@@ -996,8 +990,9 @@ void CPDF_ICCBasedCS::TranslateImageLine(pdfium::span<uint8_t> dest_span,
                                          int pixels,
                                          int image_width,
                                          int image_height,
-                                         bool bTransMask) const {
-  CHECK(!bTransMask);  // Only applies to CMYK colorspaces.
+                                         bool is_transparency_mask) const {
+  // Transparency masks are only used with CMYK colorspaces, not ICCBased.
+  CHECK(!is_transparency_mask);
 
   if (profile_->IsSRGB()) {
     fxcodec::ReverseRGB(dest_span, src_span, pixels);

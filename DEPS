@@ -102,7 +102,7 @@ vars = {
   # Three lines of non-changing comments so that
   # the commit queue can handle CLs rolling catapult
   # and whatever else without interference from each other.
-  'catapult_revision': 'e1165abbf12a3d9ecf2d3151a404c930b5047894',
+  'catapult_revision': 'c29dedc30c9ff1b0cc677e32a9a959ad5ed41bde',
   # Three lines of non-changing comments so that
   # the commit queue can handle CLs rolling clang format
   # and whatever else without interference from each other.
@@ -134,7 +134,7 @@ vars = {
   # Three lines of non-changing comments so that
   # the commit queue can handle CLs rolling fast_float
   # and whatever else without interference from each other.
-  'fast_float_revision': 'b0ab987b3dfdde13fa1915f65ef2a5c068d9208c',
+  'fast_float_revision': '42f254836ee416ffcf2f4e6576260003ac33d48c',
   # Three lines of non-changing comments so that
   # the commit queue can handle CLs rolling fp16
   # and whatever else without interference from each other.
@@ -154,7 +154,7 @@ vars = {
   # Three lines of non-changing comments so that
   # the commit queue can handle CLs rolling gtest
   # and whatever else without interference from each other.
-  'gtest_revision': '4fe3307fb2d9f86d19777c7eb0e4809e9694dde7',
+  'gtest_revision': '0b656495436f57212be8700794a3d5fb14000c5f',
   # Three lines of non-changing comments so that
   # the commit queue can handle CLs rolling HarfBuzz
   # and whatever else without interference from each other.
@@ -166,7 +166,7 @@ vars = {
   # Three lines of non-changing comments so that
   # the commit queue can handle CLs rolling icu
   # and whatever else without interference from each other.
-  'icu_revision': '5aa526207171ecadf31597f0980a7b7ad8872f33',
+  'icu_revision': 'a0ea93436c528ca316a6e698e483e258839101a5',
   # Three lines of non-changing comments so that
   # the commit queue can handle CLs rolling instrumented_lib
   # and whatever else without interference from each other.
@@ -174,7 +174,7 @@ vars = {
   # Three lines of non-changing comments so that
   # the commit queue can handle CLs rolling jinja2
   # and whatever else without interference from each other.
-  'jinja2_revision': 'c3027d884967773057bf74b957e3fea87e5df4d7',
+  'jinja2_revision': 'fde3c16799bd5937e4f15aedc9037c89f96236b9',
   # Three lines of non-changing comments so that
   # the commit queue can handle CLs rolling jpeg_turbo
   # and whatever else without interference from each other.
@@ -204,7 +204,7 @@ vars = {
   # Three lines of non-changing comments so that
   # the commit queue can handle CLs rolling llvm-libc
   # and whatever else without interference from each other.
-  'llvm_libc_revision': '14e51fd2cd7ec21294f18a3a0b2fc5339afea271',
+  'llvm_libc_revision': 'd8f2045008e230f3c5f50095d918c11f1997e477',
   # Three lines of non-changing comments so that
   # the commit queue can handle CLs rolling markupsafe
   # and whatever else without interference from each other.
@@ -244,7 +244,7 @@ vars = {
   # Three lines of non-changing comments so that
   # the commit queue can handle CLs rolling skia
   # and whatever else without interference from each other.
-  'skia_revision': '0abfcf118530e0e46e7e466f6d028041af61581a',
+  'skia_revision': '607de4b035dcf7fdbaafb66c6cc04f22009ff4d4',
   # Three lines of non-changing comments so that
   # the commit queue can handle CLs rolling test_fonts
   # and whatever else without interference from each other.
@@ -264,15 +264,15 @@ vars = {
   # Three lines of non-changing comments so that
   # the commit queue can handle CLs rolling tools_win_revision
   # and whatever else without interference from each other.
-  'tools_win_revision': 'ae34cdd9867c5d2b185fadc9d4a9cc82bb741760',
+  'tools_win_revision': 'd72db9e3040567a7589e00c0ad7ddf25c3b070bc',
   # Three lines of non-changing comments so that
   # the commit queue can handle CLs rolling v8
   # and whatever else without interference from each other.
-  'v8_revision': '0d546234ecf0af2032e958300ef8aeb14bc716c9',
+  'v8_revision': 'bb54fc4e853a1ef1640b160e5e854d0a3b514e29',
   # Three lines of non-changing comments so that
   # the commit queue can handle CLs rolling zlib
   # and whatever else without interference from each other.
-  'zlib_revision': '456ae730017b9b4bd3371927abc82627fd51feef',
+  'zlib_revision': '9f9f52c60a14e8e772fb561029ae0a121fef7609',
 }
 
 # Only these hosts are allowed for dependencies in this DEPS file.
@@ -1005,31 +1005,13 @@ hooks = [
   },
   # Configure remote exec cfg files
   {
-    # Use luci_auth if on windows and using chrome-untrusted project
     'name': 'download_and_configure_reclient_cfgs',
     'pattern': '.',
-    'condition': 'download_remoteexec_cfg and host_os == "win"',
+    'condition': 'download_remoteexec_cfg',
     'action': ['python3',
                'buildtools/reclient_cfgs/configure_reclient_cfgs.py',
                '--rbe_instance',
                Var('rbe_instance'),
-               '--reproxy_cfg_template',
-               'reproxy.cfg.template',
-               '--rewrapper_cfg_project',
-               Var('rewrapper_cfg_project'),
-               '--use_luci_auth_credshelper',
-               '--quiet',
-               ],
-  },  {
-    'name': 'download_and_configure_reclient_cfgs',
-    'pattern': '.',
-    'condition': 'download_remoteexec_cfg and not host_os == "win"',
-    'action': ['python3',
-               'buildtools/reclient_cfgs/configure_reclient_cfgs.py',
-               '--rbe_instance',
-               Var('rbe_instance'),
-               '--reproxy_cfg_template',
-               'reproxy.cfg.template',
                '--rewrapper_cfg_project',
                Var('rewrapper_cfg_project'),
                '--quiet',
@@ -1043,8 +1025,6 @@ hooks = [
                'buildtools/reclient_cfgs/configure_reclient_cfgs.py',
                '--rbe_instance',
                Var('rbe_instance'),
-               '--reproxy_cfg_template',
-               'reproxy.cfg.template',
                '--rewrapper_cfg_project',
                Var('rewrapper_cfg_project'),
                '--skip_remoteexec_cfg_fetch',

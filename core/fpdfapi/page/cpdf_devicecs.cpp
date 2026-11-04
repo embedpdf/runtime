@@ -62,13 +62,6 @@ std::optional<FX_RGB_STRUCT<float>> CPDF_DeviceCS::GetRGB(
     case Family::kDeviceCMYK: {
       const auto& cmyk =
           fxcrt::reinterpret_span<const FX_CMYK_STRUCT<float>>(pBuf).front();
-      if (IsStdConversionEnabled()) {
-        return FX_RGB_STRUCT<float>{
-            1.0f - std::min(1.0f, cmyk.cyan + cmyk.key),
-            1.0f - std::min(1.0f, cmyk.magenta + cmyk.key),
-            1.0f - std::min(1.0f, cmyk.yellow + cmyk.key),
-        };
-      }
       return AdobeCmykToStandardRgbF(
           NormalizeChannel(cmyk.cyan), NormalizeChannel(cmyk.magenta),
           NormalizeChannel(cmyk.yellow), NormalizeChannel(cmyk.key));
@@ -83,11 +76,12 @@ void CPDF_DeviceCS::TranslateImageLine(pdfium::span<uint8_t> dest_span,
                                        int pixels,
                                        int image_width,
                                        int image_height,
-                                       bool bTransMask) const {
+                                       bool is_transparency_mask) const {
   auto rgb_out = fxcrt::reinterpret_span<FX_RGB_STRUCT<uint8_t>>(dest_span);
   switch (GetFamily()) {
     case Family::kDeviceGray:
-      CHECK(!bTransMask);  // bTransMask only allowed for CMYK colorspaces.
+      // Transparency masks are only used with CMYK colorspaces, not DeviceGray.
+      CHECK(!is_transparency_mask);
       // Compiler can't conclude src/dest don't overlap, avoid interleaved
       // loads and stores by not using an auto& reference here.
       for (const auto pix : src_span.first(static_cast<size_t>(pixels))) {
@@ -98,13 +92,14 @@ void CPDF_DeviceCS::TranslateImageLine(pdfium::span<uint8_t> dest_span,
       }
       break;
     case Family::kDeviceRGB:
-      CHECK(!bTransMask);  // bTransMask only allowed for CMYK colorspaces.
+      // Transparency masks are only used with CMYK colorspaces, not DeviceRGB.
+      CHECK(!is_transparency_mask);
       fxcodec::ReverseRGB(dest_span, src_span, pixels);
       break;
     case Family::kDeviceCMYK: {
       auto cmyk_in =
           fxcrt::reinterpret_span<const FX_CMYK_STRUCT<uint8_t>>(src_span);
-      if (bTransMask) {
+      if (is_transparency_mask) {
         // Compiler can't conclude src/dest don't overlap, avoid interleaved
         // loads and stores by not using an auto& reference here.
         for (const auto cmyk : cmyk_in.first(static_cast<size_t>(pixels))) {
@@ -112,18 +107,6 @@ void CPDF_DeviceCS::TranslateImageLine(pdfium::span<uint8_t> dest_span,
           rgb_out.front().red = ((255 - cmyk.cyan) * k) / 255;
           rgb_out.front().green = ((255 - cmyk.magenta) * k) / 255;
           rgb_out.front().blue = ((255 - cmyk.yellow) * k) / 255;
-          rgb_out = rgb_out.subspan<1u>();
-        }
-        break;
-      }
-      if (IsStdConversionEnabled()) {
-        // Compiler can't conclude src/dest don't overlap, avoid interleaved
-        // loads and stores by not using am auto& reference here,
-        for (const auto cmyk : cmyk_in.first(static_cast<size_t>(pixels))) {
-          const uint8_t k = cmyk.key;
-          rgb_out.front().blue = 255 - std::min(255, cmyk.cyan + k);
-          rgb_out.front().green = 255 - std::min(255, cmyk.magenta + k);
-          rgb_out.front().red = 255 - std::min(255, cmyk.yellow + k);
           rgb_out = rgb_out.subspan<1u>();
         }
         break;
