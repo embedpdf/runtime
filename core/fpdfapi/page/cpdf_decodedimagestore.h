@@ -38,7 +38,6 @@ class CPDF_DecodedImageStore {
     Key(RetainPtr<const CPDF_Stream> stream,
         const CPDF_Document* document,
         RetainPtr<const CPDF_Dictionary> page_resources,
-        bool std_cs,
         CPDF_ColorSpace::Family family,
         bool load_mask);
     Key(const Key& that);
@@ -56,7 +55,6 @@ class CPDF_DecodedImageStore {
     RetainPtr<const CPDF_Dictionary> page_resources_;
     // The document's address: only compared, never used.
     uintptr_t document_;
-    bool std_cs_;
     CPDF_ColorSpace::Family family_;
     bool load_mask_;
   };
@@ -80,7 +78,6 @@ class CPDF_DecodedImageStore {
   // keep such an image.
   static std::optional<Key> KeyFor(const CPDF_Image& image,
                                    const CPDF_Dictionary* page_resources,
-                                   bool std_cs,
                                    CPDF_ColorSpace::Family family,
                                    bool load_mask);
 

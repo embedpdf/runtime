@@ -758,10 +758,9 @@ std::optional<Decoded> Decode(CPDF_Document* doc,
   // CPDF_DIB reads both only when it loads the image's mask.
   const bool load_mask = inline_alpha || matte;
   auto dib = pdfium::MakeRetain<CPDF_DIB>(doc, std::move(stream));
-  CPDF_DIB::LoadState state =
-      dib->StartLoadDIBBase(load_mask, resources, page_resources,
-                            /*bStdCS=*/false, CPDF_ColorSpace::Family::kUnknown,
-                            /*bLoadMask=*/load_mask, CFX_Size());
+  CPDF_DIB::LoadState state = dib->StartLoadDIBBase(
+      load_mask, resources, page_resources, CPDF_ColorSpace::Family::kUnknown,
+      /*bLoadMask=*/load_mask, CFX_Size());
   while (state == CPDF_DIB::LoadState::kContinue) {
     state = dib->ContinueLoadDIBBase(nullptr);
   }

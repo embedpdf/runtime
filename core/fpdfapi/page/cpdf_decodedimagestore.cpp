@@ -46,16 +46,15 @@ struct CPDF_DecodedImageStore::Entry {
   const size_t bytes;
 };
 
-CPDF_DecodedImageStore::Key::Key(RetainPtr<const CPDF_Stream> stream,
-                                 const CPDF_Document* document,
-                                 RetainPtr<const CPDF_Dictionary> page_resources,
-                                 bool std_cs,
-                                 CPDF_ColorSpace::Family family,
-                                 bool load_mask)
+CPDF_DecodedImageStore::Key::Key(
+    RetainPtr<const CPDF_Stream> stream,
+    const CPDF_Document* document,
+    RetainPtr<const CPDF_Dictionary> page_resources,
+    CPDF_ColorSpace::Family family,
+    bool load_mask)
     : stream_(std::move(stream)),
       page_resources_(std::move(page_resources)),
       document_(reinterpret_cast<uintptr_t>(document)),
-      std_cs_(std_cs),
       family_(family),
       load_mask_(load_mask) {}
 
@@ -67,10 +66,9 @@ CPDF_DecodedImageStore::Key& CPDF_DecodedImageStore::Key::operator=(
 CPDF_DecodedImageStore::Key::~Key() = default;
 
 bool CPDF_DecodedImageStore::Key::operator<(const Key& that) const {
-  return std::tie(stream_, page_resources_, document_, std_cs_, family_,
-                  load_mask_) < std::tie(that.stream_, that.page_resources_,
-                                         that.document_, that.std_cs_,
-                                         that.family_, that.load_mask_);
+  return std::tie(stream_, page_resources_, document_, family_, load_mask_) <
+         std::tie(that.stream_, that.page_resources_, that.document_,
+                  that.family_, that.load_mask_);
 }
 
 CPDF_DecodedImageStore::Decoded::Decoded() = default;
@@ -100,7 +98,6 @@ CPDF_DecodedImageStore* CPDF_DecodedImageStore::Get() {
 std::optional<CPDF_DecodedImageStore::Key> CPDF_DecodedImageStore::KeyFor(
     const CPDF_Image& image,
     const CPDF_Dictionary* page_resources,
-    bool std_cs,
     CPDF_ColorSpace::Family family,
     bool load_mask) {
   CPDF_DecodedImageStore* store = Get();
@@ -114,7 +111,7 @@ std::optional<CPDF_DecodedImageStore::Key> CPDF_DecodedImageStore::KeyFor(
     return std::nullopt;
   }
   return Key(std::move(stream), image.GetDocument(),
-             pdfium::WrapRetain(page_resources), std_cs, family, load_mask);
+             pdfium::WrapRetain(page_resources), family, load_mask);
 }
 
 CPDF_DecodedImageStore::CPDF_DecodedImageStore() = default;

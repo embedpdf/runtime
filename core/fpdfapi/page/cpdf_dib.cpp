@@ -162,14 +162,6 @@ bool CPDF_DIB::Load() {
   return ContinueInternal();
 }
 
-bool CPDF_DIB::ContinueToLoadMask() {
-  if (color_space_ && std_cs_) {
-    color_space_->EnableStdConversion(true);
-  }
-
-  return ContinueInternal();
-}
-
 bool CPDF_DIB::ContinueInternal() {
   if (image_mask_) {
     SetMaskProperties();
@@ -213,11 +205,9 @@ CPDF_DIB::LoadState CPDF_DIB::StartLoadDIBBase(
     bool bHasMask,
     const CPDF_Dictionary* pFormResources,
     const CPDF_Dictionary* pPageResources,
-    bool bStdCS,
     CPDF_ColorSpace::Family GroupFamily,
     bool bLoadMask,
     const CFX_Size& max_size_required) {
-  std_cs_ = bStdCS;
   has_mask_ = bHasMask;
   group_family_ = GroupFamily;
   load_mask_ = bLoadMask;
@@ -240,7 +230,7 @@ CPDF_DIB::LoadState CPDF_DIB::StartLoadDIBBase(
     return LoadState::kFail;
   }
 
-  if (!ContinueToLoadMask()) {
+  if (!ContinueInternal()) {
     return LoadState::kFail;
   }
 
@@ -252,9 +242,6 @@ CPDF_DIB::LoadState CPDF_DIB::StartLoadDIBBase(
 
   DCHECK_EQ(iCreatedDecoder, LoadState::kSuccess);
   DCHECK_EQ(iLoadedMask, LoadState::kSuccess);
-  if (color_space_ && std_cs_) {
-    color_space_->EnableStdConversion(false);
-  }
   return LoadState::kSuccess;
 }
 
@@ -326,13 +313,6 @@ CPDF_DIB::LoadState CPDF_DIB::ContinueLoadDIBBase(PauseIndicatorIface* pPause) {
       status_ = LoadState::kContinue;
     }
   }
-  if (iContinueStatus == LoadState::kContinue) {
-    return LoadState::kContinue;
-  }
-
-  if (color_space_ && std_cs_) {
-    color_space_->EnableStdConversion(false);
-  }
   return iContinueStatus;
 }
 
@@ -387,6 +367,11 @@ bool CPDF_DIB::LoadColorInfo(const CPDF_Dictionary* pFormResources,
   // decoded.
   components_ = color_space_->ComponentCount();
   family_ = color_space_->GetFamily();
+  if (family_ == CPDF_ColorSpace::Family::kPattern) {
+    // Per ISO 32000-1:2008, section 8.9.5.1, table 89, the ColorSpace entry of
+    // an image dictionary can be any type of color space except Pattern.
+    return false;
+  }
   if (family_ == CPDF_ColorSpace::Family::kICCBased && pCSObj->IsName()) {
     ByteString cs = pCSObj->GetString();
     if (cs == "DeviceGray") {
@@ -877,8 +862,7 @@ CPDF_DIB::LoadState CPDF_DIB::StartLoadMask() {
   }
 
   RetainPtr<const CPDF_Array> pMatte = mask->GetDict()->GetArrayFor("Matte");
-  if (pMatte && color_space_ && family_ != CPDF_ColorSpace::Family::kPattern &&
-      pMatte->size() == components_ &&
+  if (pMatte && color_space_ && pMatte->size() == components_ &&
       color_space_->ComponentCount() <= components_) {
     std::vector<float> colors =
         ReadArrayElementsToVector(pMatte.Get(), components_);
@@ -899,10 +883,6 @@ CPDF_DIB::LoadState CPDF_DIB::ContinueLoadMaskDIB(PauseIndicatorIface* pPause) {
   LoadState ret = mask_->ContinueLoadDIBBase(pPause);
   if (ret == LoadState::kContinue) {
     return LoadState::kContinue;
-  }
-
-  if (color_space_ && std_cs_) {
-    color_space_->EnableStdConversion(false);
   }
 
   if (ret == LoadState::kFail) {
@@ -944,7 +924,7 @@ CPDF_DIB::LoadState CPDF_DIB::StartLoadMaskDIB(
     RetainPtr<const CPDF_Stream> mask_stream) {
   mask_ = pdfium::MakeRetain<CPDF_DIB>(document_, std::move(mask_stream));
   LoadState ret =
-      mask_->StartLoadDIBBase(false, nullptr, nullptr, true,
+      mask_->StartLoadDIBBase(false, nullptr, nullptr,
                               CPDF_ColorSpace::Family::kUnknown, false, {0, 0});
   if (ret == LoadState::kContinue) {
     if (status_ == LoadState::kFail) {
@@ -959,7 +939,7 @@ CPDF_DIB::LoadState CPDF_DIB::StartLoadMaskDIB(
 }
 
 void CPDF_DIB::LoadPalette() {
-  if (!color_space_ || family_ == CPDF_ColorSpace::Family::kPattern) {
+  if (!color_space_) {
     return;
   }
 
@@ -1108,7 +1088,7 @@ void CPDF_DIB::TranslateScanline24bpp(
       rgb.red = (1.0f - color_values[0]) * k;
       rgb.green = (1.0f - color_values[1]) * k;
       rgb.blue = (1.0f - color_values[2]) * k;
-    } else if (family_ != CPDF_ColorSpace::Family::kPattern) {
+    } else {
       rgb = color_space_->GetRGBOrZerosOnError(color_values);
     }
     const float R = std::clamp(rgb.red, 0.0f, 1.0f);
