@@ -207,6 +207,7 @@ TEST_F(CPDFSecurityHandlerEmbedderTest, SetRuntimeOwnerPermissions) {
 
 TEST_F(CPDFSecurityHandlerEmbedderTest, PasswordAfterGenerateSave) {
   {
+    // Plain in layer mode too: the test asks for linearized loading.
     ASSERT_TRUE(OpenDocumentWithOptions("encrypted.pdf", "5678",
                                         LinearizeOption::kMustLinearize,
                                         JavaScriptOption::kEnableJavaScript));

@@ -16,7 +16,9 @@ namespace embedpdf_test {
 // Layer mode runs the embedder tests through EmbedPDF's layer documents
 // (docs/embedpdf/fork-ledger.md, rule layer-mode). With
 // EPDF_EMBEDDER_LAYER_MODE=1 set, every document a test opens from a file is a
-// fresh layer over a frozen base. The base is never written, so a write that
+// fresh layer over a frozen base, a linearized file included. Only a test that
+// asks for linearized loading (LinearizeOption::kMustLinearize) still gets
+// FPDFAvail's plain document. The base is never written, so a write that
 // bypasses the layer's copy-up door trips DCHECK_PDF_WRITABLE. Like the
 // engine, layer mode never drives the form-fill environment: the harness
 // still creates one, but sends it no page events and doesn't draw with it.
