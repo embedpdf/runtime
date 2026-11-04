@@ -1777,8 +1777,26 @@ EPDFAnnot_GetRichTextJSON(FPDF_ANNOTATION annot,
 
 namespace {
 
-// The rich text setters share one path: build the document, then write
-// all four forms and the appearance through CPDF_RichTextWriter, or nothing.
+// The kinds ISO 32000-2 Table 171 marks as markup: the ones /RC is an entry
+// of (§12.5.6.2).
+bool IsMarkupSubtype(const ByteString& subtype) {
+  static constexpr const char* kMarkup[] = {
+      "Text",      "FreeText", "Line",      "Square",    "Circle",
+      "Polygon",   "PolyLine", "Highlight", "Underline", "Squiggly",
+      "StrikeOut", "Caret",    "Stamp",     "Ink",       "FileAttachment",
+      "Sound",     "Redact",   "Projection"};
+  for (const char* name : kMarkup) {
+    if (subtype == name) {
+      return true;
+    }
+  }
+  return false;
+}
+
+// The rich text setters share one path. A free text draws its rich text:
+// all four forms and the appearance through CPDF_RichTextWriter, or
+// nothing. Another markup annotation's is its comment: /RC and /Contents.
+// Every other kind has none.
 bool ApplyRichTextDocument(FPDF_ANNOTATION annot,
                            const CPDF_RichTextDocument& document) {
   CPDF_AnnotContext* context = CPDFAnnotContextFromFPDFAnnotation(annot);
@@ -1786,8 +1804,16 @@ bool ApplyRichTextDocument(FPDF_ANNOTATION annot,
     return false;
   }
   RetainPtr<CPDF_Dictionary> annot_dict = context->GetMutableAnnotDict();
-  if (!annot_dict || annot_dict->GetNameFor("Subtype") != "FreeText") {
+  if (!annot_dict) {
     return false;
+  }
+  const ByteString subtype = annot_dict->GetNameFor("Subtype");
+  if (subtype != "FreeText") {
+    if (!IsMarkupSubtype(subtype)) {
+      return false;
+    }
+    CPDF_RichTextWriter::ApplyComment(annot_dict.Get(), document);
+    return true;
   }
   CPDF_Document* doc = context->GetPage()->GetDocument();
   if (!doc) {

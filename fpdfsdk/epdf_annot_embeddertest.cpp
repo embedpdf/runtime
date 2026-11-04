@@ -4164,6 +4164,130 @@ TEST_F(EPDFAnnotEmbedderTest, SetRichTextXHTMLImportsOverDefaults) {
   EXPECT_NE(std::string::npos, json.find("\"size\":16"));
 }
 
+// /RC is every markup annotation's comment (ISO 32000-2 §12.5.6.2). Acrobat
+// 26 writes a note's with no body style, Enter as "&#10;" inside a span, and
+// "font-size:-14.0pt" on every span, a size nothing can be: the body's
+// stays.
+TEST_F(EPDFAnnotEmbedderTest, AcrobatNoteCommentReadsAsRichText) {
+  ASSERT_TRUE(OpenDocument("text_rich_comment_acrobat.pdf"));
+  ScopedPage page = LoadScopedPage(0);
+  ASSERT_TRUE(page);
+  ScopedFPDFAnnotation annot(FPDFPage_GetAnnot(page.get(), 0));
+  ASSERT_EQ(FPDF_ANNOT_TEXT, FPDFAnnot_GetSubtype(annot.get()));
+  const std::string json = GetRichTextJson(annot.get());
+  EXPECT_NE(std::string::npos, json.find("\"source\":\"rc\"")) << json;
+  EXPECT_NE(std::string::npos,
+            json.find("\"body\":{\"family\":\"\",\"weight\":400,"
+                      "\"italic\":false,\"size\":12,"))
+      << json;
+  EXPECT_NE(std::string::npos,
+            json.find("{\"text\":\"test\",\"style\":{\"weight\":700,"
+                      "\"italic\":false}}"))
+      << json;
+  EXPECT_NE(std::string::npos,
+            json.find("{\"text\":\"you\",\"style\":{\"weight\":400,"
+                      "\"italic\":false,\"decoration\":[\"underline\"]}}"))
+      << json;
+  EXPECT_NE(std::string::npos, json.find("{\"text\":\"?\\r\\r\",")) << json;
+  EXPECT_NE(std::string::npos,
+            json.find("{\"text\":\"Test\",\"style\":{\"weight\":400,"
+                      "\"italic\":true}}"))
+      << json;
+}
+
+// Any other markup annotation's rich text is its comment, which draws
+// nothing: /RC and /Contents, as Acrobat writes a note's, and no /DS, /DA or
+// appearance. The body states only what differs from a comment that states
+// nothing, so the one it was read with is written as nothing.
+TEST_F(EPDFAnnotEmbedderTest, SetRichTextJSONWritesACommentAsAcrobatDoes) {
+  embedpdf_test::ScopedTestDocument doc(NewTestDocument());
+  ScopedFPDFPage page(FPDFPage_New(doc.get(), 0, 400, 400));
+  ScopedFPDFAnnotation annot(FPDFPage_CreateAnnot(page.get(), FPDF_ANNOT_TEXT));
+  ASSERT_TRUE(annot);
+  const FS_RECTF rect{50.0f, 320.0f, 70.0f, 300.0f};
+  ASSERT_TRUE(FPDFAnnot_SetRect(annot.get(), &rect));
+
+  ASSERT_TRUE(EPDFAnnot_SetRichTextJSON(
+      annot.get(),
+      "{\"paragraphs\":[{\"runs\":[{\"text\":\"Hello \"},"
+      "{\"text\":\"bold\",\"style\":{\"weight\":700}}]},"
+      "{\"runs\":[{\"text\":\"two\\rlines\"}]}]}"));
+  CPDF_AnnotContext* context = CPDFAnnotContextFromFPDFAnnotation(annot.get());
+  const CPDF_Dictionary* dict = context->GetAnnotDict();
+  EXPECT_EQ(
+      L"<?xml version=\"1.0\"?><body xmlns=\"http://www.w3.org/1999/xhtml\" "
+      L"xmlns:xfa=\"http://www.xfa.org/schema/xfa-data/1.0/\" "
+      L"xfa:APIVersion=\"EmbedPDF:1.0\" xfa:spec=\"2.0.2\">"
+      L"<p dir=\"ltr\">Hello <span style=\"font-weight:bold\">bold</span></p>"
+      L"<p dir=\"ltr\">two&#13;lines</p></body>",
+      dict->GetUnicodeTextFor("RC"));
+  EXPECT_EQ(L"Hello bold\rtwo\rlines", dict->GetUnicodeTextFor("Contents"));
+  EXPECT_FALSE(dict->KeyExist("DS"));
+  EXPECT_FALSE(dict->KeyExist("DA"));
+  EXPECT_FALSE(dict->KeyExist("AP"));
+
+  const std::string json = GetRichTextJson(annot.get());
+  EXPECT_NE(std::string::npos, json.find("\"source\":\"rc\"")) << json;
+  EXPECT_NE(std::string::npos, json.find("\"family\":\"\",")) << json;
+  EXPECT_NE(std::string::npos,
+            json.find("{\"text\":\"bold\",\"style\":{\"weight\":700}}"))
+      << json;
+
+  // A body states what differs from that: here its size and colour.
+  ScopedFPDFAnnotation square(
+      FPDFPage_CreateAnnot(page.get(), FPDF_ANNOT_SQUARE));
+  ASSERT_TRUE(square);
+  ASSERT_TRUE(EPDFAnnot_SetRichTextJSON(
+      square.get(),
+      "{\"body\":{\"size\":10,\"color\":\"#FF0000\"},"
+      "\"paragraphs\":[{\"runs\":[{\"text\":\"Note\"}]}]}"));
+  EXPECT_TRUE(CPDFAnnotContextFromFPDFAnnotation(square.get())
+                  ->GetAnnotDict()
+                  ->GetUnicodeTextFor("RC")
+                  .Contains(L"xfa:spec=\"2.0.2\" "
+                            L"style=\"font-size:10.0pt;color:#FF0000\">"
+                            L"<p dir=\"ltr\">Note</p></body>"));
+}
+
+// Acrobat's comment, read and written back, reads the same: the redundant
+// "normal" on its spans kept, its impossible size gone.
+TEST_F(EPDFAnnotEmbedderTest, AcrobatCommentWrittenBackReadsTheSame) {
+  ASSERT_TRUE(OpenDocument("text_rich_comment_acrobat.pdf"));
+  ScopedPage page = LoadScopedPage(0);
+  ASSERT_TRUE(page);
+  ScopedFPDFAnnotation annot(FPDFPage_GetAnnot(page.get(), 0));
+  ASSERT_TRUE(annot);
+  const std::string before = GetRichTextJson(annot.get());
+  ASSERT_TRUE(EPDFAnnot_SetRichTextJSON(annot.get(), before.c_str()));
+  const std::string after = GetRichTextJson(annot.get());
+  // The diagnostics differ: the size Acrobat wrote is no longer there.
+  EXPECT_EQ(before.substr(0, before.find("\"diagnostics\"")),
+            after.substr(0, after.find("\"diagnostics\"")));
+  const CPDF_Dictionary* dict =
+      CPDFAnnotContextFromFPDFAnnotation(annot.get())->GetAnnotDict();
+  EXPECT_FALSE(dict->GetUnicodeTextFor("RC").Contains(L"-14.0pt"));
+  EXPECT_EQ(L"test test how are you?\r\rTest",
+            dict->GetUnicodeTextFor("Contents"));
+}
+
+// Only markup annotations have rich text: a link's or a popup's write is
+// refused and changes nothing.
+TEST_F(EPDFAnnotEmbedderTest, SetRichTextJSONRefusesKindsThatArentMarkup) {
+  embedpdf_test::ScopedTestDocument doc(NewTestDocument());
+  ScopedFPDFPage page(FPDFPage_New(doc.get(), 0, 400, 400));
+  for (FPDF_ANNOTATION_SUBTYPE subtype : {FPDF_ANNOT_LINK, FPDF_ANNOT_POPUP}) {
+    SCOPED_TRACE(testing::Message() << "subtype " << subtype);
+    ScopedFPDFAnnotation annot(FPDFPage_CreateAnnot(page.get(), subtype));
+    ASSERT_TRUE(annot);
+    const CPDF_Dictionary* dict =
+        CPDFAnnotContextFromFPDFAnnotation(annot.get())->GetAnnotDict();
+    const std::string before = SerializeObject(dict);
+    EXPECT_FALSE(EPDFAnnot_SetRichTextJSON(
+        annot.get(), "{\"paragraphs\":[{\"runs\":[{\"text\":\"a\"}]}]}"));
+    EXPECT_EQ(before, SerializeObject(dict));
+  }
+}
+
 TEST_F(EPDFAnnotEmbedderTest, SetRichTextJSONWithRegisteredBodyFont) {
   ScopedRegisteredFonts scoped_fonts;
   std::vector<uint8_t> roboto = LoadRobotoFontData();

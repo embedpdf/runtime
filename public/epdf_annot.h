@@ -493,8 +493,9 @@ EPDFAnnot_GetRichContent(FPDF_ANNOTATION annot,
                          unsigned long buflen);
 
 // Experimental EmbedPDF Extension API.
-// The rich text of a FreeText annotation (/RC over /DS and /DA) or of a rich
-// text field (/RV), as UTF-8 JSON: {"source":"rc"|"contents","body":{...},
+// The rich text of a FreeText annotation (/RC over /DS and /DA), of another
+// markup annotation's comment (/RC), or of a rich text field (/RV), as UTF-8
+// JSON: {"source":"rc"|"contents","body":{...},
 // "paragraphs":[{"align","dir","runs":[{"text","style":{deltas}}]}],
 // "diagnostics":[{"code","detail"}]}. When there is no rich text the document
 // is synthesised from /Contents (one paragraph per line break) and "source" is
@@ -521,7 +522,13 @@ EPDFAnnot_GetRichTextJSON(FPDF_ANNOTATION annot,
 // change nothing. An unresolvable family is not a failure: it substitutes
 // and the run reads back "degraded".
 //
-//   annot     - handle to a FreeText annotation.
+// Any other markup annotation's rich text is its comment (ISO 32000-2
+// §12.5.6.2), which draws nothing: /RC and /Contents are written, the body
+// stating only what differs from a comment that states nothing (its reader's
+// face, 12 pt, black, left-aligned), and the appearance stays. A kind that
+// isn't markup (link, popup, widget, ...) returns false.
+//
+//   annot     - handle to a markup annotation.
 //   json_utf8 - the document, UTF-8 JSON.
 FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV
 EPDFAnnot_SetRichTextJSON(FPDF_ANNOTATION annot, FPDF_BYTESTRING json_utf8);
