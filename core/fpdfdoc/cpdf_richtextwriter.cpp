@@ -224,6 +224,45 @@ WideString SpanStyle(const CPDF_RichTextStyleDelta& delta) {
   return css;
 }
 
+// Acrobat's XHTML envelope around the paragraphs, the body styled with
+// |body_css| when it says anything.
+WideString RichContent(const WideString& body_css,
+                       const CPDF_RichTextDocument& document) {
+  WideString xml =
+      L"<?xml version=\"1.0\"?><body xmlns=\"http://www.w3.org/1999/xhtml\" "
+      L"xmlns:xfa=\"http://www.xfa.org/schema/xfa-data/1.0/\" "
+      L"xfa:APIVersion=\"";
+  xml += kApiVersion;
+  xml += L"\" xfa:spec=\"2.0.2\"";
+  if (!body_css.IsEmpty()) {
+    xml += L" style=\"" + EscapeXml(body_css) + L"\"";
+  }
+  xml += L">";
+  for (const CPDF_RichTextParagraph& paragraph : document.paragraphs) {
+    xml += L"<p dir=\"";
+    xml += paragraph.props.rtl ? L"rtl" : L"ltr";
+    xml += L"\"";
+    const WideString css =
+        ParagraphStyle(paragraph.props, document.body_paragraph);
+    if (!css.IsEmpty()) {
+      xml += L" style=\"" + EscapeXml(css) + L"\"";
+    }
+    xml += L">";
+    for (const CPDF_RichTextRun& run : paragraph.runs) {
+      const WideString span_css = SpanStyle(run.style);
+      if (span_css.IsEmpty()) {
+        xml += EscapeXml(run.text);
+      } else {
+        xml += L"<span style=\"" + EscapeXml(span_css) + L"\">" +
+               EscapeXml(run.text) + L"</span>";
+      }
+    }
+    xml += L"</p>";
+  }
+  xml += L"</body>";
+  return xml;
+}
+
 }  // namespace
 
 CPDF_RichTextWriter::Prepared::Prepared() = default;
@@ -277,36 +316,61 @@ WideString CPDF_RichTextWriter::SerializeRC(
   if (!extra_paragraph.IsEmpty()) {
     body_css += L";" + extra_paragraph;
   }
+  return RichContent(body_css, document);
+}
 
-  WideString xml =
-      L"<?xml version=\"1.0\"?><body xmlns=\"http://www.w3.org/1999/xhtml\" "
-      L"xmlns:xfa=\"http://www.xfa.org/schema/xfa-data/1.0/\" "
-      L"xfa:APIVersion=\"";
-  xml += kApiVersion;
-  xml += L"\" xfa:spec=\"2.0.2\" style=\"" + EscapeXml(body_css) + L"\">";
-  for (const CPDF_RichTextParagraph& paragraph : document.paragraphs) {
-    xml += L"<p dir=\"";
-    xml += paragraph.props.rtl ? L"rtl" : L"ltr";
-    xml += L"\"";
-    const WideString css =
-        ParagraphStyle(paragraph.props, document.body_paragraph);
-    if (!css.IsEmpty()) {
-      xml += L" style=\"" + EscapeXml(css) + L"\"";
-    }
-    xml += L">";
-    for (const CPDF_RichTextRun& run : paragraph.runs) {
-      const WideString span_css = SpanStyle(run.style);
-      if (span_css.IsEmpty()) {
-        xml += EscapeXml(run.text);
-      } else {
-        xml += L"<span style=\"" + EscapeXml(span_css) + L"\">" +
-               EscapeXml(run.text) + L"</span>";
-      }
-    }
-    xml += L"</p>";
+// static
+WideString CPDF_RichTextWriter::SerializeCommentRC(
+    const CPDF_RichTextDocument& document) {
+  // What the parser reads from a comment that states nothing.
+  const CPDF_RichTextStyle assumed;
+  const CPDF_RichTextParagraphProps assumed_paragraph;
+  const CPDF_RichTextStyle& body = document.body;
+  WideString body_css;
+  if (body.size != assumed.size) {
+    AppendDeclaration(&body_css, L"font-size", Points(body.size));
   }
-  xml += L"</body>";
-  return xml;
+  if (document.body_paragraph.align != assumed_paragraph.align) {
+    AppendDeclaration(&body_css, L"text-align",
+                      AlignName(document.body_paragraph.align));
+  }
+  if (body.color != assumed.color) {
+    AppendDeclaration(&body_css, L"color", HexColor(body.color));
+  }
+  if (body.weight != assumed.weight) {
+    AppendDeclaration(&body_css, L"font-weight", WeightName(body.weight));
+  }
+  if (body.italic != assumed.italic) {
+    AppendDeclaration(&body_css, L"font-style", L"italic");
+  }
+  if (body.family != assumed.family) {
+    AppendDeclaration(&body_css, L"font-family", FamilyValue(body.family));
+  }
+  if (body.decoration) {
+    AppendDeclaration(&body_css, L"text-decoration",
+                      DecorationValue(body.decoration));
+  }
+  if (body.letter_spacing != assumed.letter_spacing) {
+    AppendDeclaration(&body_css, L"letter-spacing",
+                      Points(body.letter_spacing));
+  }
+  if (body.horz_scale != assumed.horz_scale) {
+    AppendDeclaration(
+        &body_css, L"xfa-font-horizontal-scale",
+        WideString::Format(L"%d",
+                           static_cast<int>(body.horz_scale * 100 + 0.5f)));
+  }
+  CPDF_RichTextParagraphProps without_align = document.body_paragraph;
+  without_align.align = assumed_paragraph.align;
+  const WideString extra_paragraph =
+      ParagraphStyle(without_align, assumed_paragraph);
+  if (!extra_paragraph.IsEmpty()) {
+    if (!body_css.IsEmpty()) {
+      body_css += L";";
+    }
+    body_css += extra_paragraph;
+  }
+  return RichContent(body_css, document);
 }
 
 // static
@@ -443,4 +507,16 @@ bool CPDF_RichTextWriter::Apply(CPDF_Document* doc,
   }
   Publish(doc, annot_dict, std::move(prepared));
   return true;
+}
+
+// static
+void CPDF_RichTextWriter::ApplyComment(CPDF_Dictionary* annot_dict,
+                                       const CPDF_RichTextDocument& document) {
+  if (!annot_dict) {
+    return;
+  }
+  annot_dict->SetNewFor<CPDF_String>(
+      "RC", SerializeCommentRC(document).AsStringView());
+  annot_dict->SetNewFor<CPDF_String>("Contents",
+                                     ProjectPlainText(document).AsStringView());
 }

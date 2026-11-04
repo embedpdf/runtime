@@ -5,6 +5,8 @@
 // (Acrobat's XHTML envelope), /DS, /DA, /Contents and the appearance, in the
 // two halves of the Phase C note §6. Prepare builds everything off to the
 // side and touches nothing; Publish writes it all, or nothing was written.
+// Any other markup annotation's rich text is its comment (ISO 32000-2
+// §12.5.6.2), which draws nothing: ApplyComment writes /RC and /Contents.
 
 #ifndef CORE_FPDFDOC_CPDF_RICHTEXTWRITER_H_
 #define CORE_FPDFDOC_CPDF_RICHTEXTWRITER_H_
@@ -54,6 +56,10 @@ class CPDF_RichTextWriter {
                     CPDF_Dictionary* annot_dict,
                     const CPDF_RichTextDocument& document,
                     bool* degraded);
+  // A markup annotation's comment: /RC (SerializeCommentRC) and its plain
+  // projection in /Contents. The appearance stays: a comment draws nothing.
+  static void ApplyComment(CPDF_Dictionary* annot_dict,
+                           const CPDF_RichTextDocument& document);
 
   // Test-only: forwards to CPDF_AnnotFontMap::FailAfterStagedFontsForTesting.
   static void FailAfterStagedFontsForTesting(int staged_count);
@@ -61,6 +67,11 @@ class CPDF_RichTextWriter {
   // The four forms, exposed for tests. |da_color| is the annotation's DA
   // (border) colour, which DS repeats by Acrobat's convention.
   static WideString SerializeRC(const CPDF_RichTextDocument& document);
+  // A comment's /RC, as Acrobat writes a note's: the body states only what
+  // differs from what a reader assumes when it states nothing (its own face,
+  // 12 pt, black, left-aligned), so a comment written with the body it was
+  // read with reads back the same.
+  static WideString SerializeCommentRC(const CPDF_RichTextDocument& document);
   static WideString BuildDefaultStyle(const CPDF_RichTextDocument& document,
                                       FX_ARGB da_color);
   static WideString ProjectPlainText(const CPDF_RichTextDocument& document);
