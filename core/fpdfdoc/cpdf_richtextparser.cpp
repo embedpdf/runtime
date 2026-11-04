@@ -1273,6 +1273,11 @@ void CPDF_RichTextParser::DefaultsFromAnnotation(
   if (!annot_dict) {
     return;
   }
+  // A comment draws nothing: the reader's defaults stand.
+  const ByteString subtype = annot_dict->GetNameFor("Subtype");
+  if (subtype != "FreeText" && subtype != "Widget") {
+    return;
+  }
 
   // /DA: font name (→ face through /DR), size, colour.
   CPDF_DefaultAppearance da(annot_dict, acroform_dict);
@@ -1321,7 +1326,7 @@ void CPDF_RichTextParser::DefaultsFromAnnotation(
     }
     defaults = ApplyRichTextStyleDelta(defaults, ds_delta);
   }
-  if (defaults.size <= 0 && annot_dict->GetNameFor("Subtype") == "FreeText") {
+  if (defaults.size <= 0 && subtype == "FreeText") {
     defaults.size = 12.0f;  // DA size 0 (auto) has no meaning for rich text
   }
 }

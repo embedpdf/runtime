@@ -53,15 +53,20 @@ class CPDF_RichTextParser {
       const CPDF_RichTextStyle& defaults,
       const CPDF_RichTextParagraphProps& paragraph_defaults);
 
-  // The document an annotation holds: /RC (or /RV for widgets) over
-  // DA ∪ DS defaults, else its /Contents (or /V) as plain text.
+  // The document an annotation holds: /RC (or /RV for widgets) over its
+  // defaults (DefaultsFromAnnotation()), else its /Contents (or /V) as plain
+  // text.
   static CPDF_RichTextDocument FromAnnotation(
       const CPDF_Dictionary* annot_dict,
       const CPDF_Dictionary* acroform_dict,
       const CPDF_Document* doc = nullptr);
 
-  // DA ∪ DS alone (no /RC): the defaults an imported XHTML body style is
-  // applied on top of.
+  // The defaults an annotation's rich text is read over, and an imported
+  // XHTML body style is applied on top of. A free text's and a widget's
+  // rich text is the text they draw, so its defaults are DA ∪ DS (and /Q,
+  // /TextColor). Any other annotation's rich text is its comment, which
+  // draws nothing: its defaults are the reader's (CPDF_RichTextStyle{}),
+  // whatever a /DA says. A redact's /DA styles its overlay text.
   static void DefaultsFromAnnotation(
       const CPDF_Dictionary* annot_dict,
       const CPDF_Dictionary* acroform_dict,
