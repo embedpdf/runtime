@@ -20,20 +20,23 @@ struct FxFreeDeleter {
 template <typename T>
 struct IsFXDataPartitionException : std::false_type {};
 
-// Use with caution. No further checks are made to see if `T` is appropriate
-// for the Data Partition (e.g. no pointers, strings, vtables, etc.). This
-// declaration must occur in the top-level namespace.
-#define FX_DATA_PARTITION_EXCEPTION(T) \
-  template <>                          \
+// Use ONLY for external / third-party types (e.g. Skia, Apple CoreGraphics)
+// whose definitions cannot include `kIsDataPartitionSafe`.
+#define FX_EXTERNAL_DATA_PARTITION_SAFE(T) \
+  template <>                              \
   struct IsFXDataPartitionException<T> : std::true_type {}
+
+template <typename T>
+concept FxDataPartitionType = std::is_arithmetic_v<T> || std::is_enum_v<T> ||
+                              IsFXDataPartitionException<T>::value ||
+                              requires { requires T::kIsDataPartitionSafe; };
 
 // Allocators for mapping STL containers onto Partition Alloc.
 // Otherwise, replacing e.g. the FX_AllocUninit/FX_Free pairs with STL may
 // undo some of the nice segregation that we get from PartitionAlloc.
 template <class T, void* Alloc(size_t, size_t), void Free(void*)>
 struct FxPartitionAllocAllocator {
-  static_assert(std::is_arithmetic<T>::value || std::is_enum<T>::value ||
-                    IsFXDataPartitionException<T>::value,
+  static_assert(FxDataPartitionType<T>,
                 "Only numeric types allowed in this partition");
 
   using value_type = T;
@@ -85,9 +88,7 @@ struct FxPartitionAllocAllocator {
 
 // Used to put backing store for std::vector<> and such into the
 // general partition, ensuring they contain data only.
-template <typename T>
-  requires(std::is_arithmetic<T>::value || std::is_enum<T>::value ||
-           IsFXDataPartitionException<T>::value)
+template <FxDataPartitionType T>
 using FxAllocAllocator = FxPartitionAllocAllocator<T,
                                                    pdfium::internal::AllocOrDie,
                                                    pdfium::internal::Dealloc>;

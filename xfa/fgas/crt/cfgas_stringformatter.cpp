@@ -359,9 +359,6 @@ bool ParseLocaleDate(const WideString& wsDate,
       *cc += symbol.GetLength();
     }
   }
-  if (*cc < spDate.size()) {
-    return false;
-  }
 
   datetime->SetDate(year, month, day);
   return !!(*cc);
@@ -1687,7 +1684,7 @@ bool CFGAS_StringFormatter::ParseNum(LocaleMgrIface* pLocaleMgr,
       decimal = decimal * CFGAS_Decimal(powf(10, iExponent), 3);
     }
     if (bHavePercentSymbol) {
-      decimal = decimal / CFGAS_Decimal(100);
+      decimal.DivBy100();
     }
     *wsValue = decimal.ToWideString();
   }
@@ -1860,26 +1857,32 @@ bool CFGAS_StringFormatter::ParseDateTime(LocaleMgrIface* pLocaleMgr,
   }
 
   size_t iStart = 0;
+  bool success = false;
   switch (eCategory) {
     case DateTimeType::kDate:
-      return ParseLocaleDate(wsSrcDateTime, wsDatePattern, pLocale, dtValue,
-                             &iStart);
+      success = ParseLocaleDate(wsSrcDateTime, wsDatePattern, pLocale, dtValue,
+                                &iStart);
+      break;
     case DateTimeType::kTime:
-      return ParseLocaleTime(wsSrcDateTime, wsTimePattern, pLocale, dtValue,
-                             &iStart);
+      success = ParseLocaleTime(wsSrcDateTime, wsTimePattern, pLocale, dtValue,
+                                &iStart);
+      break;
     case DateTimeType::kDateTime:
-      return ParseLocaleDate(wsSrcDateTime, wsTimePattern, pLocale, dtValue,
-                             &iStart) &&
-             ParseLocaleTime(wsSrcDateTime, wsDatePattern, pLocale, dtValue,
-                             &iStart);
+      success = ParseLocaleDate(wsSrcDateTime, wsDatePattern, pLocale, dtValue,
+                                &iStart) &&
+                ParseLocaleTime(wsSrcDateTime, wsTimePattern, pLocale, dtValue,
+                                &iStart);
+      break;
     case DateTimeType::kTimeDate:
-      return ParseLocaleTime(wsSrcDateTime, wsTimePattern, pLocale, dtValue,
-                             &iStart) &&
-             ParseLocaleDate(wsSrcDateTime, wsDatePattern, pLocale, dtValue,
-                             &iStart);
+      success = ParseLocaleTime(wsSrcDateTime, wsTimePattern, pLocale, dtValue,
+                                &iStart) &&
+                ParseLocaleDate(wsSrcDateTime, wsDatePattern, pLocale, dtValue,
+                                &iStart);
+      break;
     case DateTimeType::kUnknown:
       return false;
   }
+  return success && iStart == wsSrcDateTime.GetLength();
 }
 
 bool CFGAS_StringFormatter::ParseZero(const WideString& wsSrcText) const {
@@ -2070,9 +2073,12 @@ bool CFGAS_StringFormatter::FormatNum(LocaleMgrIface* pLocaleMgr,
 
       while (decimal.IsNotZero() &&
              fabs(decimal.ToDouble()) > threshold.ValueOrDie()) {
-        decimal = decimal / CFGAS_Decimal(10);
+        decimal.DivBy10();
         ++exponent;
       }
+    }
+    if (fixed_count > 0 && (bAdjusted || exponent != 0)) {
+      wsSrcNum = decimal.ToWideString();
     }
   }
 

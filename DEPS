@@ -142,11 +142,11 @@ vars = {
   # Three lines of non-changing comments so that
   # the commit queue can handle CLs rolling freetype
   # and whatever else without interference from each other.
-  'freetype_revision': '891f904e2e7b4289f615598cd4b69832f87d2f3a',
+  'freetype_revision': '25167984d2435930f9178e8d9d2ca3bdfa71a4e7',
   # Three lines of non-changing comments so that
   # the commit queue can handle CLs rolling GN CIPD package version
   # and whatever else without interference from each other.
-  'gn_version': 'git_revision:841e072bef419ae1116477dc75e8c5a662c0212c',
+  'gn_version': 'git_revision:98f6dd2be85d0eba8f31ee3ad1def5402383cff3',
   # Three lines of non-changing comments so that
   # the commit queue can handle CLs rolling goldctl CIPD package version
   # and whatever else without interference from each other.
@@ -188,7 +188,7 @@ vars = {
   # Three lines of non-changing comments so that
   # the commit queue can handle CLs rolling libc++abi
   # and whatever else without interference from each other.
-  'libcxxabi_revision': '09351f6ec00c2b65f2d03585ae6da07098b024dc',
+  'libcxxabi_revision': 'ce814c994055b107c631c310b1c668e3714c0704',
   # Three lines of non-changing comments so that
   # the commit queue can handle CLs rolling libpng
   # and whatever else without interference from each other.
@@ -196,7 +196,7 @@ vars = {
   # Three lines of non-changing comments so that
   # the commit queue can handle CLs rolling libunwind
   # and whatever else without interference from each other.
-  'libunwind_revision': 'eb1ca4993b534b7d565daee144bbc7f9072b967b',
+  'libunwind_revision': '9e44ea2ff4f53a60c2a3d2b6f511d7bab9ab12f0',
   # Three lines of non-changing comments so that
   # the commit queue can handle CLs rolling libyuv
   # and whatever else without interference from each other.
@@ -240,7 +240,7 @@ vars = {
   # Three lines of non-changing comments so that
   # the commit queue can handle CLs rolling siso
   # and whatever else without interference from each other.
-  'siso_version': 'git_revision:c574896b272b40aac6e44c228ee0b471ea7e3d7d',
+  'siso_version': 'git_revision:dfc32e4edca158cff2b64a1658ee3940f0116b3a',
   # Three lines of non-changing comments so that
   # the commit queue can handle CLs rolling skia
   # and whatever else without interference from each other.
