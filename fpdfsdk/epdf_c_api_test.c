@@ -482,11 +482,16 @@ int CheckEmbedPDFCApi(void) {
   CHK(EPDFNumberFormat_SetText);
   CHK(EPDFNumberFormat_SetUnit);
   CHK(EPDFPage_AddViewport);
+  CHK(EPDFPage_AddViewportRaw);
   CHK(EPDFPage_CountViewports);
+  CHK(EPDFPage_CountViewportsRaw);
   CHK(EPDFPage_FindViewport);
   CHK(EPDFPage_GetViewport);
+  CHK(EPDFPage_GetViewportRaw);
   CHK(EPDFPage_RemoveViewport);
+  CHK(EPDFPage_RemoveViewportRaw);
   CHK(EPDFViewport_AddMeasure);
+  CHK(EPDFViewport_Close);
   CHK(EPDFViewport_GetBBox);
   CHK(EPDFViewport_GetMeasure);
   CHK(EPDFViewport_GetName);

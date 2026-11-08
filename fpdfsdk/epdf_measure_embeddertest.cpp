@@ -148,6 +148,11 @@ TEST_F(EPDFMeasureEmbedderTest, BadArgumentsAndRejectedWrites) {
   EXPECT_EQ(nullptr, EPDFPage_AddViewport(nullptr, &kBox));
   EXPECT_FALSE(EPDFPage_RemoveViewport(nullptr, 0));
   EXPECT_EQ(-1, EPDFPage_FindViewport(nullptr, nullptr));
+  EXPECT_EQ(0u, EPDFPage_CountViewportsRaw(nullptr, 0));
+  EXPECT_EQ(nullptr, EPDFPage_GetViewportRaw(nullptr, 0, 0));
+  EXPECT_EQ(nullptr, EPDFPage_AddViewportRaw(nullptr, 0, &kBox));
+  EXPECT_FALSE(EPDFPage_RemoveViewportRaw(nullptr, 0, 0));
+  EPDFViewport_Close(nullptr);
   EXPECT_FALSE(EPDFViewport_GetBBox(nullptr, nullptr));
   EXPECT_FALSE(EPDFViewport_SetBBox(nullptr, &kBox));
   EXPECT_FALSE(EPDFViewport_SetName(nullptr, nullptr));
@@ -346,6 +351,110 @@ TEST_F(EPDFMeasureEmbedderTest, ViewportsFindLastAndInvalidateOnRemoval) {
   EXPECT_EQ(L"second", Ratio(EPDFViewport_GetMeasure(remaining)));
   EXPECT_TRUE(EPDFPage_RemoveViewport(page.get(), 0));
   EXPECT_FALSE(CPDFPageFromFPDFPage(page.get())->GetDict()->KeyExist("VP"));
+}
+
+TEST_F(EPDFMeasureEmbedderTest, RawViewportsReadWhatTheLoadedPageReads) {
+  auto bytes = Base();
+  embedpdf_test::ScopedTestDocument doc(embedpdf_test::LoadMemDocumentForTest(
+      bytes.data(), bytes.size(), nullptr));
+  EXPECT_EQ(1u, EPDFPage_CountViewportsRaw(doc.get(), 0));
+  EXPECT_EQ(0u, EPDFPage_CountViewportsRaw(doc.get(), 1));
+  EXPECT_EQ(0u, EPDFPage_CountViewportsRaw(doc.get(), -1));
+  EXPECT_EQ(nullptr, EPDFPage_GetViewportRaw(doc.get(), 0, 1));
+  EXPECT_EQ(nullptr, EPDFPage_GetViewportRaw(doc.get(), 1, 0));
+  auto raw = EPDFPage_GetViewportRaw(doc.get(), 0, 0);
+  ASSERT_TRUE(raw);
+  FS_RECTF box;
+  ASSERT_TRUE(EPDFViewport_GetBBox(raw, &box));
+  EXPECT_FLOAT_EQ(612, box.right);
+  EXPECT_FLOAT_EQ(792, box.top);
+  EXPECT_EQ(0u, EPDFViewport_GetName(raw, nullptr, 0));
+  EXPECT_EQ(L"page scale", Ratio(EPDFViewport_GetMeasure(raw)));
+  // A loaded page reads the same viewport; closing its handle does nothing.
+  ScopedFPDFPage page(FPDF_LoadPage(doc.get(), 0));
+  EXPECT_EQ(1u, EPDFPage_CountViewports(page.get()));
+  auto loaded = EPDFPage_GetViewport(page.get(), 0);
+  EPDFViewport_Close(loaded);
+  EXPECT_EQ(L"page scale", Ratio(EPDFViewport_GetMeasure(loaded)));
+  EPDFViewport_Close(raw);
+  // One left open goes with the document.
+  EXPECT_TRUE(EPDFPage_GetViewportRaw(doc.get(), 0, 0));
+}
+
+TEST_F(EPDFMeasureEmbedderTest,
+       RawViewportWritesShareGenerationsWithLoadedPages) {
+  ASSERT_TRUE(OpenDocumentFromMemory(EmptyPdf()));
+  ScopedFPDFPage page(FPDFPage_New(document(), 0, 612, 792));
+  auto a = EPDFPage_AddViewportRaw(document(), 0, &kBox);
+  const FS_RECTF box{50, 300, 300, 50};
+  auto b = EPDFPage_AddViewportRaw(document(), 0, &box);
+  ASSERT_TRUE(a);
+  ASSERT_TRUE(b);
+  SetRatio(EPDFViewport_AddMeasure(a), L"first");
+  auto mb = EPDFViewport_AddMeasure(b);
+  SetRatio(mb, L"second");
+  auto fb = AddFormat(mb);
+  ASSERT_TRUE(fb);
+  ASSERT_TRUE(EPDFViewport_SetName(b, GetFPDFWideString(L"EmbedPDF").get()));
+  // The loaded page sees what the raw handles wrote.
+  ASSERT_EQ(2u, EPDFPage_CountViewports(page.get()));
+  EXPECT_EQ(2u, EPDFPage_CountViewportsRaw(document(), 0));
+  auto loaded_b = EPDFPage_GetViewport(page.get(), 1);
+  EXPECT_EQ(L"second", Ratio(EPDFViewport_GetMeasure(loaded_b)));
+  FS_POINTF point{100, 100};
+  EXPECT_EQ(1, EPDFPage_FindViewport(page.get(), &point));
+  // A raw removal makes every earlier handle stale, raw or loaded.
+  ASSERT_TRUE(EPDFPage_RemoveViewportRaw(document(), 0, 0));
+  EXPECT_FALSE(EPDFPage_RemoveViewportRaw(document(), 0, 1));
+  FS_RECTF out;
+  EXPECT_FALSE(EPDFViewport_GetBBox(a, &out));
+  EXPECT_FALSE(EPDFViewport_GetBBox(b, &out));
+  EXPECT_FALSE(EPDFViewport_GetBBox(loaded_b, &out));
+  EXPECT_EQ(EPDF_MEASURE_SUBTYPE_UNKNOWN, EPDFMeasure_GetSubtype(mb));
+  EXPECT_FALSE(EPDFNumberFormat_SetPrecision(fb, 10));
+  auto remaining = EPDFPage_GetViewportRaw(document(), 0, 0);
+  EXPECT_EQ(L"second", Ratio(EPDFViewport_GetMeasure(remaining)));
+  EXPECT_EQ(18u, EPDFViewport_GetName(remaining, nullptr, 0));
+  // A loaded page's removal makes the raw handles stale too.
+  ASSERT_TRUE(EPDFPage_RemoveViewport(page.get(), 0));
+  EXPECT_FALSE(EPDFViewport_GetBBox(remaining, &out));
+  EXPECT_FALSE(CPDFPageFromFPDFPage(page.get())->GetDict()->KeyExist("VP"));
+  EXPECT_EQ(0u, EPDFPage_CountViewportsRaw(document(), 0));
+  EPDFViewport_Close(remaining);
+  EPDFViewport_Close(b);
+  EPDFViewport_Close(a);
+}
+
+TEST_F(EPDFMeasureEmbedderTest, RawLayerReadsPromoteNothingAndWritesOnlyPage) {
+  embedpdf_test::LayerFixture layer;
+  ASSERT_TRUE(layer.OpenBytes(Base()));
+  EXPECT_EQ(1u, EPDFPage_CountViewportsRaw(layer.layer, 0));
+  auto first = EPDFPage_GetViewportRaw(layer.layer, 0, 0);
+  ASSERT_TRUE(first);
+  FS_RECTF box;
+  EXPECT_TRUE(EPDFViewport_GetBBox(first, &box));
+  EXPECT_EQ(L"page scale", Ratio(EPDFViewport_GetMeasure(first)));
+  EXPECT_EQ(0u, EPDFLayer_GetPromotedObjectCount(layer.layer));
+  const FS_RECTF detail{50, 300, 300, 50};
+  auto second = EPDFPage_AddViewportRaw(layer.layer, 0, &detail);
+  ASSERT_TRUE(second);
+  EXPECT_EQ(1u, EPDFLayer_GetPromotedObjectCount(layer.layer));
+  EXPECT_TRUE(
+      EPDFViewport_SetName(second, GetFPDFWideString(L"EmbedPDF").get()));
+  // The first handle follows the page into the layer.
+  EXPECT_EQ(L"page scale", Ratio(EPDFViewport_GetMeasure(first)));
+  EXPECT_EQ(1u, EPDFLayer_GetPromotedObjectCount(layer.layer));
+  EPDFViewport_Close(second);
+  EPDFViewport_Close(first);
+  auto delta = SaveDelta(layer.layer);
+  ASSERT_TRUE(delta.changed);
+  ASSERT_TRUE(layer.Reopen(std::move(delta.bytes)));
+  const auto loaded_count = EPDFLayer_GetPromotedObjectCount(layer.layer);
+  ASSERT_EQ(2u, EPDFPage_CountViewportsRaw(layer.layer, 0));
+  auto reopened = EPDFPage_GetViewportRaw(layer.layer, 0, 1);
+  EXPECT_EQ(18u, EPDFViewport_GetName(reopened, nullptr, 0));
+  EXPECT_EQ(loaded_count, EPDFLayer_GetPromotedObjectCount(layer.layer));
+  EPDFViewport_Close(reopened);
 }
 
 TEST_F(EPDFMeasureEmbedderTest,
@@ -562,9 +671,9 @@ TEST_F(EPDFMeasureEmbedderTest, ShortDistanceOmitsShaftAndBoundsCanShrink) {
   ASSERT_TRUE(EPDFAnnot_SetLine(annot.get(), &start, &end));
   ASSERT_TRUE(EPDFAnnot_SetLineLeader(annot.get(), -15, 5, 0));
   ASSERT_TRUE(EPDFAnnot_SetLineEndings(annot.get(), FPDF_ANNOT_LE_ClosedArrow,
-                                    FPDF_ANNOT_LE_ClosedArrow));
+                                       FPDF_ANNOT_LE_ClosedArrow));
   ASSERT_TRUE(EPDFAnnot_SetLineCaption(annot.get(), true, EPDF_CAPTION_INLINE,
-                                    nullptr));
+                                       nullptr));
   ASSERT_TRUE(EPDFAnnot_GenerateAppearance(annot.get()));
 
   const auto appearance = Appearance(annot.get());
@@ -579,7 +688,7 @@ TEST_F(EPDFMeasureEmbedderTest, ShortDistanceOmitsShaftAndBoundsCanShrink) {
 
   EPDF_CAPTION_OFFSET offset{100, -150};
   ASSERT_TRUE(EPDFAnnot_SetLineCaption(annot.get(), true, EPDF_CAPTION_INLINE,
-                                    &offset));
+                                       &offset));
   ASSERT_TRUE(EPDFAnnot_GenerateAppearance(annot.get()));
   FS_RECTF expanded;
   ASSERT_TRUE(FPDFAnnot_GetRect(annot.get(), &expanded));
@@ -587,7 +696,7 @@ TEST_F(EPDFMeasureEmbedderTest, ShortDistanceOmitsShaftAndBoundsCanShrink) {
   EXPECT_LT(expanded.bottom, original.bottom);
 
   ASSERT_TRUE(EPDFAnnot_SetLineCaption(annot.get(), true, EPDF_CAPTION_INLINE,
-                                    nullptr));
+                                       nullptr));
   ASSERT_TRUE(EPDFAnnot_GenerateAppearance(annot.get()));
   FS_RECTF restored;
   ASSERT_TRUE(FPDFAnnot_GetRect(annot.get(), &restored));
@@ -964,10 +1073,9 @@ TEST_F(EPDFMeasureEmbedderTest,
     FontScope() { EPDFFont_ClearRegisteredFonts(); }
     ~FontScope() { EPDFFont_ClearRegisteredFonts(); }
   } fonts;
-  auto bytes =
-      GetFileContents(PathService::GetThirdPartyFilePath(
-                          "harfbuzz/src/perf/fonts/Roboto-Regular.ttf")
-                          .c_str());
+  auto bytes = GetFileContents(PathService::GetThirdPartyFilePath(
+                                   "harfbuzz/src/perf/fonts/Roboto-Regular.ttf")
+                                   .c_str());
   ASSERT_FALSE(bytes.empty());
   auto id = EPDFFont_RegisterMemFont64("Roboto", 400, false, bytes.data(),
                                        bytes.size());
