@@ -9,6 +9,7 @@
 #include <stddef.h>
 
 #include <iterator>
+#include <optional>
 
 #include "core/fxcrt/check.h"
 #include "core/fxcrt/check_op.h"
@@ -38,14 +39,14 @@ constexpr uint16_t kTextLayoutCodeProperties[] = {
 static_assert(std::size(kTextLayoutCodeProperties) == 65536,
               "missing characters");
 
-uint16_t GetUnicodeProperties(wchar_t wch) {
+std::optional<uint16_t> GetUnicodeProperties(wchar_t wch) {
   size_t idx = static_cast<size_t>(wch);
   if (idx < std::size(kTextLayoutCodeProperties)) {
     // SAFETY: `std::size(kTextLayoutCodeProperties)` is the size of the table,
     // so the condition above verifies `idx` is in range.
     return UNSAFE_BUFFERS(kTextLayoutCodeProperties[idx]);
   }
-  return 0;
+  return std::nullopt;
 }
 
 // EmbedPDF(rich-text): the extended table is compiled unconditionally (rich
@@ -143,8 +144,11 @@ constexpr uint16_t kFXTextLayoutBidiMirror[] = {
 namespace pdfium::unicode {
 
 wchar_t GetMirrorChar(wchar_t wch) {
-  uint16_t prop = GetUnicodeProperties(wch);
-  size_t idx = prop >> kMirrorBitPos;
+  std::optional<uint16_t> prop = GetUnicodeProperties(wch);
+  if (!prop.has_value()) {
+    return wch;
+  }
+  size_t idx = prop.value() >> kMirrorBitPos;
   if (idx == kMirrorMax) {
     return wch;
   }
@@ -155,8 +159,11 @@ wchar_t GetMirrorChar(wchar_t wch) {
 }
 
 BidiClass GetBidiClass(wchar_t wch) {
-  uint16_t prop = GetUnicodeProperties(wch);
-  uint16_t result = (prop & kBidiClassBitMask) >> kBidiClassBitPos;
+  std::optional<uint16_t> prop = GetUnicodeProperties(wch);
+  if (!prop.has_value()) {
+    return BidiClass::kON;
+  }
+  uint16_t result = (prop.value() & kBidiClassBitMask) >> kBidiClassBitPos;
   DCHECK_LE(result, static_cast<uint16_t>(BidiClass::kPDF));
   return static_cast<BidiClass>(result);
 }

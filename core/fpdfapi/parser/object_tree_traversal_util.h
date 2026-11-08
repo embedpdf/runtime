@@ -23,9 +23,8 @@ enum class ObjectTreeReferenceResolveMode {
   kEffectiveDocument,
 };
 
-// Traverses `document` starting with its trailer, if it has one, or starting at
-// the catalog, which always exists. The trailer should have a reference to the
-// catalog. The traversal avoids cycles.
+// Traverses `document` starting with its trailer, if it has one, and also from
+// the catalog if not reached from the trailer. The traversal avoids cycles.
 //
 // In `kReferenceHolder` mode, references are followed through their
 // CPDF_IndirectObjectHolder. In `kEffectiveDocument` mode, references are

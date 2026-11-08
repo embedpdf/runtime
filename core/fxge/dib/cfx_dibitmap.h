@@ -63,7 +63,7 @@ class CFX_DIBitmap final : public CFX_DIBBase {
   pdfium::span<const uint8_t> GetBuffer() const override;
   pdfium::span<const uint8_t> GetScanline(int line) const override;
   size_t GetEstimatedImageMemoryBurden() const override;
-#if BUILDFLAG(IS_WIN) || defined(PDF_USE_SKIA) || defined(PDF_USE_LIBYUV)
+#if BUILDFLAG(IS_WIN) || defined(PDF_USE_SKIA)
   RetainPtr<const CFX_DIBitmap> RealizeIfNeeded() const override;
 #endif
 
@@ -212,9 +212,7 @@ class CFX_DIBitmap final : public CFX_DIBBase {
                                   int dest_top,
                                   int width,
                                   int height,
-                                  RetainPtr<const CFX_DIBBase> source,
-                                  int src_left,
-                                  int src_top);
+                                  RetainPtr<const CFX_DIBBase> source);
   void TransferWithMultipleBPP(int dest_left,
                                int dest_top,
                                int width,

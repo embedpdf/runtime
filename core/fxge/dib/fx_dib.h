@@ -9,9 +9,11 @@
 
 #include <stdint.h>
 
+#include <type_traits>
 #include <utility>
 
 #include "core/fxcrt/compiler_specific.h"
+#include "core/fxcrt/fx_memory_wrappers.h"
 #include "core/fxcrt/span.h"
 
 #if defined(PDF_USE_SKIA)
@@ -105,10 +107,21 @@ struct FX_CMYK_STRUCT {
 
 template <typename T>
 struct FX_LAB_STRUCT {
+  static constexpr bool kIsDataPartitionSafe = std::is_arithmetic_v<T>;
+
   T lightness_star = 0;
   T a_star = 0;
   T b_star = 0;
 };
+
+// Decodes an 8-bit PDF/ICC Lab sample into CIE L*a*b* floats.
+inline FX_LAB_STRUCT<float> DecodeLab(FX_LAB_STRUCT<uint8_t> lab) {
+  return {
+      static_cast<float>(lab.lightness_star * 100) / 255.0f,
+      static_cast<float>(lab.a_star - 128),
+      static_cast<float>(lab.b_star - 128),
+  };
+}
 
 struct FXDIB_ResampleOptions {
   FXDIB_ResampleOptions();
@@ -289,6 +302,7 @@ using fxge::ArgbToBGRStruct;
 using fxge::ArgbToColorRef;
 using fxge::BlendMode;
 using fxge::CmykEncode;
+using fxge::DecodeLab;
 using fxge::FX_ABGR_STRUCT;
 using fxge::FX_ARGB;
 using fxge::FX_BGR_STRUCT;

@@ -8,7 +8,9 @@
 #include "fpdfsdk/cpdfsdk_helpers.h"
 #include "fxjs/cjs_event_context.h"
 #include "fxjs/cjs_publicmethods.h"
+#include "testing/embedder_test_mock_delegate.h"
 #include "testing/external_engine_embedder_test.h"
+#include "testing/gmock/include/gmock/gmock.h"
 #include "testing/gtest/include/gtest/gtest.h"
 #include "v8/include/v8-container.h"
 #include "v8/include/v8-context.h"
@@ -255,4 +257,69 @@ TEST_F(CJSPublicMethodsEmbedderTest, AFNumberKeystroke) {
   handler->SetValueForTest(nullptr);
   handler->SetRCForTest(nullptr);
   handler->SetStrChangeForTest(nullptr);
+}
+
+TEST_F(CJSPublicMethodsEmbedderTest, BlockingScope) {
+  v8::Isolate::Scope isolate_scope(isolate());
+  v8::HandleScope handle_scope(isolate());
+  v8::Context::Scope context_scope(GetV8Context());
+
+  ASSERT_TRUE(OpenDocument("calculate.pdf"));
+  ScopedPage page = LoadScopedPage(0);
+  ASSERT_TRUE(page);
+
+  CJS_Runtime runtime(
+      CPDFSDKFormFillEnvironmentFromFPDFFormHandle(form_handle()));
+  EXPECT_FALSE(runtime.IsBlocking());
+  {
+    CJS_Runtime::BlockingScope scope1(&runtime);
+    EXPECT_TRUE(runtime.IsBlocking());
+    {
+      CJS_Runtime::BlockingScope scope2(&runtime);
+      EXPECT_TRUE(runtime.IsBlocking());
+    }
+    EXPECT_TRUE(runtime.IsBlocking());
+  }
+  EXPECT_FALSE(runtime.IsBlocking());
+}
+
+TEST_F(CJSPublicMethodsEmbedderTest, AlertIfPossibleBlocking) {
+  v8::Isolate::Scope isolate_scope(isolate());
+  v8::HandleScope handle_scope(isolate());
+  v8::Context::Scope context_scope(GetV8Context());
+
+  ASSERT_TRUE(OpenDocument("calculate.pdf"));
+  ScopedPage page = LoadScopedPage(0);
+  ASSERT_TRUE(page);
+
+  CJS_Runtime runtime(
+      CPDFSDKFormFillEnvironmentFromFPDFFormHandle(form_handle()));
+  auto& delegate = SetOwnedDelegate<EmbedderTestMockDelegate>();
+  EXPECT_CALL(delegate, Alert).WillOnce([&] {
+    EXPECT_TRUE(runtime.IsBlocking());
+    return 0;
+  });
+
+  runtime.NewEventContext();
+  auto* handler = runtime.GetCurrentEventContext();
+
+  WideString val = L"50";
+  bool valid = true;
+  handler->SetValueForTest(&val);
+  handler->SetRCForTest(&valid);
+
+  v8::LocalVector<v8::Value> params(runtime.GetIsolate());
+  params.push_back(runtime.NewBoolean(true));
+  params.push_back(runtime.NewNumber(100));
+  params.push_back(runtime.NewBoolean(true));
+  params.push_back(runtime.NewNumber(200));
+
+  EXPECT_FALSE(runtime.IsBlocking());
+  CJS_Result ret = CJS_PublicMethods::AFRange_Validate(&runtime, params);
+  EXPECT_FALSE(runtime.IsBlocking());
+  EXPECT_FALSE(valid);
+  EXPECT_FALSE(ret.HasError());
+
+  handler->SetValueForTest(nullptr);
+  handler->SetRCForTest(nullptr);
 }

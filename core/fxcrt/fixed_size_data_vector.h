@@ -22,9 +22,7 @@ namespace fxcrt {
 // accessible using spans.
 // It can either initialize its data with zeros, or leave its data
 // uninitialized.
-template <typename T>
-  requires(std::is_arithmetic<T>::value || std::is_enum<T>::value ||
-           IsFXDataPartitionException<T>::value)
+template <FxDataPartitionType T>
 class FixedSizeDataVector {
  public:
   FixedSizeDataVector() = default;
@@ -95,6 +93,14 @@ class FixedSizeDataVector {
 
   bool empty() const { return size_ == 0; }
   size_t size() const { return size_; }
+
+  // Releases ownership of the underlying data buffer and resets this vector to
+  // be empty. The caller is responsible for freeing the returned pointer with
+  // FX_Free().
+  [[nodiscard]] T* release() {
+    size_ = 0;
+    return data_.release();
+  }
 
   // Implicit access to data via span.
   operator pdfium::span<T>() { return span(); }
