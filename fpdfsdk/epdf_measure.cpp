@@ -41,8 +41,13 @@ struct OwnerEpochs {
 // the same owner must invalidate one another. Direct annotations use
 // page/index.
 using OwnerKey = std::tuple<bool, uint32_t, int>;
+struct Path;
 struct Registry final : CPDF_MeasureStorage {
   std::map<OwnerKey, OwnerEpochs> owners;
+  // The page behind each open raw viewport handle (EPDFPage_GetViewportRaw):
+  // built from the page dictionary and never parsed. Kept until
+  // EPDFViewport_Close, or until the document closes.
+  std::map<const Path*, RetainPtr<CPDF_Page>> raw_hosts;
 };
 struct Path {
   Kind kind;
@@ -85,12 +90,14 @@ Arena* ArenaFor(Host* host) {
   }
   return static_cast<Arena*>(host->GetMeasureStorage());
 }
-OwnerEpochs* EpochsFor(CPDF_Page* page, CPDF_AnnotContext* annot) {
-  auto* doc = page->GetDocument();
+Registry* RegistryFor(CPDF_Document* doc) {
   if (!doc->GetMeasureStorage()) {
     doc->SetMeasureStorage(std::make_unique<Registry>());
   }
-  auto* registry = static_cast<Registry*>(doc->GetMeasureStorage());
+  return static_cast<Registry*>(doc->GetMeasureStorage());
+}
+OwnerEpochs* EpochsFor(CPDF_Page* page, CPDF_AnnotContext* annot) {
+  auto* registry = RegistryFor(page->GetDocument());
   uint32_t obj =
       annot ? annot->GetAnnotDict()->GetObjNum() : page->GetDict()->GetObjNum();
   int direct_index = -1;
@@ -340,6 +347,79 @@ bool IsShape(const CPDF_AnnotContext* context) {
   auto type = context->GetAnnotDict()->GetNameFor("Subtype");
   return type == "Polygon" || type == "PolyLine";
 }
+
+// The page-level viewport functions, for a loaded page and for a raw host
+// alike: each reads and writes only the page dictionary.
+unsigned long CountViewports(const CPDF_Page* page) {
+  auto array = page->GetDict()->GetArrayFor("VP");
+  return array ? array->size() : 0;
+}
+Path* GetViewport(CPDF_Page* page, unsigned long index) {
+  auto array = page->GetDict()->GetArrayFor("VP");
+  if (!array || !array->GetDictAt(index)) {
+    return nullptr;
+  }
+  return ViewportPath(page, index);
+}
+Path* AddViewport(CPDF_Page* page, const FS_RECTF* bbox) {
+  if (!Finite(bbox)) {
+    return nullptr;
+  }
+  auto current = page->GetDict();
+  if (current->KeyExist("VP") && !current->GetArrayFor("VP")) {
+    return nullptr;
+  }
+  auto dict = page->GetMutableDict();
+  CPDF_Measure::DetachIndirect(dict.Get(), "VP");
+  auto array = dict->GetOrCreateArrayFor("VP");
+  auto viewport = array->AppendNew<CPDF_Dictionary>();
+  viewport->SetNewFor<CPDF_Name>("Type", "Viewport");
+  CFX_FloatRect rect(bbox->left, bbox->bottom, bbox->right, bbox->top);
+  rect.Normalize();
+  viewport->SetRectFor("BBox", rect);
+  return ViewportPath(page, array->size() - 1);
+}
+bool RemoveViewport(CPDF_Page* page, unsigned long index) {
+  auto current = page->GetDict()->GetArrayFor("VP");
+  if (!current || index >= current->size()) {
+    return false;
+  }
+  auto dict = page->GetMutableDict();
+  CPDF_Measure::DetachIndirect(dict.Get(), "VP");
+  auto array = dict->GetMutableArrayFor("VP");
+  array->RemoveAt(index);
+  if (array->IsEmpty()) {
+    dict->RemoveFor("VP");
+  }
+  auto* epochs = EpochsFor(page, nullptr);
+  ++epochs->viewports;
+  epochs->measures.clear();
+  return true;
+}
+
+// A page built from its dictionary and never parsed, as EPDFPage_GetAnnotRaw
+// builds one: what a raw viewport reads and writes through. Call it inside the
+// document's view scope, so a layer resolves the page in the layer.
+RetainPtr<CPDF_Page> RawHost(CPDF_Document* pdf, int page_index) {
+  if (!pdf || page_index < 0 || page_index >= pdf->GetPageCount()) {
+    return nullptr;
+  }
+  RetainPtr<const CPDF_Dictionary> dict = pdf->GetPageDictionary(page_index);
+  if (!dict || !CPDF_Document::IsPageTreeLeaf(dict.Get())) {
+    return nullptr;
+  }
+  return pdfium::MakeRetain<CPDF_Page>(
+      pdf, pdfium::WrapRetain(const_cast<CPDF_Dictionary*>(dict.Get())));
+}
+// A raw viewport handle keeps its host until EPDFViewport_Close. The host's
+// arena holds the handle and every handle obtained through it.
+EPDF_VIEWPORT KeepHost(RetainPtr<CPDF_Page> host, Path* path) {
+  if (!path) {
+    return nullptr;
+  }
+  RegistryFor(host->GetDocument())->raw_hosts[path] = std::move(host);
+  return reinterpret_cast<EPDF_VIEWPORT>(path);
+}
 }  // namespace
 
 FPDF_EXPORT EPDF_MEASURE FPDF_CALLCONV
@@ -365,17 +445,13 @@ EPDFAnnot_RemoveMeasure(FPDF_ANNOTATION annot) {
 FPDF_EXPORT unsigned long FPDF_CALLCONV
 EPDFPage_CountViewports(FPDF_PAGE page) {
   ScopedFPDFPageView view(page);
-  auto array = view ? view.Get()->GetDict()->GetArrayFor("VP") : nullptr;
-  return array ? array->size() : 0;
+  return view ? CountViewports(view.Get()) : 0;
 }
 FPDF_EXPORT EPDF_VIEWPORT FPDF_CALLCONV
 EPDFPage_GetViewport(FPDF_PAGE page, unsigned long index) {
   ScopedFPDFPageView view(page);
-  auto array = view ? view.Get()->GetDict()->GetArrayFor("VP") : nullptr;
-  if (!array || !array->GetDictAt(index)) {
-    return nullptr;
-  }
-  return reinterpret_cast<EPDF_VIEWPORT>(ViewportPath(view.Get(), index));
+  return view ? reinterpret_cast<EPDF_VIEWPORT>(GetViewport(view.Get(), index))
+              : nullptr;
 }
 FPDF_EXPORT EPDF_VIEWPORT FPDF_CALLCONV
 EPDFPage_AddViewport(FPDF_PAGE page, const FS_RECTF* bbox) {
@@ -383,42 +459,76 @@ EPDFPage_AddViewport(FPDF_PAGE page, const FS_RECTF* bbox) {
     return nullptr;
   }
   ScopedFPDFPageView view(page);
-  if (!view) {
-    return nullptr;
-  }
-  auto current = view.Get()->GetDict();
-  if (current->KeyExist("VP") && !current->GetArrayFor("VP")) {
-    return nullptr;
-  }
-  auto dict = view.Get()->GetMutableDict();
-  CPDF_Measure::DetachIndirect(dict.Get(), "VP");
-  auto array = dict->GetOrCreateArrayFor("VP");
-  auto viewport = array->AppendNew<CPDF_Dictionary>();
-  viewport->SetNewFor<CPDF_Name>("Type", "Viewport");
-  CFX_FloatRect rect(bbox->left, bbox->bottom, bbox->right, bbox->top);
-  rect.Normalize();
-  viewport->SetRectFor("BBox", rect);
-  return reinterpret_cast<EPDF_VIEWPORT>(
-      ViewportPath(view.Get(), array->size() - 1));
+  return view ? reinterpret_cast<EPDF_VIEWPORT>(AddViewport(view.Get(), bbox))
+              : nullptr;
 }
 FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV
 EPDFPage_RemoveViewport(FPDF_PAGE page, unsigned long index) {
   ScopedFPDFPageView view(page);
-  auto current = view ? view.Get()->GetDict()->GetArrayFor("VP") : nullptr;
-  if (!current || index >= current->size()) {
-    return false;
+  return view && RemoveViewport(view.Get(), index);
+}
+FPDF_EXPORT unsigned long FPDF_CALLCONV
+EPDFPage_CountViewportsRaw(FPDF_DOCUMENT document, int page_index) {
+  CPDF_Document* pdf = CPDFDocumentFromFPDFDocument(document);
+  if (!pdf || page_index < 0 || page_index >= pdf->GetPageCount()) {
+    return 0;
   }
-  auto dict = view.Get()->GetMutableDict();
-  CPDF_Measure::DetachIndirect(dict.Get(), "VP");
-  auto array = dict->GetMutableArrayFor("VP");
-  array->RemoveAt(index);
-  if (array->IsEmpty()) {
-    dict->RemoveFor("VP");
+  CPDF_DocumentViewScope document_view(pdf);
+  RetainPtr<const CPDF_Dictionary> dict = pdf->GetPageDictionary(page_index);
+  auto array = dict ? dict->GetArrayFor("VP") : nullptr;
+  return array ? array->size() : 0;
+}
+FPDF_EXPORT EPDF_VIEWPORT FPDF_CALLCONV
+EPDFPage_GetViewportRaw(FPDF_DOCUMENT document,
+                        int page_index,
+                        unsigned long index) {
+  CPDF_Document* pdf = CPDFDocumentFromFPDFDocument(document);
+  CPDF_DocumentViewScope document_view(pdf);
+  auto host = RawHost(pdf, page_index);
+  if (!host) {
+    return nullptr;
   }
-  auto* epochs = EpochsFor(view.Get(), nullptr);
-  ++epochs->viewports;
-  epochs->measures.clear();
-  return true;
+  Path* path = GetViewport(host.Get(), index);
+  return KeepHost(std::move(host), path);
+}
+FPDF_EXPORT EPDF_VIEWPORT FPDF_CALLCONV
+EPDFPage_AddViewportRaw(FPDF_DOCUMENT document,
+                        int page_index,
+                        const FS_RECTF* bbox) {
+  CPDF_Document* pdf = CPDFDocumentFromFPDFDocument(document);
+  CPDF_DocumentViewScope document_view(pdf);
+  auto host = RawHost(pdf, page_index);
+  if (!host) {
+    return nullptr;
+  }
+  Path* path = AddViewport(host.Get(), bbox);
+  return KeepHost(std::move(host), path);
+}
+FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV
+EPDFPage_RemoveViewportRaw(FPDF_DOCUMENT document,
+                           int page_index,
+                           unsigned long index) {
+  CPDF_Document* pdf = CPDFDocumentFromFPDFDocument(document);
+  CPDF_DocumentViewScope document_view(pdf);
+  auto host = RawHost(pdf, page_index);
+  return host && RemoveViewport(host.Get(), index);
+}
+FPDF_EXPORT void FPDF_CALLCONV EPDFViewport_Close(EPDF_VIEWPORT viewport) {
+  const auto* path = reinterpret_cast<const Path*>(viewport);
+  auto* storage =
+      path ? path->page->GetDocument()->GetMeasureStorage() : nullptr;
+  if (!storage) {
+    return;
+  }
+  auto& hosts = static_cast<Registry*>(storage)->raw_hosts;
+  auto it = hosts.find(path);
+  // A loaded page's viewport: the page owns it.
+  if (it == hosts.end()) {
+    return;
+  }
+  // The host goes when this returns, with its arena and every path in it.
+  RetainPtr<CPDF_Page> host = std::move(it->second);
+  hosts.erase(it);
 }
 FPDF_EXPORT int FPDF_CALLCONV EPDFPage_FindViewport(FPDF_PAGE page,
                                                     const FS_POINTF* point) {

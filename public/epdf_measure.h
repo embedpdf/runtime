@@ -19,6 +19,9 @@ extern "C" {
 // PDF objects in a layer. Generic raw dictionary edits must not be mixed with
 // retained measurement handles: reacquire after such edits.
 //
+// A raw viewport (EPDFPage_GetViewportRaw) is its own origin: it is closed with
+// EPDFViewport_Close.
+//
 // A /Measure dictionary (ISO 32000-2 Table 266), owned by an annotation or a
 // viewport.
 typedef struct epdf_measure_t__* EPDF_MEASURE;
@@ -160,6 +163,50 @@ FPDF_EXPORT EPDF_MEASURE FPDF_CALLCONV
 EPDFViewport_AddMeasure(EPDF_VIEWPORT viewport);  // as EPDFAnnot_AddMeasure
 FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV
 EPDFViewport_RemoveMeasure(EPDF_VIEWPORT viewport);
+
+// ── 2b. Viewports by page index, without loading the page
+// ──────────────────────────────────────────────────
+
+// Experimental EmbedPDF Extension API.
+// The page functions above for a page that isn't loaded: they read and write
+// the page dictionary and never parse the page's content, as
+// EPDFPage_GetAnnotRaw does. In a layer they resolve the page in the layer.
+// Generations are shared with loaded pages: a removal through either side
+// makes the other side's handles stale.
+//
+// Number of entries in the page's /VP array; 0 for an invalid page index.
+FPDF_EXPORT unsigned long FPDF_CALLCONV
+EPDFPage_CountViewportsRaw(FPDF_DOCUMENT document, int page_index);
+
+// Experimental EmbedPDF Extension API.
+// The viewport at |index|, or NULL when out of range. The handle owns what it
+// reads through: close it with EPDFViewport_Close, which also ends every
+// measure and format handle obtained through it. One left open is freed with
+// the document.
+FPDF_EXPORT EPDF_VIEWPORT FPDF_CALLCONV
+EPDFPage_GetViewportRaw(FPDF_DOCUMENT document,
+                        int page_index,
+                        unsigned long index);
+
+// Experimental EmbedPDF Extension API.
+// As EPDFPage_AddViewport. The handle is closed as EPDFPage_GetViewportRaw's.
+FPDF_EXPORT EPDF_VIEWPORT FPDF_CALLCONV
+EPDFPage_AddViewportRaw(FPDF_DOCUMENT document,
+                        int page_index,
+                        const FS_RECTF* bbox);
+
+// Experimental EmbedPDF Extension API.
+// As EPDFPage_RemoveViewport, including which handles become stale.
+FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV
+EPDFPage_RemoveViewportRaw(FPDF_DOCUMENT document,
+                           int page_index,
+                           unsigned long index);
+
+// Experimental EmbedPDF Extension API.
+// Close a viewport handle from EPDFPage_GetViewportRaw or
+// EPDFPage_AddViewportRaw, and every handle obtained through it. A viewport of
+// a loaded page belongs to the page: closing one does nothing. NULL is ignored.
+FPDF_EXPORT void FPDF_CALLCONV EPDFViewport_Close(EPDF_VIEWPORT viewport);
 
 // ── 3. The measure dictionary (host-agnostic)
 // ───────────────────────────────────────────────
