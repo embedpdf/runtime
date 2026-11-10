@@ -185,7 +185,9 @@ generations.
 ### save-traversal
 **Rule.** A save picks one trailer and root, walks live objects with a bounded reference index,
 and reads objects through `CPDF_SaveObjectReader` and a byte-budgeted object stream cache, without
-filling the live document's caches.
+filling the live document's caches. An incremental save's `/Size` is the highest object number
+the file defines (the input's, its `/Size` and the objects the save wrote) plus one; numbers an
+editing session reserved and never used don't count.
 **Why.** Full rewrites of large files kept every object parsed in memory, and stale cross-reference
 and encryption objects leaked into saves.
 **Where.** `cpdf_save_trailer`, `cpdf_reference_index`, `cpdf_save_object_reader`,
