@@ -4977,7 +4977,7 @@ std::optional<AltElement> AltElementOf(const CPDF_Document* doc,
 // document (so a layer copies it up first), a direct one in place.
 RetainPtr<CPDF_Dictionary> WritableDictFor(CPDF_Document* doc,
                                            CPDF_Dictionary* holder,
-                                           const ByteString& key) {
+                                           ByteStringView key) {
   RetainPtr<CPDF_Object> value = holder->GetMutableObjectFor(key);
   if (!value) {
     return nullptr;
