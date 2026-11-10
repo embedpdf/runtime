@@ -5054,16 +5054,32 @@ EPDFAnnot_SetAltText(FPDF_ANNOTATION annot, FPDF_WIDESTRING alt) {
   CPDF_DocumentViewScope document_view(doc);
   RetainPtr<CPDF_Dictionary> annot_dict =
       GetMutableAnnotDictFromFPDFAnnotation(annot);
-  const uint32_t annot_obj_num = annot_dict ? annot_dict->GetObjNum() : 0;
+  if (!annot_dict) {
+    return false;
+  }
   CPDF_Page* page = ctx->GetPage()->AsPDFPage();
   RetainPtr<const CPDF_Dictionary> page_dict = page ? page->GetDict() : nullptr;
   const uint32_t page_obj_num = page_dict ? page_dict->GetObjNum() : 0;
-  if (!annot_obj_num) {
-    return false;
-  }
   // SAFETY: required from caller.
   const WideString text =
       alt ? UNSAFE_BUFFERS(WideStringFromFPDFWideString(alt)) : WideString();
+
+  // An inline annotation is in no tree, and the tree can only list an
+  // object: it becomes one first.
+  if (!annot_dict->GetObjNum()) {
+    if (text.IsEmpty()) {
+      return true;
+    }
+    const int page_index = page_obj_num ? doc->GetPageIndex(page_obj_num) : -1;
+    if (page_index < 0 || PromoteInlineAnnots(doc, page_index) < 0) {
+      return false;
+    }
+    annot_dict = GetMutableAnnotDictFromFPDFAnnotation(annot);
+    if (!annot_dict || !annot_dict->GetObjNum()) {
+      return false;
+    }
+  }
+  const uint32_t annot_obj_num = annot_dict->GetObjNum();
 
   // Already in the tree: the element that lists it takes the text.
   if (std::optional<AltElement> found = AltElementOf(doc, annot_dict.Get())) {
