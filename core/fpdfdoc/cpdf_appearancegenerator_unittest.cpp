@@ -17,6 +17,7 @@
 #include "core/fpdfapi/parser/cpdf_stream.h"
 #include "core/fpdfapi/parser/cpdf_string.h"
 #include "core/fpdfapi/parser/cpdf_test_document.h"
+#include "core/fxcrt/fx_string.h"
 #include "core/fxge/cfx_color.h"
 #include "testing/gtest/include/gtest/gtest.h"
 
@@ -205,6 +206,40 @@ TEST_F(CPDFGenerateAPTest, GenerateEphemeralFreeTextAPDoesNotCreateAcroForm) {
   EXPECT_EQ(last_obj_num, doc.GetLastObjNum());
   EXPECT_FALSE(doc.GetRoot()->KeyExist("AcroForm"));
   EXPECT_FALSE(annot_dict->KeyExist(pdfium::annotation::kAP));
+}
+
+// A plain box with /Border [0 0 0], as PDF.js writes free text: no border,
+// and a line too wide for the box is drawn smaller instead of wrapping.
+TEST_F(CPDFGenerateAPTest, FreeTextWithoutBorderShrinksToFit) {
+  CPDF_TestDocument doc;
+  doc.CreateNewDoc();
+  auto annot_dict = MakeAnnotDict("FreeText", CFX_FloatRect(0, 0, 40, 16));
+  annot_dict->SetNewFor<CPDF_String>("DA", "/Helv 12 Tf 0 g");
+  annot_dict->SetNewFor<CPDF_String>(pdfium::annotation::kContents,
+                                     "hello world");
+  annot_dict->SetFor(pdfium::annotation::kBorder, MakeNumberArray({0, 0, 0}));
+
+  std::optional<CPDF_AppearanceGenerator::GeneratedAP> generated =
+      CPDF_AppearanceGenerator::GenerateEphemeralAnnotAP(
+          &doc, annot_dict.Get(), CPDF_Annot::Subtype::FREETEXT);
+  ASSERT_TRUE(generated.has_value());
+  ASSERT_TRUE(generated->normal_stream);
+  ASSERT_TRUE(generated->normal_stream->IsMemoryBased());
+  const pdfium::span<const uint8_t> data =
+      generated->normal_stream->GetInMemoryRawData();
+  const ByteString content(data.data(), data.size());
+
+  EXPECT_FALSE(content.Contains(" w\n"));  // no border stroke
+  // Drawn below 12 pt.
+  const std::optional<size_t> tf = content.Find(" Tf\n");
+  ASSERT_TRUE(tf.has_value());
+  const ByteString before_tf = content.First(tf.value());
+  const std::optional<size_t> space = before_tf.ReverseFind(' ');
+  ASSERT_TRUE(space.has_value());
+  const float size =
+      StringToFloat(before_tf.Substr(space.value() + 1).AsStringView());
+  EXPECT_GT(size, 0.0f);
+  EXPECT_LT(size, 12.0f);
 }
 
 TEST_F(CPDFGenerateAPTest,

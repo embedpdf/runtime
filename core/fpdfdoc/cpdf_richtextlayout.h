@@ -77,6 +77,10 @@ class CPDF_RichTextLayout {
     // A paragraph reads in the direction of its first strong character (left
     // to right when it has none), as a form field does, instead of its dir.
     bool direction_from_text = false;
+    // Lines break only at line breaks, and a text wider or taller than the
+    // area is drawn smaller to fit, by the smaller of the two ratios (as
+    // PDF.js draws a plain free text box). Not for an auto size (size 0).
+    bool shrink_to_fit = false;
   };
 
   struct Result {

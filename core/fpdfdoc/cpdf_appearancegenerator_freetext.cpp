@@ -413,8 +413,15 @@ PrepareRichFreeTextAPInternal(CPDF_Document* doc,
     prepared->footprint =
         inline_rotation ? envelope.box_rot.matrix.TransformRect(box) : box;
   } else {
-    const BorderStyleInfo border_style_info =
-        GetBorderStyleInfo(annot_dict->GetDictFor("BS"));
+    RetainPtr<const CPDF_Dictionary> border_style =
+        annot_dict->GetDictFor("BS");
+    BorderStyleInfo border_style_info =
+        GetBorderStyleInfo(border_style.Get());
+    if (!border_style) {
+      // No /BS: the /Border array's width (ISO 32000-1 12.5.2), as the
+      // callout reads it. PDF.js writes /Border [0 0 0] for no border.
+      border_style_info.width = GetBorderWidth(annot_dict);
+    }
     const ShapeRotationInfo rot_info = GetShapeRotationInfo(annot_dict);
     const CFX_FloatRect rect = rot_info.bbox;
     const float half_border_width = border_style_info.width / 2.0f;
@@ -448,6 +455,14 @@ PrepareRichFreeTextAPInternal(CPDF_Document* doc,
   if (text_area.Width() > 0 && text_area.Height() > 0) {
     CPDF_RichTextLayout::Options options;
     options.typographic_features = doc->GetTypographicFeaturesEnabled();
+    // A plain box (no /RC) without a border is how PDF.js writes free text,
+    // with no appearance: draw it as PDF.js does, its lines broken only at
+    // line breaks and shrunk to fit, reading in its text's direction.
+    if (in.document->source == CPDF_RichTextDocument::Source::kContents &&
+        !annot_dict->KeyExist("RC") && text_area == box) {
+      options.shrink_to_fit = true;
+      options.direction_from_text = true;
+    }
     CPDF_RichTextLayout layout(&map, options);
     arranged =
         layout.Arrange(*in.document, text_area, GetVerticalAlign(annot_dict));
