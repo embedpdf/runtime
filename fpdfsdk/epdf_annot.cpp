@@ -4969,8 +4969,9 @@ std::optional<AltElement> AltElementOf(const CPDF_Document* doc,
   if (!lists_it) {
     return std::nullopt;
   }
-  const CPDF_Reference* ref = entry->AsReference();
-  return AltElement{element, ref ? ref->GetRefObjNum() : 0};
+  // The number tree hands back the element itself, not the reference to it.
+  const uint32_t element_obj_num = element->GetObjNum();
+  return AltElement{element, element_obj_num};
 }
 
 // |holder|'s |key| as a dictionary to write: an indirect one through the
