@@ -4921,6 +4921,271 @@ EPDFAnnot_GetStructurePosition(FPDF_ANNOTATION annot,
   return static_cast<unsigned long>(steps.size());
 }
 
+namespace {
+
+// The structure element |annot_dict|'s /StructParent leads to, if it lists the
+// annotation, and its object number (0 for a direct one).
+struct AltElement {
+  RetainPtr<const CPDF_Dictionary> element;
+  uint32_t objnum = 0;
+};
+
+std::optional<AltElement> AltElementOf(const CPDF_Document* doc,
+                                       const CPDF_Dictionary* annot_dict) {
+  RetainPtr<const CPDF_Number> key =
+      ToNumber(annot_dict->GetDirectObjectFor("StructParent"));
+  const CPDF_Dictionary* catalog = doc->GetRoot();
+  if (!key || !key->IsInteger() || key->GetInteger() < 0 || !catalog) {
+    return std::nullopt;
+  }
+  RetainPtr<const CPDF_Dictionary> tree_root =
+      catalog->GetDictFor("StructTreeRoot");
+  RetainPtr<const CPDF_Dictionary> parent_tree =
+      tree_root ? tree_root->GetDictFor("ParentTree") : nullptr;
+  if (!parent_tree) {
+    return std::nullopt;
+  }
+  RetainPtr<const CPDF_Object> entry =
+      CPDF_NumberTree(std::move(parent_tree)).LookupValue(key->GetInteger());
+  if (!entry) {
+    return std::nullopt;
+  }
+  RetainPtr<const CPDF_Dictionary> element = ToDictionary(entry->GetDirect());
+  if (!element) {
+    return std::nullopt;
+  }
+  const uint32_t annot_obj_num = annot_dict->GetObjNum();
+  const bool lists_it =
+      KidIndex(element.Get(), [annot_obj_num](const CPDF_Object* kid) {
+        const CPDF_Dictionary* objr = kid->AsDictionary();
+        if (!objr || objr->GetNameFor("Type") != "OBJR") {
+          return false;
+        }
+        RetainPtr<const CPDF_Reference> target =
+            ToReference(objr->GetObjectFor("Obj"));
+        return target && annot_obj_num &&
+               target->GetRefObjNum() == annot_obj_num;
+      }).has_value();
+  if (!lists_it) {
+    return std::nullopt;
+  }
+  const CPDF_Reference* ref = entry->AsReference();
+  return AltElement{element, ref ? ref->GetRefObjNum() : 0};
+}
+
+// |holder|'s |key| as a dictionary to write: an indirect one through the
+// document (so a layer copies it up first), a direct one in place.
+RetainPtr<CPDF_Dictionary> WritableDictFor(CPDF_Document* doc,
+                                           CPDF_Dictionary* holder,
+                                           const ByteString& key) {
+  RetainPtr<CPDF_Object> value = holder->GetMutableObjectFor(key);
+  if (!value) {
+    return nullptr;
+  }
+  if (const CPDF_Reference* ref = value->AsReference()) {
+    return ToDictionary(doc->GetMutableIndirectObject(ref->GetRefObjNum()));
+  }
+  return ToDictionary(std::move(value));
+}
+
+// Appends |objnum| to |parent|'s /K, which becomes an array when it isn't.
+void AppendStructKid(CPDF_Document* doc,
+                     CPDF_Dictionary* parent,
+                     uint32_t objnum) {
+  RetainPtr<CPDF_Object> kids = parent->GetMutableObjectFor("K");
+  RetainPtr<CPDF_Array> array;
+  if (const CPDF_Reference* ref = kids ? kids->AsReference() : nullptr) {
+    // An indirect array is written through the document; a reference to
+    // anything else is the one kid.
+    if (ToArray(ref->GetDirect())) {
+      array = ToArray(doc->GetMutableIndirectObject(ref->GetRefObjNum()));
+    }
+  } else if (kids) {
+    array = ToArray(kids);
+  }
+  if (kids && !array) {
+    RetainPtr<CPDF_Object> only = kids->Clone();
+    array = parent->SetNewFor<CPDF_Array>("K");
+    array->Append(std::move(only));
+  } else if (!array) {
+    array = parent->SetNewFor<CPDF_Array>("K");
+  }
+  array->AppendNew<CPDF_Reference>(doc, objnum);
+}
+
+}  // namespace
+
+FPDF_EXPORT unsigned long FPDF_CALLCONV
+EPDFAnnot_GetAltText(FPDF_ANNOTATION annot,
+                     FPDF_WCHAR* buffer,
+                     unsigned long buflen) {
+  ScopedFPDFAnnotationView annot_view(annot);
+  CPDF_AnnotContext* ctx = CPDFAnnotContextFromFPDFAnnotation(annot);
+  if (!ctx) {
+    return 0;
+  }
+  CPDF_Document* doc = ctx->GetPage()->GetDocument();
+  const CPDF_Dictionary* annot_dict = ctx->GetAnnotDict();
+  if (!doc || !annot_dict) {
+    return 0;
+  }
+  CPDF_DocumentViewScope document_view(doc);
+  std::optional<AltElement> found = AltElementOf(doc, annot_dict);
+  if (!found || !found->element->KeyExist("Alt")) {
+    return 0;
+  }
+  // SAFETY: required from caller.
+  return Utf16EncodeMaybeCopyAndReturnLength(
+      found->element->GetUnicodeTextFor("Alt"),
+      UNSAFE_BUFFERS(SpanFromFPDFApiArgs(buffer, buflen)));
+}
+
+FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV
+EPDFAnnot_SetAltText(FPDF_ANNOTATION annot, FPDF_WIDESTRING alt) {
+  ScopedFPDFAnnotationView annot_view(annot);
+  CPDF_AnnotContext* ctx = CPDFAnnotContextFromFPDFAnnotation(annot);
+  if (!ctx) {
+    return false;
+  }
+  CPDF_Document* doc = ctx->GetPage()->GetDocument();
+  if (!doc) {
+    return false;
+  }
+  CPDF_DocumentViewScope document_view(doc);
+  RetainPtr<CPDF_Dictionary> annot_dict =
+      GetMutableAnnotDictFromFPDFAnnotation(annot);
+  const uint32_t annot_obj_num = annot_dict ? annot_dict->GetObjNum() : 0;
+  CPDF_Page* page = ctx->GetPage()->AsPDFPage();
+  RetainPtr<const CPDF_Dictionary> page_dict = page ? page->GetDict() : nullptr;
+  const uint32_t page_obj_num = page_dict ? page_dict->GetObjNum() : 0;
+  if (!annot_obj_num) {
+    return false;
+  }
+  // SAFETY: required from caller.
+  const WideString text =
+      alt ? UNSAFE_BUFFERS(WideStringFromFPDFWideString(alt)) : WideString();
+
+  // Already in the tree: the element that lists it takes the text.
+  if (std::optional<AltElement> found = AltElementOf(doc, annot_dict.Get())) {
+    if (!found->objnum) {
+      return false;
+    }
+    RetainPtr<CPDF_Dictionary> element =
+        ToDictionary(doc->GetMutableIndirectObject(found->objnum));
+    if (!element) {
+      return false;
+    }
+    if (text.IsEmpty()) {
+      element->RemoveFor("Alt");
+    } else {
+      element->SetNewFor<CPDF_String>("Alt", text.AsStringView());
+    }
+    return true;
+  }
+  if (text.IsEmpty()) {
+    return true;
+  }
+
+  // Everything is checked before anything is written: a refusal changes
+  // nothing.
+  RetainPtr<CPDF_Dictionary> catalog = doc->GetMutableRoot();
+  if (!catalog) {
+    return false;
+  }
+  RetainPtr<const CPDF_Object> existing_root =
+      catalog->GetDirectObjectFor("StructTreeRoot");
+  if (existing_root && !existing_root->IsDictionary()) {
+    return false;
+  }
+  if (existing_root) {
+    RetainPtr<const CPDF_Object> existing_tree =
+        existing_root->AsDictionary()->GetDirectObjectFor("ParentTree");
+    if (existing_tree && (!existing_tree->IsDictionary() ||
+                          existing_tree->AsDictionary()->KeyExist("Kids"))) {
+      return false;
+    }
+  }
+
+  RetainPtr<CPDF_Dictionary> tree_root;
+  if (existing_root) {
+    tree_root = WritableDictFor(doc, catalog.Get(), "StructTreeRoot");
+  } else {
+    tree_root = doc->NewIndirect<CPDF_Dictionary>();
+    tree_root->SetNewFor<CPDF_Name>("Type", "StructTreeRoot");
+    catalog->SetNewFor<CPDF_Reference>("StructTreeRoot", doc,
+                                       tree_root->GetObjNum());
+  }
+  if (!tree_root) {
+    return false;
+  }
+  RetainPtr<CPDF_Dictionary> parent_tree =
+      WritableDictFor(doc, tree_root.Get(), "ParentTree");
+  if (!parent_tree) {
+    parent_tree = doc->NewIndirect<CPDF_Dictionary>();
+    tree_root->SetNewFor<CPDF_Reference>("ParentTree", doc,
+                                         parent_tree->GetObjNum());
+  }
+  RetainPtr<CPDF_Array> nums = parent_tree->GetMutableArrayFor("Nums");
+  if (!nums) {
+    nums = parent_tree->SetNewFor<CPDF_Array>("Nums");
+  }
+
+  // The key: /ParentTreeNextKey, past every key in use.
+  int key = 0;
+  if (RetainPtr<const CPDF_Number> next =
+          ToNumber(tree_root->GetDirectObjectFor("ParentTreeNextKey"));
+      next && next->IsInteger() && next->GetInteger() > 0) {
+    key = next->GetInteger();
+  }
+  for (size_t i = 0; i + 1 < nums->size(); i += 2) {
+    key = std::max(key, nums->GetIntegerAt(i) + 1);
+  }
+
+  // The element goes into the tree's one /Document element, if it has one.
+  RetainPtr<CPDF_Dictionary> parent = tree_root;
+  if (RetainPtr<const CPDF_Object> kids = tree_root->GetObjectFor("K");
+      kids && kids->AsReference()) {
+    RetainPtr<const CPDF_Dictionary> only = ToDictionary(kids->GetDirect());
+    if (only && only->GetNameFor("S") == "Document") {
+      RetainPtr<CPDF_Dictionary> document_element = ToDictionary(
+          doc->GetMutableIndirectObject(kids->AsReference()->GetRefObjNum()));
+      if (document_element) {
+        parent = std::move(document_element);
+      }
+    }
+  }
+
+  RetainPtr<CPDF_Dictionary> element = doc->NewIndirect<CPDF_Dictionary>();
+  element->SetNewFor<CPDF_Name>("Type", "StructElem");
+  element->SetNewFor<CPDF_Name>("S", "Figure");
+  element->SetNewFor<CPDF_Reference>("P", doc, parent->GetObjNum());
+  if (page_obj_num) {
+    element->SetNewFor<CPDF_Reference>("Pg", doc, page_obj_num);
+  }
+  element->SetNewFor<CPDF_String>("Alt", text.AsStringView());
+  RetainPtr<CPDF_Dictionary> objr = element->SetNewFor<CPDF_Dictionary>("K");
+  objr->SetNewFor<CPDF_Name>("Type", "OBJR");
+  objr->SetNewFor<CPDF_Reference>("Obj", doc, annot_obj_num);
+  if (page_obj_num) {
+    objr->SetNewFor<CPDF_Reference>("Pg", doc, page_obj_num);
+  }
+  AppendStructKid(doc, parent.Get(), element->GetObjNum());
+
+  // The parent tree keeps its keys in order.
+  size_t at = nums->size() - nums->size() % 2;
+  for (size_t i = 0; i + 1 < nums->size(); i += 2) {
+    if (nums->GetIntegerAt(i) > key) {
+      at = i;
+      break;
+    }
+  }
+  nums->InsertNewAt<CPDF_Number>(at, key);
+  nums->InsertNewAt<CPDF_Reference>(at + 1, doc, element->GetObjNum());
+  tree_root->SetNewFor<CPDF_Number>("ParentTreeNextKey", key + 1);
+  annot_dict->SetNewFor<CPDF_Number>("StructParent", key);
+  return true;
+}
+
 FPDF_EXPORT FPDF_ANNOTATION FPDF_CALLCONV
 EPDFPage_GetAnnotByObjectNumber(FPDF_PAGE page, unsigned int obj_num) {
   if (!page || obj_num == 0) {

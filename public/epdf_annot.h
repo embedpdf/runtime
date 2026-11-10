@@ -1710,6 +1710,46 @@ EPDFAnnot_GetStructurePosition(FPDF_ANNOTATION annot,
                                unsigned long buflen);
 
 // Experimental EmbedPDF Extension API.
+// Get the alternate description of an annotation: the /Alt of the structure
+// element that lists it (ISO 32000-2 14.9.3), found through its
+// /StructParent and the parent tree.
+//
+//   annot  - handle to an annotation.
+//   buffer - receives the text as UTF-16LE with a terminating NUL; may be
+//            NULL.
+//   buflen - size of |buffer| in bytes.
+//
+// Returns the number of bytes the text needs, including the NUL; 0 when the
+// annotation isn't in the structure tree or its element has no /Alt.
+FPDF_EXPORT unsigned long FPDF_CALLCONV
+EPDFAnnot_GetAltText(FPDF_ANNOTATION annot,
+                     FPDF_WCHAR* buffer,
+                     unsigned long buflen);
+
+// Experimental EmbedPDF Extension API.
+// Set the alternate description of an annotation, as PDF.js writes a stamp's
+// alt text: in the structure tree, not in the annotation.
+//
+// An annotation already in the structure tree gets the /Alt on the element
+// that lists it (an empty |alt| removes it). Otherwise a non-empty |alt|
+// creates a /Figure element with the /Alt and an object reference (/OBJR) to
+// the annotation, appended to the tree's /Document element when the root's
+// one kid is one, else to the root; the annotation gets a /StructParent and
+// the parent tree an entry for it. The catalog's /StructTreeRoot and its
+// /ParentTree are created when missing.
+//
+//   annot - handle to an annotation; its dictionary must be an indirect
+//           object.
+//   alt   - the description, UTF-16LE with a terminating NUL; NULL or empty
+//           removes it.
+//
+// Returns TRUE on success; FALSE for a direct annotation dictionary, a parent
+// tree with /Kids (only a flat /Nums is written), or a structure tree that
+// isn't dictionaries where it needs them.
+FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV
+EPDFAnnot_SetAltText(FPDF_ANNOTATION annot, FPDF_WIDESTRING alt);
+
+// Experimental EmbedPDF Extension API.
 // Get an annotation on a page by its PDF indirect object number.
 // Similar to EPDFPage_GetAnnotByName() but keyed by object number.
 //
