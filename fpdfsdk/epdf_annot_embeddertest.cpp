@@ -10410,3 +10410,53 @@ TEST_F(EPDFAnnotStructureEmbedderTest, AnUntaggedDocumentHasNoPositions) {
   ASSERT_TRUE(annot);
   EXPECT_EQ(0u, EPDFAnnot_GetStructurePosition(annot.get(), nullptr, 0));
 }
+
+// Alt text lives in the structure tree, as PDF.js writes a stamp's: a /Figure
+// element with the /Alt, listing the annotation, which gets a /StructParent.
+TEST_F(EPDFAnnotEmbedderTest, AltTextRoundTripsThroughTheStructureTree) {
+  embedpdf_test::ScopedTestDocument doc(NewTestDocument());
+  ASSERT_TRUE(doc);
+  ScopedFPDFPage page(FPDFPage_New(doc.get(), 0, 612, 792));
+  ASSERT_TRUE(page);
+  ScopedFPDFAnnotation stamp(
+      FPDFPage_CreateAnnot(page.get(), FPDF_ANNOT_STAMP));
+  ASSERT_TRUE(stamp);
+  ScopedFPDFAnnotation square(
+      FPDFPage_CreateAnnot(page.get(), FPDF_ANNOT_SQUARE));
+  ASSERT_TRUE(square);
+
+  auto alt_of = [](FPDF_ANNOTATION annot) {
+    const unsigned long length = EPDFAnnot_GetAltText(annot, nullptr, 0);
+    if (length == 0) {
+      return std::wstring();
+    }
+    std::vector<FPDF_WCHAR> buffer = GetFPDFWideStringBuffer(length);
+    EXPECT_EQ(length, EPDFAnnot_GetAltText(annot, buffer.data(), length));
+    return GetPlatformWString(buffer.data());
+  };
+
+  EXPECT_EQ(L"", alt_of(stamp.get()));
+  ScopedFPDFWideString first = GetFPDFWideString(L"A red stamp");
+  ASSERT_TRUE(EPDFAnnot_SetAltText(stamp.get(), first.get()));
+  EXPECT_EQ(L"A red stamp", alt_of(stamp.get()));
+  ScopedFPDFWideString second = GetFPDFWideString(L"A square");
+  ASSERT_TRUE(EPDFAnnot_SetAltText(square.get(), second.get()));
+  EXPECT_EQ(L"A square", alt_of(square.get()));
+  EXPECT_EQ(L"A red stamp", alt_of(stamp.get()));
+
+  // Both are /Figure kids of the root, at their own parent tree keys.
+  std::vector<unsigned int> steps(4);
+  EXPECT_EQ(2u, EPDFAnnot_GetStructurePosition(stamp.get(), steps.data(), 4));
+  EXPECT_EQ(0u, steps[0]);
+  EXPECT_EQ(2u, EPDFAnnot_GetStructurePosition(square.get(), steps.data(), 4));
+  EXPECT_EQ(1u, steps[0]);
+
+  // Setting it again rewrites the element; empty removes the /Alt.
+  ScopedFPDFWideString changed = GetFPDFWideString(L"A blue stamp");
+  ASSERT_TRUE(EPDFAnnot_SetAltText(stamp.get(), changed.get()));
+  EXPECT_EQ(L"A blue stamp", alt_of(stamp.get()));
+  EXPECT_EQ(2u, EPDFAnnot_GetStructurePosition(stamp.get(), steps.data(), 4));
+  EXPECT_EQ(0u, steps[0]);
+  ASSERT_TRUE(EPDFAnnot_SetAltText(stamp.get(), nullptr));
+  EXPECT_EQ(L"", alt_of(stamp.get()));
+}

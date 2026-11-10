@@ -77,6 +77,8 @@ int CheckEmbedPDFCApi(void) {
   CHK(EPDFAction_NodeHasJavaScript);
   CHK(EPDFAction_SetNext);
   CHK(EPDFAnnot_GetActionModel);
+  CHK(EPDFAnnot_GetAltText);
+  CHK(EPDFAnnot_SetAltText);
   CHK(EPDFAnnot_SetEventAction);
   CHK(EPDFDoc_GetAdditionalActionModel);
   CHK(EPDFDoc_GetNamedJavaScriptActionModel);
