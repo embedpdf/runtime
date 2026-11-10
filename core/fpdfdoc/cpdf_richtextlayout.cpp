@@ -793,6 +793,7 @@ CPDF_RichTextLayout::Result CPDF_RichTextLayout::Arrange(
   } else {
     candidate_sizes.push_back(document.body.size);
   }
+  const bool shrink_to_fit = options_.shrink_to_fit && !auto_size;
 
   // Faces resolve once per request (family, weight, italic) over every
   // character styled with it, whatever the size attempt (C note §1.3): a
@@ -939,6 +940,7 @@ CPDF_RichTextLayout::Result CPDF_RichTextLayout::Arrange(
           // The furthest opportunity whose ink fits.
           size_t best = length;
           bool fits_whole =
+              shrink_to_fit ||
               Impl::InkWidth(segment, pos, length) <= avail + kEpsilon;
           if (!fits_whole) {
             best = 0;
@@ -1129,6 +1131,16 @@ CPDF_RichTextLayout::Result CPDF_RichTextLayout::Arrange(
         (content_height > area_height + kEpsilon ||
          widest > area_width + kEpsilon)) {
       continue;  // try the next smaller size
+    }
+    if (shrink_to_fit && attempt == 0 && content_height > 0 && widest > 0 &&
+        (content_height > area_height + kEpsilon ||
+         widest > area_width + kEpsilon)) {
+      const float scale =
+          std::min(area_width / widest, area_height / content_height);
+      if (scale > 0) {
+        candidate_sizes.push_back(body_size * scale);
+        continue;  // once more at the size that fits
+      }
     }
 
     // 7. Vertical alignment of the block, then absolute baselines.
