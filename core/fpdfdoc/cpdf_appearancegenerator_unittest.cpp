@@ -209,8 +209,8 @@ TEST_F(CPDFGenerateAPTest, GenerateEphemeralFreeTextAPDoesNotCreateAcroForm) {
 
 // Without /BS, a free text box takes its border width from /Border (ISO
 // 32000-1 12.5.2), as a callout does: it draws exactly as the same width in
-// /BS does, frame and text plate alike. With neither, the border is 1 pt.
-// PDF.js writes /Border [0 0 0] for a box with no border.
+// /BS does, frame and text plate alike. With neither, the border is the
+// default 1 pt.
 TEST_F(CPDFGenerateAPTest, FreeTextBorderWidthFromBorderArray) {
   auto generate = [](std::optional<float> border_width,
                      std::optional<float> bs_width) {

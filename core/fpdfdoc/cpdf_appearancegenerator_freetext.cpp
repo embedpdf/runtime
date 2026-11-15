@@ -417,9 +417,8 @@ PrepareRichFreeTextAPInternal(CPDF_Document* doc,
         annot_dict->GetDictFor("BS");
     BorderStyleInfo border_style_info = GetBorderStyleInfo(border_style.Get());
     if (!border_style) {
-      // No /BS: the /Border array's width (ISO 32000-1 12.5.2), as the
-      // callout and the border reader take it; 1 pt when it has none.
-      // PDF.js writes /Border [0 0 0] for a box with no border.
+      // No /BS: the /Border array's width (ISO 32000-1 12.5.2, default
+      // [0 0 1]), as the callout and the border reader take it.
       border_style_info.width = GetBorderWidth(annot_dict);
     }
     const ShapeRotationInfo rot_info = GetShapeRotationInfo(annot_dict);
