@@ -151,6 +151,8 @@ CFXJSE_Engine::CFXJSE_Engine(CXFA_Document* document, v8::Isolate* isolate)
                                          &kGlobalClassDescriptor,
                                          document->GetRoot()->JSObject(),
                                          nullptr)),
+      up_object_array_(cppgc::MakeGarbageCollected<GCedVector<CXFA_Node>>(
+          document->GetHeap()->GetAllocationHandle())),
       node_helper_(std::make_unique<CFXJSE_NodeHelper>()),
       resolve_processor_(
           std::make_unique<CFXJSE_ResolveProcessor>(this, node_helper_.get())) {
@@ -615,11 +617,12 @@ CXFA_Script::Type CFXJSE_Engine::GetType() {
 }
 
 void CFXJSE_Engine::AddObjectToUpArray(CXFA_Node* pNode) {
-  up_object_array_.push_back(pNode);
+  up_object_array_->storage.push_back(pNode);
 }
 
 CXFA_Node* CFXJSE_Engine::LastObjectFromUpArray() {
-  return !up_object_array_.empty() ? up_object_array_.back() : nullptr;
+  return !up_object_array_->storage.empty() ? up_object_array_->storage.back()
+                                            : nullptr;
 }
 
 CFXJSE_Context* CFXJSE_Engine::CreateVariablesContext(CXFA_Script* pScriptNode,
@@ -771,10 +774,10 @@ CFXJSE_Engine::ResolveObjectsWithBindNode(CXFA_Object* refObject,
       !!(dwStyles & Mask<XFA_ResolveFlag>{XFA_ResolveFlag::kParent,
                                           XFA_ResolveFlag::kSiblings});
   if (script_type_ != CXFA_Script::Type::Formcalc || bParentOrSiblings) {
-    up_object_array_.clear();
+    up_object_array_->storage.clear();
   }
   if (refObject && refObject->IsNode() && bParentOrSiblings) {
-    up_object_array_.push_back(refObject->AsNode());
+    up_object_array_->storage.push_back(refObject->AsNode());
   }
 
   ResolveResult result;
@@ -790,12 +793,18 @@ CFXJSE_Engine::ResolveObjectsWithBindNode(CXFA_Object* refObject,
   int32_t nStart = 0;
   int32_t nLevel = 0;
 
-  std::vector<cppgc::Member<CXFA_Object>> findObjects;
-  findObjects.emplace_back(refObject ? refObject : document_->GetRoot());
+  cppgc::Persistent<GCedVector<CXFA_Object>> find_objects =
+      cppgc::MakeGarbageCollected<GCedVector<CXFA_Object>>(
+          document_->GetHeap()->GetAllocationHandle());
+  find_objects->storage.emplace_back(refObject ? refObject
+                                               : document_->GetRoot());
+  cppgc::Persistent<GCedVector<CXFA_Object>> ret_objects =
+      cppgc::MakeGarbageCollected<GCedVector<CXFA_Object>>(
+          document_->GetHeap()->GetAllocationHandle());
   int32_t nNodes = 0;
   CFXJSE_ScopeUtil_IsolateHandleContext scope(GetJseContext());
   while (true) {
-    nNodes = fxcrt::CollectionSize<int32_t>(findObjects);
+    nNodes = fxcrt::CollectionSize<int32_t>(find_objects->storage);
     int32_t i = 0;
     rndFind.styles_ = dwStyles;
     resolve_processor_->SetCurStart(nStart);
@@ -805,21 +814,22 @@ CFXJSE_Engine::ResolveObjectsWithBindNode(CXFA_Object* refObject,
         CXFA_Node* pDataNode = nullptr;
         nStart = node_helper_->cur_all_start_;
         if (nStart != -1) {
-          pDataNode = document_->GetNotBindNode(findObjects);
+          pDataNode = document_->GetNotBindNode(find_objects->storage);
           if (pDataNode) {
-            findObjects.clear();
-            findObjects.emplace_back(pDataNode);
+            find_objects->storage.clear();
+            find_objects->storage.emplace_back(pDataNode);
             break;
           }
         } else {
-          pDataNode = findObjects.front()->AsNode();
-          findObjects.clear();
-          findObjects.emplace_back(pDataNode);
+          pDataNode = find_objects->storage.front()->AsNode();
+          find_objects->storage.clear();
+          find_objects->storage.emplace_back(pDataNode);
           break;
         }
         dwStyles |= XFA_ResolveFlag::kBind;
-        findObjects.clear();
-        findObjects.emplace_back(node_helper_->all_start_parent_.Get());
+        find_objects->storage.clear();
+        find_objects->storage.emplace_back(
+            node_helper_->all_start_parent_.Get());
         continue;
       }
       break;
@@ -833,7 +843,10 @@ CFXJSE_Engine::ResolveObjectsWithBindNode(CXFA_Object* refObject,
       }
       break;
     }
-    std::vector<cppgc::Member<CXFA_Object>> retObjects;
+    // Could make a new `ret_objects` every time through here, execpt
+    // that would generate needless cppgc heap garbage when only the
+    // backing-store has to change.
+    ret_objects->storage.clear();
     while (i < nNodes) {
       bool bDataBind = false;
       if (((dwStyles & XFA_ResolveFlag::kBind) ||
@@ -844,7 +857,7 @@ CFXJSE_Engine::ResolveObjectsWithBindNode(CXFA_Object* refObject,
         i = resolve_processor_->IndexForDataBind(rndBind.condition_, nNodes);
         bDataBind = true;
       }
-      rndFind.cur_object_ = findObjects[i++].Get();
+      rndFind.cur_object_ = find_objects->storage[i++].Get();
       rndFind.level_ = nLevel;
       rndFind.result_.type = ResolveResult::Type::kNodes;
       if (!resolve_processor_->Resolve(GetIsolate(), rndFind)) {
@@ -863,19 +876,20 @@ CFXJSE_Engine::ResolveObjectsWithBindNode(CXFA_Object* refObject,
           rndFind.result_.objects.front() = ToObject(GetIsolate(), pValue);
         }
       }
-      if (!up_object_array_.empty()) {
-        up_object_array_.pop_back();
+      if (!up_object_array_->storage.empty()) {
+        up_object_array_->storage.pop_back();
       }
-      retObjects.insert(retObjects.end(), rndFind.result_.objects.begin(),
-                        rndFind.result_.objects.end());
+      ret_objects->storage.insert(ret_objects->storage.end(),
+                                  rndFind.result_.objects.begin(),
+                                  rndFind.result_.objects.end());
       rndFind.result_.objects.clear();
       if (bDataBind) {
         break;
       }
     }
-    findObjects.clear();
+    find_objects->storage.clear();
 
-    nNodes = fxcrt::CollectionSize<int32_t>(retObjects);
+    nNodes = fxcrt::CollectionSize<int32_t>(ret_objects->storage);
     if (nNodes < 1) {
       if (dwStyles & XFA_ResolveFlag::kCreateNode) {
         bNextCreate = true;
@@ -893,7 +907,7 @@ CFXJSE_Engine::ResolveObjectsWithBindNode(CXFA_Object* refObject,
       break;
     }
 
-    findObjects = std::move(retObjects);
+    find_objects->storage = std::move(ret_objects->storage);
     rndFind.result_.objects.clear();
     if (nLevel == 0) {
       dwStyles.Clear(XFA_ResolveFlag::kParent);
@@ -905,8 +919,8 @@ CFXJSE_Engine::ResolveObjectsWithBindNode(CXFA_Object* refObject,
   if (!bNextCreate) {
     result.type = rndFind.result_.type;
     if (nNodes > 0) {
-      result.objects.insert(result.objects.end(), findObjects.begin(),
-                            findObjects.end());
+      result.objects.insert(result.objects.end(), find_objects->storage.begin(),
+                            find_objects->storage.end());
     }
     if (rndFind.result_.type == ResolveResult::Type::kAttribute) {
       result.script_attribute = rndFind.result_.script_attribute;
@@ -990,8 +1004,12 @@ CXFA_Object* CFXJSE_Engine::ToXFAObject(v8::Local<v8::Value> obj) {
 v8::Local<v8::Object> CFXJSE_Engine::NewNormalXFAObject(CXFA_Object* obj) {
   v8::EscapableHandleScope scope(GetIsolate());
   CJX_Object* js_object = obj->JSObject();
-  v8::Local<v8::Object> binding = js_object->NewBoundV8Object(
-      GetIsolate(), GetJseNormalClass()->GetTemplate(GetIsolate()));
+  auto iter = map_object_to_object_.find(js_object);
+  if (iter != map_object_to_object_.end()) {
+    return scope.Escape(v8::Local<v8::Object>::New(GetIsolate(), iter->second));
+  }
+  v8::Local<v8::Object> binding = FXJSE_CreateBoundObject(
+      GetIsolate(), js_object, GetJseNormalClass()->GetTemplate(GetIsolate()));
   map_object_to_object_[js_object].Reset(GetIsolate(), binding);
   return scope.Escape(binding);
 }

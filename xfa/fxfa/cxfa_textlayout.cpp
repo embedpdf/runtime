@@ -16,7 +16,6 @@
 #include "core/fxcrt/compiler_specific.h"
 #include "core/fxcrt/css/cfx_csscomputedstyle.h"
 #include "core/fxcrt/css/cfx_cssstyleselector.h"
-#include "core/fxcrt/notreached.h"
 #include "core/fxcrt/stl_util.h"
 #include "core/fxcrt/xml/cfx_xmlelement.h"
 #include "core/fxcrt/xml/cfx_xmlnode.h"
@@ -175,31 +174,29 @@ void CXFA_TextLayout::InitBreak(float fLineWidth) {
   float fStart = 0;
   float fStartPos = 0;
   if (para) {
-    CFGAS_RTFBreak::LineAlignment iAlign = CFGAS_RTFBreak::LineAlignment::Left;
+    CFGAS_RTFBreak::LineAlignment align;
     switch (para->GetHorizontalAlign()) {
       case XFA_AttributeValue::Center:
-        iAlign = CFGAS_RTFBreak::LineAlignment::Center;
+        align = CFGAS_RTFBreak::LineAlignment::Center;
         break;
       case XFA_AttributeValue::Right:
-        iAlign = CFGAS_RTFBreak::LineAlignment::Right;
+        align = CFGAS_RTFBreak::LineAlignment::Right;
         break;
       case XFA_AttributeValue::Justify:
-        iAlign = CFGAS_RTFBreak::LineAlignment::Justified;
+        align = CFGAS_RTFBreak::LineAlignment::Justified;
         break;
       case XFA_AttributeValue::JustifyAll:
-        iAlign = CFGAS_RTFBreak::LineAlignment::Distributed;
-        break;
-      case XFA_AttributeValue::Left:
-      case XFA_AttributeValue::Radix:
+        align = CFGAS_RTFBreak::LineAlignment::Distributed;
         break;
       default:
-        NOTREACHED();
+        align = CFGAS_RTFBreak::LineAlignment::Left;
+        break;
     }
-    break_->SetAlignment(iAlign);
+    break_->SetAlignment(align);
 
     fStart = para->GetMarginLeft();
     if (text_provider_->IsCheckButtonAndAutoWidth()) {
-      if (iAlign != CFGAS_RTFBreak::LineAlignment::Left) {
+      if (align != CFGAS_RTFBreak::LineAlignment::Left) {
         fLineWidth -= para->GetMarginRight();
       }
     } else {
@@ -245,24 +242,25 @@ void CXFA_TextLayout::InitBreak(CFX_CSSComputedStyle* pStyle,
 
   if (eDisplay == CFX_CSSDisplay::Block ||
       eDisplay == CFX_CSSDisplay::ListItem) {
-    CFGAS_RTFBreak::LineAlignment iAlign = CFGAS_RTFBreak::LineAlignment::Left;
+    CFGAS_RTFBreak::LineAlignment align;
     switch (pStyle->GetTextAlign()) {
       case CFX_CSSTextAlign::Right:
-        iAlign = CFGAS_RTFBreak::LineAlignment::Right;
+        align = CFGAS_RTFBreak::LineAlignment::Right;
         break;
       case CFX_CSSTextAlign::Center:
-        iAlign = CFGAS_RTFBreak::LineAlignment::Center;
+        align = CFGAS_RTFBreak::LineAlignment::Center;
         break;
       case CFX_CSSTextAlign::Justify:
-        iAlign = CFGAS_RTFBreak::LineAlignment::Justified;
+        align = CFGAS_RTFBreak::LineAlignment::Justified;
         break;
       case CFX_CSSTextAlign::JustifyAll:
-        iAlign = CFGAS_RTFBreak::LineAlignment::Distributed;
+        align = CFGAS_RTFBreak::LineAlignment::Distributed;
         break;
       default:
+        align = CFGAS_RTFBreak::LineAlignment::Left;
         break;
     }
-    break_->SetAlignment(iAlign);
+    break_->SetAlignment(align);
 
     float fStart = 0;
     const CFX_CSSRect* pRect = pStyle->GetMarginWidth();
@@ -505,7 +503,7 @@ float CXFA_TextLayout::Layout(const CFX_SizeF& size) {
   Unload();
   break_ = CreateBreak(true);
   if (loader_) {
-    loader_->iTotalLines = -1;
+    loader_->total_lines.reset();
     loader_->nCharIdx = 0;
   }
 
@@ -524,7 +522,7 @@ bool CXFA_TextLayout::LayoutInternal(size_t szBlockIndex) {
     return false;
   }
 
-  loader_->iTotalLines = -1;
+  loader_->total_lines.reset();
   lines_ = 0;
   float fLinePos = 0;
   CXFA_Node* pNode = nullptr;
@@ -542,8 +540,7 @@ bool CXFA_TextLayout::LayoutInternal(size_t szBlockIndex) {
 
     loader_->nCharIdx = 0;
     if (!blocks_.empty()) {
-      loader_->iTotalLines =
-          pdfium::checked_cast<int32_t>(blocks_[szBlockIndex].szLength);
+      loader_->total_lines = blocks_[szBlockIndex].szLength;
     }
     Loader(szText.width, &fLinePos, true);
     if (blocks_.empty() && loader_->fStartLineOffset < 0.1f) {
@@ -551,8 +548,7 @@ bool CXFA_TextLayout::LayoutInternal(size_t szBlockIndex) {
     }
   } else if (text_data_node_) {
     if (!blocks_.empty() && szBlockIndex < blocks_.size() - 1) {
-      loader_->iTotalLines =
-          pdfium::checked_cast<int32_t>(blocks_[szBlockIndex].szLength);
+      loader_->total_lines = blocks_[szBlockIndex].szLength;
     }
     break_->Reset();
     if (rich_text_) {
@@ -905,7 +901,7 @@ bool CXFA_TextLayout::LoadRichText(const CFX_XMLNode* pXMLNode,
           if (!IsEnd(bSavePieces)) {
             return true;
           }
-          if (loader_ && loader_->iTotalLines > -1) {
+          if (loader_ && loader_->total_lines.has_value()) {
             loader_->pXMLNode = pXMLNode;
             loader_->pParentStyle = pParentStyle;
           }
@@ -959,7 +955,7 @@ bool CXFA_TextLayout::LoadRichText(const CFX_XMLNode* pXMLNode,
     return true;
   }
 
-  if (loader_ && loader_->iTotalLines > -1) {
+  if (loader_ && loader_->total_lines.has_value()) {
     loader_->pXMLNode = pXMLNode->GetNextSibling();
     loader_->pParentStyle = pParentStyle;
   }
@@ -1005,8 +1001,8 @@ bool CXFA_TextLayout::IsEnd(bool bSavePieces) {
   if (!bSavePieces) {
     return false;
   }
-  if (loader_ && loader_->iTotalLines > 0) {
-    return lines_ >= loader_->iTotalLines;
+  if (loader_ && loader_->total_lines.value_or(0) > 0) {
+    return lines_ >= loader_->total_lines;
   }
   return false;
 }

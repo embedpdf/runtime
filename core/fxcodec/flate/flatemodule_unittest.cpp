@@ -273,3 +273,25 @@ TEST(FlateModule, LZWDecode) {
   EXPECT_THAT(result.data, ElementsAreArray(kExpected));
   EXPECT_EQ(5u, result.bytes_consumed);
 }
+
+TEST(FlateModule, CreateDecoderPngPredictorRewind) {
+  // 2x2 RGB image encoded with PNG Paeth filter (tag 4) on each row.
+  static constexpr uint8_t kRawInput[] = {
+      4, 80, 140, 200, 0, 0, 0,  // Row 0
+      4, 0,  0,   0,   0, 0, 0,  // Row 1
+  };
+  static constexpr uint8_t kExpectedRow[] = {80, 140, 200, 80, 140, 200};
+
+  DataVector<uint8_t> encoded = FlateModule::Encode(kRawInput);
+  std::unique_ptr<ScanlineDecoder> decoder = FlateModule::CreateDecoder(
+      encoded, /*width=*/2, /*height=*/2, /*nComps=*/3, /*bpc=*/8,
+      /*predictor=*/15, /*Colors=*/3, /*BitsPerComponent=*/8, /*Columns=*/2);
+  ASSERT_TRUE(decoder);
+
+  EXPECT_THAT(decoder->GetScanline(0), ElementsAreArray(kExpectedRow));
+  EXPECT_THAT(decoder->GetScanline(1), ElementsAreArray(kExpectedRow));
+
+  // Reading scanline 0 again rewinds the decoder.
+  EXPECT_THAT(decoder->GetScanline(0), ElementsAreArray(kExpectedRow));
+  EXPECT_THAT(decoder->GetScanline(1), ElementsAreArray(kExpectedRow));
+}
