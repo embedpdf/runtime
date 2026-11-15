@@ -323,6 +323,30 @@ BorderStyleInfo GetBorderStyleInfo(const CPDF_Dictionary* border_style_dict) {
   return border_style_info;
 }
 
+// An annotation's border as ISO 32000-1 12.5.2 reads it: its /BS, or else
+// its /Border array, whose width (default 1) and dash array draw as
+// GetBorderWidth and GetDashPatternString take them; an empty dash array
+// draws a solid line.
+BorderStyleInfo GetAnnotBorderStyleInfo(const CPDF_Dictionary* annot_dict) {
+  RetainPtr<const CPDF_Dictionary> border_style_dict =
+      annot_dict->GetDictFor("BS");
+  if (border_style_dict) {
+    return GetBorderStyleInfo(border_style_dict.Get());
+  }
+  BorderStyleInfo border_style_info;
+  border_style_info.width = GetBorderWidth(annot_dict);
+  RetainPtr<const CPDF_Array> border_array =
+      annot_dict->GetArrayFor(pdfium::annotation::kBorder);
+  if (border_array && border_array->size() == 4) {
+    std::vector<float> dash = DashValues(border_array->GetArrayAt(3).Get());
+    if (!dash.empty()) {
+      border_style_info.style = BorderStyle::kDash;
+      border_style_info.dash_pattern = std::move(dash);
+    }
+  }
+  return border_style_info;
+}
+
 AnnotationDimensionsAndColor GetAnnotationDimensionsAndColor(
     const CPDF_Dictionary* annot_dict) {
   const AppearanceCharacteristics appearance_characteristics =

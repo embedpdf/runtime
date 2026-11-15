@@ -147,6 +147,7 @@ CFX_PointF Midpoint(const CFX_PointF& first, const CFX_PointF& second);
 ByteString BlendModeToPDFName(BlendMode bm);
 BlendMode DefaultBlendModeFor(CPDF_Annot::Subtype subtype);
 BorderStyleInfo GetBorderStyleInfo(const CPDF_Dictionary* border_style_dict);
+BorderStyleInfo GetAnnotBorderStyleInfo(const CPDF_Dictionary* annot_dict);
 AnnotationDimensionsAndColor GetAnnotationDimensionsAndColor(
     const CPDF_Dictionary* annot_dict);
 ShapeRotationInfo GetShapeRotationInfo(const CPDF_Dictionary* annot_dict);
