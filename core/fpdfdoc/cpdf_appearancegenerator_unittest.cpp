@@ -3,6 +3,7 @@
 
 #include "core/fpdfdoc/cpdf_appearancegenerator.h"
 
+#include <optional>
 #include <vector>
 
 #include "constants/annotation_common.h"
@@ -207,6 +208,69 @@ TEST_F(CPDFGenerateAPTest, GenerateEphemeralFreeTextAPDoesNotCreateAcroForm) {
   EXPECT_FALSE(annot_dict->KeyExist(pdfium::annotation::kAP));
 }
 
+namespace {
+
+// A free text box at |rect| reading "hello world" in 12 pt Helvetica.
+RetainPtr<CPDF_Dictionary> MakeFreeTextDict(const CFX_FloatRect& rect) {
+  auto annot_dict = MakeAnnotDict("FreeText", rect);
+  annot_dict->SetNewFor<CPDF_String>("DA", "/Helv 12 Tf 0 g");
+  annot_dict->SetNewFor<CPDF_String>(pdfium::annotation::kContents,
+                                     "hello world");
+  return annot_dict;
+}
+
+// A callout's free text box, its leader running from (10, 10) through a knee
+// at (40, 40) to the box, ending in an open arrow.
+RetainPtr<CPDF_Dictionary> MakeCalloutDict() {
+  auto annot_dict = MakeFreeTextDict(CFX_FloatRect(0, 0, 200, 100));
+  annot_dict->SetNewFor<CPDF_Name>("IT", "FreeTextCallout");
+  annot_dict->SetFor("CL", MakeNumberArray({10, 10, 40, 40, 60, 40}));
+  annot_dict->SetNewFor<CPDF_Name>("LE", "OpenArrow");
+  return annot_dict;
+}
+
+// /Border [0 0 |width|], with |dash| as its dash array when given.
+void SetBorderArray(CPDF_Dictionary* annot_dict,
+                    float width,
+                    std::optional<std::vector<float>> dash = std::nullopt) {
+  RetainPtr<CPDF_Array> border = MakeNumberArray({0, 0, width});
+  if (dash.has_value()) {
+    border->Append(MakeNumberArray(dash.value()));
+  }
+  annot_dict->SetFor(pdfium::annotation::kBorder, std::move(border));
+}
+
+// /BS << /W |width| >>, dashed by |dash| when given.
+void SetBorderStyle(CPDF_Dictionary* annot_dict,
+                    float width,
+                    std::optional<std::vector<float>> dash = std::nullopt) {
+  auto border_style = annot_dict->SetNewFor<CPDF_Dictionary>("BS");
+  border_style->SetNewFor<CPDF_Number>("W", width);
+  if (dash.has_value()) {
+    border_style->SetNewFor<CPDF_Name>("S", "D");
+    border_style->SetFor("D", MakeNumberArray(dash.value()));
+  }
+}
+
+// The content an in-memory free text appearance draws, each in a document
+// of its own; empty when none is drawn.
+ByteString GenerateFreeTextAPContent(CPDF_Dictionary* annot_dict) {
+  CPDF_TestDocument doc;
+  doc.CreateNewDoc();
+  std::optional<CPDF_AppearanceGenerator::GeneratedAP> generated =
+      CPDF_AppearanceGenerator::GenerateEphemeralAnnotAP(
+          &doc, annot_dict, CPDF_Annot::Subtype::FREETEXT);
+  if (!generated || !generated->normal_stream ||
+      !generated->normal_stream->IsMemoryBased()) {
+    return ByteString();
+  }
+  const pdfium::span<const uint8_t> data =
+      generated->normal_stream->GetInMemoryRawData();
+  return ByteString(data.data(), data.size());
+}
+
+}  // namespace
+
 // Without /BS, a free text box takes its border width from /Border (ISO
 // 32000-1 12.5.2), as a callout does: it draws exactly as the same width in
 // /BS does, frame and text plate alike. With neither, the border is the
@@ -214,30 +278,14 @@ TEST_F(CPDFGenerateAPTest, GenerateEphemeralFreeTextAPDoesNotCreateAcroForm) {
 TEST_F(CPDFGenerateAPTest, FreeTextBorderWidthFromBorderArray) {
   auto generate = [](std::optional<float> border_width,
                      std::optional<float> bs_width) {
-    CPDF_TestDocument doc;
-    doc.CreateNewDoc();
-    auto annot_dict = MakeAnnotDict("FreeText", CFX_FloatRect(0, 0, 100, 30));
-    annot_dict->SetNewFor<CPDF_String>("DA", "/Helv 12 Tf 0 g");
-    annot_dict->SetNewFor<CPDF_String>(pdfium::annotation::kContents,
-                                       "hello world");
+    auto annot_dict = MakeFreeTextDict(CFX_FloatRect(0, 0, 100, 30));
     if (border_width.has_value()) {
-      annot_dict->SetFor(pdfium::annotation::kBorder,
-                         MakeNumberArray({0, 0, border_width.value()}));
+      SetBorderArray(annot_dict.Get(), border_width.value());
     }
     if (bs_width.has_value()) {
-      auto border_style = annot_dict->SetNewFor<CPDF_Dictionary>("BS");
-      border_style->SetNewFor<CPDF_Number>("W", bs_width.value());
+      SetBorderStyle(annot_dict.Get(), bs_width.value());
     }
-    std::optional<CPDF_AppearanceGenerator::GeneratedAP> generated =
-        CPDF_AppearanceGenerator::GenerateEphemeralAnnotAP(
-            &doc, annot_dict.Get(), CPDF_Annot::Subtype::FREETEXT);
-    if (!generated || !generated->normal_stream ||
-        !generated->normal_stream->IsMemoryBased()) {
-      return ByteString();
-    }
-    const pdfium::span<const uint8_t> data =
-        generated->normal_stream->GetInMemoryRawData();
-    return ByteString(data.data(), data.size());
+    return GenerateFreeTextAPContent(annot_dict.Get());
   };
 
   // No border: no frame, and the text plate is the whole box.
@@ -257,6 +305,64 @@ TEST_F(CPDFGenerateAPTest, FreeTextBorderWidthFromBorderArray) {
 
   // /BS wins over /Border.
   EXPECT_EQ(generate(0.0f, 3.0f), generate(std::nullopt, 3.0f));
+}
+
+// Without /BS, a free text box's /Border dash array dashes its frame, as the
+// same pattern in /BS does (ISO 32000-1 12.5.2); an empty one draws solid.
+TEST_F(CPDFGenerateAPTest, FreeTextBorderDashFromBorderArray) {
+  auto with_border = [](std::optional<std::vector<float>> dash) {
+    auto annot_dict = MakeFreeTextDict(CFX_FloatRect(0, 0, 100, 30));
+    SetBorderArray(annot_dict.Get(), 2, dash);
+    return GenerateFreeTextAPContent(annot_dict.Get());
+  };
+  auto with_border_style = [](std::optional<std::vector<float>> dash) {
+    auto annot_dict = MakeFreeTextDict(CFX_FloatRect(0, 0, 100, 30));
+    SetBorderStyle(annot_dict.Get(), 2, dash);
+    return GenerateFreeTextAPContent(annot_dict.Get());
+  };
+
+  const ByteString dashed = with_border(std::vector<float>{4, 2});
+  ASSERT_FALSE(dashed.IsEmpty());
+  EXPECT_TRUE(dashed.Contains("[4 2 ] 0 d\n"));
+  EXPECT_EQ(with_border_style(std::vector<float>{4, 2}), dashed);
+
+  const ByteString empty_dash = with_border(std::vector<float>{});
+  EXPECT_FALSE(empty_dash.Contains(" 0 d\n"));
+  EXPECT_EQ(with_border_style(std::nullopt), empty_dash);
+}
+
+// A callout's border dash draws its leader, the leader's ending and its box
+// alike, from /BS or else /Border, as a line annotation's dash draws its line
+// and endings. The text's underlines then draw solid.
+TEST_F(CPDFGenerateAPTest, FreeTextCalloutBorderDash) {
+  auto callout = MakeCalloutDict();
+  SetBorderStyle(callout.Get(), 1, std::vector<float>{3, 1});
+  const ByteString dashed = GenerateFreeTextAPContent(callout.Get());
+  ASSERT_FALSE(dashed.IsEmpty());
+
+  const std::optional<size_t> dash = dashed.Find("[3 1 ] 0 d\n");
+  const std::optional<size_t> leader = dashed.Find(" l S\n");
+  const std::optional<size_t> ending = dashed.Find(" cm\n");
+  const std::optional<size_t> solid = dashed.Find("[] 0 d\n");
+  const std::optional<size_t> text = dashed.Find("BT\n");
+  ASSERT_TRUE(dash.has_value());
+  ASSERT_TRUE(leader.has_value());
+  ASSERT_TRUE(ending.has_value());
+  ASSERT_TRUE(solid.has_value());
+  ASSERT_TRUE(text.has_value());
+  EXPECT_LT(dash.value(), leader.value());
+  EXPECT_LT(leader.value(), ending.value());
+  EXPECT_LT(ending.value(), solid.value());
+  EXPECT_LT(solid.value(), text.value());
+
+  auto from_border = MakeCalloutDict();
+  SetBorderArray(from_border.Get(), 1, std::vector<float>{3, 1});
+  EXPECT_EQ(GenerateFreeTextAPContent(from_border.Get()), dashed);
+
+  auto solid_callout = MakeCalloutDict();
+  SetBorderStyle(solid_callout.Get(), 1);
+  EXPECT_FALSE(
+      GenerateFreeTextAPContent(solid_callout.Get()).Contains(" 0 d\n"));
 }
 
 TEST_F(CPDFGenerateAPTest,
