@@ -595,6 +595,7 @@ int CheckEmbedPDFCApi(void) {
   CHK(EPDFDoc_CompareRevisions);
   CHK(EPDFDoc_GetBaseBytesSize);
   CHK(EPDFDoc_GetLoadedBytesSize);
+  CHK(EPDFDoc_GetLoadedObjectValue);
   CHK(EPDFDoc_GetRevision);
   CHK(EPDFDoc_GetRevisionCount);
   CHK(EPDFDoc_GetStructureObjectNumbers);
@@ -602,6 +603,9 @@ int CheckEmbedPDFCApi(void) {
   CHK(EPDFDoc_OpenBaseOverlayFromPath);
   CHK(EPDFDoc_OpenRevision);
   CHK(EPDFDoc_ReadLoadedBytes);
+  CHK(EPDFDss_Add);
+  CHK(EPDFDss_GetCount);
+  CHK(EPDFDss_GetData);
   CHK(EPDFObjectDiff_Close);
   CHK(EPDFObjectDiff_GetCount);
   CHK(EPDFObjectDiff_GetEntry);

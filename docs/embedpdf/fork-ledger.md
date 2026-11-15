@@ -439,10 +439,11 @@ a field breaks its lines where upstream's would. Keep `font_index_` declared aft
 **When upstream touches this.** Annotation drawing.
 
 ### signatures
-**Rule.** Revisions, signature reading and signing support.
-**Why.** Digital signatures.
-**Where.** `epdf_signature.cpp`, `epdf_revision_*` (ours), hooks in the parser and creator.
-**Guarded by.** `epdf_signature_embeddertest.cpp`.
+**Rule.** Revisions, signature reading and signing support, and the document security store.
+**Why.** Digital signatures, and keeping them checkable for years.
+**Where.** `epdf_signature.cpp`, `epdf_revision_*`, `epdf_dss.cpp` (ours), hooks in the parser and
+creator.
+**Guarded by.** `epdf_signature_embeddertest.cpp`, `epdf_dss_embeddertest.cpp`.
 **When upstream touches this.** Parser revision handling and the creator.
 
 ### embed-metadata

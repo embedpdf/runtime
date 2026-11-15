@@ -53,6 +53,8 @@ source_set("fpdfsdk") {
     "epdf_hasher.h",
     # EmbedPDF: digital signatures - revisions, the signature model.
     "epdf_signature.cpp",
+    # EmbedPDF: digital signatures - the document security store (/DSS).
+    "epdf_dss.cpp",
     # EmbedPDF: digital signatures - the cross-revision object diff.
     "epdf_revision_diff.cpp",
     # EmbedPDF: digital signatures - the immutable loaded-bytes view that
@@ -298,6 +300,8 @@ pdfium_embeddertest_source_set("embeddertests") {
     "epdf_redact_embeddertest.cpp",
     # EmbedPDF: covers EPDF_DigestBuffer.
     "epdf_digest_embeddertest.cpp",
+    # EmbedPDF: covers the document security store (EPDFDss_*).
+    "epdf_dss_embeddertest.cpp",
     # EmbedPDF: covers the digital-signature APIs.
     "epdf_signature_embeddertest.cpp",
     # EmbedPDF: covers generic document/page /PieceInfo metadata APIs.
