@@ -207,6 +207,58 @@ TEST_F(CPDFGenerateAPTest, GenerateEphemeralFreeTextAPDoesNotCreateAcroForm) {
   EXPECT_FALSE(annot_dict->KeyExist(pdfium::annotation::kAP));
 }
 
+// Without /BS, a free text box takes its border width from /Border (ISO
+// 32000-1 12.5.2), as a callout does: it draws exactly as the same width in
+// /BS does, frame and text plate alike. With neither, the border is the
+// default 1 pt.
+TEST_F(CPDFGenerateAPTest, FreeTextBorderWidthFromBorderArray) {
+  auto generate = [](std::optional<float> border_width,
+                     std::optional<float> bs_width) {
+    CPDF_TestDocument doc;
+    doc.CreateNewDoc();
+    auto annot_dict = MakeAnnotDict("FreeText", CFX_FloatRect(0, 0, 100, 30));
+    annot_dict->SetNewFor<CPDF_String>("DA", "/Helv 12 Tf 0 g");
+    annot_dict->SetNewFor<CPDF_String>(pdfium::annotation::kContents,
+                                       "hello world");
+    if (border_width.has_value()) {
+      annot_dict->SetFor(pdfium::annotation::kBorder,
+                         MakeNumberArray({0, 0, border_width.value()}));
+    }
+    if (bs_width.has_value()) {
+      auto border_style = annot_dict->SetNewFor<CPDF_Dictionary>("BS");
+      border_style->SetNewFor<CPDF_Number>("W", bs_width.value());
+    }
+    std::optional<CPDF_AppearanceGenerator::GeneratedAP> generated =
+        CPDF_AppearanceGenerator::GenerateEphemeralAnnotAP(
+            &doc, annot_dict.Get(), CPDF_Annot::Subtype::FREETEXT);
+    if (!generated || !generated->normal_stream ||
+        !generated->normal_stream->IsMemoryBased()) {
+      return ByteString();
+    }
+    const pdfium::span<const uint8_t> data =
+        generated->normal_stream->GetInMemoryRawData();
+    return ByteString(data.data(), data.size());
+  };
+
+  // No border: no frame, and the text plate is the whole box.
+  const ByteString no_border = generate(0.0f, std::nullopt);
+  ASSERT_FALSE(no_border.IsEmpty());
+  EXPECT_FALSE(no_border.Contains("re f*"));
+  EXPECT_TRUE(no_border.Contains("0 0 100 30 re W n\n"));
+  EXPECT_EQ(generate(std::nullopt, 0.0f), no_border);
+
+  EXPECT_EQ(generate(3.0f, std::nullopt), generate(std::nullopt, 3.0f));
+
+  // Neither key: the 1 pt default, framed, the plate inset 2 pt.
+  const ByteString default_border = generate(std::nullopt, std::nullopt);
+  EXPECT_TRUE(default_border.Contains("re f*"));
+  EXPECT_TRUE(default_border.Contains("2 2 96 26 re W n\n"));
+  EXPECT_EQ(generate(std::nullopt, 1.0f), default_border);
+
+  // /BS wins over /Border.
+  EXPECT_EQ(generate(0.0f, 3.0f), generate(std::nullopt, 3.0f));
+}
+
 TEST_F(CPDFGenerateAPTest,
        GeneratePersistentFreeTextAPAfterDefaultAppearanceColorUpdate) {
   CPDF_TestDocument doc;

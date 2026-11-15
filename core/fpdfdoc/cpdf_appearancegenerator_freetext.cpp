@@ -413,8 +413,14 @@ PrepareRichFreeTextAPInternal(CPDF_Document* doc,
     prepared->footprint =
         inline_rotation ? envelope.box_rot.matrix.TransformRect(box) : box;
   } else {
-    const BorderStyleInfo border_style_info =
-        GetBorderStyleInfo(annot_dict->GetDictFor("BS"));
+    RetainPtr<const CPDF_Dictionary> border_style =
+        annot_dict->GetDictFor("BS");
+    BorderStyleInfo border_style_info = GetBorderStyleInfo(border_style.Get());
+    if (!border_style) {
+      // No /BS: the /Border array's width (ISO 32000-1 12.5.2, default
+      // [0 0 1]), as the callout and the border reader take it.
+      border_style_info.width = GetBorderWidth(annot_dict);
+    }
     const ShapeRotationInfo rot_info = GetShapeRotationInfo(annot_dict);
     const CFX_FloatRect rect = rot_info.bbox;
     const float half_border_width = border_style_info.width / 2.0f;
