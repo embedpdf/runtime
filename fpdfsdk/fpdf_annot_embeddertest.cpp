@@ -15,6 +15,7 @@
 #include "build/build_config.h"
 #include "constants/annotation_common.h"
 #include "core/fpdfapi/page/cpdf_annotcontext.h"
+#include "core/fpdfapi/page/cpdf_page.h"
 #include "core/fpdfapi/parser/cpdf_array.h"
 #include "core/fpdfapi/parser/cpdf_dictionary.h"
 #include "core/fxcrt/compiler_specific.h"
@@ -112,9 +113,96 @@ void VerifyUriActionInLink(FPDF_DOCUMENT doc,
   EXPECT_EQ(expected_uri, buffer.data());
 }
 
+// ISO 32000-1:2008 spec, table 30.
+// Each /Annots entry is an indirect reference.
+void ExpectHighlightAnnotsAreReferences(FPDF_PAGE page) {
+  CPDF_Page* cpdf_page = CPDFPageFromFPDFPage(page);
+  ASSERT_TRUE(cpdf_page);
+  RetainPtr<const CPDF_Array> annots = cpdf_page->GetAnnotsArray();
+  ASSERT_TRUE(annots);
+  ASSERT_EQ(2u, annots->size());
+  for (size_t i = 0; i < annots->size(); ++i) {
+    RetainPtr<const CPDF_Object> entry = annots->GetObjectAt(i);
+    ASSERT_TRUE(entry);
+    EXPECT_TRUE(entry->IsReference());
+    RetainPtr<const CPDF_Dictionary> dict = annots->GetDictAt(i);
+    ASSERT_TRUE(dict);
+    EXPECT_EQ("Highlight",
+              dict->GetByteStringFor(pdfium::annotation::kSubtype));
+  }
+}
+
 }  // namespace
 
 class FPDFAnnotEmbedderTest : public EmbedderTest {};
+
+TEST_F(FPDFAnnotEmbedderTest, IsSupportedSubtype) {
+  EXPECT_FALSE(FPDFAnnot_IsSupportedSubtype(FPDF_ANNOT_UNKNOWN));
+  EXPECT_TRUE(FPDFAnnot_IsSupportedSubtype(FPDF_ANNOT_TEXT));
+  EXPECT_TRUE(FPDFAnnot_IsSupportedSubtype(FPDF_ANNOT_LINK));
+  EXPECT_TRUE(FPDFAnnot_IsSupportedSubtype(FPDF_ANNOT_FREETEXT));
+  // EmbedPDF(annot-appearance): our appearance generator draws lines.
+  EXPECT_TRUE(FPDFAnnot_IsSupportedSubtype(FPDF_ANNOT_LINE));
+  EXPECT_TRUE(FPDFAnnot_IsSupportedSubtype(FPDF_ANNOT_SQUARE));
+  EXPECT_TRUE(FPDFAnnot_IsSupportedSubtype(FPDF_ANNOT_CIRCLE));
+  EXPECT_TRUE(FPDFAnnot_IsSupportedSubtype(FPDF_ANNOT_HIGHLIGHT));
+  EXPECT_TRUE(FPDFAnnot_IsSupportedSubtype(FPDF_ANNOT_UNDERLINE));
+  EXPECT_TRUE(FPDFAnnot_IsSupportedSubtype(FPDF_ANNOT_SQUIGGLY));
+  EXPECT_TRUE(FPDFAnnot_IsSupportedSubtype(FPDF_ANNOT_STRIKEOUT));
+  EXPECT_TRUE(FPDFAnnot_IsSupportedSubtype(FPDF_ANNOT_STAMP));
+  // EmbedPDF(annot-appearance): our appearance generator draws carets.
+  EXPECT_TRUE(FPDFAnnot_IsSupportedSubtype(FPDF_ANNOT_CARET));
+  EXPECT_TRUE(FPDFAnnot_IsSupportedSubtype(FPDF_ANNOT_INK));
+  EXPECT_TRUE(FPDFAnnot_IsSupportedSubtype(FPDF_ANNOT_POPUP));
+  EXPECT_TRUE(FPDFAnnot_IsSupportedSubtype(FPDF_ANNOT_FILEATTACHMENT));
+  EXPECT_FALSE(FPDFAnnot_IsSupportedSubtype(FPDF_ANNOT_SOUND));
+  EXPECT_FALSE(FPDFAnnot_IsSupportedSubtype(FPDF_ANNOT_MOVIE));
+  // EmbedPDF(forms-model): widgets are born through the annotation API.
+  EXPECT_TRUE(FPDFAnnot_IsSupportedSubtype(FPDF_ANNOT_WIDGET));
+  EXPECT_FALSE(FPDFAnnot_IsSupportedSubtype(FPDF_ANNOT_SCREEN));
+  EXPECT_FALSE(FPDFAnnot_IsSupportedSubtype(FPDF_ANNOT_PRINTERMARK));
+  EXPECT_FALSE(FPDFAnnot_IsSupportedSubtype(FPDF_ANNOT_TRAPNET));
+  EXPECT_FALSE(FPDFAnnot_IsSupportedSubtype(FPDF_ANNOT_WATERMARK));
+  EXPECT_FALSE(FPDFAnnot_IsSupportedSubtype(FPDF_ANNOT_THREED));
+  EXPECT_FALSE(FPDFAnnot_IsSupportedSubtype(FPDF_ANNOT_RICHMEDIA));
+  EXPECT_FALSE(FPDFAnnot_IsSupportedSubtype(FPDF_ANNOT_XFAWIDGET));
+  // EmbedPDF(redaction): redact annotations can be created.
+  EXPECT_TRUE(FPDFAnnot_IsSupportedSubtype(FPDF_ANNOT_REDACT));
+  EXPECT_FALSE(FPDFAnnot_IsSupportedSubtype(-1));
+  EXPECT_FALSE(FPDFAnnot_IsSupportedSubtype(999));
+}
+
+TEST_F(FPDFAnnotEmbedderTest, IsObjectSupportedSubtype) {
+  EXPECT_FALSE(FPDFAnnot_IsObjectSupportedSubtype(FPDF_ANNOT_UNKNOWN));
+  EXPECT_FALSE(FPDFAnnot_IsObjectSupportedSubtype(FPDF_ANNOT_TEXT));
+  EXPECT_FALSE(FPDFAnnot_IsObjectSupportedSubtype(FPDF_ANNOT_LINK));
+  EXPECT_FALSE(FPDFAnnot_IsObjectSupportedSubtype(FPDF_ANNOT_FREETEXT));
+  EXPECT_FALSE(FPDFAnnot_IsObjectSupportedSubtype(FPDF_ANNOT_LINE));
+  EXPECT_FALSE(FPDFAnnot_IsObjectSupportedSubtype(FPDF_ANNOT_SQUARE));
+  EXPECT_FALSE(FPDFAnnot_IsObjectSupportedSubtype(FPDF_ANNOT_CIRCLE));
+  EXPECT_FALSE(FPDFAnnot_IsObjectSupportedSubtype(FPDF_ANNOT_HIGHLIGHT));
+  EXPECT_FALSE(FPDFAnnot_IsObjectSupportedSubtype(FPDF_ANNOT_UNDERLINE));
+  EXPECT_FALSE(FPDFAnnot_IsObjectSupportedSubtype(FPDF_ANNOT_SQUIGGLY));
+  EXPECT_FALSE(FPDFAnnot_IsObjectSupportedSubtype(FPDF_ANNOT_STRIKEOUT));
+  EXPECT_TRUE(FPDFAnnot_IsObjectSupportedSubtype(FPDF_ANNOT_STAMP));
+  EXPECT_FALSE(FPDFAnnot_IsObjectSupportedSubtype(FPDF_ANNOT_CARET));
+  EXPECT_TRUE(FPDFAnnot_IsObjectSupportedSubtype(FPDF_ANNOT_INK));
+  EXPECT_FALSE(FPDFAnnot_IsObjectSupportedSubtype(FPDF_ANNOT_POPUP));
+  EXPECT_FALSE(FPDFAnnot_IsObjectSupportedSubtype(FPDF_ANNOT_FILEATTACHMENT));
+  EXPECT_FALSE(FPDFAnnot_IsObjectSupportedSubtype(FPDF_ANNOT_SOUND));
+  EXPECT_FALSE(FPDFAnnot_IsObjectSupportedSubtype(FPDF_ANNOT_MOVIE));
+  EXPECT_FALSE(FPDFAnnot_IsObjectSupportedSubtype(FPDF_ANNOT_WIDGET));
+  EXPECT_FALSE(FPDFAnnot_IsObjectSupportedSubtype(FPDF_ANNOT_SCREEN));
+  EXPECT_FALSE(FPDFAnnot_IsObjectSupportedSubtype(FPDF_ANNOT_PRINTERMARK));
+  EXPECT_FALSE(FPDFAnnot_IsObjectSupportedSubtype(FPDF_ANNOT_TRAPNET));
+  EXPECT_FALSE(FPDFAnnot_IsObjectSupportedSubtype(FPDF_ANNOT_WATERMARK));
+  EXPECT_FALSE(FPDFAnnot_IsObjectSupportedSubtype(FPDF_ANNOT_THREED));
+  EXPECT_FALSE(FPDFAnnot_IsObjectSupportedSubtype(FPDF_ANNOT_RICHMEDIA));
+  EXPECT_FALSE(FPDFAnnot_IsObjectSupportedSubtype(FPDF_ANNOT_XFAWIDGET));
+  EXPECT_FALSE(FPDFAnnot_IsObjectSupportedSubtype(FPDF_ANNOT_REDACT));
+  EXPECT_FALSE(FPDFAnnot_IsObjectSupportedSubtype(-1));
+  EXPECT_FALSE(FPDFAnnot_IsObjectSupportedSubtype(999));
+}
 
 TEST_F(FPDFAnnotEmbedderTest, SetAP) {
   ScopedFPDFDocument doc(FPDF_CreateNewDocument());
@@ -817,6 +905,43 @@ TEST_F(FPDFAnnotEmbedderTest, AddAndSaveUnderlineAnnotation) {
     EXPECT_NEAR(quadpoints.y1, new_quadpoints.y1, 0.001f);
     EXPECT_NEAR(quadpoints.x4, new_quadpoints.x4, 0.001f);
     EXPECT_NEAR(quadpoints.y4, new_quadpoints.y4, 0.001f);
+  }
+}
+
+TEST_F(FPDFAnnotEmbedderTest, CreateAnnotSavesIndirectReference) {
+  // ISO 32000-1:2008 spec, table 30.
+  // The /Annots to hold indirect references. A direct dictionary has
+  // no object number, so readers that only follow references skip the
+  // annotation.
+  ASSERT_TRUE(OpenDocument("annotation_highlight_long_content.pdf"));
+  ScopedPage page = LoadScopedPage(0);
+  ASSERT_TRUE(page);
+  EXPECT_EQ(1, FPDFPage_GetAnnotCount(page.get()));
+
+  {
+    ScopedFPDFAnnotation annot(
+        FPDFPage_CreateAnnot(page.get(), FPDF_ANNOT_HIGHLIGHT));
+    ASSERT_TRUE(annot);
+    const FS_RECTF kRect = {10.0f, 40.0f, 80.0f, 60.0f};
+    EXPECT_TRUE(FPDFAnnot_SetRect(annot.get(), &kRect));
+  }
+  EXPECT_EQ(2, FPDFPage_GetAnnotCount(page.get()));
+  ExpectHighlightAnnotsAreReferences(page.get());
+
+  ASSERT_TRUE(FPDF_SaveAsCopy(document(), this, 0));
+
+  {
+    ScopedSavedDoc saved_doc = OpenScopedSavedDocument();
+    ASSERT_TRUE(saved_doc);
+    ScopedSavedPage saved_page = LoadScopedSavedPage(0);
+    ASSERT_TRUE(saved_page);
+    EXPECT_EQ(2, FPDFPage_GetAnnotCount(saved_page.get()));
+    ExpectHighlightAnnotsAreReferences(saved_page.get());
+    for (int index = 0; index < 2; ++index) {
+      ScopedFPDFAnnotation annot(FPDFPage_GetAnnot(saved_page.get(), index));
+      ASSERT_TRUE(annot);
+      EXPECT_EQ(FPDF_ANNOT_HIGHLIGHT, FPDFAnnot_GetSubtype(annot.get()));
+    }
   }
 }
 

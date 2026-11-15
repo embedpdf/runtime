@@ -2547,6 +2547,8 @@ TEST_F(FPDFTextEmbedderTest, ActualTextRtl) {
        // Third line:
        'M', 'i', 'r', 'r', 'o', 'r', 'e', 'd', ' ',
        // ם:
+       // TODO(crbug.com/525087036): Should be {0x05dd, '[', ')'}, since
+       // /ActualText should not be modified.
        0x05dd, ']', '(', '\r', '\n',
        // Pure RTL case:
        // שלום (logical order):
@@ -2594,6 +2596,46 @@ TEST_F(FPDFTextEmbedderTest, ActualTextRtl) {
   static constexpr int kExpectedTextSize = std::size(kExpectedText);
 
   unsigned short buffer[256] = {};
+  EXPECT_EQ(kExpectedTextSize,
+            FPDFText_GetText(text_page.get(), 0, std::size(buffer), buffer));
+  EXPECT_THAT(pdfium::span(buffer).first<kExpectedTextSize>(),
+              ElementsAreArray(kExpectedText));
+}
+
+// Like ActualTextRtl, but the /ActualText spans mark RTL glyphs instead of
+// Latin ones, which takes different code paths in CPDF_TextPage, and the
+// /ActualText also contains numbers and punctuation.
+TEST_F(FPDFTextEmbedderTest, ActualTextOnRtlGlyphsWithNumbersAndPunctuation) {
+  ASSERT_TRUE(OpenDocument("actual_text_rtl_glyphs.pdf"));
+  ScopedPage page = LoadScopedPage(0);
+  ASSERT_TRUE(page);
+
+  ScopedFPDFTextPage text_page(FPDFText_LoadPage(page.get()));
+  ASSERT_TRUE(text_page);
+
+  // EmbedPDF(bug-fix): what the fork extracts. Its /ActualText rules keep the
+  // letters of every line in typed order and get lines 2 and 5 right; the
+  // digits and punctuation of lines 3, 4 and 6 still land on the wrong side.
+  static constexpr auto kExpectedText = std::to_array<unsigned short>(
+      {// בין (literal text):
+       0x05d1, 0x05d9, 0x05df, '\r', '\n',
+       // בין
+       0x05d1, 0x05d9, 0x05df, '\r', '\n',
+       // TODO(crbug.com/525087036): Should be
+       // {0x05d1, '\'', 0x05d9, 0x05df, '.'}.
+       '.', 0x05d1, '\'', 0x05d9, 0x05df, '\r', '\n',
+       // TODO(crbug.com/525087036): Should be
+       // {0x05d1, 0x05d9, 0x05df, '1', '2', '3'}.
+       '1', '2', '3', 0x05d1, 0x05d9, 0x05df, '\r', '\n',
+       // Hello world בין.
+       'H', 'e', 'l', 'l', 'o', ' ', 'w', 'o', 'r', 'l', 'd', ' ', 0x05d1,
+       0x05d9, 0x05df, '.', '\r', '\n',
+       // TODO(crbug.com/525087036): Should be
+       // {'1', '-', ' ', 0x05d1, 0x05d9, 0x05df}.
+       0x05d1, 0x05d9, 0x05df, ' ', '1', '-', '\0'});
+  static constexpr int kExpectedTextSize = std::size(kExpectedText);
+
+  unsigned short buffer[128] = {};
   EXPECT_EQ(kExpectedTextSize,
             FPDFText_GetText(text_page.get(), 0, std::size(buffer), buffer));
   EXPECT_THAT(pdfium::span(buffer).first<kExpectedTextSize>(),
@@ -2658,4 +2700,29 @@ TEST_F(FPDFTextEmbedderTest, ArabicActualTextOrdering) {
     EXPECT_THAT(pdfium::span(buffer).first(static_cast<size_t>(num_chars)),
                 ElementsAreArray(expected_page));
   }
+}
+
+TEST_F(FPDFTextEmbedderTest, RtlMultiCharGlyph) {
+  ASSERT_TRUE(OpenDocument("rtl_multi_char_glyph.pdf"));
+  ScopedPage page = LoadScopedPage(0);
+  ASSERT_TRUE(page);
+
+  ScopedFPDFTextPage text_page(FPDFText_LoadPage(page.get()));
+  ASSERT_TRUE(text_page);
+
+  static constexpr auto kExpectedText = std::to_array<unsigned short>(
+      {// TODO(crbug.com/575985355): Should be سلام کلاس لاله, with lam and
+       // alef in ToUnicode order.
+       0x0633, 0x0627, 0x0644, 0x0645, ' ', 0x06a9, 0x0627, 0x0644, 0x0633, ' ',
+       0x0627, 0x0644, 0x0644, 0x0647, '\r', '\n',
+       // سلام کلاس لاله (mirrored matrix):
+       0x0633, 0x0644, 0x0627, 0x0645, ' ', 0x06a9, 0x0644, 0x0627, 0x0633, ' ',
+       0x0644, 0x0627, 0x0644, 0x0647, '\0'});
+  static constexpr int kExpectedTextSize = std::size(kExpectedText);
+
+  unsigned short buffer[64] = {};
+  EXPECT_EQ(kExpectedTextSize,
+            FPDFText_GetText(text_page.get(), 0, std::size(buffer), buffer));
+  EXPECT_THAT(pdfium::span(buffer).first<kExpectedTextSize>(),
+              ElementsAreArray(kExpectedText));
 }

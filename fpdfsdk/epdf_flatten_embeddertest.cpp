@@ -364,8 +364,15 @@ TEST_F(EPDFFlattenEmbedderTest, FlattenDirectAnnotationByHandle) {
   ScopedFPDFPage other_page(FPDFPage_New(document.get(), 1, 100, 100));
   ASSERT_TRUE(other_page);
 
-  ScopedFPDFAnnotation annotation(
-      FPDFPage_CreateAnnot(page.get(), FPDF_ANNOT_INK));
+  // An annotation dictionary written directly in /Annots, not an object of
+  // its own, as some writers do (FPDFPage_CreateAnnot() makes its own).
+  CPDF_Document* pdf = CPDFDocumentFromFPDFDocument(document.get());
+  RetainPtr<CPDF_Dictionary> direct = pdf->GetMutablePageDictionary(0)
+                                          ->SetNewFor<CPDF_Array>("Annots")
+                                          ->AppendNew<CPDF_Dictionary>();
+  direct->SetNewFor<CPDF_Name>("Type", "Annot");
+  direct->SetNewFor<CPDF_Name>("Subtype", "Ink");
+  ScopedFPDFAnnotation annotation(FPDFPage_GetAnnot(page.get(), 0));
   ASSERT_TRUE(annotation);
   ASSERT_EQ(0u, EPDFAnnot_GetObjectNumber(annotation.get()));
   const FS_RECTF rectangle = {10.0f, 40.0f, 40.0f, 10.0f};

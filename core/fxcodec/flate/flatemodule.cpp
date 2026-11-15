@@ -459,10 +459,6 @@ bool FlatePredictorScanlineDecoder::Rewind() {
   }
 
   left_over_ = 0;
-  // EmbedPDF(bug-fix): upstream kept the last decoded row across a rewind, so
-  // an image decoded again (drawn twice) came out corrupt.
-  // The first line predicts from zeros again, not from the last line decoded
-  // before the rewind.
   std::ranges::fill(last_line_.span(), 0);
   return true;
 }

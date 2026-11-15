@@ -8,6 +8,9 @@
 #include <stdint.h>
 
 #include <set>
+#include <vector>
+
+#include "core/fpdfapi/parser/tree_traversal_util.h"
 
 class CPDF_Document;
 
@@ -23,12 +26,23 @@ enum class ObjectTreeReferenceResolveMode {
   kEffectiveDocument,
 };
 
+struct PdfReferenceGraph {
+  std::vector<pdfium::NodeId> roots;
+  pdfium::AdjacencyMap adj;
+};
+
+// Traverses the PDF object hierarchy in `document` and returns the extracted
+// reference graph without reference count analysis or cycle pruning.
+PdfReferenceGraph BuildPdfReferenceGraphForTesting(
+    const CPDF_Document* document);
+
 // Traverses `document` starting with its trailer, if it has one, and also from
 // the catalog if not reached from the trailer. The traversal avoids cycles.
 //
-// In `kReferenceHolder` mode, references are followed through their
-// CPDF_IndirectObjectHolder. In `kEffectiveDocument` mode, references are
-// resolved through `document` so any overlay it provides is honored.
+// EmbedPDF(layer-save): in `kReferenceHolder` mode, references are followed
+// through their CPDF_IndirectObjectHolder. In `kEffectiveDocument` mode,
+// references are resolved through `document` so any overlay it provides is
+// honored.
 //
 // Returns all the PDF objects (not CPDF_Objects) the traversal reached as a set
 // of object numbers.

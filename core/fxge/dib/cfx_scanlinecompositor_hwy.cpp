@@ -10,7 +10,7 @@
 #include "core/fxcrt/check_op.h"
 #include "core/fxcrt/compiler_specific.h"
 #include "core/fxcrt/span.h"
-#include "core/fxcrt/span_util.h"
+#include "core/fxcrt/zip.h"
 
 #undef HWY_TARGET_INCLUDE
 #define HWY_TARGET_INCLUDE "core/fxge/dib/cfx_scanlinecompositor_hwy.cpp"
@@ -40,33 +40,38 @@ HWY_INLINE V AlphaMergeLanes(V back, V src, V alpha, V v255) {
       hn::Add(hn::Mul(back, hn::Sub(v255, alpha)), hn::Mul(src, alpha)));
 }
 
-// scalar tail; bit-exact with CompositeRowBgra2Bgra normal/no-clip
-inline uint32_t CompositePixelBgra2Bgra(uint32_t src, uint32_t back) {
-  const uint32_t back_alpha = FXARGB_A(back);
-  if (back_alpha == 0) {
-    return src;
+// scalar tail; bit-exact with CompositeRowBgra2Bgra() normal/no-clip
+inline void CompositePixelBgra2Bgra(const FX_BGRA_STRUCT<uint8_t>& src,
+                                    FX_BGRA_STRUCT<uint8_t>& dest) {
+  if (dest.alpha == 0) {
+    dest = src;
+    return;
   }
-  const uint32_t src_alpha = FXARGB_A(src);
-  if (src_alpha == 0) {
-    return back;
+  if (src.alpha == 0) {
+    return;
   }
-  if (src_alpha == 255) {
-    return src;
+  if (src.alpha == 255) {
+    dest = src;
+    return;
   }
   const uint32_t dest_alpha =
-      back_alpha + src_alpha - (back_alpha * src_alpha / 255);
-  const uint32_t ratio = src_alpha * 255 / dest_alpha;
-  return ArgbEncode(dest_alpha,
-                    AlphaMerge(FXARGB_R(back), FXARGB_R(src), ratio),
-                    AlphaMerge(FXARGB_G(back), FXARGB_G(src), ratio),
-                    AlphaMerge(FXARGB_B(back), FXARGB_B(src), ratio));
+      dest.alpha + src.alpha - (dest.alpha * src.alpha / 255);
+  const uint32_t ratio = src.alpha * 255 / dest_alpha;
+  dest.blue = AlphaMerge(dest.blue, src.blue, ratio);
+  dest.green = AlphaMerge(dest.green, src.green, ratio);
+  dest.red = AlphaMerge(dest.red, src.red, ratio);
+  dest.alpha = dest_alpha;
 }
 
 // Porter-Duff over, packed BGRA, normal, no clip. Per pixel:
 //   dest a == 0 -> copy src     src a == 255 -> copy src
 //   src a == 0 -> keep dest     else AlphaMerge/AlphaUnion over
-// Byte spans bitcast to u32 lanes -> no 4-byte scanline alignment needed.
-void RunBgra2Bgra(pdfium::span<const uint8_t> src, pdfium::span<uint8_t> dest) {
+// Byte loads bitcast to u32 lanes -> no 4-byte scanline alignment needed.
+void RunBgra2Bgra(pdfium::span<const FX_BGRA_STRUCT<uint8_t>> src,
+                  pdfium::span<FX_BGRA_STRUCT<uint8_t>> dest) {
+  // Make sure the compiler can see equal span sizes after the dispatch.
+  dest = dest.first(src.size());
+#if HWY_TARGET != HWY_SCALAR
   const hn::ScalableTag<uint32_t> d;
   const hn::ScalableTag<uint8_t> d8;
   const size_t n = hn::Lanes(d);       // pixels/vector
@@ -74,10 +79,11 @@ void RunBgra2Bgra(pdfium::span<const uint8_t> src, pdfium::span<uint8_t> dest) {
   const auto one = hn::Set(d, 1);
   const auto zero = hn::Zero(d);
 
-  size_t count = src.size() / 4;
-  while (count >= n) {
-    const auto s = hn::BitCast(d, hn::LoadU(d8, src.data()));
-    const auto back = hn::BitCast(d, hn::LoadU(d8, dest.data()));
+  while (src.size() >= n) {
+    const auto s = hn::BitCast(
+        d, hn::LoadU(d8, reinterpret_cast<const uint8_t*>(src.data())));
+    const auto back = hn::BitCast(
+        d, hn::LoadU(d8, reinterpret_cast<const uint8_t*>(dest.data())));
     const auto sa = hn::ShiftRight<24>(s);
     const auto da = hn::ShiftRight<24>(back);
 
@@ -87,10 +93,10 @@ void RunBgra2Bgra(pdfium::span<const uint8_t> src, pdfium::span<uint8_t> dest) {
     // all copy/keep -> skip divide; copy_src ? src : dest
     if (hn::AllTrue(d, hn::Or(copy_src, keep_dest))) {
       const auto result = hn::IfThenElse(copy_src, s, back);
-      hn::StoreU(hn::BitCast(d8, result), d8, dest.data());
-      src = src.subspan(n * 4);
-      dest = dest.subspan(n * 4);
-      count -= n;
+      hn::StoreU(hn::BitCast(d8, result), d8,
+                 reinterpret_cast<uint8_t*>(dest.data()));
+      src = src.subspan(n);
+      dest = dest.subspan(n);
       continue;
     }
 
@@ -113,46 +119,104 @@ void RunBgra2Bgra(pdfium::span<const uint8_t> src, pdfium::span<uint8_t> dest) {
 
     auto result = hn::IfThenElse(keep_dest, back, gen);
     result = hn::IfThenElse(copy_src, s, result);
-    hn::StoreU(hn::BitCast(d8, result), d8, dest.data());
+    hn::StoreU(hn::BitCast(d8, result), d8,
+               reinterpret_cast<uint8_t*>(dest.data()));
 
-    src = src.subspan(n * 4);
-    dest = dest.subspan(n * 4);
-    count -= n;
+    src = src.subspan(n);
+    dest = dest.subspan(n);
   }
-  for (size_t i = 0; i < count; ++i) {
-    const uint32_t s = FXARGB_GetDIB(src.first<4u>());
-    const uint32_t back = FXARGB_GetDIB(dest.first<4u>());
-    FXARGB_SetDIB(dest.first<4u>(), CompositePixelBgra2Bgra(s, back));
-    src = src.subspan(4u);
-    dest = dest.subspan(4u);
+#endif  // HWY_TARGET != HWY_SCALAR
+  for (auto [src_elem, dest_elem] : fxcrt::Zip(src, dest)) {
+    CompositePixelBgra2Bgra(src_elem, dest_elem);
   }
 }
 
 // Opaque BGRA(4) -> BGRA, alpha forced 0xFF (src alpha ignored). Same byte
 // order required: src and dest both packed BGRA.
-void RunBgra2BgrxForceOpaque(pdfium::span<const uint8_t> src,
-                             pdfium::span<uint8_t> dest) {
+void RunBgra2BgrxForceOpaque(pdfium::span<const FX_BGRA_STRUCT<uint8_t>> src,
+                             pdfium::span<FX_BGRA_STRUCT<uint8_t>> dest) {
+  // Make sure the compiler can see equal span sizes after the dispatch.
+  dest = dest.first(src.size());
+#if HWY_TARGET != HWY_SCALAR
   const hn::ScalableTag<uint32_t> d;
   const hn::ScalableTag<uint8_t> d8;
   const size_t n = hn::Lanes(d);
   const auto alpha_ff = hn::Set(d, 0xFF000000u);
 
-  size_t count = src.size() / 4;
-  while (count >= n) {
-    const auto v = hn::BitCast(d, hn::LoadU(d8, src.data()));
-    hn::StoreU(hn::BitCast(d8, hn::Or(v, alpha_ff)), d8, dest.data());
-    src = src.subspan(n * 4);
-    dest = dest.subspan(n * 4);
-    count -= n;
+  while (src.size() >= n) {
+    const auto v = hn::BitCast(
+        d, hn::LoadU(d8, reinterpret_cast<const uint8_t*>(src.data())));
+    hn::StoreU(hn::BitCast(d8, hn::Or(v, alpha_ff)), d8,
+               reinterpret_cast<uint8_t*>(dest.data()));
+    src = src.subspan(n);
+    dest = dest.subspan(n);
   }
-  for (size_t i = 0; i < count; ++i) {
-    dest[0] = src[0];
-    dest[1] = src[1];
-    dest[2] = src[2];
-    dest[3] = 0xFF;
-    src = src.subspan(4u);
-    dest = dest.subspan(4u);
+#endif  // HWY_TARGET != HWY_SCALAR
+  for (auto [src_elem, dest_elem] : fxcrt::Zip(src, dest)) {
+    dest_elem.blue = src_elem.blue;
+    dest_elem.green = src_elem.green;
+    dest_elem.red = src_elem.red;
+    dest_elem.alpha = 0xFF;
   }
+}
+
+// Keep the clip decision outside the loop. Both products passed to Div255()
+// are at most 255 * 255, so its exact, truncating division matches
+// AlphaUnion().
+template <bool kHasClip>
+void Bgra2Mask(pdfium::span<const FX_BGRA_STRUCT<uint8_t>> src,
+               pdfium::span<const uint8_t> clip,
+               pdfium::span<uint8_t> dest) {
+  // Make sure the compiler can see equal span sizes after the dispatch.
+  dest = dest.first(src.size());
+  if constexpr (kHasClip) {
+    clip = clip.first(src.size());
+  }
+#if HWY_TARGET != HWY_SCALAR
+  const hn::ScalableTag<uint32_t> d;
+  const hn::ScalableTag<uint8_t> d8;
+  const hn::Rebind<uint8_t, decltype(d)> dn;
+  const size_t n = hn::Lanes(d);
+  while (src.size() >= n) {
+    // The BGRA load reads 4*n bytes; the narrow descriptor reads/writes n
+    // bytes for clip and dest. The span sizes bound every vector access.
+    const auto packed = hn::BitCast(
+        d, hn::LoadU(d8, reinterpret_cast<const uint8_t*>(src.data())));
+    auto alpha = hn::ShiftRight<24>(packed);
+    if constexpr (kHasClip) {
+      alpha =
+          Div255(hn::Mul(alpha, hn::PromoteTo(d, hn::LoadU(dn, clip.data()))));
+      clip = clip.subspan(n);
+    }
+    const auto back = hn::PromoteTo(d, hn::LoadU(dn, dest.data()));
+    const auto result =
+        hn::Sub(hn::Add(back, alpha), Div255(hn::Mul(back, alpha)));
+    // Alpha union is in [0, 255], satisfying U8FromU32()'s precondition.
+    hn::StoreU(hn::U8FromU32(result), dn, dest.data());
+    src = src.subspan(n);
+    dest = dest.subspan(n);
+  }
+#endif  // HWY_TARGET != HWY_SCALAR
+  while (!src.empty()) {
+    uint32_t alpha = src[0].alpha;
+    if constexpr (kHasClip) {
+      alpha = alpha * clip[0] / 255;
+      clip = clip.subspan<1u>();
+    }
+    dest[0] = static_cast<uint8_t>(dest[0] + alpha - dest[0] * alpha / 255);
+    src = src.subspan<1u>();
+    dest = dest.subspan<1u>();
+  }
+}
+
+void RunBgra2Mask(pdfium::span<const FX_BGRA_STRUCT<uint8_t>> src,
+                  pdfium::span<const uint8_t> clip,
+                  pdfium::span<uint8_t> dest) {
+  if (clip.empty()) {
+    Bgra2Mask<false>(src, clip, dest);
+    return;
+  }
+  Bgra2Mask<true>(src, clip, dest);
 }
 
 }  // namespace
@@ -165,19 +229,28 @@ namespace fxge_composite_simd {
 
 HWY_EXPORT(RunBgra2Bgra);
 HWY_EXPORT(RunBgra2BgrxForceOpaque);
+HWY_EXPORT(RunBgra2Mask);
 
 // Unqualified name, in-namespace: a qualified name breaks single-target
 // HWY_STATIC_DISPATCH.
-void DispatchBgra2Bgra(pdfium::span<const uint8_t> src,
-                       pdfium::span<uint8_t> dest) {
+void DispatchBgra2Bgra(pdfium::span<const FX_BGRA_STRUCT<uint8_t>> src,
+                       pdfium::span<FX_BGRA_STRUCT<uint8_t>> dest) {
   // SAFETY: dispatch indexes Highway's per-target table; no span macro form.
   UNSAFE_BUFFERS(HWY_DYNAMIC_DISPATCH(RunBgra2Bgra)(src, dest));
 }
 
-void DispatchBgra2BgrxForceOpaque(pdfium::span<const uint8_t> src,
-                                  pdfium::span<uint8_t> dest) {
+void DispatchBgra2BgrxForceOpaque(
+    pdfium::span<const FX_BGRA_STRUCT<uint8_t>> src,
+    pdfium::span<FX_BGRA_STRUCT<uint8_t>> dest) {
   // SAFETY: see DispatchBgra2Bgra().
   UNSAFE_BUFFERS(HWY_DYNAMIC_DISPATCH(RunBgra2BgrxForceOpaque)(src, dest));
+}
+
+void DispatchBgra2Mask(pdfium::span<const FX_BGRA_STRUCT<uint8_t>> src,
+                       pdfium::span<const uint8_t> clip,
+                       pdfium::span<uint8_t> dest) {
+  // SAFETY: see DispatchBgra2Bgra().
+  UNSAFE_BUFFERS(HWY_DYNAMIC_DISPATCH(RunBgra2Mask)(src, clip, dest));
 }
 
 }  // namespace fxge_composite_simd
@@ -187,9 +260,7 @@ void CompositeRowBgra2BgraSimd(
     pdfium::span<FX_BGRA_STRUCT<uint8_t>> dest_span) {
   // `src_span.size()` pixels, like `fxcrt::Zip(src_span, dest_span)`.
   CHECK_LE(src_span.size(), dest_span.size());
-  fxge_composite_simd::DispatchBgra2Bgra(
-      fxcrt::reinterpret_span<const uint8_t>(src_span),
-      fxcrt::reinterpret_span<uint8_t>(dest_span));
+  fxge_composite_simd::DispatchBgra2Bgra(src_span, dest_span);
 }
 
 void CompositeRowBgra2BgrxForceOpaqueSimd(
@@ -197,8 +268,15 @@ void CompositeRowBgra2BgrxForceOpaqueSimd(
     pdfium::span<FX_BGRA_STRUCT<uint8_t>> dest_span) {
   // `src_span.size()` pixels, like `fxcrt::Zip(src_span, dest_span)`.
   CHECK_LE(src_span.size(), dest_span.size());
-  fxge_composite_simd::DispatchBgra2BgrxForceOpaque(
-      fxcrt::reinterpret_span<const uint8_t>(src_span),
-      fxcrt::reinterpret_span<uint8_t>(dest_span));
+  fxge_composite_simd::DispatchBgra2BgrxForceOpaque(src_span, dest_span);
+}
+
+void CompositeRowBgra2MaskSimd(
+    pdfium::span<const FX_BGRA_STRUCT<uint8_t>> src_span,
+    pdfium::span<const uint8_t> clip_span,
+    pdfium::span<uint8_t> dest_span) {
+  CHECK_LE(src_span.size(), dest_span.size());
+  CHECK(clip_span.empty() || src_span.size() <= clip_span.size());
+  fxge_composite_simd::DispatchBgra2Mask(src_span, clip_span, dest_span);
 }
 #endif  // HWY_ONCE
