@@ -491,6 +491,32 @@ EPDFObjectDiff_GetRevisionHealth(EPDF_OBJECT_DIFF diff,
                                  unsigned int* out_bare_reference_count,
                                  FPDF_BOOL* out_referrers_complete);
 
+// Experimental EmbedPDF Extension API.
+// The shallow serialisation of object |obj_num| as |document|'s loaded bytes
+// hold it, in the form EPDFObjectDiff_GetValue() returns, for ANY object
+// number. A diff carries the values of the objects an update wrote; a rule
+// sometimes has to read one it did not write, such as the /Annots array a
+// page pointed at before an update pointed it at a new array and left the old
+// one in the file. |document| is a revision opened with
+// EPDFDoc_OpenRevision(), or the document itself for its last revision;
+// |obj_num| 0 reads the trailer. NUL-terminated, two-call protocol.
+//
+// |out_read_status| receives EPDF_DIFF_READ_*: ABSENT when the number is
+// free or unknown in those bytes (the call returns 0), FAILED when its
+// mapping is live but the bytes do not parse (the value is "null" and is not
+// evidence, as in the diff), or -1 when the document is NULL or has no
+// parser. |out_truncated| is set when the serialisation exceeded the cap
+// (1 MiB); the call then returns 0 and carries no value evidence. Either
+// out-param may be NULL. Like the diff, this parses the loaded bytes and
+// never reads the document's object cache.
+FPDF_EXPORT unsigned long FPDF_CALLCONV
+EPDFDoc_GetLoadedObjectValue(FPDF_DOCUMENT document,
+                             unsigned int obj_num,
+                             char* buffer,
+                             unsigned long buflen,
+                             int* out_read_status,
+                             FPDF_BOOL* out_truncated);
+
 // ---------------------------------------------------------------------------
 // Digests.
 // ---------------------------------------------------------------------------
@@ -729,6 +755,66 @@ EPDFSig_WriteContents(unsigned char* buffer,
                       unsigned long long contents_hex_len,
                       const unsigned char* der,
                       unsigned long der_len);
+
+// ---------------------------------------------------------------------------
+// Document security store (/DSS, ISO 32000-2 12.8.4.3).
+//
+// The catalog's /DSS holds what a later reader needs to check the document's
+// signatures without asking anyone: certificates (/Certs), OCSP responses
+// (/OCSPs) and CRLs (/CRLs), each a stream holding one DER object. Its
+// optional index (/VRI) points at streams of the same three kinds, one entry
+// per signature.
+//
+// These functions move bytes and nothing more. They parse none of them, look
+// for no duplicates and never remove anything: what is worth storing, and
+// what a stored item proves, is the caller's decision.
+//
+// Unlike the revision functions above, they read and write the document as
+// it is now: an item added and not yet saved is read back.
+// ---------------------------------------------------------------------------
+
+#define EPDF_DSS_CERTIFICATES 0    // /Certs, and /Cert of an index entry
+#define EPDF_DSS_OCSP_RESPONSES 1  // /OCSPs, and /OCSP of an index entry
+#define EPDF_DSS_CRLS 2            // /CRLs, and /CRL of an index entry
+
+// Experimental EmbedPDF Extension API.
+// Number of streams of |kind| (EPDF_DSS_*) the store references: those of
+// its list, in the list's order, followed by those only an index entry names,
+// in the order of the entries' keys. A stream referenced more than once
+// counts once. An entry that is not a reference to a stream is skipped.
+// 0 when the document has no store; -1 for a NULL document or an unknown
+// kind. Reads the catalog and the store, and loads no page.
+FPDF_EXPORT int FPDF_CALLCONV EPDFDss_GetCount(FPDF_DOCUMENT document,
+                                               int kind);
+
+// Experimental EmbedPDF Extension API.
+// The decoded data of stream |index| of |kind|, in the order
+// EPDFDss_GetCount() counts them. Two-call protocol: returns the data's
+// length; nothing is copied unless |buffer| holds at least that many bytes.
+// 0 when |index| is out of range or the stream's data cannot be decoded.
+// Each call walks the store up to |index|.
+FPDF_EXPORT unsigned long FPDF_CALLCONV EPDFDss_GetData(FPDF_DOCUMENT document,
+                                                        int kind,
+                                                        int index,
+                                                        void* buffer,
+                                                        unsigned long length);
+
+// Experimental EmbedPDF Extension API.
+// Store |size| bytes of |data| as a new stream and append it to the list of
+// |kind|. A store the document lacks is created as an object of its own, and
+// a list the store lacks as an array inside it; a store or a list that is
+// already an object of its own is extended where it is. The stream holds the
+// bytes as given, with no filter and no /Type. Nothing else is written: no
+// index entry and no /Extensions. Returns the new stream's object number.
+//
+// Validate-then-apply: returns 0 and leaves the document untouched when the
+// document or |data| is NULL, |size| is 0, the kind is unknown, the document
+// has no catalog, or the catalog's /DSS or the kind's list exists and is not
+// a dictionary or an array.
+FPDF_EXPORT uint32_t FPDF_CALLCONV EPDFDss_Add(FPDF_DOCUMENT document,
+                                               int kind,
+                                               const void* data,
+                                               unsigned long size);
 
 #ifdef __cplusplus
 }  // extern "C"

@@ -1040,3 +1040,55 @@ EPDFObjectDiff_GetReferrer(EPDF_OBJECT_DIFF diff,
   return NulTerminateMaybeCopyAndReturnLength(
       edge.label, UNSAFE_BUFFERS(SpanFromFPDFApiArgs(buffer, buflen)));
 }
+
+FPDF_EXPORT unsigned long FPDF_CALLCONV
+EPDFDoc_GetLoadedObjectValue(FPDF_DOCUMENT document,
+                             unsigned int obj_num,
+                             char* buffer,
+                             unsigned long buflen,
+                             int* out_read_status,
+                             FPDF_BOOL* out_truncated) {
+  if (out_read_status) {
+    *out_read_status = -1;
+  }
+  if (out_truncated) {
+    *out_truncated = false;
+  }
+  CPDF_Document* doc = CPDFDocumentFromFPDFDocument(document);
+  const epdf::RevisionView* view = doc ? epdf::RevisionView::For(doc) : nullptr;
+  // A table rebuilt by scanning maps numbers to whatever the scan found: a
+  // value read through it says nothing about a revision.
+  if (!view || view->parser()->xref_table_rebuilt()) {
+    return 0;
+  }
+  // The same reading and the same serialisation as a diff entry's side, so a
+  // value from here and a value from a diff compare as text.
+  RevisionSide side;
+  if (obj_num == 0) {
+    RetainPtr<CPDF_Dictionary> trailer = view->parser()->GetCombinedTrailer();
+    FillValue(trailer.Get(), nullptr, &side);
+  } else {
+    const auto& info = view->parser()->GetCrossRefTable()->objects_info();
+    const auto it = info.find(obj_num);
+    if (it != info.end() && IsLive(it->second)) {
+      RetainPtr<const CPDF_Object> object = view->ParseObject(obj_num);
+      std::optional<ByteString> signature;
+      if (object && object->IsStream()) {
+        signature = StreamSignature(object->AsStream());
+      }
+      FillValue(object.Get(), &signature, &side);
+    }
+  }
+  if (out_read_status) {
+    *out_read_status = side.read;
+  }
+  if (out_truncated) {
+    *out_truncated = side.value_truncated;
+  }
+  if (!side.present || side.value_truncated) {
+    return 0;
+  }
+  // SAFETY: required from caller.
+  return NulTerminateMaybeCopyAndReturnLength(
+      side.value, UNSAFE_BUFFERS(SpanFromFPDFApiArgs(buffer, buflen)));
+}

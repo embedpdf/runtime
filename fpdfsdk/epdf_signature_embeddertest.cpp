@@ -15,6 +15,7 @@
 #include "core/fpdfapi/parser/cpdf_array.h"
 #include "core/fpdfapi/parser/cpdf_dictionary.h"
 #include "core/fpdfapi/parser/cpdf_document.h"
+#include "core/fpdfapi/parser/cpdf_number.h"
 #include "core/fpdfapi/parser/cpdf_string.h"
 #include "core/fxcrt/data_vector.h"
 #include "fpdfsdk/cpdfsdk_helpers.h"
@@ -2599,4 +2600,157 @@ TEST_F(EPDFSignatureEmbedderTest, FileCandidateSaveSealSpanAndFileDigestAgree) {
   // The digest refuses a range past the file.
   unsigned long long bad[4] = {0, 10, static_cast<unsigned long long>(patched.size()), 10};
   EXPECT_FALSE(EPDFSig_DigestFileRange(&access, bad, EPDF_DIGEST_SHA256, fdigest, &fdlen));
+}
+
+// ---------------------------------------------------------------------------
+// Reading an object an update did not write.
+// ---------------------------------------------------------------------------
+
+namespace {
+
+struct LoadedValue {
+  std::string text;
+  int status = -2;
+  bool truncated = false;
+};
+
+LoadedValue ReadLoadedValue(FPDF_DOCUMENT doc, unsigned int obj_num) {
+  LoadedValue value;
+  FPDF_BOOL truncated = false;
+  const unsigned long len = EPDFDoc_GetLoadedObjectValue(
+      doc, obj_num, nullptr, 0, &value.status, &truncated);
+  value.truncated = !!truncated;
+  if (len == 0) {
+    return value;
+  }
+  std::vector<char> buffer(len);
+  EXPECT_EQ(len, EPDFDoc_GetLoadedObjectValue(doc, obj_num, buffer.data(), len,
+                                              nullptr, nullptr));
+  value.text = std::string(buffer.data());
+  return value;
+}
+
+}  // namespace
+
+// What Acrobat does when it adds a signature field to a page whose /Annots
+// is an object of its own: it writes a NEW list and points the page at it.
+// The old list stays in the file and no update writes it, so no diff entry
+// holds what it listed.
+TEST_F(EPDFSignatureEmbedderTest, LoadedObjectValueReadsWhatNoUpdateWrote) {
+  std::vector<std::string> b = BasicObjects();
+  b[2] = "<</Type/Page /Parent 2 0 R /MediaBox[0 0 100 100] /Annots 4 0 R>>";
+  b.push_back("[5 0 R]");
+  b.push_back("<</Type/Annot /Subtype/Square /Rect[0 0 10 10]>>");
+  b.push_back("<</Length 3>>\nstream\nabc\nendstream");
+  RawPdf old = MakeRawPdf(b);
+  RawPdf n = AppendRawUpdate(old, 7, "[5 0 R 8 0 R]", 8);
+  n = AppendRawUpdate(n, 8, "<</Type/Annot /Subtype/Widget /FT/Sig /T(new)>>",
+                      9);
+  n = AppendRawUpdate(
+      n, 3, "<</Type/Page /Parent 2 0 R /MediaBox[0 0 100 100] /Annots 7 0 R>>",
+      9);
+
+  embedpdf_test::ScopedTestDocument newer = OpenRaw(n);
+  ASSERT_TRUE(newer);
+  ScopedFPDFDocument older(EPDFDoc_OpenRevision(newer.get(), old.bytes.size()));
+  ASSERT_TRUE(older);
+  EPDF_OBJECT_DIFF diff = EPDFDoc_CompareRevisions(older.get(), newer.get());
+  ASSERT_TRUE(diff);
+  const std::vector<DiffRow> rows = ReadDiffRows(diff);
+
+  // The old list is not in the diff, and it reads the same from both sides.
+  EXPECT_EQ(-1, FindRow(rows, 4));
+  LoadedValue list = ReadLoadedValue(older.get(), 4);
+  EXPECT_EQ(EPDF_DIFF_READ_OK, list.status);
+  EXPECT_FALSE(list.truncated);
+  EXPECT_EQ("[5 0 R]", list.text);
+  EXPECT_EQ("[5 0 R]", ReadLoadedValue(newer.get(), 4).text);
+
+  // An object the update added is absent before it and there after it.
+  LoadedValue added = ReadLoadedValue(older.get(), 7);
+  EXPECT_EQ(EPDF_DIFF_READ_ABSENT, added.status);
+  EXPECT_EQ("", added.text);
+  EXPECT_EQ("[5 0 R 8 0 R]", ReadLoadedValue(newer.get(), 7).text);
+  EXPECT_EQ(EPDF_DIFF_READ_ABSENT, ReadLoadedValue(newer.get(), 999).status);
+
+  // The same text as the diff's, for an object, a stream and the trailer.
+  const int page = FindRow(rows, 3);
+  ASSERT_GE(page, 0);
+  EXPECT_EQ(ReadDiffValue(diff, page, EPDF_DIFF_OLD),
+            ReadLoadedValue(older.get(), 3).text);
+  EXPECT_EQ(ReadDiffValue(diff, page, EPDF_DIFF_NEW),
+            ReadLoadedValue(newer.get(), 3).text);
+  const int trailer = FindRow(rows, 0);
+  ASSERT_GE(trailer, 0);
+  EXPECT_EQ(ReadDiffValue(diff, trailer, EPDF_DIFF_OLD),
+            ReadLoadedValue(older.get(), 0).text);
+  EXPECT_EQ(ReadDiffValue(diff, trailer, EPDF_DIFF_NEW),
+            ReadLoadedValue(newer.get(), 0).text);
+  EXPECT_EQ(
+      "stream(3,"
+      "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad)"
+      "<</Length 3>>",
+      ReadLoadedValue(newer.get(), 6).text);
+  EPDFObjectDiff_Close(diff);
+
+  // A buffer that can't hold the value gets none of it.
+  char small[4] = {'-', '-', '-', '-'};
+  EXPECT_EQ(8u, EPDFDoc_GetLoadedObjectValue(older.get(), 4, small,
+                                             sizeof(small), nullptr, nullptr));
+  EXPECT_EQ('-', small[0]);
+
+  // NULL document: no value, and a status that is none of the three.
+  int status = 0;
+  FPDF_BOOL truncated = true;
+  EXPECT_EQ(0u, EPDFDoc_GetLoadedObjectValue(nullptr, 4, nullptr, 0, &status,
+                                             &truncated));
+  EXPECT_EQ(-1, status);
+  EXPECT_FALSE(truncated);
+}
+
+TEST_F(EPDFSignatureEmbedderTest, LoadedObjectValueComesFromBytesNotCache) {
+  std::vector<std::string> b = BasicObjects();
+  b.push_back("[5 0 R]");
+  b.push_back("<</K(kept)>>");
+  RawPdf p = MakeRawPdf(b);
+  ScopedFPDFDocument doc = OpenPlainBytes(p.bytes);
+  ASSERT_TRUE(doc);
+  {
+    CPDF_Document* native = CPDFDocumentFromFPDFDocument(doc.get());
+    RetainPtr<CPDF_Array> list = ToArray(native->GetMutableIndirectObject(4));
+    ASSERT_TRUE(list);
+    list->AppendNew<CPDF_Number>(7);
+    native->NewIndirect<CPDF_Dictionary>();
+  }
+  // An unsaved edit is not part of the loaded bytes, and neither is an
+  // object made in memory.
+  EXPECT_EQ("[5 0 R]", ReadLoadedValue(doc.get(), 4).text);
+  EXPECT_EQ(EPDF_DIFF_READ_ABSENT, ReadLoadedValue(doc.get(), 6).status);
+}
+
+TEST_F(EPDFSignatureEmbedderTest, LoadedObjectValueSeparatesFailureFromNull) {
+  // As in DiffReadStatusSeparatesFailureFromNull: object 4's entry points two
+  // bytes into the object, so its mapping is live and its bytes do not parse.
+  std::vector<std::string> b = BasicObjects("/Extra 4 0 R");
+  b.push_back("<</A 1>>");
+  RawPdf old = MakeRawPdf(b);
+  RawPdf broken = AppendRawUpdate(old, 4, "<</A 1 /B 2>>", 5);
+  {
+    const size_t row = broken.bytes.find("xref\n4 1\n", broken.xref) + 9;
+    ASSERT_NE(std::string::npos, row);
+    const size_t offset = std::stoul(broken.bytes.substr(row, 10));
+    char fixed[16];
+    snprintf(fixed, sizeof(fixed), "%010zu", offset + 2);
+    broken.bytes.replace(row, 10, fixed);
+  }
+  embedpdf_test::ScopedTestDocument dnew = OpenRaw(broken);
+  ASSERT_TRUE(dnew);
+  ScopedFPDFDocument dold(EPDFDoc_OpenRevision(dnew.get(), old.bytes.size()));
+  ASSERT_TRUE(dold);
+  LoadedValue before = ReadLoadedValue(dold.get(), 4);
+  EXPECT_EQ(EPDF_DIFF_READ_OK, before.status);
+  EXPECT_EQ("<</A 1>>", before.text);
+  LoadedValue after = ReadLoadedValue(dnew.get(), 4);
+  EXPECT_EQ(EPDF_DIFF_READ_FAILED, after.status);
+  EXPECT_EQ("null", after.text);
 }
