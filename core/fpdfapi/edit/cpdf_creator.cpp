@@ -608,6 +608,24 @@ CPDF_Creator::Stage CPDF_Creator::WriteDoc_Stage3() {
   DCHECK(stage_ >= Stage::kInitWriteXRefs80 ||
          stage_ < Stage::kWriteTrailerAndFinish90);
 
+  if (stage_ == Stage::kInitWriteXRefs80 && is_incremental_) {
+    // EmbedPDF(save-traversal): an incremental save's /Size and cross-reference
+    // stream number follow the highest object number the file defines (the
+    // input's objects and /Size, and the objects this save wrote), not
+    // numbers the document reserved and never used. A layer delta is
+    // cumulative from its base, so it writes every object the base lacks.
+    last_obj_num_ =
+        object_offsets_.empty() ? 0 : object_offsets_.rbegin()->first;
+    if (parser_) {
+      last_obj_num_ = std::max(last_obj_num_, parser_->GetLastObjNum());
+      const int original_size =
+          parser_->GetCombinedTrailer()->GetIntegerFor("Size");
+      if (original_size > 0) {
+        last_obj_num_ =
+            std::max(last_obj_num_, static_cast<uint32_t>(original_size) - 1);
+      }
+    }
+  }
   uint32_t dwLastObjNum = last_obj_num_;
   if (stage_ == Stage::kInitWriteXRefs80) {
     if (is_incremental_ && skip_empty_revision_ &&

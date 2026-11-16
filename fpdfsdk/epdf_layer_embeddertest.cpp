@@ -1481,6 +1481,40 @@ TEST_F(EPDFLayerEmbedderTest, SaveLayerDeltaMaterializesWithBaseBytes) {
   EPDF_ReleaseBaseDocument(base);
 }
 
+// Object numbers reserved with EPDFLayer_RaiseLastObjectNumber() and never
+// used don't count in the delta's /Size: it is the highest object number the
+// file defines plus one.
+TEST_F(EPDFLayerEmbedderTest, SaveLayerDeltaSizeIgnoresUnusedReservedNumbers) {
+  FileAccessForTesting base_access("rectangles.pdf");
+  EPDF_BASE_DOCUMENT base = EPDF_LoadBaseDocument(&base_access, nullptr);
+  ASSERT_TRUE(base);
+  {
+    ScopedFPDFDocument layer(
+        EPDFLayer_OpenLayer(base, nullptr, nullptr, nullptr));
+    ASSERT_TRUE(layer);
+    const unsigned long last = EPDFLayer_GetLastObjectNumber(layer.get());
+    ASSERT_GT(last, 0u);
+    ASSERT_TRUE(EPDFLayer_RaiseLastObjectNumber(layer.get(), last + 64));
+    ASSERT_TRUE(EPDFLayer_BeginTransaction(layer.get()));
+    {
+      ScopedFPDFAnnotation annot(EPDFPage_CreateAnnotRaw(
+          layer.get(), 0, FPDF_ANNOT_SQUARE, last + 1));
+      ASSERT_TRUE(annot);
+    }
+    ASSERT_TRUE(EPDFLayer_CommitTransaction(layer.get()));
+
+    ClearString();
+    EPDFLayerSaveStatus save_status = EPDFLayerSaveStatus_kSaveFailed;
+    ASSERT_TRUE(EPDFLayer_SaveDelta(layer.get(), this, &save_status));
+    EXPECT_EQ(EPDFLayerSaveStatus_kSuccess, save_status);
+    const std::string delta = GetString();
+    const size_t at = delta.rfind("/Size ");
+    ASSERT_NE(std::string::npos, at);
+    EXPECT_EQ(last + 2, std::stoul(delta.substr(at + 6)));
+  }
+  EPDF_ReleaseBaseDocument(base);
+}
+
 TEST_F(EPDFLayerEmbedderTest, LayerDeltaReplayWithLeadingBytesInBase) {
   const std::string pdf_path = PathService::GetTestFilePath("rectangles.pdf");
   ASSERT_FALSE(pdf_path.empty());
