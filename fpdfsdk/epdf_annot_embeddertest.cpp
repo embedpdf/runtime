@@ -9416,6 +9416,168 @@ TEST_F(EPDFStampResizeEmbedderTest, RotatedWrapperStartsAtTheOrigin) {
   EXPECT_FALSE(layer->GetDict()->KeyExist("Matrix"));
 }
 
+// A quarter turn is written in whole numbers, and /Rect stands around the
+// turned box about its middle.
+TEST_F(EPDFStampResizeEmbedderTest, AQuarterTurnIsWrittenWithoutNoise) {
+  InstallArtwork();
+  const FS_RECTF unrotated{10, 60, 110, 10};
+  ASSERT_TRUE(EPDFAnnot_SetEmbedMetadataNumber(annot_.get(), "Rotation", 90));
+  ASSERT_TRUE(EPDFAnnot_SetEmbedMetadataRect(annot_.get(), "UnrotatedRect",
+                                             &unrotated));
+  ASSERT_TRUE(
+      EPDFAnnot_UpdateAppearanceToRect(annot_.get(), EPDF_STAMP_FIT_CONTAIN));
+  auto wrapper = appearance();
+  EXPECT_EQ(CFX_FloatRect(0, 0, 100, 50),
+            wrapper->GetDict()->GetRectFor("BBox"));
+  EXPECT_EQ(CFX_Matrix(0, 1, -1, 0, 50, 0),
+            wrapper->GetDict()->GetMatrixFor("Matrix"));
+  EXPECT_EQ(CFX_FloatRect(35, -15, 85, 85), annot_dict()->GetRectFor("Rect"));
+}
+
+namespace {
+
+// A one-page document whose page, 200 by 100, is one red box: a mark to draw
+// into a signature field.
+embedpdf_test::ScopedTestDocument NewMarkDocument() {
+  embedpdf_test::ScopedTestDocument source(NewTestDocument());
+  ScopedFPDFPage page(FPDFPage_New(source.get(), 0, 200, 100));
+  FPDF_PAGEOBJECT box = FPDFPageObj_CreateNewRect(0, 0, 200, 100);
+  EXPECT_TRUE(FPDFPageObj_SetFillColor(box, 255, 0, 0, 255));
+  EXPECT_TRUE(FPDFPath_SetDrawMode(box, FPDF_FILLMODE_ALTERNATE, false));
+  FPDFPage_InsertObject(page.get(), box);
+  EXPECT_TRUE(FPDFPage_GenerateContent(page.get()));
+  return source;
+}
+
+// A widget on `page` that stands 40 wide and 160 tall, its /MK /R as
+// `written` (none without a value).
+ScopedFPDFAnnotation NewStandingWidget(FPDF_PAGE page,
+                                       std::optional<int> written) {
+  ScopedFPDFAnnotation widget(FPDFPage_CreateAnnot(page, FPDF_ANNOT_WIDGET));
+  EXPECT_TRUE(widget);
+  const FS_RECTF rect{100.25f, 360.5f, 140.25f, 200.5f};
+  EXPECT_TRUE(EPDFAnnot_SetRect(widget.get(), &rect));
+  if (written) {
+    CPDFAnnotContextFromFPDFAnnotation(widget.get())
+        ->GetMutableAnnotDict()
+        ->SetNewFor<CPDF_Dictionary>("MK")
+        ->SetNewFor<CPDF_Number>("R", *written);
+  }
+  return widget;
+}
+
+RetainPtr<CPDF_Dictionary> DictOf(FPDF_ANNOTATION annot) {
+  return CPDFAnnotContextFromFPDFAnnotation(annot)->GetMutableAnnotDict();
+}
+
+}  // namespace
+
+// A mark drawn into a turned field is fitted into the box the field's
+// contents are laid out in, /Rect with its sides swapped at 90 and 270, and
+// turned with them: the wrapper's /Matrix is the quarter turn a field's own
+// appearance has. /Rect and /MK /R stay as they were written.
+TEST_F(EPDFStampResizeEmbedderTest,
+       AWidgetsMarkIsFittedIntoTheBoxItsTurnGives) {
+  embedpdf_test::ScopedTestDocument mark = NewMarkDocument();
+  const struct {
+    int written;
+    CFX_FloatRect box;
+    CFX_Matrix turn;
+    const char* placement;
+  } kCases[] = {
+      // Laid out 160 by 40: the mark, 200 by 100, is 80 by 40 in its middle.
+      {90, CFX_FloatRect(0, 0, 160, 40), CFX_Matrix(0, 1, -1, 0, 40, 0),
+       "q .4 0 0 .4 40 0 cm /EPDFWRAP Do Q"},
+      {270, CFX_FloatRect(0, 0, 160, 40), CFX_Matrix(0, -1, 1, 0, 0, 160),
+       "q .4 0 0 .4 40 0 cm /EPDFWRAP Do Q"},
+      {-90, CFX_FloatRect(0, 0, 160, 40), CFX_Matrix(0, -1, 1, 0, 0, 160),
+       "q .4 0 0 .4 40 0 cm /EPDFWRAP Do Q"},
+      // Upside down it is laid out as it stands, 40 by 160: 40 by 20.
+      {180, CFX_FloatRect(0, 0, 40, 160), CFX_Matrix(-1, 0, 0, -1, 40, 160),
+       "q .2 0 0 .2 0 70 cm /EPDFWRAP Do Q"},
+  };
+  for (const auto& expected : kCases) {
+    SCOPED_TRACE(expected.written);
+    ScopedFPDFAnnotation widget =
+        NewStandingWidget(page_.get(), expected.written);
+    const CFX_FloatRect stands = DictOf(widget.get())->GetRectFor("Rect");
+    ASSERT_TRUE(EPDFAnnot_SetAppearanceFromPage(widget.get(), mark.get(), 0));
+    ASSERT_TRUE(
+        EPDFAnnot_UpdateAppearanceToRect(widget.get(), EPDF_STAMP_FIT_CONTAIN));
+
+    RetainPtr<CPDF_Stream> wrapper = GetAnnotAP(
+        DictOf(widget.get()).Get(), CPDF_Annot::AppearanceMode::kNormal);
+    ASSERT_TRUE(wrapper);
+    EXPECT_EQ(expected.box, wrapper->GetDict()->GetRectFor("BBox"));
+    EXPECT_EQ(expected.turn, wrapper->GetDict()->GetMatrixFor("Matrix"));
+    EXPECT_EQ(expected.placement, StreamBytes(wrapper.Get()));
+    // Turned, the box is the size the field stands in: /Rect shows it at
+    // scale 1.
+    EXPECT_EQ(CFX_FloatRect(0, 0, 40, 160), ShownBox(wrapper.Get()));
+    EXPECT_EQ(stands, DictOf(widget.get())->GetRectFor("Rect"));
+    EXPECT_EQ(expected.written,
+              DictOf(widget.get())->GetDictFor("MK")->GetIntegerFor("R"));
+  }
+}
+
+// Without a quarter turn the mark is fitted into /Rect as the field stands:
+// no /MK /R, a whole turn, and a value that is no quarter turn.
+TEST_F(EPDFStampResizeEmbedderTest, AWidgetsMarkWithoutAQuarterTurnFillsRect) {
+  embedpdf_test::ScopedTestDocument mark = NewMarkDocument();
+  for (std::optional<int> written :
+       {std::optional<int>(), std::optional<int>(0), std::optional<int>(360),
+        std::optional<int>(45)}) {
+    SCOPED_TRACE(written.value_or(-1));
+    ScopedFPDFAnnotation widget = NewStandingWidget(page_.get(), written);
+    const CFX_FloatRect stands = DictOf(widget.get())->GetRectFor("Rect");
+    ASSERT_TRUE(EPDFAnnot_SetAppearanceFromPage(widget.get(), mark.get(), 0));
+    ASSERT_TRUE(
+        EPDFAnnot_UpdateAppearanceToRect(widget.get(), EPDF_STAMP_FIT_CONTAIN));
+
+    RetainPtr<CPDF_Stream> wrapper = GetAnnotAP(
+        DictOf(widget.get()).Get(), CPDF_Annot::AppearanceMode::kNormal);
+    ASSERT_TRUE(wrapper);
+    EXPECT_EQ(CFX_FloatRect(0, 0, 40, 160),
+              wrapper->GetDict()->GetRectFor("BBox"));
+    EXPECT_FALSE(wrapper->GetDict()->KeyExist("Matrix"));
+    EXPECT_EQ("q .2 0 0 .2 0 70 cm /EPDFWRAP Do Q", StreamBytes(wrapper.Get()));
+    EXPECT_EQ(stands, DictOf(widget.get())->GetRectFor("Rect"));
+  }
+}
+
+// A turned field's appearance drawn by another app is a form whose /Matrix
+// holds the turn. Wrapped, the drawing is that form without the matrix, and
+// our wrapper turns it: once.
+TEST_F(EPDFStampResizeEmbedderTest, ATurnedWidgetsOwnAppearanceIsTurnedOnce) {
+  ScopedFPDFAnnotation widget = NewStandingWidget(page_.get(), 90);
+  const ByteStringView kArtwork = "1 0 0 rg 0 0 160 40 re f";
+  auto drawn = pdf()->NewIndirect<CPDF_Stream>(kArtwork.unsigned_span());
+  drawn->GetMutableDict()->SetNewFor<CPDF_Name>("Subtype", "Form");
+  drawn->GetMutableDict()->SetRectFor("BBox", CFX_FloatRect(0, 0, 160, 40));
+  drawn->GetMutableDict()->SetMatrixFor("Matrix",
+                                        CFX_Matrix(0, 1, -1, 0, 40, 0));
+  drawn->GetMutableDict()->SetNewFor<CPDF_Dictionary>("Resources");
+  DictOf(widget.get())
+      ->SetNewFor<CPDF_Dictionary>("AP")
+      ->SetNewFor<CPDF_Reference>("N", pdf(), drawn->GetObjNum());
+
+  ASSERT_TRUE(
+      EPDFAnnot_UpdateAppearanceToRect(widget.get(), EPDF_STAMP_FIT_CONTAIN));
+  RetainPtr<CPDF_Stream> wrapper = GetAnnotAP(
+      DictOf(widget.get()).Get(), CPDF_Annot::AppearanceMode::kNormal);
+  ASSERT_TRUE(wrapper);
+  EXPECT_EQ(CFX_FloatRect(0, 0, 160, 40),
+            wrapper->GetDict()->GetRectFor("BBox"));
+  EXPECT_EQ(CFX_Matrix(0, 1, -1, 0, 40, 0),
+            wrapper->GetDict()->GetMatrixFor("Matrix"));
+  EXPECT_EQ("q 1 0 0 1 0 0 cm /EPDFWRAP Do Q", StreamBytes(wrapper.Get()));
+  auto drawing = FormNamed(wrapper.Get(), "EPDFWRAP");
+  ASSERT_TRUE(drawing);
+  EXPECT_FALSE(drawing->GetDict()->KeyExist("Matrix"));
+  EXPECT_EQ(CFX_FloatRect(0, 0, 160, 40),
+            drawing->GetDict()->GetRectFor("BBox"));
+}
+
 TEST_F(EPDFStampResizeEmbedderTest, ALayerThatDoesNotRepeatCAIsPartOfTheDrawing) {
   InstallOpacityLayer(pdf(), annot_dict().Get(), 0.3f);
   ASSERT_TRUE(
