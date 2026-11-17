@@ -68,11 +68,15 @@ std::optional<AnnotRotation> GetRecordedAnnotRotation(
   return AnnotRotation{degrees, box};
 }
 
+int GetMKRotationDegrees(const CPDF_Dictionary* mk_dict) {
+  const int written =
+      mk_dict ? mk_dict->GetIntegerFor(pdfium::appearance::kR) : 0;
+  return ((written % 360) + 360) % 360;
+}
+
 std::optional<AnnotRotation> GetWidgetAnnotRotation(
     const CPDF_Dictionary* annot_dict) {
-  RetainPtr<const CPDF_Dictionary> mk = annot_dict->GetDictFor("MK");
-  const int written = mk ? mk->GetIntegerFor(pdfium::appearance::kR) : 0;
-  const int degrees = ((written % 360) + 360) % 360;
+  const int degrees = GetMKRotationDegrees(annot_dict->GetDictFor("MK").Get());
   CFX_FloatRect rect = annot_dict->GetRectFor(pdfium::annotation::kRect);
   rect.Normalize();
   if (degrees == 0 || degrees % 90 != 0 || rect.IsEmpty()) {

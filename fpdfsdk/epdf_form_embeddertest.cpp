@@ -2380,3 +2380,42 @@ TEST_F(EPDFFormEmbedderTest, WidgetRotationTurnsItsAppearance) {
   amount.reset();
   UnloadPage(page);
 }
+
+// /MK /R counts as a turn: a file's -90 is 270, as Acrobat reads it. The
+// setter takes 0 to 270, so the number is written as a file would hold it.
+TEST_F(EPDFFormEmbedderTest, ANegativeWidgetRotationIsDrawnAsItsTurn) {
+  ASSERT_TRUE(OpenDocument("merged_field_actions.pdf"));
+  FPDF_PAGE page = LoadPage(0);
+  ASSERT_TRUE(page);
+  ScopedFPDFAnnotation amount(FPDFPage_GetAnnot(page, 0));
+  auto normal = [&] {
+    return GetEffectiveIndirectDictionary(document(), 4u)
+        ->GetDictFor("AP")
+        ->GetStreamFor("N");
+  };
+
+  ASSERT_TRUE(EPDFAnnot_SetMKRotation(amount.get(), 270));
+  ASSERT_TRUE(EPDFAnnot_GenerateFormFieldAP(amount.get()));
+  ASSERT_TRUE(normal());
+  const CFX_FloatRect box = normal()->GetDict()->GetRectFor("BBox");
+  const CFX_Matrix matrix = normal()->GetDict()->GetMatrixFor("Matrix");
+  const std::wstring drawn = GetEffectiveWidgetAppearance(document(), 4u);
+  EXPECT_FALSE(box.IsEmpty());
+  EXPECT_FLOAT_EQ(0.0f, matrix.a);
+  EXPECT_FLOAT_EQ(-1.0f, matrix.b);
+  EXPECT_FLOAT_EQ(1.0f, matrix.c);
+  EXPECT_FLOAT_EQ(0.0f, matrix.d);
+
+  ToDictionary(
+      CPDFDocumentFromFPDFDocument(document())->GetMutableIndirectObject(4u))
+      ->GetOrCreateDictFor("MK")
+      ->SetNewFor<CPDF_Number>("R", -90);
+  EXPECT_EQ(-90, EPDFAnnot_GetMKRotation(amount.get()));
+  ASSERT_TRUE(EPDFAnnot_GenerateFormFieldAP(amount.get()));
+  ASSERT_TRUE(normal());
+  EXPECT_EQ(box, normal()->GetDict()->GetRectFor("BBox"));
+  EXPECT_EQ(matrix, normal()->GetDict()->GetMatrixFor("Matrix"));
+  EXPECT_EQ(drawn, GetEffectiveWidgetAppearance(document(), 4u));
+  amount.reset();
+  UnloadPage(page);
+}

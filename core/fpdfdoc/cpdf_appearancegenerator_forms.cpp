@@ -31,6 +31,7 @@
 #include "core/fpdfapi/parser/cpdf_reference.h"
 #include "core/fpdfapi/parser/cpdf_stream.h"
 #include "core/fpdfapi/parser/fpdf_parser_utility.h"
+#include "core/fpdfdoc/cpdf_annot_rotation.h"
 #include "core/fpdfdoc/cpdf_annotfontmap.h"
 #include "core/fpdfdoc/cpdf_appearancegenerator_internal.h"
 #include "core/fpdfdoc/cpdf_color_utils.h"
@@ -917,8 +918,7 @@ AppearanceCharacteristics GetAppearanceCharacteristics(
     return appearance_characteristics;
   }
 
-  appearance_characteristics.rotation =
-      mk_dict->GetIntegerFor(pdfium::appearance::kR);
+  appearance_characteristics.rotation = fpdfdoc::GetMKRotationDegrees(mk_dict);
 
   RetainPtr<const CPDF_Array> border_color_array =
       mk_dict->GetArrayFor(pdfium::appearance::kBC);
