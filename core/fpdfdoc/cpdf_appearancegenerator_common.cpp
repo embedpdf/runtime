@@ -356,7 +356,7 @@ AnnotationDimensionsAndColor GetAnnotationDimensionsAndColor(
 
   CFX_FloatRect bbox_rect;
   CFX_Matrix matrix;
-  switch (appearance_characteristics.rotation % 360) {
+  switch (appearance_characteristics.rotation) {
     case 0:
       bbox_rect = CFX_FloatRect(0, 0, annot_rect.right - annot_rect.left,
                                 annot_rect.top - annot_rect.bottom);

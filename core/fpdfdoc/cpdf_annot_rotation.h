@@ -32,6 +32,17 @@ CFX_Matrix TurnAbout(const CFX_PointF& center, float degrees);
 std::optional<AnnotRotation> GetRecordedAnnotRotation(
     const CPDF_Dictionary* annot_dict);
 
+// /MK /R as a turn, in [0, 360): the number as written, so -90 is 270, as
+// Acrobat reads it. 0 without a /MK or an /R.
+int GetMKRotationDegrees(const CPDF_Dictionary* mk_dict);
+
+// A widget's rotation, from the entries every PDF app reads: /MK /R turns its
+// contents (GetMKRotationDegrees) and /Rect is where it stands, so the box is
+// /Rect with its sides swapped about its middle at 90 and 270. A value that
+// is no quarter turn is no turn.
+std::optional<AnnotRotation> GetWidgetAnnotRotation(
+    const CPDF_Dictionary* annot_dict);
+
 }  // namespace fpdfdoc
 
 #endif  // CORE_FPDFDOC_CPDF_ANNOT_ROTATION_H_

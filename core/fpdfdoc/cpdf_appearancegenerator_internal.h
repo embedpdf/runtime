@@ -77,7 +77,7 @@ struct BorderStyleInfo {
 // ISO 32000-1:2008 spec, table 189.
 // ISO 32000-2:2020 spec, table 192.
 struct AppearanceCharacteristics {
-  int rotation = 0;  // In degrees.
+  int rotation = 0;  // /MK /R as a turn: degrees in [0, 360).
   CFX_Color border_color;
   CFX_Color background_color;
   // /CA, the normal caption. A check box or radio button keeps one

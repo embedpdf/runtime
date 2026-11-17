@@ -1047,7 +1047,13 @@ FPDF_EXPORT unsigned long FPDF_CALLCONV EPDFAnnot_GetName(FPDF_ANNOTATION annot,
 // that paints another opacity is part of the drawing; to change /CA, use
 // EPDFAnnot_SetStampOpacity.
 //
-//   annot - handle to a Stamp annotation.
+// A Widget's drawing (a signature field's mark) is fitted the same way, into
+// the box its /MK /R turns: /Rect with its sides swapped at 90 and 270, and
+// the wrapper's /Matrix is that quarter turn, as a field's own appearance has
+// it. So the mark reads the way the field's contents do. A widget's /Rect and
+// /MK are read, never written.
+//
+//   annot - handle to a Stamp annotation, or to a Widget.
 //   fit   - one of EPDF_STAMP_FIT_*.
 //
 // Returns true on success.
