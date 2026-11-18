@@ -7,6 +7,10 @@
 // did: each test changes one thing, saves, reloads and compares the page
 // with how it rendered before, everywhere outside the change. Every test runs
 // on a document and on a layer in a transaction, as engine jobs do.
+//
+// Where a page's content is cut into streams must make no difference either:
+// a reader treats the streams as one. See
+// WhereContentIsCutIntoStreamsChangesNothing.
 
 #include <algorithm>
 #include <cstdlib>
@@ -18,11 +22,15 @@
 #include <vector>
 
 #include "core/fpdfapi/font/cpdf_tounicodemap.h"
+#include "core/fpdfapi/page/cpdf_pageobject.h"
+#include "core/fpdfapi/page/cpdf_streamparser.h"
 #include "core/fpdfapi/parser/cpdf_array.h"
 #include "core/fpdfapi/parser/cpdf_dictionary.h"
 #include "core/fpdfapi/parser/cpdf_document.h"
+#include "core/fpdfapi/parser/cpdf_reference.h"
 #include "core/fpdfapi/parser/cpdf_stream.h"
 #include "core/fpdfapi/parser/cpdf_stream_acc.h"
+#include "core/fxcrt/span.h"
 #include "fpdfsdk/cpdfsdk_helpers.h"
 #include "public/cpp/fpdf_scopers.h"
 #include "public/epdf_layer.h"
@@ -98,6 +106,18 @@ enum CasePage : int {
   kType3FontSelectingAnotherWithoutText = 48,
   kType3FontDrawnByARedactedGlyph = 49,
   kType3FontSelectedAgainByAForm = 50,
+};
+
+// The fixture pages of redact_split_content_streams.in.
+enum SplitStreamsPage : int {
+  kCutAsPrintToPDFDoes = 0,
+  kCutInsideATransformWithoutAnInverse = 1,
+};
+
+// How CutIntoStreams() cuts a page's content.
+enum class Cut {
+  kIntoThree,
+  kAfterEveryOperator,
 };
 
 // The page on white at a pixel per point, its annotations included.
@@ -260,8 +280,44 @@ std::wstring TextInside(FPDF_PAGE page, const std::vector<FS_RECTF>& areas) {
   return found;
 }
 
-// The decoded content of page `index` of `doc`.
-std::string PageContent(FPDF_DOCUMENT doc, int index) {
+// A character `page` shows, and its origin in page space.
+struct PlacedChar {
+  unsigned int unicode;
+  double x;
+  double y;
+};
+
+// The characters `page` shows whose box centre lies outside `areas`.
+std::vector<PlacedChar> CharsOutside(FPDF_PAGE page,
+                                     const std::vector<FS_RECTF>& areas) {
+  std::vector<PlacedChar> chars;
+  ScopedFPDFTextPage text(FPDFText_LoadPage(page));
+  for (int i = 0; i < FPDFText_CountChars(text.get()); ++i) {
+    PlacedChar placed = {FPDFText_GetUnicode(text.get(), i), 0, 0};
+    double left;
+    double right;
+    double bottom;
+    double top;
+    if (placed.unicode <= ' ' ||
+        !FPDFText_GetCharBox(text.get(), i, &left, &right, &bottom, &top) ||
+        !FPDFText_GetCharOrigin(text.get(), i, &placed.x, &placed.y)) {
+      continue;
+    }
+    const float x = static_cast<float>((left + right) / 2);
+    const float y = static_cast<float>((bottom + top) / 2);
+    bool inside = false;
+    for (const FS_RECTF& area : areas) {
+      inside = inside || Contains(area, x, y, 0);
+    }
+    if (!inside) {
+      chars.push_back(placed);
+    }
+  }
+  return chars;
+}
+
+// The decoded content of each content stream of page `index` of `doc`.
+std::vector<std::string> PageContentStreams(FPDF_DOCUMENT doc, int index) {
   CPDF_Document* pdf = CPDFDocumentFromFPDFDocument(doc);
   RetainPtr<const CPDF_Object> contents =
       pdf->GetPageDictionary(index)->GetDirectObjectFor("Contents");
@@ -273,14 +329,74 @@ std::string PageContent(FPDF_DOCUMENT doc, int index) {
   } else if (contents && contents->IsStream()) {
     streams.push_back(pdfium::WrapRetain(contents->AsStream()));
   }
-  std::string content;
+  std::vector<std::string> content;
   for (const auto& stream : streams) {
     auto acc = pdfium::MakeRetain<CPDF_StreamAcc>(stream);
     acc->LoadAllDataFiltered();
     const auto bytes = acc->GetSpan();
-    content.append(bytes.begin(), bytes.end());
+    content.emplace_back(bytes.begin(), bytes.end());
   }
   return content;
+}
+
+// The decoded content of page `index` of `doc`.
+std::string PageContent(FPDF_DOCUMENT doc, int index) {
+  std::string content;
+  for (const std::string& stream : PageContentStreams(doc, index)) {
+    content += stream;
+  }
+  return content;
+}
+
+// Calls `visit` with each operator of `content` and the offset just after
+// it. An inline image (BI ... EI) counts as one operator, EI: its data is no
+// tokens.
+void ForEachOperator(const std::string& content,
+                     const std::function<void(ByteStringView, size_t)>& visit) {
+  CPDF_StreamParser parser(pdfium::as_byte_span(content));
+  bool in_image = false;
+  while (true) {
+    const CPDF_StreamParser::ElementType type = parser.ParseNextElement();
+    if (type == CPDF_StreamParser::ElementType::kEndOfData) {
+      return;
+    }
+    if (type != CPDF_StreamParser::ElementType::kKeyword) {
+      continue;
+    }
+    const ByteStringView op = parser.GetWord();
+    if (op == "BI") {
+      in_image = true;
+    } else if (op == "EI") {
+      in_image = false;
+    }
+    if (!in_image) {
+      visit(op, parser.GetPos());
+    }
+  }
+}
+
+// Expects each content stream of page `index` of `doc` to stand alone: it
+// restores what it saves (q ... Q) and sets no CTM outside of that. Such a
+// stream leaves the one after it nothing, so where one stream ends and the
+// next begins has no effect.
+void ExpectEachStreamStandsAlone(FPDF_DOCUMENT doc, int index) {
+  for (const std::string& content : PageContentStreams(doc, index)) {
+    int depth = 0;
+    ForEachOperator(content, [&](ByteStringView op, size_t) {
+      if (op == "q") {
+        ++depth;
+      } else if (op == "Q") {
+        --depth;
+        EXPECT_GE(depth, 0)
+            << "a Q without its q on page " << index << ": " << content;
+      } else if (op == "cm") {
+        EXPECT_GT(depth, 0)
+            << "a cm outside q ... Q on page " << index << ": " << content;
+      }
+    });
+    EXPECT_EQ(0, depth) << "a q without its Q on page " << index << ": "
+                        << content;
+  }
 }
 
 }  // namespace
@@ -302,7 +418,15 @@ class EPDFContentRewriteEmbedderTest
   // Opens the test file `name`, as a layer of it when the parameter says so.
   FPDF_DOCUMENT Open(const char* name) {
     const std::string path = PathService::GetTestFilePath(name);
-    bytes_ = GetFileContents(path.c_str());
+    return OpenBytes(GetFileContents(path.c_str()));
+  }
+
+  // Opens the file `bytes` hold, as Open() does, in place of the open one.
+  FPDF_DOCUMENT OpenBytes(std::vector<uint8_t> bytes) {
+    saved_.reset();
+    doc_.reset();
+    base_.reset();
+    bytes_ = std::move(bytes);
     if (layer()) {
       base_.reset(
           EPDF_LoadMemBaseDocument64(bytes_.data(), bytes_.size(), nullptr));
@@ -425,6 +549,119 @@ class EPDFContentRewriteEmbedderTest
       const std::function<void(FPDF_DOCUMENT, FPDF_PAGE)>& inspect = {}) {
     ExpectRedactingWordChangesOnlyIt("redact_rewrite_cases.pdf", index,
                                      L"REDACTME", inspect);
+  }
+
+  // A copy of the test file `name` with every page's content cut into
+  // streams: after the operators at a third and at two thirds, or after every
+  // operator, wherever that falls - inside q ... Q, a path, a text object. A
+  // reader treats a page's streams as one, so the copy draws what the file
+  // draws.
+  std::vector<uint8_t> CutIntoStreams(const char* name, Cut cut) {
+    const std::string path = PathService::GetTestFilePath(name);
+    const std::vector<uint8_t> bytes = GetFileContents(path.c_str());
+    ScopedFPDFDocument source(
+        FPDF_LoadMemDocument64(bytes.data(), bytes.size(), nullptr));
+    EXPECT_TRUE(source);
+    if (!source) {
+      return {};
+    }
+    CPDF_Document* pdf = CPDFDocumentFromFPDFDocument(source.get());
+    for (int i = 0; i < FPDF_GetPageCount(source.get()); ++i) {
+      std::string content;
+      for (const std::string& stream : PageContentStreams(source.get(), i)) {
+        content += stream + "\n";
+      }
+      std::vector<size_t> ends;
+      ForEachOperator(content,
+                      [&](ByteStringView, size_t end) { ends.push_back(end); });
+      if (ends.size() < 3) {
+        continue;
+      }
+      if (cut == Cut::kIntoThree) {
+        ends = {ends[ends.size() / 3 - 1], ends[2 * ends.size() / 3 - 1],
+                ends.back()};
+      }
+      auto streams = pdfium::MakeRetain<CPDF_Array>();
+      size_t begin = 0;
+      for (size_t end : ends) {
+        auto stream = pdf->NewIndirect<CPDF_Stream>(
+            pdfium::as_byte_span(content).subspan(begin, end - begin));
+        streams->AppendNew<CPDF_Reference>(pdf, stream->GetObjNum());
+        begin = end;
+      }
+      pdf->GetMutablePageDictionary(i)->SetFor("Contents", std::move(streams));
+    }
+    ClearString();
+    EXPECT_TRUE(FPDF_SaveAsCopy(source.get(), this, FPDF_NO_INCREMENTAL));
+    const std::string& saved = GetString();
+    return std::vector<uint8_t>(saved.begin(), saved.end());
+  }
+
+  // Opens the file `bytes` hold and writes every page's content again in one
+  // change: a page showing REDACTME, SECRET or Jane Doe has it redacted, any
+  // other has its first object marked as changed. Gives each page's render
+  // from the saved copy, and in `before` each page's render before the
+  // change. Expects the content written to stand alone
+  // (ExpectEachStreamStandsAlone()).
+  std::vector<ScopedFPDFBitmap> RewriteEveryPage(
+      std::vector<uint8_t> bytes,
+      std::vector<ScopedFPDFBitmap>* before) {
+    std::vector<ScopedFPDFBitmap> after;
+    if (!OpenBytes(std::move(bytes))) {
+      ADD_FAILURE() << "the file does not open";
+      return after;
+    }
+    const int count = FPDF_GetPageCount(doc_.get());
+    std::vector<ScopedFPDFPage> pages;
+    std::vector<bool> redacts;
+    for (int i = 0; i < count; ++i) {
+      pages.emplace_back(FPDF_LoadPage(doc_.get(), i));
+      FPDF_PAGE page = pages.back().get();
+      EXPECT_TRUE(page) << i;
+      if (!page) {
+        return after;
+      }
+      before->push_back(RenderAtPageSize(page));
+      std::vector<FS_RECTF> areas;
+      for (const wchar_t* word : {L"REDACTME", L"SECRET", L"Jane Doe"}) {
+        if (areas.empty()) {
+          areas = AreasOf(page, word);
+        }
+      }
+      Mark(page, areas);
+      redacts.push_back(!areas.empty());
+    }
+    std::vector<bool> written(count);
+    ChangeAndSave([&] {
+      for (int i = 0; i < count; ++i) {
+        FPDF_PAGE page = pages[i].get();
+        if (redacts[i]) {
+          ApplyRedactions(page);
+          written[i] = true;
+        } else if (FPDFPage_CountObjects(page) > 0) {
+          CPDFPageObjectFromFPDFPageObject(FPDFPage_GetObject(page, 0))
+              ->SetDirty(true);
+          ASSERT_TRUE(FPDFPage_GenerateContent(page));
+          written[i] = true;
+        }
+      }
+    });
+    if (HasFatalFailure()) {
+      return after;
+    }
+    for (int i = 0; i < count; ++i) {
+      ScopedSavedPage saved = LoadScopedSavedPage(i);
+      EXPECT_TRUE(saved) << i;
+      if (!saved) {
+        return after;
+      }
+      after.push_back(RenderAtPageSize(saved.get()));
+      if (written[i]) {
+        ExpectEachStreamStandsAlone(saved_document(), i);
+      }
+    }
+    CloseSaved();
+    return after;
   }
 
   // Page `index` of the open document, rendered (RenderAtPageSize()).
@@ -1337,4 +1574,186 @@ TEST_P(EPDFContentRewriteEmbedderTest,
                                kType3FontSelectedAgainByAForm,
                                "SELECTIONPRIVATE");
       });
+}
+
+// A page as "Microsoft: Print To PDF" writes it: one cm for the whole page,
+// never undone, and the content cut into streams in the middle of
+// q ... cm ... Q, so each stream ends at another CTM than it began with.
+// Every stream is written again and stands alone: none hands the next a CTM.
+// (Upstream's cm for that multiplies the wrong way round, which moved
+// everything from the third stream on.)
+TEST_P(EPDFContentRewriteEmbedderTest, KeepsContentCutIntoStreams) {
+  ExpectRedactingWordChangesOnlyIt(
+      "redact_split_content_streams.pdf", kCutAsPrintToPDFDoes, L"SECRET",
+      [](FPDF_DOCUMENT saved, FPDF_PAGE) {
+        ExpectEachStreamStandsAlone(saved, kCutAsPrintToPDFDoes);
+      });
+}
+
+// The cut falls after a cm with no inverse (a strip of no height): no stream
+// written again can undo it to draw in place, so none may begin under it.
+TEST_P(EPDFContentRewriteEmbedderTest,
+       KeepsContentCutInsideATransformWithoutAnInverse) {
+  ExpectRedactingWordChangesOnlyIt(
+      "redact_split_content_streams.pdf", kCutInsideATransformWithoutAnInverse,
+      L"SECRET", [](FPDF_DOCUMENT saved, FPDF_PAGE) {
+        ExpectEachStreamStandsAlone(saved,
+                                    kCutInsideATransformWithoutAnInverse);
+      });
+}
+
+// A second rewrite of the loaded page starts from the streams the first one
+// wrote, not from the CTMs the page was parsed with.
+TEST_P(EPDFContentRewriteEmbedderTest,
+       RewritingAgainKeepsContentCutIntoStreams) {
+  ASSERT_TRUE(Open("redact_split_content_streams.pdf"));
+  ScopedFPDFPage page(FPDF_LoadPage(doc_.get(), kCutAsPrintToPDFDoes));
+  ASSERT_TRUE(page);
+  ScopedFPDFBitmap before = RenderAtPageSize(page.get());
+  std::vector<FS_RECTF> areas;
+  for (const wchar_t* word : {L"SECRET", L"STAYS"}) {
+    const std::vector<FS_RECTF> found = AreasOf(page.get(), word);
+    ASSERT_EQ(1u, found.size());
+    areas.push_back(found[0]);
+    Mark(page.get(), found);
+    Change([&] { ApplyRedactions(page.get()); });
+    ASSERT_FALSE(HasFatalFailure());
+  }
+  SaveAndReopen();
+  ASSERT_FALSE(HasFatalFailure());
+  ExpectSavedPageChangedOnlyIn(kCutAsPrintToPDFDoes, before.get(), areas,
+                               [](FPDF_DOCUMENT saved, FPDF_PAGE) {
+                                 ExpectEachStreamStandsAlone(
+                                     saved, kCutAsPrintToPDFDoes);
+                               });
+}
+
+// An object added to the page goes into a stream of its own, which begins by
+// undoing the CTM the last stream ended at. Added after a rewrite, it finds
+// the streams the rewrite wrote; added before one, its stream is written
+// again with the others. Either way it is drawn where it was put.
+TEST_P(EPDFContentRewriteEmbedderTest,
+       AnObjectAddedAroundARewriteIsDrawnInPlace) {
+  for (const bool add_first : {false, true}) {
+    SCOPED_TRACE(add_first ? "added before the rewrite"
+                           : "added after the rewrite");
+    ASSERT_TRUE(Open("redact_split_content_streams.pdf"));
+    ScopedFPDFPage page(FPDF_LoadPage(doc_.get(), kCutAsPrintToPDFDoes));
+    ASSERT_TRUE(page);
+    ScopedFPDFBitmap before = RenderAtPageSize(page.get());
+    std::vector<FS_RECTF> areas = AreasOf(page.get(), L"SECRET");
+    ASSERT_EQ(1u, areas.size());
+    Mark(page.get(), areas);
+    // A red square on empty paper.
+    const FS_RECTF square = {200, 60, 240, 40};
+    const auto add = [&] {
+      FPDF_PAGEOBJECT rect = FPDFPageObj_CreateNewRect(200, 40, 40, 20);
+      ASSERT_TRUE(FPDFPageObj_SetFillColor(rect, 255, 0, 0, 255));
+      ASSERT_TRUE(FPDFPath_SetDrawMode(rect, FPDF_FILLMODE_ALTERNATE, false));
+      FPDFPage_InsertObject(page.get(), rect);
+      ASSERT_TRUE(FPDFPage_GenerateContent(page.get()));
+    };
+    const auto redact = [&] { ApplyRedactions(page.get()); };
+    Change(add_first ? std::function<void()>(add) : redact);
+    ASSERT_FALSE(HasFatalFailure());
+    Change(add_first ? std::function<void()>(redact) : add);
+    ASSERT_FALSE(HasFatalFailure());
+    SaveAndReopen();
+    ASSERT_FALSE(HasFatalFailure());
+    {
+      ScopedSavedPage saved = LoadScopedSavedPage(kCutAsPrintToPDFDoes);
+      ASSERT_TRUE(saved);
+      ScopedFPDFBitmap after = RenderAtPageSize(saved.get());
+      EXPECT_EQ(0xff0000u, PixelAt(after.get(), 220, 50));
+      areas.push_back(square);
+      std::string where;
+      EXPECT_EQ(0, CountChangedPixelsOutside(before.get(), after.get(), areas,
+                                             &where))
+          << where;
+    }
+    CloseSaved();
+  }
+}
+
+// Where a page's content is cut into streams makes no difference to a
+// reader, and so none to a rewrite. Every page of the rewrite cases is
+// written again - redacted, or unchanged where it shows no word to redact -
+// with its content as it is, cut into three streams, and with every operator
+// in a stream of its own: each cut copy draws what the file draws, before
+// the rewrite and after it.
+TEST_P(EPDFContentRewriteEmbedderTest,
+       WhereContentIsCutIntoStreamsChangesNothing) {
+  for (const char* name :
+       {"redact_rewrite_cases.pdf", "redact_special_colorspaces.pdf",
+        "edit_form_with_matrix.pdf", "redact_split_content_streams.pdf"}) {
+    const std::string path = PathService::GetTestFilePath(name);
+    std::vector<ScopedFPDFBitmap> uncut_before;
+    const std::vector<ScopedFPDFBitmap> uncut_after =
+        RewriteEveryPage(GetFileContents(path.c_str()), &uncut_before);
+    ASSERT_FALSE(HasFatalFailure());
+    ASSERT_FALSE(uncut_after.empty());
+    for (const Cut cut : {Cut::kIntoThree, Cut::kAfterEveryOperator}) {
+      std::vector<ScopedFPDFBitmap> cut_before;
+      const std::vector<ScopedFPDFBitmap> cut_after =
+          RewriteEveryPage(CutIntoStreams(name, cut), &cut_before);
+      ASSERT_FALSE(HasFatalFailure());
+      ASSERT_EQ(uncut_after.size(), cut_after.size());
+      for (size_t i = 0; i < cut_after.size(); ++i) {
+        SCOPED_TRACE(std::string(name) + " page " + std::to_string(i) +
+                     (cut == Cut::kIntoThree ? ", cut into three streams"
+                                             : ", cut after every operator"));
+        std::string where;
+        EXPECT_EQ(0, CountChangedPixelsOutside(uncut_before[i].get(),
+                                               cut_before[i].get(), {}, &where))
+            << "the cut copy draws another page: " << where;
+        EXPECT_EQ(0, CountChangedPixelsOutside(uncut_after[i].get(),
+                                               cut_after[i].get(), {}, &where))
+            << "the rewrite of the cut copy draws another page: " << where;
+      }
+    }
+  }
+}
+
+// The text left after a redaction starts a text object of its own, and each
+// character of it keeps its origin. Renders can't show this: PDFium draws
+// each glyph on a whole pixel, so text that drifts by less than half a pixel
+// renders as before - and a glyph lying on a pixel edge may be drawn a pixel
+// over when its origin moves by a millionth of a point, as float rounding
+// moves it.
+TEST_P(EPDFContentRewriteEmbedderTest, TextLeftAfterARedactionKeepsItsPlace) {
+  struct Case {
+    const char* name;
+    int index;
+    const wchar_t* word;
+  };
+  for (const Case& test :
+       {Case{"redact_split_content_streams.pdf", kCutAsPrintToPDFDoes, L"tail"},
+        Case{"redact_split_content_streams.pdf",
+             kCutInsideATransformWithoutAnInverse, L"SECRET"},
+        Case{"redact_rewrite_cases.pdf", kTextScalingRiseAndSpacing, L"and"}}) {
+    SCOPED_TRACE(std::string(test.name) + " page " +
+                 std::to_string(test.index));
+    ASSERT_TRUE(Open(test.name));
+    ScopedFPDFPage page(FPDF_LoadPage(doc_.get(), test.index));
+    ASSERT_TRUE(page);
+    const std::vector<FS_RECTF> areas = AreasOf(page.get(), test.word);
+    ASSERT_FALSE(areas.empty());
+    const std::vector<PlacedChar> before = CharsOutside(page.get(), areas);
+    ASSERT_FALSE(before.empty());
+    Mark(page.get(), areas);
+    ChangeAndSave([&] { ApplyRedactions(page.get()); });
+    ASSERT_FALSE(HasFatalFailure());
+    {
+      ScopedSavedPage saved = LoadScopedSavedPage(test.index);
+      ASSERT_TRUE(saved);
+      const std::vector<PlacedChar> after = CharsOutside(saved.get(), {});
+      ASSERT_EQ(before.size(), after.size());
+      for (size_t i = 0; i < before.size(); ++i) {
+        EXPECT_EQ(before[i].unicode, after[i].unicode) << i;
+        EXPECT_NEAR(before[i].x, after[i].x, 0.001) << i;
+        EXPECT_NEAR(before[i].y, after[i].y, 0.001) << i;
+      }
+    }
+    CloseSaved();
+  }
 }

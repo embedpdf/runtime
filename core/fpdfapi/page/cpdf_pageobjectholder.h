@@ -197,6 +197,12 @@ class CPDF_PageObjectHolder {
   // `stream` must be non-negative.
   CFX_Matrix GetCTMAtEndOfStream(int32_t stream);
 
+  // EmbedPDF(faithful-content-rewrite): for a rewrite of every content
+  // stream. The parser recorded the CTM each stream ended at, which the next
+  // one began with. Streams written again take nothing from each other, so
+  // every stream now begins and ends at the CTM the content begins with.
+  void ForgetStreamCTMs();
+
   AllRemovedResourcesMap& all_removed_resources_map() {
     return all_removed_resources_map_;
   }

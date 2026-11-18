@@ -441,6 +441,11 @@ CFX_Matrix CPDF_PageObjectHolder::GetCTMAtEndOfStream(int32_t stream) {
   return it != all_ctms_.end() ? it->second : all_ctms_.rbegin()->second;
 }
 
+// EmbedPDF(faithful-content-rewrite): see the header.
+void CPDF_PageObjectHolder::ForgetStreamCTMs() {
+  all_ctms_.clear();
+}
+
 void CPDF_PageObjectHolder::LoadTransparencyInfo() {
   RetainPtr<const CPDF_Dictionary> pGroup = dict_->GetDictFor("Group");
   if (!pGroup) {

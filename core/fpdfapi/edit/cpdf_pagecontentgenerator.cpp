@@ -639,6 +639,14 @@ CPDF_PageContentGenerator::GenerateModifiedStreams() {
     for (int32_t i = 0; i <= last_index; ++i) {
       all_dirty_streams.insert(i);
     }
+    // Every stream is written again from objects that carry their whole
+    // matrix, so no stream takes a CTM from the one before it or leaves one
+    // for the next: where the content was cut into streams stops mattering.
+    // Without this, each stream would undo the CTM the old stream began with
+    // and re-create the one it ended with, which fails where that CTM has no
+    // inverse, and upstream's `cm` for it below multiplies the wrong way
+    // round (see EPDFContentRewriteEmbedderTest.KeepsContentCutIntoStreams).
+    obj_holder_->ForgetStreamCTMs();
   }
   // --- end embedpdf
 
