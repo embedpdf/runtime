@@ -234,13 +234,21 @@ neither is secret: the `/Perms` filler bytes (encrypted under the file key) and 
 ### faithful-content-rewrite
 **Rule.** Regenerating a page's or form's content writes back what the parser read: colour spaces
 by their names, the matrix a form's content starts at, soft-mask matrices, Type3 glyphs, `TJ`
-arrays, a form XObject's own resource names.
+arrays, a form XObject's own resource names. A change to existing content writes every stream
+again, and each stands alone (`q ... Q`, no `cm` outside it): where the content was cut into
+streams makes no difference.
 **Why.** Redaction and editing rewrite content, and anything the writer drops shows up far from the
-edit (embedpdf/runtime#58, #59).
+edit (embedpdf/runtime#58, #59). Upstream writes only the streams that changed and gives each next
+stream its CTM with a `cm` whose matrix product is the wrong way round. On a page cut into streams
+inside `q ... cm ... Q`, as "Microsoft: Print To PDF" writes them, a redaction moved everything
+from the third stream on.
 **Where.** `CPDF_PageContentGenerator`, `CPDF_PageContentManager`, `CPDF_StreamContentParser`,
-`CPDF_ColorState`, `CPDF_Type3Font`.
-**Guarded by.** `epdf_content_rewrite_embeddertest.cpp`, `cpdf_contentnames_unittest.cpp`.
+`CPDF_ColorState`, `CPDF_Type3Font`, `CPDF_PageObjectHolder::ForgetStreamCTMs`.
+**Guarded by.** `epdf_content_rewrite_embeddertest.cpp` (`WhereContentIsCutIntoStreamsChangesNothing`
+runs every case page again with its content cut into streams), `cpdf_contentnames_unittest.cpp`.
 **When upstream touches this.** The content generator, and what the parser records about state.
+The fork never reaches upstream's `cm` between streams: a pass appends a stream or writes them all.
+If upstream corrects or moves it, a rewrite of every stream still forgets the stream CTMs first.
 
 ### redaction
 **Rule.** Redaction removes text, paths, images and marked content under its regions, and draws

@@ -1,0 +1,113 @@
+{{header}}
+{{object 1 0}} << /Type /Catalog /Pages 2 0 R >>
+endobj
+{{object 2 0}} << /Type /Pages /Count 2 /Kids [10 0 R 20 0 R] >>
+endobj
+{{object 3 0}} << /Type /Font /Subtype /Type1 /BaseFont /Courier >>
+endobj
+% Content cut into streams in the middle of q ... cm ... Q, so that a stream
+% ends at another CTM than it began with (see
+% EPDFContentRewriteEmbedderTest.KeepsContentCutIntoStreams).
+%
+% The text sits off whole pixels at a pixel per point. The text left after a
+% redaction starts a text object of its own, placed to within float rounding
+% of where it was, and PDFium draws a glyph that lies on a pixel edge on
+% either side of it.
+%
+% Page 0: the shape "Microsoft: Print To PDF" writes. One cm at the top of
+% the first stream flips and scales the whole page and is never undone; the
+% content is then cut into streams wherever a size limit falls, here in the
+% middle of a path inside q ... cm ... Q each time. Every stream after the
+% first so begins and ends at a different CTM.
+{{object 10 0}} << /Type /Page /Parent 2 0 R /MediaBox [0 0 300 200]
+  /Resources << /Font << /F1 3 0 R >> >>
+  /Contents [11 0 R 12 0 R 13 0 R 14 0 R] >>
+endobj
+{{object 11 0}} << {{streamlen}} >>
+stream
+.75 0 0 -.75 0 200 cm
+BT /F1 16 Tf 1 0 0 -1 21 41 Tm (keep SECRET keep) Tj ET
+q
+1 0 0 1 40 80 cm
+0 0 0 rg
+0 0 m
+60 0 l
+endstream
+endobj
+{{object 12 0}} << {{streamlen}} >>
+stream
+60 30 l
+0 30 l
+h
+f
+Q
+q
+1 0 0 1 150 120 cm
+0 .4 .8 rg
+0 0 m
+80 0 l
+endstream
+endobj
+{{object 13 0}} << {{streamlen}} >>
+stream
+80 40 l
+0 40 l
+h
+f
+Q
+q
+1 0 0 1 280 60 cm
+.8 .2 .2 rg
+0 0 m
+70 0 l
+endstream
+endobj
+{{object 14 0}} << {{streamlen}} >>
+stream
+70 50 l
+0 50 l
+h
+f
+Q
+BT /F1 14 Tf 1 0 0 -1 21 239 Tm (tail text STAYS) Tj ET
+endstream
+endobj
+% Page 1: a stream cut inside q ... cm ... Q where the cm cannot be inverted
+% (a strip of no height). Nothing after it can be drawn by undoing that CTM.
+{{object 20 0}} << /Type /Page /Parent 2 0 R /MediaBox [0 0 300 200]
+  /Resources << /Font << /F1 3 0 R >> >>
+  /Contents [21 0 R 22 0 R 23 0 R] >>
+endobj
+{{object 21 0}} << {{streamlen}} >>
+stream
+BT /F1 16 Tf 20.25 150.25 Td (keep SECRET keep) Tj ET
+q
+120 0 0 0 40 100 cm
+endstream
+endobj
+{{object 22 0}} << {{streamlen}} >>
+stream
+0 0 1 1 re
+f
+Q
+q
+1 0 0 1 60 40 cm
+0 .5 0 rg
+0 0 m
+80 0 l
+endstream
+endobj
+{{object 23 0}} << {{streamlen}} >>
+stream
+80 30 l
+0 30 l
+h
+f
+Q
+BT /F1 14 Tf 20.25 20.25 Td (tail text STAYS) Tj ET
+endstream
+endobj
+{{xref}}
+{{trailer}}
+{{startxref}}
+%%EOF
