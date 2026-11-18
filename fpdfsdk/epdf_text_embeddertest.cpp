@@ -5,7 +5,9 @@
 
 #include "public/epdf_text.h"
 
+#include <algorithm>
 #include <cstdint>
+#include <cstring>
 #include <string>
 #include <vector>
 
@@ -53,6 +55,53 @@ CFX_FloatRect BoundsFromQuad(const FS_QUADPOINTSF& quad) {
   bounds.UpdateRect({quad.x3, quad.y3});
   bounds.UpdateRect({quad.x4, quad.y4});
   return bounds;
+}
+
+// EPDFText_GetPageGeometry gives, for every character, what the calls that
+// take one character give, read in one piece and |piece| characters at a time.
+void ExpectPageGeometryMatchesTheCharCalls(FPDF_TEXTPAGE text_page, int piece) {
+  const int char_count = FPDFText_CountChars(text_page);
+  ASSERT_GT(char_count, 0);
+
+  std::vector<EPDF_PAGE_CHAR_GEOMETRY> records(static_cast<size_t>(char_count));
+  ASSERT_EQ(char_count,
+            EPDFText_GetPageGeometry(text_page, 0, char_count, records.data()));
+
+  FPDF_PAGEOBJECT run_object = nullptr;
+  uint32_t run = 0;
+  for (int i = 0; i < char_count; ++i) {
+    const EPDF_PAGE_CHAR_GEOMETRY& record = records[static_cast<size_t>(i)];
+
+    EPDF_CHAR_GEOMETRY geometry = {};
+    ASSERT_TRUE(EPDFText_GetCharGeometry(text_page, i, &geometry)) << i;
+    EXPECT_EQ(0, memcmp(&geometry, &record.geometry, sizeof(geometry))) << i;
+
+    FPDF_PAGEOBJECT object = FPDFText_GetTextObject(text_page, i);
+    if (i > 0 && object != run_object) {
+      ++run;
+    }
+    run_object = object;
+    EXPECT_EQ(run, record.object_run) << i;
+
+    EXPECT_EQ(static_cast<float>(FPDFText_GetFontSize(text_page, i)),
+              record.font_size)
+        << i;
+  }
+
+  // A piece's runs count from the page's first character, so the pieces put
+  // together are the page.
+  std::vector<EPDF_PAGE_CHAR_GEOMETRY> buffer(static_cast<size_t>(piece));
+  std::vector<EPDF_PAGE_CHAR_GEOMETRY> pieces;
+  for (int start = 0; start < char_count; start += piece) {
+    const int expected = std::min(piece, char_count - start);
+    ASSERT_EQ(expected,
+              EPDFText_GetPageGeometry(text_page, start, piece, buffer.data()))
+        << start;
+    pieces.insert(pieces.end(), buffer.begin(), buffer.begin() + expected);
+  }
+  ASSERT_EQ(records.size(), pieces.size());
+  EXPECT_EQ(0, memcmp(records.data(), pieces.data(),
+                      records.size() * sizeof(EPDF_PAGE_CHAR_GEOMETRY)));
 }
 
 }  // namespace
@@ -427,6 +476,175 @@ TEST_F(EPDFTextEmbedderTest, GetVerticalCharGeometry) {
   EXPECT_FLOAT_EQ(legacy_loose.right, geometry.loose_box.right);
   EXPECT_FLOAT_EQ(legacy_loose.bottom, geometry.loose_box.bottom);
   EXPECT_FLOAT_EQ(legacy_loose.top, geometry.loose_box.top);
+}
+
+// Upright, turned, sheared, mirrored and vertical text, a font with its own
+// matrix, a Type3 font whose every glyph is a text object, and a character
+// that prints nothing.
+TEST_F(EPDFTextEmbedderTest, GetPageGeometryMatchesTheCharCalls) {
+  static constexpr const char* kDocuments[] = {
+      "hello_world.pdf",
+      "rotated_text.pdf",
+      "sheared_text.pdf",
+      "mirrored_text.pdf",
+      "embedpdf_vertical_text.pdf",
+      "font_matrix.pdf",
+      "embedpdf_chrome_type3_text.pdf",
+      "bug_1139.pdf",
+  };
+  for (const char* document : kDocuments) {
+    SCOPED_TRACE(document);
+    ASSERT_TRUE(OpenDocument(document));
+    {
+      ScopedPage page = LoadScopedPage(0);
+      ASSERT_TRUE(page);
+      ScopedFPDFTextPage text_page(FPDFText_LoadPage(page.get()));
+      ASSERT_TRUE(text_page);
+      ExpectPageGeometryMatchesTheCharCalls(text_page.get(), 7);
+    }
+    CloseDocument();
+  }
+}
+
+// /ActualText characters are synthesized: they stand in for the glyphs drawn,
+// on the page and through a form.
+TEST_F(EPDFTextEmbedderTest, GetPageGeometryMatchesTheCharCallsOnActualText) {
+  static constexpr char kSpan[] =
+      "/Span << /ActualText <FEFF05E905DC05D505DD> >> BDC (abcd) Tj EMC";
+  const std::string pdf = MakePdf({
+      "<< /Type /Catalog /Pages 2 0 R >>",
+      "<< /Type /Pages /Kids [3 0 R] /Count 1 >>",
+      "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 400 400] /Contents 4 0 R "
+      "/Resources << /Font << /F1 5 0 R >> /XObject << /Fm 6 0 R >> >> >>",
+      Stream(std::string("BT /F1 24 Tf 40 300 Td ") + kSpan +
+             " ET q 1 0 0 1 20 50 cm /Fm Do Q"),
+      "<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>",
+      Stream("/Type /XObject /Subtype /Form /BBox [0 0 200 100] "
+             "/Matrix [2 0 0 2 0 0] /Resources << /Font << /F1 5 0 R >> >>",
+             std::string("BT /F1 12 Tf 10 25 Td ") + kSpan + " ET"),
+  });
+  embedpdf_test::ScopedTestDocument doc(
+      embedpdf_test::LoadMemDocumentForTest(pdf.data(), pdf.size(), nullptr));
+  ASSERT_TRUE(doc);
+  ScopedFPDFPage page(FPDF_LoadPage(doc.get(), 0));
+  ASSERT_TRUE(page);
+  ScopedFPDFTextPage text_page(FPDFText_LoadPage(page.get()));
+  ASSERT_TRUE(text_page);
+
+  EPDF_PAGE_CHAR_GEOMETRY first = {};
+  ASSERT_EQ(1, EPDFText_GetPageGeometry(text_page.get(), 0, 1, &first));
+  EXPECT_TRUE(first.geometry.flags & EPDF_CHARGEO_SYNTHESIZED);
+
+  ExpectPageGeometryMatchesTheCharCalls(text_page.get(), 3);
+}
+
+// hello_world.pdf draws "Hello, world!" at 12 points and "Goodbye, world!" at
+// 16, each as one text object. The line break between them is two generated
+// characters, which have no text object: three runs.
+TEST_F(EPDFTextEmbedderTest, GetPageGeometryRunsFollowTheTextObjects) {
+  ASSERT_TRUE(OpenDocument("hello_world.pdf"));
+  ScopedPage page = LoadScopedPage(0);
+  ASSERT_TRUE(page);
+  ScopedFPDFTextPage text_page(FPDFText_LoadPage(page.get()));
+  ASSERT_TRUE(text_page);
+
+  static constexpr int kHello = std::char_traits<char>::length("Hello, world!");
+  static constexpr int kBreak = std::char_traits<char>::length("\r\n");
+  static constexpr int kGoodbye =
+      std::char_traits<char>::length("Goodbye, world!");
+  const int char_count = FPDFText_CountChars(text_page.get());
+  ASSERT_EQ(kHello + kBreak + kGoodbye, char_count);
+
+  std::vector<EPDF_PAGE_CHAR_GEOMETRY> records(static_cast<size_t>(char_count));
+  ASSERT_EQ(char_count, EPDFText_GetPageGeometry(text_page.get(), 0, char_count,
+                                                 records.data()));
+  for (int i = 0; i < char_count; ++i) {
+    const uint32_t run = i < kHello ? 0u : i < kHello + kBreak ? 1u : 2u;
+    EXPECT_EQ(run, records[static_cast<size_t>(i)].object_run) << i;
+  }
+  EXPECT_FLOAT_EQ(12.0f, records[0].font_size);
+  EXPECT_FLOAT_EQ(16.0f,
+                  records[static_cast<size_t>(kHello + kBreak)].font_size);
+
+  // From the second character of the line break: its run is still the second
+  // of the page, and "Goodbye" keeps its own font size.
+  EPDF_PAGE_CHAR_GEOMETRY tail[3] = {};
+  ASSERT_EQ(3, EPDFText_GetPageGeometry(text_page.get(), kHello + 1, 3, tail));
+  EXPECT_EQ(1u, tail[0].object_run);
+  EXPECT_EQ(2u, tail[1].object_run);
+  EXPECT_EQ(2u, tail[2].object_run);
+  EXPECT_FLOAT_EQ(16.0f, tail[1].font_size);
+}
+
+// A range gives the characters it names, stops at the last character, and
+// writes nothing when it names none.
+TEST_F(EPDFTextEmbedderTest, GetPageGeometryReadsARange) {
+  ASSERT_TRUE(OpenDocument("hello_world.pdf"));
+  ScopedPage page = LoadScopedPage(0);
+  ASSERT_TRUE(page);
+  ScopedFPDFTextPage text_page(FPDFText_LoadPage(page.get()));
+  ASSERT_TRUE(text_page);
+
+  const int char_count = FPDFText_CountChars(text_page.get());
+  ASSERT_GT(char_count, 8);
+
+  static constexpr uint32_t kUntouched = 0xffffffffu;
+  EPDF_PAGE_CHAR_GEOMETRY untouched = {};
+  untouched.object_run = kUntouched;
+  std::vector<EPDF_PAGE_CHAR_GEOMETRY> records(5, untouched);
+
+  // Three characters from the third on.
+  ASSERT_EQ(3, EPDFText_GetPageGeometry(text_page.get(), 2, 3, records.data()));
+  for (int i = 0; i < 3; ++i) {
+    EPDF_CHAR_GEOMETRY geometry = {};
+    ASSERT_TRUE(EPDFText_GetCharGeometry(text_page.get(), 2 + i, &geometry));
+    EXPECT_EQ(0, memcmp(&geometry, &records[static_cast<size_t>(i)].geometry,
+                        sizeof(geometry)))
+        << i;
+  }
+  EXPECT_EQ(kUntouched, records[3].object_run);
+
+  // Five asked for where two are left.
+  records.assign(5, untouched);
+  ASSERT_EQ(2, EPDFText_GetPageGeometry(text_page.get(), char_count - 2, 5,
+                                        records.data()));
+  EPDF_CHAR_GEOMETRY last = {};
+  ASSERT_TRUE(EPDFText_GetCharGeometry(text_page.get(), char_count - 1, &last));
+  EXPECT_EQ(0, memcmp(&last, &records[1].geometry, sizeof(last)));
+  EXPECT_EQ(kUntouched, records[2].object_run);
+
+  // No character named: nothing is written.
+  records.assign(5, untouched);
+  EXPECT_EQ(0, EPDFText_GetPageGeometry(text_page.get(), char_count, 5,
+                                        records.data()));
+  EXPECT_EQ(0, EPDFText_GetPageGeometry(text_page.get(), char_count + 1, 5,
+                                        records.data()));
+  EXPECT_EQ(0,
+            EPDFText_GetPageGeometry(text_page.get(), -1, 5, records.data()));
+  EXPECT_EQ(0, EPDFText_GetPageGeometry(text_page.get(), 0, 0, records.data()));
+  EXPECT_EQ(0,
+            EPDFText_GetPageGeometry(text_page.get(), 0, -1, records.data()));
+  EXPECT_EQ(kUntouched, records[0].object_run);
+  EXPECT_EQ(0, EPDFText_GetPageGeometry(text_page.get(), 0, 5, nullptr));
+}
+
+TEST_F(EPDFTextEmbedderTest, GetPageGeometryOfAPageWithoutText) {
+  ASSERT_TRUE(OpenDocument("font_size_zero.pdf"));
+  ScopedPage page = LoadScopedPage(0);
+  ASSERT_TRUE(page);
+  ScopedFPDFTextPage text_page(FPDFText_LoadPage(page.get()));
+  ASSERT_TRUE(text_page);
+
+  EPDF_PAGE_CHAR_GEOMETRY record = {};
+  record.object_run = 0xffffffffu;
+  EXPECT_EQ(0, EPDFText_GetPageGeometry(text_page.get(), 0, 1, &record));
+  EXPECT_EQ(0xffffffffu, record.object_run);
+}
+
+TEST_F(EPDFTextEmbedderTest, GetPageGeometryInvalidArgs) {
+  EPDF_PAGE_CHAR_GEOMETRY record = {};
+  EXPECT_EQ(-1, EPDFText_GetPageGeometry(nullptr, 0, 0, nullptr));
+  EXPECT_EQ(-1, EPDFText_GetPageGeometry(nullptr, 0, 1, &record));
 }
 
 TEST_F(EPDFTextEmbedderTest, ReadPurityRenderType3Font) {

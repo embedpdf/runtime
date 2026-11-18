@@ -51,6 +51,38 @@ EPDFText_GetCharGeometry(FPDF_TEXTPAGE text_page,
                          EPDF_CHAR_GEOMETRY* geometry);
 
 // Experimental EmbedPDF Extension API.
+// One character of EPDFText_GetPageGeometry.
+//   geometry    what EPDFText_GetCharGeometry gives for the character.
+//   object_run  the run of consecutive characters with one text object that
+//               the character is in, counted from the page's first character:
+//               0 there, and one more each time FPDFText_GetTextObject
+//               changes from a character to the next. A generated character
+//               has no text object, so generated characters make runs of
+//               their own.
+//   font_size   what FPDFText_GetFontSize gives for the character.
+typedef struct EPDF_PAGE_CHAR_GEOMETRY_ {
+  EPDF_CHAR_GEOMETRY geometry;
+  uint32_t object_run;
+  float font_size;
+} EPDF_PAGE_CHAR_GEOMETRY;
+
+// Experimental EmbedPDF Extension API.
+// The geometry of |count| characters of a text page from |start_index| on, in
+// one call and in character order: for each character, what
+// EPDFText_GetCharGeometry, FPDFText_GetTextObject and FPDFText_GetFontSize
+// answer one character at a time. It carries no text.
+//
+// |buffer| must hold |count| entries. Returns the number of characters
+// written: fewer than |count| when the page ends first, and 0 when
+// |start_index| isn't a character of the page, |count| isn't positive or
+// |buffer| is null. Returns -1 for an invalid |text_page|.
+FPDF_EXPORT int FPDF_CALLCONV
+EPDFText_GetPageGeometry(FPDF_TEXTPAGE text_page,
+                         int start_index,
+                         int count,
+                         EPDF_PAGE_CHAR_GEOMETRY* buffer);
+
+// Experimental EmbedPDF Extension API.
 // One anchor of the character->text mapping emitted by
 // EPDFText_GetCharToTextMap: from |char_index| onward (until the next
 // anchor) character boundary c maps to text offset

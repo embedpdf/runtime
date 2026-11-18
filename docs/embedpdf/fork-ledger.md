@@ -351,11 +351,12 @@ accept it in the report.
 ## Text
 
 ### text-geometry
-**Rule.** Text pages expose each character's geometry (loose and tight boxes, quads, matrix), and
-text markup reads oriented quads.
-**Why.** Selection and markup on rotated and skewed text.
-**Where.** `CPDF_TextPage`, `fpdf_text.cpp`, `EPDFText_GetCharGeometry`, quad reading in
-`cpdf_annot.cpp`.
+**Rule.** Text pages expose each character's geometry (loose and tight boxes, quads, matrix), one
+character at a time or a range of characters in one call, and text markup reads oriented quads.
+**Why.** Selection and markup on rotated and skewed text. A call per character costs more than the
+geometry itself once it crosses into JavaScript, so a range of characters also comes in one call.
+**Where.** `CPDF_TextPage`, `fpdf_text.cpp`, `EPDFText_GetCharGeometry`,
+`EPDFText_GetPageGeometry`, quad reading in `cpdf_annot.cpp`.
 **Guarded by.** `epdf_text_bounds_embeddertest.cpp`, the text embedder tests.
 **When upstream touches this.** `CPDF_TextPage` character processing.
 
