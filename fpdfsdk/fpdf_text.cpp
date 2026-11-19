@@ -47,6 +47,11 @@ static_assert(offsetof(EPDF_CHAR_MAP_ANCHOR, text_offset) == 4);
 static_assert(offsetof(EPDF_CHAR_GEOMETRY, matrix) == 96);
 static_assert(offsetof(EPDF_CHAR_GEOMETRY, flags) == 120);
 
+static_assert(sizeof(EPDF_PAGE_CHAR_GEOMETRY) == 132);
+static_assert(offsetof(EPDF_PAGE_CHAR_GEOMETRY, geometry) == 0);
+static_assert(offsetof(EPDF_PAGE_CHAR_GEOMETRY, object_run) == 124);
+static_assert(offsetof(EPDF_PAGE_CHAR_GEOMETRY, font_size) == 128);
+
 constexpr float kUprightTolerance = 1e-4f;
 constexpr float kSingularTolerance = 1e-6f;
 
@@ -59,7 +64,8 @@ CPDF_TextPage* GetTextPageForValidIndex(FPDF_TEXTPAGE text_page, int index) {
   return static_cast<size_t>(index) < textpage->size() ? textpage : nullptr;
 }
 
-// EmbedPDF(epdf-api): helpers for EPDFText_GetCharGeometry.
+// EmbedPDF(epdf-api): helpers for EPDFText_GetCharGeometry and
+// EPDFText_GetPageGeometry.
 bool HasUsableBasis(const CFX_Matrix& matrix) {
   if (!std::isfinite(matrix.a) || !std::isfinite(matrix.b) ||
       !std::isfinite(matrix.c) || !std::isfinite(matrix.d)) {
@@ -109,6 +115,60 @@ CFX_FloatRect BoundsOfPoints(const std::array<CFX_PointF, 4>& points) {
 FS_QUADPOINTSF QuadFromPoints(const std::array<CFX_PointF, 4>& points) {
   return {points[0].x, points[0].y, points[1].x, points[1].y,
           points[2].x, points[2].y, points[3].x, points[3].y};
+}
+
+// One character's geometry. |index| is a character of |textpage|.
+EPDF_CHAR_GEOMETRY CharGeometryOf(const CPDF_TextPage& textpage, int index) {
+  const CPDF_TextPage::CharInfo& charinfo = textpage.GetCharInfo(index);
+  EPDF_CHAR_GEOMETRY result = {};
+  result.matrix = FSMatrixFromCFXMatrix(charinfo.matrix());
+  result.loose_box = FSRectFFromCFXFloatRect(charinfo.loose_char_box());
+  result.tight_box = FSRectFFromCFXFloatRect(charinfo.char_box());
+
+  if (!charinfo.char_box().IsEmpty()) {
+    result.flags |= EPDF_CHARGEO_HAS_TIGHT_BOX;
+  }
+  if (charinfo.unicode() == L' ') {
+    result.flags |= EPDF_CHARGEO_SPACE;
+  }
+  if (charinfo.char_type() == CPDF_TextPage::CharType::kGenerated ||
+      charinfo.char_type() == CPDF_TextPage::CharType::kPiece ||
+      charinfo.char_type() == CPDF_TextPage::CharType::kActualText) {
+    result.flags |= EPDF_CHARGEO_SYNTHESIZED;
+  }
+  if (IsUpright(charinfo.matrix())) {
+    result.flags |= EPDF_CHARGEO_UPRIGHT;
+  }
+
+  std::optional<CPDF_TextPage::CharLocalGeometry> local_geometry =
+      textpage.GetCharLocalGeometry(index);
+  if (local_geometry && HasUsableBasis(charinfo.matrix())) {
+    const std::array<CFX_PointF, 4> loose_points =
+        TransformLocalBox(local_geometry->loose_box, charinfo.matrix());
+    result.loose_quad = QuadFromPoints(loose_points);
+    result.loose_box = FSRectFFromCFXFloatRect(BoundsOfPoints(loose_points));
+    result.flags |= EPDF_CHARGEO_HAS_LOOSE_QUAD;
+
+    if (local_geometry->tight_box) {
+      const std::array<CFX_PointF, 4> tight_points =
+          TransformLocalBox(*local_geometry->tight_box, charinfo.matrix());
+      result.tight_quad = QuadFromPoints(tight_points);
+      result.tight_box = FSRectFFromCFXFloatRect(BoundsOfPoints(tight_points));
+      result.flags |= EPDF_CHARGEO_HAS_TIGHT_BOX | EPDF_CHARGEO_HAS_TIGHT_QUAD;
+    }
+  }
+
+  const CFX_FloatRect result_loose = CFXFloatRectFromFSRectF(result.loose_box);
+  if (result_loose.IsEmpty()) {
+    result.flags |= EPDF_CHARGEO_EMPTY;
+    result.flags &= ~(EPDF_CHARGEO_HAS_LOOSE_QUAD |
+                      EPDF_CHARGEO_HAS_TIGHT_QUAD | EPDF_CHARGEO_HAS_TIGHT_BOX);
+    result.loose_quad = {};
+    result.tight_quad = {};
+    result.tight_box = {};
+  }
+
+  return result;
 }
 
 }  // namespace
@@ -363,8 +423,8 @@ FPDFText_GetLooseCharBox(FPDF_TEXTPAGE text_page, int index, FS_RECTF* rect) {
   return true;
 }
 
-// EmbedPDF(epdf-api): EPDFText_GetCharGeometry, EPDFText_GetTextFull and
-// EPDFText_GetCharToTextMap.
+// EmbedPDF(epdf-api): EPDFText_GetCharGeometry, EPDFText_GetPageGeometry,
+// EPDFText_GetTextFull and EPDFText_GetCharToTextMap.
 FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV
 EPDFText_GetCharGeometry(FPDF_TEXTPAGE text_page,
                          int index,
@@ -377,57 +437,55 @@ EPDFText_GetCharGeometry(FPDF_TEXTPAGE text_page,
     return false;
   }
 
-  const CPDF_TextPage::CharInfo& charinfo = textpage->GetCharInfo(index);
-  EPDF_CHAR_GEOMETRY result = {};
-  result.matrix = FSMatrixFromCFXMatrix(charinfo.matrix());
-  result.loose_box = FSRectFFromCFXFloatRect(charinfo.loose_char_box());
-  result.tight_box = FSRectFFromCFXFloatRect(charinfo.char_box());
+  *geometry = CharGeometryOf(*textpage, index);
+  return true;
+}
 
-  if (!charinfo.char_box().IsEmpty()) {
-    result.flags |= EPDF_CHARGEO_HAS_TIGHT_BOX;
+FPDF_EXPORT int FPDF_CALLCONV
+EPDFText_GetPageGeometry(FPDF_TEXTPAGE text_page,
+                         int start_index,
+                         int count,
+                         EPDF_PAGE_CHAR_GEOMETRY* buffer) {
+  CPDF_TextPage* textpage = CPDFTextPageFromFPDFTextPage(text_page);
+  if (!textpage) {
+    return -1;
   }
-  if (charinfo.unicode() == L' ') {
-    result.flags |= EPDF_CHARGEO_SPACE;
+  const int char_count = textpage->CountChars();
+  if (!buffer || count <= 0 || start_index < 0 || start_index >= char_count) {
+    return 0;
   }
-  if (charinfo.char_type() == CPDF_TextPage::CharType::kGenerated ||
-      charinfo.char_type() == CPDF_TextPage::CharType::kPiece ||
-      charinfo.char_type() == CPDF_TextPage::CharType::kActualText) {
-    result.flags |= EPDF_CHARGEO_SYNTHESIZED;
-  }
-  if (IsUpright(charinfo.matrix())) {
-    result.flags |= EPDF_CHARGEO_UPRIGHT;
-  }
+  const int written = std::min(count, char_count - start_index);
+  // SAFETY: required from caller. `buffer` must hold `count` entries, and
+  // `written` is at most `count`.
+  pdfium::span<EPDF_PAGE_CHAR_GEOMETRY> out =
+      UNSAFE_BUFFERS(pdfium::span(buffer, static_cast<size_t>(written)));
 
-  std::optional<CPDF_TextPage::CharLocalGeometry> local_geometry =
-      textpage->GetCharLocalGeometry(index);
-  if (local_geometry && HasUsableBasis(charinfo.matrix())) {
-    const std::array<CFX_PointF, 4> loose_points =
-        TransformLocalBox(local_geometry->loose_box, charinfo.matrix());
-    result.loose_quad = QuadFromPoints(loose_points);
-    result.loose_box = FSRectFFromCFXFloatRect(BoundsOfPoints(loose_points));
-    result.flags |= EPDF_CHARGEO_HAS_LOOSE_QUAD;
-
-    if (local_geometry->tight_box) {
-      const std::array<CFX_PointF, 4> tight_points =
-          TransformLocalBox(*local_geometry->tight_box, charinfo.matrix());
-      result.tight_quad = QuadFromPoints(tight_points);
-      result.tight_box = FSRectFFromCFXFloatRect(BoundsOfPoints(tight_points));
-      result.flags |= EPDF_CHARGEO_HAS_TIGHT_BOX | EPDF_CHARGEO_HAS_TIGHT_QUAD;
+  // A run's characters share a text object, and so a font size. Runs count
+  // from the page's first character, whatever the range read.
+  const CPDF_TextObject* run_object = textpage->GetCharInfo(0).text_object();
+  uint32_t run = 0;
+  for (int i = 1; i <= start_index; ++i) {
+    const CPDF_TextObject* object =
+        textpage->GetCharInfo(static_cast<size_t>(i)).text_object();
+    if (object != run_object) {
+      ++run;
+      run_object = object;
     }
   }
-
-  const CFX_FloatRect result_loose = CFXFloatRectFromFSRectF(result.loose_box);
-  if (result_loose.IsEmpty()) {
-    result.flags |= EPDF_CHARGEO_EMPTY;
-    result.flags &= ~(EPDF_CHARGEO_HAS_LOOSE_QUAD |
-                      EPDF_CHARGEO_HAS_TIGHT_QUAD | EPDF_CHARGEO_HAS_TIGHT_BOX);
-    result.loose_quad = {};
-    result.tight_quad = {};
-    result.tight_box = {};
+  float font_size = textpage->GetCharFontSize(static_cast<size_t>(start_index));
+  for (int i = 0; i < written; ++i) {
+    const int index = start_index + i;
+    const CPDF_TextObject* object =
+        textpage->GetCharInfo(static_cast<size_t>(index)).text_object();
+    if (object != run_object) {
+      ++run;
+      run_object = object;
+      font_size = textpage->GetCharFontSize(static_cast<size_t>(index));
+    }
+    out[static_cast<size_t>(i)] = {CharGeometryOf(*textpage, index), run,
+                                   font_size};
   }
-
-  *geometry = result;
-  return true;
+  return written;
 }
 
 FPDF_EXPORT int FPDF_CALLCONV EPDFText_GetTextFull(FPDF_TEXTPAGE text_page,
