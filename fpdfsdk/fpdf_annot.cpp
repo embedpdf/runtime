@@ -1341,8 +1341,10 @@ FPDFAnnot_GetLinkedAnnot(FPDF_ANNOTATION annot, FPDF_BYTESTRING key) {
     return nullptr;
   }
 
-  auto pLinkedAnnot = std::make_unique<CPDF_AnnotContext>(
-      std::move(pLinkedDict), pAnnot->GetPage());
+  // EmbedPDF(epdf-api): on |annot|'s page, sharing that page when |annot| owns
+  // it (a *Raw handle), so either handle can be closed first.
+  std::unique_ptr<CPDF_AnnotContext> pLinkedAnnot =
+      pAnnot->CreateLinked(std::move(pLinkedDict));
 
   // Caller takes ownership.
   return FPDFAnnotationFromCPDFAnnotContext(pLinkedAnnot.release());

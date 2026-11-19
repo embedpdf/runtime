@@ -176,7 +176,11 @@ CPDFSDK_Widget* GetWidget(FPDF_FORMHANDLE handle, FPDF_ANNOTATION annot) {
     return nullptr;
   }
   auto* annot_context = CPDFAnnotContextFromFPDFAnnotation(annot);
-  if (!annot_context) {
+  // EmbedPDF(epdf-api): a handle that owns its page (a *Raw one) is on no page
+  // the form environment shows. Its view was never valid, so this failed
+  // below already, but only after a view was made for a page that the view
+  // then outlived.
+  if (!annot_context || annot_context->OwnsPage()) {
     return nullptr;
   }
   auto* page_view =
@@ -750,7 +754,8 @@ FORM_SetFocusedAnnot(FPDF_FORMHANDLE handle, FPDF_ANNOTATION annot) {
   }
 
   CPDF_AnnotContext* annot_context = CPDFAnnotContextFromFPDFAnnotation(annot);
-  if (!annot_context) {
+  // EmbedPDF(epdf-api): see GetWidget().
+  if (!annot_context || annot_context->OwnsPage()) {
     return false;
   }
 

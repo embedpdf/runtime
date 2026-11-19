@@ -314,20 +314,6 @@ static_assert(static_cast<int>(CPDF_Annot::ReplyType::kGroup) ==
                   FPDF_ANNOT_RT_GROUP,
               "ReplyType::kGroup mismatch");
 
-class RawAnnotContext final : public CPDF_AnnotContext {
- public:
-  // Takes ownership of |unparsed_page| by value (RetainPtr).
-  RawAnnotContext(RetainPtr<CPDF_Dictionary> dict,
-                  RetainPtr<CPDF_Page> unparsed_page,
-                  int annot_index)
-      : CPDF_AnnotContext(dict, unparsed_page.Get(), annot_index),
-        owned_page_(std::move(unparsed_page)) {}
-
- private:
-  // Keeps the page alive as long as the annot context lives.
-  const RetainPtr<CPDF_Page> owned_page_;
-};
-
 // Checks if an annotation subtype can have a /Name entry.
 bool IsNameSubtype(FPDF_ANNOTATION_SUBTYPE subtype) {
   return subtype == FPDF_ANNOT_TEXT || subtype == FPDF_ANNOT_FILEATTACHMENT ||
@@ -2821,16 +2807,13 @@ EPDFPage_GetAnnotRaw(FPDF_DOCUMENT doc, int page_index, int index) {
     return nullptr;
   }
 
-  // Use the standard MakeRetain to create the page object.
-  // This works because of the CONSTRUCT_VIA_MAKE_RETAIN macro in cpdf_page.h.
+  // Built from the dictionary alone: its content is never parsed. The handle
+  // keeps the page, and closing the handle frees it.
   auto page = pdfium::MakeRetain<CPDF_Page>(pdf, page_dict);
-
-  // Create the context, which now takes the RetainPtr directly.
-  auto ctx = std::make_unique<RawAnnotContext>(std::move(annot_dict),
-                                               std::move(page), index);
-
-  // The lifetime is now perfectly managed by smart pointers.
-  return FPDFAnnotationFromCPDFAnnotContext(ctx.release());
+  return FPDFAnnotationFromCPDFAnnotContext(
+      CPDF_AnnotContext::CreateOwningPage(std::move(annot_dict),
+                                          std::move(page), index)
+          .release());
 }
 
 FPDF_EXPORT FPDF_ANNOTATION FPDF_CALLCONV
@@ -2855,7 +2838,8 @@ EPDFPage_CreateAnnotRaw(FPDF_DOCUMENT doc,
   if (!CPDF_Document::IsPageTreeLeaf(page_dict.Get())) {
     return nullptr;
   }
-  // Built from the dictionary alone: its content is never parsed.
+  // Built from the dictionary alone: its content is never parsed. The handle
+  // keeps the page, and closing the handle frees it.
   auto page = pdfium::MakeRetain<CPDF_Page>(pdf, page_dict);
 
   RetainPtr<CPDF_Dictionary> dict =
@@ -2876,9 +2860,10 @@ EPDFPage_CreateAnnotRaw(FPDF_DOCUMENT doc,
   annots->AppendNew<CPDF_Reference>(pdf, dict->GetObjNum());
   const int index = fxcrt::CollectionSize<int>(*annots) - 1;
 
-  auto ctx =
-      std::make_unique<RawAnnotContext>(std::move(dict), std::move(page), index);
-  return FPDFAnnotationFromCPDFAnnotContext(ctx.release());
+  return FPDFAnnotationFromCPDFAnnotContext(
+      CPDF_AnnotContext::CreateOwningPage(std::move(dict), std::move(page),
+                                          index)
+          .release());
 }
 
 FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV EPDFPage_RemoveAnnotRaw(FPDF_DOCUMENT doc,

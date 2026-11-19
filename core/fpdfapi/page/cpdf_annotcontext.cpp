@@ -70,6 +70,27 @@ CPDF_AnnotContext::CPDF_AnnotContext(RetainPtr<CPDF_Dictionary> pAnnotDict,
 
 CPDF_AnnotContext::~CPDF_AnnotContext() = default;
 
+// EmbedPDF(epdf-api): see the header.
+// static
+std::unique_ptr<CPDF_AnnotContext> CPDF_AnnotContext::CreateOwningPage(
+    RetainPtr<CPDF_Dictionary> annot_dict,
+    RetainPtr<IPDF_Page> page,
+    int annot_index) {
+  auto context = std::make_unique<CPDF_AnnotContext>(std::move(annot_dict),
+                                                     page.Get(), annot_index);
+  context->owned_page_ = std::move(page);
+  return context;
+}
+
+// EmbedPDF(epdf-api): see the header.
+std::unique_ptr<CPDF_AnnotContext> CPDF_AnnotContext::CreateLinked(
+    RetainPtr<CPDF_Dictionary> linked_dict) const {
+  auto linked =
+      std::make_unique<CPDF_AnnotContext>(std::move(linked_dict), GetPage());
+  linked->owned_page_ = owned_page_;
+  return linked;
+}
+
 void CPDF_AnnotContext::SetForm(RetainPtr<CPDF_Stream> pStream) {
   CHECK(pStream);
   // EmbedPDF(view-scope, reads-dont-write): parse the appearance through the

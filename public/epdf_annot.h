@@ -859,13 +859,19 @@ FPDF_EXPORT int FPDF_CALLCONV EPDFPage_GetAnnotCountRaw(FPDF_DOCUMENT doc,
                                                         int page_index);
 
 // Experimental EmbedPDF Extension API.
-// Get the annotation by index.
+// Open the annotation at |index| in a page's /Annots, without loading or
+// parsing the page.
 //
-//   doc    - handle to a document.
+//   doc        - handle to a document.
 //   page_index - the index of the page.
-//   index    - the index of the annotation.
+//   index      - the index of the annotation.
 //
-// Returns the annotation.
+// Returns a handle to the annotation, which the caller closes with
+// FPDFPage_CloseAnnot(), or NULL on error. There is no page to close: the
+// handle keeps what it needs of the page, and closing it frees that. A
+// handle FPDFAnnot_GetLinkedAnnot() returns for it may be closed before or
+// after it. The handle is on no loaded page, so FORM_SetFocusedAnnot(),
+// FORM_GetTextDirection() and FORM_SetTextDirection() fail for it.
 FPDF_EXPORT FPDF_ANNOTATION FPDF_CALLCONV
 EPDFPage_GetAnnotRaw(FPDF_DOCUMENT doc, int page_index, int index);
 
@@ -918,7 +924,7 @@ EPDFPage_GetAnnotIndexByObjectNumberRaw(FPDF_DOCUMENT doc,
 //
 // Returns a handle to the new annotation, which the caller closes with
 // FPDFPage_CloseAnnot(), or NULL on error, including a number that isn't
-// free.
+// free. The handle is like the one EPDFPage_GetAnnotRaw() returns.
 FPDF_EXPORT FPDF_ANNOTATION FPDF_CALLCONV
 EPDFPage_CreateAnnotRaw(FPDF_DOCUMENT doc,
                         int page_index,
