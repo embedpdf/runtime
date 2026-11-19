@@ -486,10 +486,12 @@ taking upstream's side without putting `EPDF_TLS` back, on the variable renamed 
 
 ### per-thread-init
 **Rule.** Library start-up runs once per thread. A process-wide value it writes must be
-thread-local, or identical on every thread and on the allowlist.
-**Why.** `EPDF_InitThread` calls `FPDF_InitLibrary` on every worker thread.
+thread-local, or identical on every thread and on the allowlist. `EPDF_InitThread` and
+`EPDF_ShutdownThread` are counted per thread: the last `EPDF_ShutdownThread` tears PDFium down.
+**Why.** `EPDF_InitThread` calls `FPDF_InitLibrary` on every worker thread. Two runtimes on one
+thread (two engines in a Node thread) share its PDFium, and each calls the pair.
 **Where.** `fpdf_view.cpp` (`FPDF_InitLibrary`), `epdf_threading.cpp`.
-**Guarded by.** The thread soak.
+**Guarded by.** The thread soak; `EPDFViewEmbedderTest.ThreadLifecycleIsCounted`.
 **When upstream touches this.** Anything new in `FPDF_InitLibraryWithConfig` or
 `FPDF_DestroyLibrary`.
 

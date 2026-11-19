@@ -24,11 +24,16 @@ extern "C" {
 //          PDFium state, so every thread that uses PDFium MUST call
 //          EPDF_InitThread before creating any handle and EPDF_ShutdownThread
 //          after closing every handle it created. Handles must never cross
-//          threads. When per-thread globals are disabled, these are exact
-//          aliases of FPDF_InitLibrary / FPDF_DestroyLibrary and are safe to
-//          call once on a single thread. EPDF_ShutdownThread is lifecycle-
-//          strict: only legal after all handles on the calling thread are
-//          closed.
+//          threads. When per-thread globals are disabled, they start and tear
+//          down the process's one PDFium, as FPDF_InitLibrary and
+//          FPDF_DestroyLibrary do.
+//          The calls are counted per thread. Callers that share a thread
+//          (two runtimes loaded over the same native library) each call
+//          EPDF_InitThread once and EPDF_ShutdownThread once, and only the
+//          last EPDF_ShutdownThread tears PDFium down: a caller that leaves
+//          does not take PDFium from the ones still using it.
+//          EPDF_ShutdownThread is lifecycle-strict: a caller makes it only
+//          after closing every handle it created on the calling thread.
 FPDF_EXPORT void FPDF_CALLCONV EPDF_InitThread();
 FPDF_EXPORT void FPDF_CALLCONV EPDF_ShutdownThread();
 
