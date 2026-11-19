@@ -542,10 +542,11 @@ component builds; don't bring back the empty `#else` branch.
 **Why.** It was put there when the API was added.
 **Where.** The implementations still in `fpdf_view.cpp`, `fpdf_doc.cpp`, `fpdf_attachment.cpp`,
 `fpdf_save.cpp` and `fpdf_text.cpp`; the two colour types `public/fpdf_annot.h` adds for
-`public/epdf_annot.h`; core helpers such as `CPDF_Dest::GetPageObjectNumber`. Every declaration we
-added to a public header now lives in our own: `public/epdf_<name>.h` next to upstream's
-`public/fpdf_<name>.h` (`epdf_view.h` and `epdf_layer.h` for `fpdfview.h`), and the annotation API
-in `fpdfsdk/epdf_annot.cpp`.
+`public/epdf_annot.h`; core helpers such as `CPDF_Dest::GetPageObjectNumber` and
+`CPDF_AnnotContext::CreateOwningPage` (a `*Raw` annotation handle keeps its page, and closing the
+handle frees it). Every declaration we added to a public header now lives in our own:
+`public/epdf_<name>.h` next to upstream's `public/fpdf_<name>.h` (`epdf_view.h` and `epdf_layer.h`
+for `fpdfview.h`), and the annotation API in `fpdfsdk/epdf_annot.cpp`.
 **Guarded by.** The embedder tests of each API. `epdf.CApiTest` (`fpdfsdk/epdf_c_api_test.c`) takes
 every `EPDF*` function's address from C, so each header compiles as C and each declaration links;
 `check-c-api.py` keeps its list complete.

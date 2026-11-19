@@ -21,7 +21,10 @@ class CPDF_Form;
 class CPDF_Stream;
 class IPDF_Page;
 
-class CPDF_AnnotContext {
+// EmbedPDF(epdf-api): final. FPDFPage_CloseAnnot() deletes a handle as this
+// type and the destructor is not virtual, so a subclass's members would never
+// be destroyed: how a *Raw handle used to leak its page.
+class CPDF_AnnotContext final {
  public:
   // EmbedPDF(measurement): owned SDK measurement state; never part of the
   // PDF graph.
@@ -38,6 +41,25 @@ class CPDF_AnnotContext {
                     IPDF_Page* pPage,
                     int annot_index = -1);
   ~CPDF_AnnotContext();
+
+  // EmbedPDF(epdf-api): a handle for a page nobody loaded (the *Raw calls).
+  // It keeps |page|, the page object it was built on, and closing the handle
+  // frees that page. Every other handle borrows a page its caller keeps open.
+  static std::unique_ptr<CPDF_AnnotContext> CreateOwningPage(
+      RetainPtr<CPDF_Dictionary> annot_dict,
+      RetainPtr<IPDF_Page> page,
+      int annot_index);
+
+  // EmbedPDF(epdf-api): a handle to another annotation reached from this one
+  // (/Popup, /IRT, /Parent), on the same page. It shares a page this handle
+  // owns, so the two handles close in either order.
+  std::unique_ptr<CPDF_AnnotContext> CreateLinked(
+      RetainPtr<CPDF_Dictionary> linked_dict) const;
+
+  // EmbedPDF(epdf-api): whether the handle keeps its own page (see
+  // CreateOwningPage()). No form environment shows such a page, so the
+  // form-fill calls fail for the handle without making a view for the page.
+  bool OwnsPage() const { return !!owned_page_; }
 
   void SetForm(RetainPtr<CPDF_Stream> pStream);
   bool HasForm() const { return !!annot_form_; }
@@ -67,6 +89,10 @@ class CPDF_AnnotContext {
   int GetAnnotIndex() const { return annot_index_; }
 
  private:
+  // EmbedPDF(epdf-api): the page a *Raw handle keeps, else null. Declared
+  // first so that it is destroyed last: the page outlives every member below
+  // that points at it.
+  RetainPtr<IPDF_Page> owned_page_;
   // EmbedPDF(measurement): see GetMeasureStorage().
   std::unique_ptr<CPDF_MeasureStorage> measure_storage_;
   // EmbedPDF(overlay-epoch): re-resolve the annotation when the overlay
