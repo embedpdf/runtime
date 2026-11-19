@@ -9,6 +9,7 @@
 #include <cstdint>
 #include <limits>
 #include <string>
+#include <thread>
 #include <vector>
 
 #include "constants/page_object.h"
@@ -28,7 +29,9 @@
 #include "fpdfsdk/epdf_c_api_test.h"
 #include "fpdfsdk/epdf_edit_test_util.h"
 #include "public/cpp/fpdf_scopers.h"
+#include "public/epdf_annot.h"
 #include "public/epdf_progressive.h"
+#include "public/fpdf_annot.h"
 #include "public/fpdf_edit.h"
 #include "public/fpdf_progressive.h"
 #include "public/fpdf_save.h"
@@ -987,3 +990,59 @@ TEST_F(EPDFViewEmbedderTest, ImageOfAnotherDocumentDraws) {
   EXPECT_EQ(render(document.get(), document.get()),
             render(document.get(), other.get()));
 }
+
+#if defined(EPDF_THREAD_LOCAL_GLOBALS)
+// EPDF_InitThread() and EPDF_ShutdownThread() are counted (rule
+// per-thread-init): callers that share a thread share its PDFium, and one
+// that leaves does not take it from the ones still there. A second engine in
+// a Node thread did: once it was destroyed, the first read content with the
+// thread's operator table gone. Runs on a thread of its own, as a worker
+// does: the harness started the main thread's PDFium, and the last
+// EPDF_ShutdownThread() here would tear that down.
+TEST_F(EPDFViewEmbedderTest, ThreadLifecycleIsCounted) {
+  // A page with a square whose appearance multiplies.
+  const std::string pdf = MakePdf({
+      "<< /Type /Catalog /Pages 2 0 R >>",
+      "<< /Type /Pages /Kids [3 0 R] /Count 1 >>",
+      "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 200 200] "
+      "/Annots [4 0 R] >>",
+      "<< /Type /Annot /Subtype /Square /Rect [10 10 60 60] "
+      "/AP << /N 5 0 R >> >>",
+      Stream("/Type /XObject /Subtype /Form /BBox [0 0 50 50] "
+             "/Resources << /ExtGState << /GS << /BM /Multiply >> >> >>",
+             "/GS gs 1 0 0 rg 0 0 50 50 re f"),
+  });
+  // The square's blend mode, which is read by parsing its appearance.
+  auto blend_mode = [&pdf]() -> int {
+    embedpdf_test::ScopedTestDocument doc(
+        embedpdf_test::LoadMemDocumentForTest(pdf.data(), pdf.size(), nullptr));
+    if (!doc) {
+      return -1;
+    }
+    ScopedFPDFPage page(FPDF_LoadPage(doc.get(), 0));
+    if (!page) {
+      return -1;
+    }
+    ScopedFPDFAnnotation annot(FPDFPage_GetAnnot(page.get(), 0));
+    return annot ? EPDFAnnot_GetBlendMode(annot.get()) : -1;
+  };
+
+  int with_one_left = -1;
+  int started_again = -1;
+  std::thread worker([&] {
+    EPDF_InitThread();
+    EPDF_InitThread();
+    EPDF_ShutdownThread();
+    with_one_left = blend_mode();
+    EPDF_ShutdownThread();
+
+    // The last one out tore PDFium down; the next one in starts it again.
+    EPDF_InitThread();
+    started_again = blend_mode();
+    EPDF_ShutdownThread();
+  });
+  worker.join();
+  EXPECT_EQ(FPDF_BLENDMODE_Multiply, with_one_left);
+  EXPECT_EQ(FPDF_BLENDMODE_Multiply, started_again);
+}
+#endif  // defined(EPDF_THREAD_LOCAL_GLOBALS)
