@@ -1252,8 +1252,8 @@ EPDFAnnot_SetAppearanceFromPage(FPDF_ANNOTATION annot,
 // dictionary describes, as a new single-page document: the drawing a copy of
 // the annotation is created from.
 //
-//   - EmbedPDF's own wrapper (the appearance a stamp gets from
-//     EPDFAnnot_SetStampDrawing or EPDFAnnot_UpdateAppearanceToRect), also
+//   - EmbedPDF's own wrapper (the appearance a stamp or a widget gets from
+//     EPDFAnnot_SetDrawing or EPDFAnnot_UpdateAppearanceToRect), also
 //     when another editor has put forms that only draw it around it: the
 //     drawing it places, as EPDFDoc_ExportDrawing() exports it, without the
 //     wrapper's placement, rotation and opacity.
@@ -1268,9 +1268,10 @@ EPDFAnnot_SetAppearanceFromPage(FPDF_ANNOTATION annot,
 // The page is the canonical form of a drawing: its content is exactly
 // `/EPDFDRAWING Do`, the placement is folded into the form's /Matrix, and
 // the document has no /Info and an /ID made from its content. The same
-// drawing is the same bytes on every runtime, and EPDFAnnot_SetAppearanceFromPage
-// and EPDFDoc_ImportDrawing adopt the form as it is, so exporting what they
-// made gives the same bytes again. The source document is untouched.
+// drawing is the same bytes on every runtime, and
+// EPDFAnnot_SetAppearanceFromPage and EPDFDoc_ImportDrawing adopt the form as
+// it is, so exporting what they made gives the same bytes again. The source
+// document is untouched.
 //
 //   annot         - handle to an annotation with a normal appearance.
 //   degrees       - the turn the annotation's data describes, counterclockwise
@@ -1284,14 +1285,20 @@ EPDFAnnot_ExportAppearance(FPDF_ANNOTATION annot,
                            float degrees,
                            const FS_RECTF* unrotated_box);
 
-// Stamp drawings.
+// Drawings.
 //
-// A stamp's drawing is its artwork, one form. Each stamp places it with a
-// wrapper of its own, which holds the stamp's box, fit, rotation and
-// opacity, so stamps with the same artwork can share one drawing. A drawing
-// is never edited in place: a stamp that changes gets a new wrapper, and new
-// artwork is a new drawing. A drawing is known by its content, the
-// EPDF_DIGEST_SHA256 (EPDF_DigestBuffer()) of its canonical bytes.
+// A drawing is a picture the document holds once: one form XObject. It shows
+// in three places, and every place can share it:
+//   - a stamp's artwork, and a mark in a widget (a signature field's): each
+//     places the drawing with a wrapper of its own, which holds the box,
+//     fit, rotation and opacity (EPDFAnnot_SetDrawing());
+//   - a push button's icon: /MK names the drawing, and the button's
+//     appearance draws it (EPDFAnnot_SetMKIcon()).
+// A drawing is never edited in place: a place that changes gets a new
+// wrapper or a new appearance, and a new picture is a new drawing. Placing a
+// drawing only reads it, so it can be one an earlier revision of the file
+// holds. A drawing is known by its content, the EPDF_DIGEST_SHA256
+// (EPDF_DigestBuffer()) of its canonical bytes.
 
 // Experimental EmbedPDF Extension API.
 // The canonical drawing of a page, in a new single-page document: the bytes
@@ -1334,9 +1341,11 @@ FPDF_EXPORT FPDF_DOCUMENT FPDF_CALLCONV
 EPDFDoc_ExportDrawing(FPDF_DOCUMENT document, unsigned int drawing);
 
 // Experimental EmbedPDF Extension API.
-// The drawings EmbedPDF wrappers place on the stamps of |document|'s pages,
-// each once, in page and /Annots order. Reads the page dictionaries; no page
-// is loaded. A stamp without our wrapper has none.
+// The drawings the annotations on |document|'s pages show, each once, in
+// page and /Annots order: the one an EmbedPDF wrapper places on a stamp or
+// in a widget, then the forms a widget's /MK names as its icons (/I, /RI,
+// /IX), whoever wrote them. Reads the page dictionaries; no page is loaded,
+// and an appearance that draws no form is not read at all.
 //
 //   document - handle to the document.
 //   buffer   - receives up to |buflen| object numbers; may be NULL.
@@ -1344,35 +1353,45 @@ EPDFDoc_ExportDrawing(FPDF_DOCUMENT document, unsigned int drawing);
 //
 // Returns the number of drawings, which may exceed |buflen|.
 FPDF_EXPORT unsigned long FPDF_CALLCONV
-EPDFDoc_GetStampDrawings(FPDF_DOCUMENT document,
-                         unsigned int* buffer,
-                         unsigned long buflen);
+EPDFDoc_GetDrawings(FPDF_DOCUMENT document,
+                    unsigned int* buffer,
+                    unsigned long buflen);
 
 // Experimental EmbedPDF Extension API.
-// Make a stamp place |drawing|: a new wrapper that fits it into the stamp's
-// box with |fit|, honouring /EMBD_Metadata rotation, under a layer that
-// paints /CA below full opacity, as EPDFAnnot_UpdateAppearanceToRect() does.
-// The drawing is not changed, so other stamps can place it too.
+// Make a stamp or a widget place |drawing|: a new wrapper that fits it into
+// the annotation's box with |fit|, exactly as
+// EPDFAnnot_UpdateAppearanceToRect() fits one. A stamp's box and turn are the
+// ones /EMBD_Metadata records; a widget's are /Rect and /MK /R, and its
+// /Rect and /MK are not written. Below full opacity the wrapper sits under a
+// layer that paints /CA. The drawing is not changed, so other annotations
+// can place it too, and a later EPDFAnnot_UpdateAppearanceToRect() gives the
+// annotation a new wrapper around the same drawing.
 //
-//   annot   - handle to a Stamp annotation.
+// In a widget this is a mark, a signature field's: the wrapper is the whole
+// appearance, and the field's box is not drawn under it. A push button's
+// picture is its icon (EPDFAnnot_SetMKIcon()).
+//
+//   annot   - handle to a Stamp or a Widget annotation.
 //   drawing - object number of a drawing of the annotation's document.
 //   fit     - one of EPDF_STAMP_FIT_*.
 //
-// Returns true on success.
-FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV
-EPDFAnnot_SetStampDrawing(FPDF_ANNOTATION annot,
-                          unsigned int drawing,
-                          EPDF_STAMP_FIT fit);
+// Returns true on success. False, writing nothing, for another subtype, a
+// |drawing| that is no form XObject of the document, and an annotation
+// without area.
+FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV EPDFAnnot_SetDrawing(FPDF_ANNOTATION annot,
+                                                         unsigned int drawing,
+                                                         EPDF_STAMP_FIT fit);
 
 // Experimental EmbedPDF Extension API.
-// The drawing a stamp's wrapper places.
+// The drawing the wrapper of a stamp or a widget places.
 //
-//   annot - handle to a Stamp annotation.
+//   annot - handle to a Stamp or a Widget annotation.
 //
-// Returns the drawing's object number, or 0 for a stamp without our wrapper,
-// or an annotation that is not a stamp.
+// Returns the drawing's object number, or 0 for an appearance that is not
+// our wrapper (a push button's icon is read with EPDFAnnot_GetMKIcon()), or
+// another subtype.
 FPDF_EXPORT unsigned int FPDF_CALLCONV
-EPDFAnnot_GetStampDrawing(FPDF_ANNOTATION annot);
+EPDFAnnot_GetDrawing(FPDF_ANNOTATION annot);
 
 // Experimental EmbedPDF Extension API.
 // Get the annotation rectangle with normalization applied.
@@ -1615,6 +1634,59 @@ EPDFAnnot_SetMKTextPosition(FPDF_ANNOTATION annot, int position);
 FPDF_EXPORT int FPDF_CALLCONV
 EPDFAnnot_GetMKTextPosition(FPDF_ANNOTATION annot);
 
+// The icons of a widget's /MK dictionary (push buttons).
+#define EPDF_MK_ICON_I 0   // /I, the normal icon
+#define EPDF_MK_ICON_RI 1  // /RI, the rollover icon
+#define EPDF_MK_ICON_IX 2  // /IX, the down icon
+
+// Experimental EmbedPDF Extension API.
+// Make a widget's /MK name |drawing| as its icon |which| (EPDF_MK_ICON_*): a
+// drawing of the widget's document, by object number (EPDFDoc_ImportDrawing()
+// adds one; other widgets and stamps can show the same one). Only that entry
+// is written: not /MK /TP (EPDFAnnot_SetMKTextPosition()), not /MK /IF, and
+// the appearance is not regenerated (EPDFAnnot_GenerateFormFieldAP()). An
+// image field as Acrobat writes one is a push button with the normal icon,
+// /MK /TP 1 and an appearance drawn from them. The drawing is only read.
+//
+// An icon the entry named before is not deleted: the appearance may still
+// draw it, and another widget may share it. A save writes only what the
+// document still reaches, so once the appearance is drawn again an icon
+// nothing else shows is in no saved file. An incremental save appends, and
+// keeps the bytes of the file it appends to.
+//
+//   annot   - handle to a widget annotation.
+//   which   - one of EPDF_MK_ICON_*.
+//   drawing - object number of a drawing of the annotation's document.
+//
+// Returns false, writing nothing, for another subtype, an unknown |which|
+// and a |drawing| that is no form XObject of the document. Naming the
+// drawing the entry already names writes nothing.
+FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV EPDFAnnot_SetMKIcon(FPDF_ANNOTATION annot,
+                                                        int which,
+                                                        unsigned int drawing);
+
+// Experimental EmbedPDF Extension API.
+// The form a widget's /MK names as its icon |which| (EPDF_MK_ICON_*), by
+// object number: a drawing EPDFDoc_ExportDrawing() exports, whoever wrote it.
+// 0 without one, for another subtype and an unknown |which|.
+FPDF_EXPORT unsigned int FPDF_CALLCONV
+EPDFAnnot_GetMKIcon(FPDF_ANNOTATION annot, int which);
+
+// Experimental EmbedPDF Extension API.
+// Remove a widget's /MK icon |which| (EPDF_MK_ICON_*). The appearance is not
+// regenerated (EPDFAnnot_GenerateFormFieldAP()), and the icon is not deleted,
+// as EPDFAnnot_SetMKIcon() leaves the one it replaces. Returns false
+// for another subtype and an unknown |which|; true when there was no icon to
+// remove.
+FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV EPDFAnnot_ClearMKIcon(FPDF_ANNOTATION annot,
+                                                          int which);
+
+// Experimental EmbedPDF Extension API.
+// Whether a widget's /MK holds the icon |which| (EPDF_MK_ICON_*): a stream.
+// False for another subtype and an unknown |which|.
+FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV EPDFAnnot_HasMKIcon(FPDF_ANNOTATION annot,
+                                                        int which);
+
 // Experimental EmbedPDF Extension API.
 // Set a widget's /MK /R: how far its appearance turns, in degrees
 // counterclockwise, a multiple of 90 from 0 to 270 (0 removes /R). The
@@ -1637,7 +1709,13 @@ FPDF_EXPORT int FPDF_CALLCONV EPDFAnnot_GetMKRotation(FPDF_ANNOTATION annot);
 //   - /Btn -> a check box or radio button appearance: both states, the
 //             symbol /MK /CA names in the /DA colour. A push button: its
 //             background and border, and its caption (/MK /CA) centred in
-//             the /DA font and colour; an icon (/MK /I) is not drawn.
+//             the /DA font and colour. A push button that shows its icon
+//             alone (/MK /TP 1): its background and border, and the normal
+//             icon (/MK /I) inside the border, fitted as /MK /IF says (ISO
+//             32000-2 Table 250; without one: always scaled, keeping its
+//             proportions, in the middle). It draws no caption, and without
+//             an icon it is the box alone. In the layouts that show a
+//             caption and an icon (/MK /TP 2 to 6) the icon is not drawn.
 //   - /Sig, and a widget in no field -> its box: the background and border
 //             as a text field draws them. It replaces whatever the widget
 //             shows, a signature drawn into it included.

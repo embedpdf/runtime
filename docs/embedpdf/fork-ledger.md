@@ -340,13 +340,21 @@ measurement, redaction overlays, form fields. Mixed into upstream's file, it was
 file. Apart, upstream's file merges cleanly.
 **Where.** `cpdf_appearancegenerator*` and its unit test; the calls in `cpdf_annot.cpp`,
 upstream's `FPDFAnnot_AppendObject` and `FPDFAnnot_SetFontColor` in `fpdf_annot.cpp`,
-`epdf_annot.cpp`, `epdf_form.cpp`, `epdf_redact.cpp` and the rich text writer.
+`epdf_annot.cpp`, `epdf_form.cpp`, `epdf_redact.cpp` and the rich text writer. A push button that
+shows its icon alone (`/MK /TP 1`, an image field) is drawn from `/MK /I` by
+`GenerateIconButtonAP`. It reads the icon fit (`/MK /IF`) through upstream's `CPDF_IconFit` and
+places the icon itself (`IconPlacement`), by ISO 32000-2 Table 250: upstream's own placement
+(`CPDF_IconFit::GetScale` and `GetImageOffset`, used by its form filler) puts an icon whose fit
+names no `/A` at the bottom left, where the table's default is the middle, and reads an icon
+narrower than one unit as one unit wide.
 **Guarded by.** `check-fork-tags.py` fails when upstream's files differ from upstream
 (`fork-pristine.txt`); `upstream-preview.py` lists new upstream callers of `CPDF_GenerateAP::`, and
-upstream's commits to its generator.
+upstream's commits to its generator. `epdf_widget_drawing_embeddertest.cpp` for a button's icon.
 **When upstream touches this.** A commit to `cpdf_generateap.*`: port it to ours or skip it, with
 the reason in the sync report. A new upstream caller of `CPDF_GenerateAP::`: route it to ours, or
-accept it in the report.
+accept it in the report. A change to what `CPDF_IconFit`'s readers return (`GetScaleMethod`,
+`IsProportionalScale`, `GetIconBottomLeftPosition`, `GetFittingBounds`): `IconPlacement` reads the
+file through them.
 
 ## Text
 
@@ -374,11 +382,21 @@ calls FreeType.
 
 ### annot-appearance
 **Rule.** Our appearance model: appearance states, box kinds drawn in a frame they measure, dashes,
-note icons, canonical stamp drawings, widget rendering, and the hooks into our appearance
-generator.
-**Why.** Annotations look the same in every viewer and survive edits.
-**Where.** `cpdf_annot.cpp`, `cpdf_annotlist.cpp`, `cpdf_annotcontext.cpp`.
-**Guarded by.** `epdf_appearance_state_embeddertest.cpp`, the annotation embedder tests.
+note icons, canonical drawings, widget rendering, and the hooks into our appearance generator. A
+drawing is a picture the document holds once: a form XObject, known by the digest of its canonical
+bytes. A stamp's artwork and a mark in a widget each place it with a wrapper of their own, and a
+push button's `/MK` names it as an icon, so one drawing serves all three. A drawing is never
+written after it is made: placing one only reads it.
+**Why.** Annotations look the same in every viewer and survive edits. A picture shown in many
+places is in the file once, and a place added after a signature leaves the drawing the signature
+covers as it was.
+**Where.** `cpdf_annot.cpp`, `cpdf_annotlist.cpp`, `cpdf_annotcontext.cpp`; the drawing calls in
+`epdf_annot.cpp` (`EPDFDoc_CanonicalDrawing`, `EPDFDoc_ImportDrawing`, `EPDFDoc_ExportDrawing`,
+`EPDFDoc_GetDrawings`, `EPDFAnnot_SetDrawing`, `EPDFAnnot_GetDrawing`, `EPDFAnnot_SetMKIcon`,
+`EPDFAnnot_GetMKIcon`) and the wrapper in `epdf_wrapped_appearance.{h,cpp}`.
+**Guarded by.** `epdf_appearance_state_embeddertest.cpp`, the annotation embedder tests,
+`epdf_widget_drawing_embeddertest.cpp`, and
+`EPDFSignatureEmbedderTest.PlacingADrawingAgainLeavesTheSignedRevisionAlone`.
 **When upstream touches this.** Annotation drawing and appearance lookup.
 
 ### forms-model

@@ -10,6 +10,7 @@
 // See docs/embedpdf/fork-ledger.md, rule own-appearance-generator. EmbedPDF's
 // changes are Copyright 2026 CloudPDF LTD.
 
+#include <algorithm>
 #include <array>
 #include <cmath>
 #include <memory>
@@ -37,6 +38,7 @@
 #include "core/fpdfdoc/cpdf_color_utils.h"
 #include "core/fpdfdoc/cpdf_defaultappearance.h"
 #include "core/fpdfdoc/cpdf_formfield.h"
+#include "core/fpdfdoc/cpdf_iconfit.h"
 #include "core/fpdfdoc/cpdf_interactiveform.h"
 #include "core/fpdfdoc/cpdf_richtextlayout.h"
 #include "core/fxcrt/fx_string_wrappers.h"
@@ -478,10 +480,89 @@ void BuildCheckboxBoxStream(fxcrt::ostringstream& stream,
   }
 }
 
-// A push button: background and border as a text field draws them, and the
-// caption (/MK /CA) on one line, centred both ways, in the /DA font and
-// colour. An icon (/MK /I) is not drawn, so the caption takes the whole
-// button whatever /MK /TP says.
+// How a push button lays out its caption and its icon: /MK /TP (ISO 32000-2
+// Table 192). A number the table doesn't list is 0, the caption alone, as an
+// absent one is.
+constexpr int kButtonShowsIconAlone = 1;
+
+int ButtonTextPosition(const CPDF_Dictionary* annot_dict) {
+  RetainPtr<const CPDF_Dictionary> mk = annot_dict->GetDictFor("MK");
+  const int position = mk ? mk->GetIntegerFor("TP") : 0;
+  return position >= 0 && position <= 6 ? position : 0;
+}
+
+// The box an icon takes where it is drawn: its /BBox through its /Matrix.
+CFX_FloatRect IconBox(const CPDF_Stream* icon) {
+  RetainPtr<const CPDF_Dictionary> dict = icon->GetDict();
+  CFX_FloatRect box = dict->GetRectFor("BBox");
+  box.Normalize();
+  box = dict->GetMatrixFor("Matrix").TransformRect(box);
+  box.Normalize();
+  return box;
+}
+
+// The matrix that draws an icon whose box is `icon` in `plate`, as the icon
+// fit dictionary says (ISO 32000-2 Table 250): when the icon is scaled (/SW),
+// with or without its proportions (/S), and how the room left over is shared
+// between its left and its bottom (/A). Without a dictionary these are the
+// table's defaults: always scaled, keeping its proportions, in the middle.
+// Nothing for an icon or a plate without area.
+std::optional<CFX_Matrix> IconPlacement(const CFX_FloatRect& icon,
+                                        const CFX_FloatRect& plate,
+                                        const CPDF_IconFit& fit) {
+  const float icon_width = icon.Width();
+  const float icon_height = icon.Height();
+  const float plate_width = plate.Width();
+  const float plate_height = plate.Height();
+  if (!(icon_width > 0) || !(icon_height > 0) || !(plate_width > 0) ||
+      !(plate_height > 0)) {
+    return std::nullopt;
+  }
+
+  float scale_x = 1;
+  float scale_y = 1;
+  switch (fit.GetScaleMethod()) {
+    case CPDF_IconFit::ScaleMethod::kAlways:
+      scale_x = plate_width / icon_width;
+      scale_y = plate_height / icon_height;
+      break;
+    case CPDF_IconFit::ScaleMethod::kBigger:
+      if (icon_width > plate_width) {
+        scale_x = plate_width / icon_width;
+      }
+      if (icon_height > plate_height) {
+        scale_y = plate_height / icon_height;
+      }
+      break;
+    case CPDF_IconFit::ScaleMethod::kSmaller:
+      if (icon_width < plate_width) {
+        scale_x = plate_width / icon_width;
+      }
+      if (icon_height < plate_height) {
+        scale_y = plate_height / icon_height;
+      }
+      break;
+    case CPDF_IconFit::ScaleMethod::kNever:
+      break;
+  }
+  if (fit.IsProportionalScale()) {
+    scale_x = scale_y = std::min(scale_x, scale_y);
+  }
+
+  const CFX_PointF share = fit.GetIconBottomLeftPosition();
+  const float left = plate.left + (plate_width - icon_width * scale_x) *
+                                      std::clamp(share.x, 0.0f, 1.0f);
+  const float bottom = plate.bottom + (plate_height - icon_height * scale_y) *
+                                          std::clamp(share.y, 0.0f, 1.0f);
+  return CFX_Matrix(scale_x, 0, 0, scale_y, left - icon.left * scale_x,
+                    bottom - icon.bottom * scale_y);
+}
+
+// A push button in every layout but the icon alone, which
+// GenerateIconButtonAP() draws: background and border as a text field draws
+// them, and the caption (/MK /CA) on one line, centred both ways, in the /DA
+// font and colour. In the layouts that show a caption and an icon (/MK /TP 2
+// to 6) the icon is not drawn, and the caption takes the whole button.
 void GeneratePushButtonFormAP(fxcrt::ostringstream& app_stream,
                               const CPDF_Dictionary* annot_dict,
                               const CFX_FloatRect& bbox,
@@ -672,20 +753,98 @@ void WriteCheckSymbol(fxcrt::ostringstream& stream,
   stream << (stroked ? "S\n" : "f\n") << "Q\n";
 }
 
-uint32_t CreateFormXObjectStream(CPDF_Document* doc,
-                                 fxcrt::ostringstream& content,
-                                 const CFX_FloatRect& bbox,
-                                 const CFX_Matrix& matrix) {
+// The dictionary of a form XObject that draws in `bbox`, placed by `matrix`.
+RetainPtr<CPDF_Dictionary> NewFormXObjectDict(
+    const CFX_FloatRect& bbox,
+    const CFX_Matrix& matrix,
+    RetainPtr<CPDF_Dictionary> resources = nullptr) {
   auto stream_dict = pdfium::MakeRetain<CPDF_Dictionary>();
   stream_dict->SetNewFor<CPDF_Number>("FormType", 1);
   stream_dict->SetNewFor<CPDF_Name>("Type", "XObject");
   stream_dict->SetNewFor<CPDF_Name>("Subtype", "Form");
   stream_dict->SetMatrixFor("Matrix", matrix);
   stream_dict->SetRectFor("BBox", bbox);
+  if (resources) {
+    stream_dict->SetFor("Resources", std::move(resources));
+  }
+  return stream_dict;
+}
 
-  auto stream = doc->NewIndirect<CPDF_Stream>(std::move(stream_dict));
+uint32_t CreateFormXObjectStream(
+    CPDF_Document* doc,
+    fxcrt::ostringstream& content,
+    const CFX_FloatRect& bbox,
+    const CFX_Matrix& matrix,
+    RetainPtr<CPDF_Dictionary> resources = nullptr) {
+  auto stream = doc->NewIndirect<CPDF_Stream>(
+      NewFormXObjectDict(bbox, matrix, std::move(resources)));
   stream->SetDataFromStringstreamAndRemoveFilter(&content);
   return stream->GetObjNum();
+}
+
+// A push button that shows its icon alone (/MK /TP 1): background and border
+// as every push button has them, and the normal icon (/MK /I), a form
+// XObject of its own, drawn inside the border. The icon is fitted into the
+// button less the border's width at each edge, or into the whole button when
+// /MK /IF /FB says so (IconPlacement()), and clipped to that plate. The
+// appearance names it /FRM in its resources, as Acrobat writes an image
+// field, so the file holds the picture once, for /MK and for /AP. The button
+// is laid out in the frame its quarter turn gives (/MK /R), as every field's
+// contents are.
+//
+// It draws no caption, so it needs no /DA and no font, and without an icon
+// it is the box alone. Written into the file, the appearance is a new
+// stream, as a check box's are: the old /N may be another widget's too, or
+// the icon itself. The old /N is not deleted, nor is an icon it drew: a save
+// writes only what the document still reaches.
+void GenerateIconButtonAP(APGenerationTarget* target,
+                          const CPDF_Dictionary* annot_dict) {
+  CPDF_Document* const doc = target->doc;
+  RetainPtr<const CPDF_Dictionary> mk_dict = annot_dict->GetDictFor("MK");
+  const AppearanceCharacteristics mk =
+      GetAppearanceCharacteristics(mk_dict.Get());
+  const BorderStyleInfo bs = GetBorderStyleInfo(annot_dict->GetDictFor("BS"));
+  const AnnotationDimensionsAndColor dims =
+      GetAnnotationDimensionsAndColor(annot_dict);
+
+  fxcrt::ostringstream content;
+  content << "q\n";
+  BuildCheckboxBoxStream(content, mk, bs, dims.bbox);
+  content << "Q\n";
+
+  // An icon is drawn by reference, so only one that is an object of its own
+  // can be: a file always holds a stream so.
+  RetainPtr<CPDF_Dictionary> resources;
+  RetainPtr<const CPDF_Stream> icon =
+      mk_dict ? mk_dict->GetStreamFor(pdfium::appearance::kI) : nullptr;
+  if (icon && icon->GetObjNum() != 0) {
+    const CPDF_IconFit fit(mk_dict->GetDictFor("IF"));
+    CFX_FloatRect plate = dims.bbox;
+    if (!fit.GetFittingBounds()) {
+      plate.Deflate(bs.width, bs.width);
+    }
+    if (const std::optional<CFX_Matrix> placement =
+            IconPlacement(IconBox(icon.Get()), plate, fit)) {
+      content << "q\n";
+      WriteRect(content, plate) << " re W n\n";
+      WriteMatrix(content, placement.value()) << " cm\n/FRM Do\nQ\n";
+      resources = doc->New<CPDF_Dictionary>();
+      resources->SetNewFor<CPDF_Dictionary>("XObject")
+          ->SetNewFor<CPDF_Reference>("FRM", doc, icon->GetObjNum());
+    }
+  }
+
+  if (!target->IsPersistent()) {
+    // Drawn in memory: a stream of no document, and nothing is written.
+    target->normal_stream = pdfium::MakeRetain<CPDF_Stream>(
+        NewFormXObjectDict(dims.bbox, dims.matrix, std::move(resources)));
+    target->normal_stream->SetDataFromStringstream(&content);
+    return;
+  }
+  const uint32_t normal_obj_num = CreateFormXObjectStream(
+      doc, content, dims.bbox, dims.matrix, std::move(resources));
+  target->persistent_annot_dict->GetOrCreateDictFor(pdfium::annotation::kAP)
+      ->SetNewFor<CPDF_Reference>("N", doc, normal_obj_num);
 }
 
 bool GenerateFormAPToTarget(APGenerationTarget* target,
@@ -696,6 +855,14 @@ bool GenerateFormAPToTarget(APGenerationTarget* target,
   const CPDF_Dictionary* root_dict = doc->GetRoot();
   if (!root_dict) {
     return false;
+  }
+
+  // A push button that shows its icon alone draws no text: it needs no /DA
+  // and no font.
+  if (type == CPDF_AppearanceGenerator::kPushButton &&
+      ButtonTextPosition(annot_dict) == kButtonShowsIconAlone) {
+    GenerateIconButtonAP(target, annot_dict);
+    return true;
   }
 
   RetainPtr<const CPDF_Dictionary> form_dict =

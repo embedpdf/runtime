@@ -37,7 +37,9 @@ using fxge::BlendMode;
 class CPDF_AppearanceGenerator {
  public:
   // kPushButton: the button's background and border, and its caption (/MK
-  // /CA) centred in the /DA font and colour.
+  // /CA) centred in the /DA font and colour. One that shows its icon alone
+  // (/MK /TP 1) draws the normal icon (/MK /I) inside the border, fitted as
+  // /MK /IF says, and no caption.
   enum FormType { kTextField, kComboBox, kListBox, kPushButton };
 
   static void GenerateFormAP(CPDF_Document* doc,
