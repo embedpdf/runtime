@@ -340,21 +340,29 @@ measurement, redaction overlays, form fields. Mixed into upstream's file, it was
 file. Apart, upstream's file merges cleanly.
 **Where.** `cpdf_appearancegenerator*` and its unit test; the calls in `cpdf_annot.cpp`,
 upstream's `FPDFAnnot_AppendObject` and `FPDFAnnot_SetFontColor` in `fpdf_annot.cpp`,
-`epdf_annot.cpp`, `epdf_form.cpp`, `epdf_redact.cpp` and the rich text writer. A push button that
-shows its icon alone (`/MK /TP 1`, an image field) is drawn from `/MK /I` by
-`GenerateIconButtonAP`. It reads the icon fit (`/MK /IF`) through upstream's `CPDF_IconFit` and
-places the icon itself (`IconPlacement`), by ISO 32000-2 Table 250: upstream's own placement
-(`CPDF_IconFit::GetScale` and `GetImageOffset`, used by its form filler) puts an icon whose fit
-names no `/A` at the bottom left, where the table's default is the middle, and reads an icon
-narrower than one unit as one unit wide.
+`epdf_annot.cpp`, `epdf_form.cpp`, `epdf_redact.cpp` and the rich text writer. A push button's
+icon (`/MK /I`) is drawn in every layout that shows one. Alone (`/MK /TP 1`, an image field, and
+any layout 2 to 6 without a caption) `GenerateIconButtonAP` draws it. With the caption (`/MK /TP`
+2 to 6) `GeneratePushButtonFormAP` draws both, and shares the button between them by the rule of
+upstream's form filler (`SplitButton`, after `GetPushButtonAppStream` in
+`fpdfsdk/cpdfsdk_appstream.cpp`, which stays unchanged), so a button looks the same whichever drew
+it. The engine writes layouts 0 and 1 only, a caption or an image field, so layouts 2 to 6 are
+met only in buttons other apps made. Either way the icon fit (`/MK /IF`) is read through
+upstream's `CPDF_IconFit` and the icon is placed by our own `IconPlacement`, by ISO 32000-2 Table
+250: upstream's own placement (`CPDF_IconFit::GetScale` and `GetImageOffset`, used by its form
+filler) puts an icon whose fit names no `/A` at the bottom left, where the table's default is the
+middle, and reads an icon narrower than one unit as one unit wide.
 **Guarded by.** `check-fork-tags.py` fails when upstream's files differ from upstream
 (`fork-pristine.txt`); `upstream-preview.py` lists new upstream callers of `CPDF_GenerateAP::`, and
-upstream's commits to its generator. `epdf_widget_drawing_embeddertest.cpp` for a button's icon.
+upstream's commits to its generator. `epdf_widget_drawing_embeddertest.cpp` for a button's icon;
+its `AButtonIsSharedAsTheFormFillerSharesIt` runs upstream's form filler on the same buttons and
+compares the two.
 **When upstream touches this.** A commit to `cpdf_generateap.*`: port it to ours or skip it, with
 the reason in the sync report. A new upstream caller of `CPDF_GenerateAP::`: route it to ours, or
 accept it in the report. A change to what `CPDF_IconFit`'s readers return (`GetScaleMethod`,
 `IsProportionalScale`, `GetIconBottomLeftPosition`, `GetFittingBounds`): `IconPlacement` reads the
-file through them.
+file through them. A change to how `GetPushButtonAppStream` shares a button: `SplitButton`
+follows it, and the comparing test fails until it does.
 
 ## Text
 

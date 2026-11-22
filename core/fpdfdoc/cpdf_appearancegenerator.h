@@ -39,7 +39,8 @@ class CPDF_AppearanceGenerator {
   // kPushButton: the button's background and border, and its caption (/MK
   // /CA) centred in the /DA font and colour. One that shows its icon alone
   // (/MK /TP 1) draws the normal icon (/MK /I) inside the border, fitted as
-  // /MK /IF says, and no caption.
+  // /MK /IF says, and no caption. One that shows both (/MK /TP 2 to 6)
+  // draws both, each in its part of the button.
   enum FormType { kTextField, kComboBox, kListBox, kPushButton };
 
   static void GenerateFormAP(CPDF_Document* doc,

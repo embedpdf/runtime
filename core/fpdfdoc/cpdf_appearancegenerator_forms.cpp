@@ -72,19 +72,29 @@ using appearance_generator::ResolveDaFontForPersistentTarget;
 namespace {
 
 // A field's text laid out in |plate| (CPDF_RichTextLayout::ArrangeField())
-// and written in the /DA font, which is |map|'s first entry: Td, Tf and a
-// string per run. |content_height| receives the height the lines take.
-ByteString FieldText(CPDF_AnnotFontMap& map,
-                     const CPDF_RichTextLayout::Options& options,
-                     CPDF_RichTextLayout::Field field,
-                     const CFX_FloatRect& plate,
-                     float* content_height = nullptr) {
+// in the /DA font, which is |map|'s first entry.
+CPDF_RichTextLayout::Result ArrangeFieldText(
+    CPDF_AnnotFontMap& map,
+    const CPDF_RichTextLayout::Options& options,
+    CPDF_RichTextLayout::Field field,
+    const CFX_FloatRect& plate) {
   const CPDF_AnnotFontMap::EntryFacts face = map.DescribeEntry(0);
   field.face_entry = 0;
   field.weight = face.weight;
   field.italic = face.italic;
   CPDF_RichTextLayout layout(&map, options);
-  const CPDF_RichTextLayout::Result laid = layout.ArrangeField(field, plate);
+  return layout.ArrangeField(field, plate);
+}
+
+// A field's text laid out in |plate| (ArrangeFieldText()) and written: Td, Tf
+// and a string per run. |content_height| receives the height the lines take.
+ByteString FieldText(CPDF_AnnotFontMap& map,
+                     const CPDF_RichTextLayout::Options& options,
+                     CPDF_RichTextLayout::Field field,
+                     const CFX_FloatRect& plate,
+                     float* content_height = nullptr) {
+  const CPDF_RichTextLayout::Result laid =
+      ArrangeFieldText(map, options, std::move(field), plate);
   if (content_height) {
     *content_height = laid.content_height;
   }
@@ -483,12 +493,64 @@ void BuildCheckboxBoxStream(fxcrt::ostringstream& stream,
 // How a push button lays out its caption and its icon: /MK /TP (ISO 32000-2
 // Table 192). A number the table doesn't list is 0, the caption alone, as an
 // absent one is.
-constexpr int kButtonShowsIconAlone = 1;
+enum class ButtonLayout {
+  kCaptionAlone = 0,
+  kIconAlone = 1,
+  kCaptionBelowIcon = 2,
+  kCaptionAboveIcon = 3,
+  kCaptionRightOfIcon = 4,
+  kCaptionLeftOfIcon = 5,
+  kCaptionOverIcon = 6,
+};
 
-int ButtonTextPosition(const CPDF_Dictionary* annot_dict) {
+ButtonLayout ButtonLayoutOf(const CPDF_Dictionary* annot_dict) {
   RetainPtr<const CPDF_Dictionary> mk = annot_dict->GetDictFor("MK");
   const int position = mk ? mk->GetIntegerFor("TP") : 0;
-  return position >= 0 && position <= 6 ? position : 0;
+  return position >= 0 && position <= 6 ? static_cast<ButtonLayout>(position)
+                                        : ButtonLayout::kCaptionAlone;
+}
+
+// The normal icon of a push button (/MK /I) when it can be drawn. An icon is
+// drawn by reference, so only one that is an object of its own can be: a
+// file always holds a stream so.
+RetainPtr<const CPDF_Stream> ButtonIconOf(const CPDF_Dictionary* mk_dict) {
+  RetainPtr<const CPDF_Stream> icon =
+      mk_dict ? mk_dict->GetStreamFor(pdfium::appearance::kI) : nullptr;
+  return icon && icon->GetObjNum() != 0 ? icon : nullptr;
+}
+
+// True when `stream` is one of the icons the widget's /MK names. An
+// appearance is never written into one: it would draw over the picture.
+bool IsAnIconOf(const CPDF_Dictionary* annot_dict, const CPDF_Stream* stream) {
+  RetainPtr<const CPDF_Dictionary> mk = annot_dict->GetDictFor("MK");
+  if (!mk || stream->GetObjNum() == 0) {
+    return false;
+  }
+  for (const char* key : {pdfium::appearance::kI, pdfium::appearance::kRI,
+                          pdfium::appearance::kIX}) {
+    RetainPtr<const CPDF_Stream> icon = mk->GetStreamFor(key);
+    if (icon && icon->GetObjNum() == stream->GetObjNum()) {
+      return true;
+    }
+  }
+  return false;
+}
+
+// True for a push button that draws no caption beside its icon: one that
+// shows its icon alone (/MK /TP 1), and one that shows both (2 to 6) when it
+// has an icon and no caption. GenerateIconButtonAP() draws these.
+bool ButtonDrawsNoCaption(const CPDF_Dictionary* annot_dict) {
+  switch (ButtonLayoutOf(annot_dict)) {
+    case ButtonLayout::kCaptionAlone:
+      return false;
+    case ButtonLayout::kIconAlone:
+      return true;
+    default: {
+      RetainPtr<const CPDF_Dictionary> mk = annot_dict->GetDictFor("MK");
+      return ButtonIconOf(mk.Get()) &&
+             mk->GetUnicodeTextFor(pdfium::appearance::kCA).IsEmpty();
+    }
+  }
 }
 
 // The box an icon takes where it is drawn: its /BBox through its /Matrix.
@@ -558,19 +620,174 @@ std::optional<CFX_Matrix> IconPlacement(const CFX_FloatRect& icon,
                     bottom - icon.bottom * scale_y);
 }
 
-// A push button in every layout but the icon alone, which
-// GenerateIconButtonAP() draws: background and border as a text field draws
-// them, and the caption (/MK /CA) on one line, centred both ways, in the /DA
-// font and colour. In the layouts that show a caption and an icon (/MK /TP 2
-// to 6) the icon is not drawn, and the caption takes the whole button.
-void GeneratePushButtonFormAP(fxcrt::ostringstream& app_stream,
-                              const CPDF_Dictionary* annot_dict,
-                              const CFX_FloatRect& bbox,
-                              const DefaultAppearanceInfo& da_info,
-                              CPDF_AnnotFontMap& map,
-                              const CPDF_RichTextLayout::Options& options) {
+// The part of a push button its icon is fitted into, alone or with the
+// caption beside it: the button less the border's width at each edge, or the
+// whole button when /MK /IF /FB says the icon reaches the edges.
+CFX_FloatRect ButtonPlate(const CFX_FloatRect& bbox,
+                          float border_width,
+                          const CPDF_IconFit& fit) {
+  CFX_FloatRect plate = bbox;
+  if (!fit.GetFittingBounds()) {
+    plate.Deflate(border_width, border_width);
+  }
+  return plate;
+}
+
+// Draws `icon` in `box`, fitted as `fit` says (IconPlacement()) and clipped
+// to the box, by the name /FRM. False when nothing is drawn: an icon or a
+// box without area.
+bool WriteButtonIcon(fxcrt::ostringstream& content,
+                     const CPDF_Stream* icon,
+                     const CFX_FloatRect& box,
+                     const CPDF_IconFit& fit) {
+  const std::optional<CFX_Matrix> placement =
+      IconPlacement(IconBox(icon), box, fit);
+  if (!placement.has_value()) {
+    return false;
+  }
+  content << "q\n";
+  WriteRect(content, box) << " re W n\n";
+  WriteMatrix(content, placement.value()) << " cm\n/FRM Do\nQ\n";
+  return true;
+}
+
+// Names the icon an appearance draws /FRM in its resources, as Acrobat
+// writes an image field, so the file holds the picture once, for /MK and
+// for /AP.
+void NameButtonIcon(CPDF_Dictionary* resources,
+                    CPDF_Document* doc,
+                    uint32_t icon_number) {
+  resources->SetNewFor<CPDF_Dictionary>("XObject")->SetNewFor<CPDF_Reference>(
+      "FRM", doc, icon_number);
+}
+
+// Where a push button that shows both draws its caption and its icon.
+struct ButtonParts {
+  CFX_FloatRect caption;
+  CFX_FloatRect icon;  // without area when the caption takes the whole plate
+};
+
+// Shares `plate` between a caption and an icon by the rule of PDFium's form
+// filler (GetPushButtonAppStream() in fpdfsdk/cpdfsdk_appstream.cpp), so a
+// button looks the same whichever drew it. Below or above the icon, the
+// caption takes a strip as high as its line; right or left of it, a strip
+// as wide as its text; the icon takes the rest. A caption that needs more
+// than the plate has takes all of it, and no icon is drawn. A caption whose
+// size is fitted (a font size of 0) takes a third of the plate, and is
+// fitted to that. Over the icon, both take the whole plate. `caption` is the
+// room the caption takes at its font size, and is not read when `fitted`.
+ButtonParts SplitButton(ButtonLayout layout,
+                        const CFX_FloatRect& plate,
+                        const CFX_SizeF& caption,
+                        bool fitted) {
+  ButtonParts parts = {plate, plate};
+  if (layout == ButtonLayout::kCaptionOverIcon) {
+    return parts;
+  }
+  const bool stacked = layout == ButtonLayout::kCaptionBelowIcon ||
+                       layout == ButtonLayout::kCaptionAboveIcon;
+  const float room = stacked ? plate.Height() : plate.Width();
+  const float strip =
+      fitted ? room / 3.0f : (stacked ? caption.height : caption.width);
+  if (strip > room) {
+    parts.icon = CFX_FloatRect();
+    return parts;
+  }
+  switch (layout) {
+    case ButtonLayout::kCaptionBelowIcon:
+      parts.caption.top = plate.bottom + strip;
+      parts.icon.bottom = parts.caption.top;
+      break;
+    case ButtonLayout::kCaptionAboveIcon:
+      parts.caption.bottom = plate.top - strip;
+      parts.icon.top = parts.caption.bottom;
+      break;
+    case ButtonLayout::kCaptionRightOfIcon:
+      parts.caption.left = plate.right - strip;
+      parts.icon.right = parts.caption.left;
+      break;
+    case ButtonLayout::kCaptionLeftOfIcon:
+      parts.caption.right = plate.left + strip;
+      parts.icon.left = parts.caption.right;
+      break;
+    default:
+      break;
+  }
+  return parts;
+}
+
+// A push button's caption as the layout takes it: one line, centred both
+// ways.
+CPDF_RichTextLayout::Field ButtonCaptionField(const WideString& caption,
+                                              float font_size) {
+  CPDF_RichTextLayout::Field field;
+  field.text = caption;
+  field.size = font_size;
+  field.alignment = 1;
+  field.centered = true;
+  return field;
+}
+
+// The room a caption takes at `font_size`: its line's width and height.
+CFX_SizeF ButtonCaptionSize(CPDF_AnnotFontMap& map,
+                            const CPDF_RichTextLayout::Options& options,
+                            const WideString& caption,
+                            float font_size,
+                            const CFX_FloatRect& plate) {
+  const CPDF_RichTextLayout::Result laid = ArrangeFieldText(
+      map, options, ButtonCaptionField(caption, font_size), plate);
+  float width = 0;
+  for (const CPDF_RichTextLayout::Line& line : laid.lines) {
+    width = std::max(width, line.width);
+  }
+  return CFX_SizeF(width, laid.content_height);
+}
+
+// Writes a push button's caption laid out in `body`, in the /DA font and
+// colour, clipped to `clip`.
+void WriteButtonCaption(fxcrt::ostringstream& app_stream,
+                        const WideString& caption,
+                        const CFX_FloatRect& body,
+                        const CFX_FloatRect& clip,
+                        const DefaultAppearanceInfo& da_info,
+                        CPDF_AnnotFontMap& map,
+                        const CPDF_RichTextLayout::Options& options) {
+  const ByteString text = FieldText(
+      map, options, ButtonCaptionField(caption, da_info.font_size), body);
+  if (text.IsEmpty()) {
+    return;
+  }
+  app_stream << "q\n";
+  WriteRect(app_stream, clip) << " re W n\n";
+  app_stream << "BT\n"
+             << GenerateColorAP(da_info.text_color, PaintOperation::kFill)
+             << text << "ET\nQ\n";
+}
+
+// A push button that draws a caption (GenerateIconButtonAP() draws the ones
+// that draw none): background and border as a text field draws them, and the
+// caption (/MK /CA) on one line, centred both ways, in the /DA font and
+// colour.
+//
+// The caption alone (/MK /TP 0, or any layout without an icon) takes the
+// whole button inside its border. In the layouts that show a caption and an
+// icon (/MK /TP 2 to 6), a button that has an icon (/MK /I) draws both, each
+// in the part SplitButton() gives it: the icon first, fitted into its part
+// as /MK /IF says and clipped to it, then the caption in the middle of its
+// part, so over the icon the caption is on top. When the caption leaves the
+// icon no room, the caption is drawn alone.
+//
+// Returns the object number of the icon it drew, which the appearance's
+// resources must name /FRM (NameButtonIcon()), or 0.
+uint32_t GeneratePushButtonFormAP(fxcrt::ostringstream& app_stream,
+                                  const CPDF_Dictionary* annot_dict,
+                                  const CFX_FloatRect& bbox,
+                                  const DefaultAppearanceInfo& da_info,
+                                  CPDF_AnnotFontMap& map,
+                                  const CPDF_RichTextLayout::Options& options) {
+  RetainPtr<const CPDF_Dictionary> mk_dict = annot_dict->GetDictFor("MK");
   const AppearanceCharacteristics mk =
-      GetAppearanceCharacteristics(annot_dict->GetDictFor("MK"));
+      GetAppearanceCharacteristics(mk_dict.Get());
   const BorderStyleInfo bs = GetBorderStyleInfo(annot_dict->GetDictFor("BS"));
   const float bw = bs.width;
 
@@ -578,29 +795,37 @@ void GeneratePushButtonFormAP(fxcrt::ostringstream& app_stream,
   BuildCheckboxBoxStream(app_stream, mk, bs, bbox);
   app_stream << "Q\n";
   if (mk.caption.IsEmpty()) {
-    return;
+    return 0;
+  }
+
+  const ButtonLayout layout = ButtonLayoutOf(annot_dict);
+  RetainPtr<const CPDF_Stream> icon = layout == ButtonLayout::kCaptionAlone
+                                          ? nullptr
+                                          : ButtonIconOf(mk_dict.Get());
+  if (icon) {
+    const CPDF_IconFit fit(mk_dict->GetDictFor("IF"));
+    const CFX_FloatRect plate = ButtonPlate(bbox, bw, fit);
+    const bool fitted = FXSYS_IsFloatZero(da_info.font_size);
+    const ButtonParts parts =
+        SplitButton(layout, plate,
+                    fitted ? CFX_SizeF()
+                           : ButtonCaptionSize(map, options, mk.caption,
+                                               da_info.font_size, plate),
+                    fitted);
+    if (WriteButtonIcon(app_stream, icon.Get(), parts.icon, fit)) {
+      WriteButtonCaption(app_stream, mk.caption, parts.caption, parts.caption,
+                         da_info, map, options);
+      return icon->GetObjNum();
+    }
   }
 
   CFX_FloatRect body_rect = bbox;
   body_rect.Deflate(2.0f * bw, bw);
-  CPDF_RichTextLayout::Field field;
-  field.text = mk.caption;
-  field.size = da_info.font_size;
-  field.alignment = 1;
-  field.centered = true;
-  const ByteString caption =
-      FieldText(map, options, std::move(field), body_rect);
-  if (caption.IsEmpty()) {
-    return;
-  }
-
-  app_stream << "q\n";
   CFX_FloatRect clip_rect = bbox;
   clip_rect.Deflate(bw, bw);
-  WriteRect(app_stream, clip_rect) << " re W n\n";
-  app_stream << "BT\n"
-             << GenerateColorAP(da_info.text_color, PaintOperation::kFill)
-             << caption << "ET\nQ\n";
+  WriteButtonCaption(app_stream, mk.caption, body_rect, clip_rect, da_info, map,
+                     options);
+  return 0;
 }
 
 // The symbol a check box or radio button shows when on, named by the
@@ -782,21 +1007,18 @@ uint32_t CreateFormXObjectStream(
   return stream->GetObjNum();
 }
 
-// A push button that shows its icon alone (/MK /TP 1): background and border
-// as every push button has them, and the normal icon (/MK /I), a form
-// XObject of its own, drawn inside the border. The icon is fitted into the
-// button less the border's width at each edge, or into the whole button when
-// /MK /IF /FB says so (IconPlacement()), and clipped to that plate. The
-// appearance names it /FRM in its resources, as Acrobat writes an image
-// field, so the file holds the picture once, for /MK and for /AP. The button
-// is laid out in the frame its quarter turn gives (/MK /R), as every field's
-// contents are.
+// A push button that draws no caption (ButtonDrawsNoCaption()): background
+// and border as every push button has them, and the normal icon (/MK /I), a
+// form XObject of its own, drawn inside the border. The icon is fitted into
+// the button's plate (ButtonPlate()) as /MK /IF says, and clipped to it. The
+// button is laid out in the frame its quarter turn gives (/MK /R), as every
+// field's contents are.
 //
-// It draws no caption, so it needs no /DA and no font, and without an icon
-// it is the box alone. Written into the file, the appearance is a new
-// stream, as a check box's are: the old /N may be another widget's too, or
-// the icon itself. The old /N is not deleted, nor is an icon it drew: a save
-// writes only what the document still reaches.
+// It needs no /DA and no font, and without an icon it is the box alone.
+// Written into the file, the appearance is a new stream, as a check box's
+// are: the old /N may be another widget's too, or the icon itself. The old
+// /N is not deleted, nor is an icon it drew: a save writes only what the
+// document still reaches.
 void GenerateIconButtonAP(APGenerationTarget* target,
                           const CPDF_Dictionary* annot_dict) {
   CPDF_Document* const doc = target->doc;
@@ -812,25 +1034,13 @@ void GenerateIconButtonAP(APGenerationTarget* target,
   BuildCheckboxBoxStream(content, mk, bs, dims.bbox);
   content << "Q\n";
 
-  // An icon is drawn by reference, so only one that is an object of its own
-  // can be: a file always holds a stream so.
   RetainPtr<CPDF_Dictionary> resources;
-  RetainPtr<const CPDF_Stream> icon =
-      mk_dict ? mk_dict->GetStreamFor(pdfium::appearance::kI) : nullptr;
-  if (icon && icon->GetObjNum() != 0) {
+  if (RetainPtr<const CPDF_Stream> icon = ButtonIconOf(mk_dict.Get())) {
     const CPDF_IconFit fit(mk_dict->GetDictFor("IF"));
-    CFX_FloatRect plate = dims.bbox;
-    if (!fit.GetFittingBounds()) {
-      plate.Deflate(bs.width, bs.width);
-    }
-    if (const std::optional<CFX_Matrix> placement =
-            IconPlacement(IconBox(icon.Get()), plate, fit)) {
-      content << "q\n";
-      WriteRect(content, plate) << " re W n\n";
-      WriteMatrix(content, placement.value()) << " cm\n/FRM Do\nQ\n";
+    if (WriteButtonIcon(content, icon.Get(),
+                        ButtonPlate(dims.bbox, bs.width, fit), fit)) {
       resources = doc->New<CPDF_Dictionary>();
-      resources->SetNewFor<CPDF_Dictionary>("XObject")
-          ->SetNewFor<CPDF_Reference>("FRM", doc, icon->GetObjNum());
+      NameButtonIcon(resources.Get(), doc, icon->GetObjNum());
     }
   }
 
@@ -857,10 +1067,10 @@ bool GenerateFormAPToTarget(APGenerationTarget* target,
     return false;
   }
 
-  // A push button that shows its icon alone draws no text: it needs no /DA
-  // and no font.
+  // A push button that draws no caption draws no text: it needs no /DA and
+  // no font.
   if (type == CPDF_AppearanceGenerator::kPushButton &&
-      ButtonTextPosition(annot_dict) == kButtonShowsIconAlone) {
+      ButtonDrawsNoCaption(annot_dict)) {
     GenerateIconButtonAP(target, annot_dict);
     return true;
   }
@@ -951,6 +1161,8 @@ bool GenerateFormAPToTarget(APGenerationTarget* target,
   const AnnotationDimensionsAndColor dims =
       GetAnnotationDimensionsAndColor(annot_dict);
   fxcrt::ostringstream app_stream;
+  // The icon a push button drew beside its caption, by object number.
+  uint32_t drawn_icon = 0;
   switch (type) {
     case CPDF_AppearanceGenerator::kTextField:
       GenerateTextFieldFormAP(app_stream, annot_dict, dims.bbox,
@@ -967,8 +1179,9 @@ bool GenerateFormAPToTarget(APGenerationTarget* target,
                             default_appearance_info.value(), map, options);
       break;
     case CPDF_AppearanceGenerator::kPushButton:
-      GeneratePushButtonFormAP(app_stream, annot_dict, dims.bbox,
-                               default_appearance_info.value(), map, options);
+      drawn_icon = GeneratePushButtonFormAP(app_stream, annot_dict, dims.bbox,
+                                            default_appearance_info.value(),
+                                            map, options);
       break;
   }
 
@@ -979,6 +1192,9 @@ bool GenerateFormAPToTarget(APGenerationTarget* target,
     }
     auto resources_dict = GenerateResourcesDict(
         doc, GenerateExtGStateDict(*annot_dict, "Normal"), std::move(fonts));
+    if (drawn_icon != 0) {
+      NameButtonIcon(resources_dict.Get(), doc, drawn_icon);
+    }
     target->ephemeral_fonts = std::move(owned_map);
     return GenerateAPDict(
         target, annot_dict, &app_stream, std::move(resources_dict),
@@ -992,7 +1208,13 @@ bool GenerateFormAPToTarget(APGenerationTarget* target,
   RetainPtr<CPDF_Dictionary> ap_dict =
       annot_dict->GetOrCreateDictFor(pdfium::annotation::kAP);
   RetainPtr<CPDF_Stream> normal_stream = ap_dict->GetMutableStreamFor("N");
-  if (!normal_stream) {
+  // An appearance that draws an icon is a new stream, as an icon-only
+  // button's is: the old /N may be another widget's too, and its resources
+  // may be shared, where /FRM would name this button's icon for all of them.
+  // And no appearance is written into a stream that is one of the widget's
+  // icons.
+  if (!normal_stream || drawn_icon != 0 ||
+      IsAnIconOf(annot_dict, normal_stream.Get())) {
     normal_stream =
         doc->NewIndirect<CPDF_Stream>(pdfium::MakeRetain<CPDF_Dictionary>());
     ap_dict->SetNewFor<CPDF_Reference>("N", doc, normal_stream->GetObjNum());
@@ -1005,8 +1227,12 @@ bool GenerateFormAPToTarget(APGenerationTarget* target,
   stream_dict->SetNewFor<CPDF_Name>("Subtype", "Form");
   stream_dict->SetMatrixFor("Matrix", dims.matrix);
   stream_dict->SetRectFor("BBox", dims.bbox);
-  stream_dict->GetOrCreateDictFor("Resources")
-      ->SetFor("Font", std::move(resource_font_dict));
+  RetainPtr<CPDF_Dictionary> resources =
+      stream_dict->GetOrCreateDictFor("Resources");
+  resources->SetFor("Font", std::move(resource_font_dict));
+  if (drawn_icon != 0) {
+    NameButtonIcon(resources.Get(), doc, drawn_icon);
+  }
   return true;
 }
 

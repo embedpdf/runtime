@@ -1715,7 +1715,16 @@ FPDF_EXPORT int FPDF_CALLCONV EPDFAnnot_GetMKRotation(FPDF_ANNOTATION annot);
 //             32000-2 Table 250; without one: always scaled, keeping its
 //             proportions, in the middle). It draws no caption, and without
 //             an icon it is the box alone. In the layouts that show a
-//             caption and an icon (/MK /TP 2 to 6) the icon is not drawn.
+//             caption and an icon (/MK /TP 2 to 6), a button that has both
+//             draws both inside the border: the caption in a strip as high
+//             as its line below or above the icon, or as wide as its text
+//             right or left of it, and the icon fitted into the rest; over
+//             the icon both take all of it, the caption on top. A caption
+//             whose font size is 0 takes a third instead, and is fitted to
+//             it. A caption too large for the button is drawn alone. Without
+//             an icon the caption is drawn alone, and without a caption the
+//             icon. A caption needs a /DA: a button that has a caption and
+//             none is left as it was.
 //   - /Sig, and a widget in no field -> its box: the background and border
 //             as a text field draws them. It replaces whatever the widget
 //             shows, a signature drawn into it included.
