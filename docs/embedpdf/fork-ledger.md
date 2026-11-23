@@ -351,7 +351,13 @@ met only in buttons other apps made. Either way the icon fit (`/MK /IF`) is read
 upstream's `CPDF_IconFit` and the icon is placed by our own `IconPlacement`, by ISO 32000-2 Table
 250: upstream's own placement (`CPDF_IconFit::GetScale` and `GetImageOffset`, used by its form
 filler) puts an icon whose fit names no `/A` at the bottom left, where the table's default is the
-middle, and reads an icon narrower than one unit as one unit wide.
+middle, and reads an icon narrower than one unit as one unit wide. A push button's appearance is
+a new stream on every redraw, as a check box's are: the stream it had may be another widget's or
+a picture the button showed, so it is never written into, and the icon its resources named goes
+with it. Before a form drawer replaces an appearance, a widget whose `/AP` is an indirect object
+gets a copy of its own (`OwnAppearanceDict`), and `epdf_annot.cpp` does the same for `/MK` before
+a setter writes it (`OwnMKForWriting`): another widget may name the same dictionary. An icon is a
+form XObject everywhere (`ButtonIconOf`, `MKIconForm`).
 **Guarded by.** `check-fork-tags.py` fails when upstream's files differ from upstream
 (`fork-pristine.txt`); `upstream-preview.py` lists new upstream callers of `CPDF_GenerateAP::`, and
 upstream's commits to its generator. `epdf_widget_drawing_embeddertest.cpp` for a button's icon;

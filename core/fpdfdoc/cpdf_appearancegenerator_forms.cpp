@@ -512,28 +512,34 @@ ButtonLayout ButtonLayoutOf(const CPDF_Dictionary* annot_dict) {
 
 // The normal icon of a push button (/MK /I) when it can be drawn. An icon is
 // drawn by reference, so only one that is an object of its own can be: a
-// file always holds a stream so.
+// file always holds a stream so. And an icon is a form XObject (ISO 32000-2
+// Table 192): an entry that names anything else, an image say, is no icon,
+// here as for EPDFAnnot_GetMKIcon() and EPDFDoc_GetDrawings().
 RetainPtr<const CPDF_Stream> ButtonIconOf(const CPDF_Dictionary* mk_dict) {
   RetainPtr<const CPDF_Stream> icon =
       mk_dict ? mk_dict->GetStreamFor(pdfium::appearance::kI) : nullptr;
-  return icon && icon->GetObjNum() != 0 ? icon : nullptr;
+  return icon && icon->GetObjNum() != 0 &&
+                 icon->GetDict()->GetNameFor("Subtype") == "Form"
+             ? icon
+             : nullptr;
 }
 
-// True when `stream` is one of the icons the widget's /MK names. An
-// appearance is never written into one: it would draw over the picture.
-bool IsAnIconOf(const CPDF_Dictionary* annot_dict, const CPDF_Stream* stream) {
-  RetainPtr<const CPDF_Dictionary> mk = annot_dict->GetDictFor("MK");
-  if (!mk || stream->GetObjNum() == 0) {
-    return false;
-  }
-  for (const char* key : {pdfium::appearance::kI, pdfium::appearance::kRI,
-                          pdfium::appearance::kIX}) {
-    RetainPtr<const CPDF_Stream> icon = mk->GetStreamFor(key);
-    if (icon && icon->GetObjNum() == stream->GetObjNum()) {
-      return true;
+// A widget's /AP, to replace an appearance in: a dictionary of the widget's
+// own. One that is an indirect object may be another widget's too, and a new
+// /N in it would show in that widget as well. So the widget gets a copy
+// first, which names the same appearances.
+RetainPtr<CPDF_Dictionary> OwnAppearanceDict(CPDF_Document* doc,
+                                             CPDF_Dictionary* annot_dict) {
+  RetainPtr<const CPDF_Object> entry =
+      annot_dict->GetObjectFor(pdfium::annotation::kAP);
+  if (entry && entry->IsReference()) {
+    RetainPtr<const CPDF_Dictionary> shared =
+        annot_dict->GetDictFor(pdfium::annotation::kAP);
+    if (shared) {
+      annot_dict->SetFor(pdfium::annotation::kAP, shared->CloneForHolder(doc));
     }
   }
-  return false;
+  return annot_dict->GetOrCreateDictFor(pdfium::annotation::kAP);
 }
 
 // True for a push button that draws no caption beside its icon: one that
@@ -1053,7 +1059,7 @@ void GenerateIconButtonAP(APGenerationTarget* target,
   }
   const uint32_t normal_obj_num = CreateFormXObjectStream(
       doc, content, dims.bbox, dims.matrix, std::move(resources));
-  target->persistent_annot_dict->GetOrCreateDictFor(pdfium::annotation::kAP)
+  OwnAppearanceDict(doc, target->persistent_annot_dict)
       ->SetNewFor<CPDF_Reference>("N", doc, normal_obj_num);
 }
 
@@ -1205,19 +1211,24 @@ bool GenerateFormAPToTarget(APGenerationTarget* target,
   if (!resource_font_dict) {
     return false;  // registered /DA font without a resource: no appearance
   }
-  RetainPtr<CPDF_Dictionary> ap_dict =
-      annot_dict->GetOrCreateDictFor(pdfium::annotation::kAP);
-  RetainPtr<CPDF_Stream> normal_stream = ap_dict->GetMutableStreamFor("N");
-  // An appearance that draws an icon is a new stream, as an icon-only
-  // button's is: the old /N may be another widget's too, and its resources
-  // may be shared, where /FRM would name this button's icon for all of them.
-  // And no appearance is written into a stream that is one of the widget's
-  // icons.
-  if (!normal_stream || drawn_icon != 0 ||
-      IsAnIconOf(annot_dict, normal_stream.Get())) {
+  // A push button's appearance is a new stream every time, as a check box's
+  // are. The stream it had may be another widget's too; it may be a picture
+  // (the button's icon, now or before it was cleared), which is never drawn
+  // over; and its resources may still name an icon the button no longer
+  // shows, which would keep that picture in the file. The old stream is not
+  // opened for writing, so nothing of it is copied into a layer. The other
+  // fields write into the stream they have.
+  RetainPtr<CPDF_Stream> normal_stream;
+  if (type != CPDF_AppearanceGenerator::kPushButton) {
+    RetainPtr<CPDF_Dictionary> ap_dict =
+        annot_dict->GetMutableDictFor(pdfium::annotation::kAP);
+    normal_stream = ap_dict ? ap_dict->GetMutableStreamFor("N") : nullptr;
+  }
+  if (!normal_stream) {
     normal_stream =
         doc->NewIndirect<CPDF_Stream>(pdfium::MakeRetain<CPDF_Dictionary>());
-    ap_dict->SetNewFor<CPDF_Reference>("N", doc, normal_stream->GetObjNum());
+    OwnAppearanceDict(doc, annot_dict)
+        ->SetNewFor<CPDF_Reference>("N", doc, normal_stream->GetObjNum());
   }
   normal_stream->SetDataFromStringstreamAndRemoveFilter(&app_stream);
   RetainPtr<CPDF_Dictionary> stream_dict = normal_stream->GetMutableDict();
@@ -1405,7 +1416,7 @@ void CPDF_AppearanceGenerator::GenerateBoxFormAP(CPDF_Document* doc,
   // too, or a drawing someone placed in this one.
   const uint32_t normal_obj_num =
       CreateFormXObjectStream(doc, content, dims.bbox, dims.matrix);
-  annot_dict->GetOrCreateDictFor(pdfium::annotation::kAP)
+  OwnAppearanceDict(doc, annot_dict)
       ->SetNewFor<CPDF_Reference>("N", doc, normal_obj_num);
 }
 
@@ -1440,8 +1451,7 @@ void CPDF_AppearanceGenerator::GenerateCheckboxFormAP(
   const uint32_t yes_obj_num =
       CreateFormXObjectStream(doc, yes_content, dims.bbox, dims.matrix);
 
-  RetainPtr<CPDF_Dictionary> ap_dict =
-      annot_dict->GetOrCreateDictFor(pdfium::annotation::kAP);
+  RetainPtr<CPDF_Dictionary> ap_dict = OwnAppearanceDict(doc, annot_dict);
 
   ByteString on_state;
   RetainPtr<const CPDF_Dictionary> old_n = ap_dict->GetDictFor("N");
@@ -1550,8 +1560,7 @@ void CPDF_AppearanceGenerator::GenerateRadioButtonFormAP(
   const uint32_t yes_obj_num =
       CreateFormXObjectStream(doc, yes_content, dims.bbox, dims.matrix);
 
-  RetainPtr<CPDF_Dictionary> ap_dict =
-      annot_dict->GetOrCreateDictFor(pdfium::annotation::kAP);
+  RetainPtr<CPDF_Dictionary> ap_dict = OwnAppearanceDict(doc, annot_dict);
 
   ByteString on_state;
   RetainPtr<const CPDF_Dictionary> old_n = ap_dict->GetDictFor("N");

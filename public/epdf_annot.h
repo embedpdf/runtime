@@ -1563,6 +1563,10 @@ typedef enum {
 // Experimental EmbedPDF Extension API.
 // Set a color in the widget annotation's /MK dictionary.
 //
+// Every function here that writes a /MK entry writes the annotation's own
+// /MK. One that is an indirect object, which another widget may name too, is
+// copied into the annotation first, so the other widget keeps what it had.
+//
 //   annot - handle to an annotation.
 //   type  - EPDF_MK_COLOR_BC (border) or EPDF_MK_COLOR_BG (background).
 //   R,G,B - color components in 0..255.
@@ -1668,22 +1672,26 @@ FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV EPDFAnnot_SetMKIcon(FPDF_ANNOTATION annot,
 // Experimental EmbedPDF Extension API.
 // The form a widget's /MK names as its icon |which| (EPDF_MK_ICON_*), by
 // object number: a drawing EPDFDoc_ExportDrawing() exports, whoever wrote it.
-// 0 without one, for another subtype and an unknown |which|.
+// 0 without one, for an entry that names anything but a form XObject (an
+// image, say: it is no icon, and nothing draws, lists or exports it), for
+// another subtype and an unknown |which|.
 FPDF_EXPORT unsigned int FPDF_CALLCONV
 EPDFAnnot_GetMKIcon(FPDF_ANNOTATION annot, int which);
 
 // Experimental EmbedPDF Extension API.
-// Remove a widget's /MK icon |which| (EPDF_MK_ICON_*). The appearance is not
-// regenerated (EPDFAnnot_GenerateFormFieldAP()), and the icon is not deleted,
-// as EPDFAnnot_SetMKIcon() leaves the one it replaces. Returns false
-// for another subtype and an unknown |which|; true when there was no icon to
+// Remove a widget's /MK entry for the icon |which| (EPDF_MK_ICON_*),
+// whatever it names. The appearance is not regenerated
+// (EPDFAnnot_GenerateFormFieldAP()), and the icon is not deleted, as
+// EPDFAnnot_SetMKIcon() leaves the one it replaces. Returns false for
+// another subtype and an unknown |which|; true when there was no entry to
 // remove.
 FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV EPDFAnnot_ClearMKIcon(FPDF_ANNOTATION annot,
                                                           int which);
 
 // Experimental EmbedPDF Extension API.
-// Whether a widget's /MK holds the icon |which| (EPDF_MK_ICON_*): a stream.
-// False for another subtype and an unknown |which|.
+// Whether a widget's /MK names an icon |which| (EPDF_MK_ICON_*): a form
+// XObject, as EPDFAnnot_GetMKIcon() reads it. False for another subtype and
+// an unknown |which|.
 FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV EPDFAnnot_HasMKIcon(FPDF_ANNOTATION annot,
                                                         int which);
 
@@ -1728,6 +1736,15 @@ FPDF_EXPORT int FPDF_CALLCONV EPDFAnnot_GetMKRotation(FPDF_ANNOTATION annot);
 //   - /Sig, and a widget in no field -> its box: the background and border
 //             as a text field draws them. It replaces whatever the widget
 //             shows, a signature drawn into it included.
+//
+// A push button, a check box, a radio button and a box get new appearance
+// streams every time. The ones they had are not written into and not
+// deleted: one may be another widget's too, or a picture the widget showed,
+// and a save writes only what the document still reaches. So a picture a
+// button no longer names or draws is in no file saved in full afterwards. A
+// text field, a combo box and a list box write into the stream they have.
+// A widget whose /AP is an indirect object, which another widget may name
+// too, gets a copy of its own before an appearance in it is replaced.
 //
 //   annot - handle to a widget annotation.
 //

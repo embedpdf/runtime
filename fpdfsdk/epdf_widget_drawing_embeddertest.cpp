@@ -14,6 +14,7 @@
 #include <algorithm>
 #include <cstdlib>
 #include <fstream>
+#include <functional>
 #include <iterator>
 #include <map>
 #include <optional>
@@ -29,11 +30,13 @@
 #include "core/fpdfapi/parser/cpdf_boolean.h"
 #include "core/fpdfapi/parser/cpdf_dictionary.h"
 #include "core/fpdfapi/parser/cpdf_document.h"
+#include "core/fpdfapi/parser/cpdf_layer_document.h"
 #include "core/fpdfapi/parser/cpdf_name.h"
 #include "core/fpdfapi/parser/cpdf_number.h"
 #include "core/fpdfapi/parser/cpdf_reference.h"
 #include "core/fpdfapi/parser/cpdf_stream.h"
 #include "core/fpdfapi/parser/cpdf_stream_acc.h"
+#include "core/fpdfapi/parser/cpdf_string.h"
 #include "core/fpdfdoc/cpdf_annot.h"
 #include "core/fpdfdoc/cpdf_appearancegenerator.h"
 #include "core/fxcrt/fx_coordinates.h"
@@ -725,12 +728,13 @@ class EPDFWidgetDrawingEmbedderTest : public EmbedderTest {
 
   // A new widget of `field` on `page`, a page of `document`, standing at
   // `rect`, with a border of `border_width` when one is given: /BS /W, and no
-  // colour to paint it.
+  // colour to paint it. A check box's names its checked state `on_state`.
   ScopedFPDFAnnotation NewWidget(FPDF_DOCUMENT document,
                                  uint32_t field,
                                  FPDF_PAGE page,
                                  const FS_RECTF& rect,
-                                 std::optional<float> border_width = {}) {
+                                 std::optional<float> border_width = {},
+                                 const char* on_state = nullptr) {
     uint32_t number = 0;
     {
       ScopedFPDFAnnotation widget(
@@ -743,7 +747,7 @@ class EPDFWidgetDrawingEmbedderTest : public EmbedderTest {
       }
       number = EPDFAnnot_GetObjectNumber(widget.get());
     }
-    EXPECT_TRUE(EPDFForm_AttachWidget(document, field, number, nullptr, 0));
+    EXPECT_TRUE(EPDFForm_AttachWidget(document, field, number, on_state, 0));
     return ScopedFPDFAnnotation(EPDFPage_GetAnnotByObjectNumber(page, number));
   }
 
@@ -1535,9 +1539,9 @@ TEST_F(EPDFWidgetDrawingEmbedderTest, AnIconReadsUprightOnATurnedPage) {
 // A button another app made with a picture reads as having one in every
 // layout, and drawing its appearance again never takes the picture out of
 // the file: /MK /I still names the same form, and the form is as it was.
-// Drawn again, every layout that shows an icon shows this one, in a stream
-// of its own that leaves the other app's appearance as it was, and every
-// layout that shows a caption shows it. The document lists the form as a
+// Drawn again, every layout that shows an icon shows this one, and every
+// layout that shows a caption shows it, in a stream of its own that leaves
+// the other app's appearance as it was. The document lists the form as a
 // drawing, once, whoever made it.
 TEST_F(EPDFWidgetDrawingEmbedderTest, AForeignButtonKeepsItsIconInEveryLayout) {
   const std::string bytes = ForeignButtonsPdf();
@@ -1574,11 +1578,13 @@ TEST_F(EPDFWidgetDrawingEmbedderTest, AForeignButtonKeepsItsIconInEveryLayout) {
     const bool shows_icon = layout != 0;
     const bool shows_caption = layout != 1;
     EXPECT_EQ(shows_icon, DrawnIconOf(button.get()).has_value());
+    // A new stream in every layout, and it names the icon only where it
+    // draws it.
+    EXPECT_NE(foreign_appearance, AppearanceOf(button.get())->GetObjNum());
+    EXPECT_EQ(before.at(foreign_appearance),
+              ObjectGraph(doc)[foreign_appearance]);
+    EXPECT_EQ(shows_icon ? kForeignIcon : 0u, DrawnIconNumber(button.get()));
     if (shows_icon) {
-      EXPECT_EQ(kForeignIcon, DrawnIconNumber(button.get()));
-      EXPECT_NE(foreign_appearance, AppearanceOf(button.get())->GetObjNum());
-      EXPECT_EQ(before.at(foreign_appearance),
-                ObjectGraph(doc)[foreign_appearance]);
       const std::optional<DrawnIcon> icon = DrawnIconOf(button.get());
       ASSERT_TRUE(icon);
       const CFX_PointF red = RedPointOf(icon->picture);
@@ -2895,9 +2901,9 @@ TEST_F(EPDFWidgetDrawingEmbedderTest,
 }
 
 // Without an icon a button draws its caption alone in every layout that
-// shows a caption, exactly as the layout that shows the caption alone does,
-// and into the appearance it had. And that layout shows no icon, though the
-// button has one.
+// shows a caption, exactly as the layout that shows the caption alone does.
+// And that layout shows no icon, though the button has one. Each time the
+// appearance is a new stream, and the one before is left as it was.
 TEST_F(EPDFWidgetDrawingEmbedderTest,
        AButtonWithoutAnIconDrawsItsCaptionAlone) {
   ScopedFPDFAnnotation button = NewButton({100, 254, 304, 150}, 2.0f);
@@ -2907,25 +2913,30 @@ TEST_F(EPDFWidgetDrawingEmbedderTest,
   ASSERT_TRUE(EPDFAnnot_SetDefaultAppearance(button.get(), FPDF_FONT_HELVETICA,
                                              12, 0, 0, 0));
   ASSERT_TRUE(EPDFAnnot_GenerateFormFieldAP(button.get()));
-  const uint32_t appearance = AppearanceOf(button.get())->GetObjNum();
+  uint32_t appearance = AppearanceOf(button.get())->GetObjNum();
   const std::string alone = StreamBytes(AppearanceOf(button.get()).Get());
   ASSERT_NE(std::string::npos, alone.find("BT\n"));
+  // Drawn again, the button has a new stream that holds the same, and the
+  // one it had is untouched.
+  auto expect_drawn_alone_again = [&]() {
+    const std::string before = ObjectGraph(pdf())[appearance];
+    ASSERT_TRUE(EPDFAnnot_GenerateFormFieldAP(button.get()));
+    EXPECT_NE(appearance, AppearanceOf(button.get())->GetObjNum());
+    EXPECT_EQ(before, ObjectGraph(pdf())[appearance]);
+    EXPECT_EQ(alone, StreamBytes(AppearanceOf(button.get()).Get()));
+    EXPECT_EQ(0u, DrawnIconNumber(button.get()));
+    appearance = AppearanceOf(button.get())->GetObjNum();
+  };
   for (const auto& layout : kCaptionAndIconLayouts) {
     SCOPED_TRACE(layout.name);
     ASSERT_TRUE(EPDFAnnot_SetMKTextPosition(button.get(), layout.layout));
-    ASSERT_TRUE(EPDFAnnot_GenerateFormFieldAP(button.get()));
-    EXPECT_EQ(appearance, AppearanceOf(button.get())->GetObjNum());
-    EXPECT_EQ(alone, StreamBytes(AppearanceOf(button.get()).Get()));
-    EXPECT_EQ(0u, DrawnIconNumber(button.get()));
+    expect_drawn_alone_again();
   }
 
   const unsigned int drawing = AddDrawing(doc_.get());
   ASSERT_TRUE(EPDFAnnot_SetMKIcon(button.get(), EPDF_MK_ICON_I, drawing));
   ASSERT_TRUE(EPDFAnnot_SetMKTextPosition(button.get(), 0));
-  ASSERT_TRUE(EPDFAnnot_GenerateFormFieldAP(button.get()));
-  EXPECT_EQ(appearance, AppearanceOf(button.get())->GetObjNum());
-  EXPECT_EQ(alone, StreamBytes(AppearanceOf(button.get()).Get()));
-  EXPECT_EQ(0u, DrawnIconNumber(button.get()));
+  expect_drawn_alone_again();
   EXPECT_EQ(drawing, EPDFAnnot_GetMKIcon(button.get(), EPDF_MK_ICON_I));
 }
 
@@ -3283,4 +3294,402 @@ TEST_F(EPDFWidgetDrawingEmbedderTest, AButtonIsSharedAsTheFormFillerSharesIt) {
       KeepSample(SavedBytes(undrawn.get()), "button-layouts-not-drawn");
     }
   }
+}
+
+// A button whose appearance was its icon itself, as another app may write
+// one, has the icon cleared and is drawn again, in every layout. /MK no
+// longer names the picture, but another button still shows it: it is not
+// written into.
+TEST_F(EPDFWidgetDrawingEmbedderTest,
+       AClearedIconThatWasTheAppearanceIsNotWrittenInto) {
+  const unsigned int picture = AddDrawing(doc_.get());
+  ASSERT_NE(0u, picture);
+  const std::string picture_before = ObjectGraph(pdf())[picture];
+  for (int layout = 0; layout <= 6; ++layout) {
+    SCOPED_TRACE(layout);
+    ScopedFPDFPage page(FPDFPage_New(doc_.get(), layout + 1, 400, 400));
+    ASSERT_TRUE(page);
+    ScopedFPDFAnnotation cleared =
+        NewButton({10, 60, 130, 10}, 0.0f, page.get());
+    ScopedFPDFAnnotation other =
+        NewButton({140, 60, 260, 10}, 0.0f, page.get());
+    ASSERT_TRUE(cleared);
+    ASSERT_TRUE(other);
+    SetIcon(other.get(), picture);
+    ASSERT_TRUE(EPDFAnnot_SetMKText(cleared.get(), EPDF_MK_TEXT_CA,
+                                    GetFPDFWideString(L"Go").get()));
+    ASSERT_TRUE(EPDFAnnot_SetDefaultAppearance(
+        cleared.get(), FPDF_FONT_HELVETICA, 12, 0, 0, 0));
+    ASSERT_TRUE(EPDFAnnot_SetMKIcon(cleared.get(), EPDF_MK_ICON_I, picture));
+    ASSERT_TRUE(EPDFAnnot_SetMKTextPosition(cleared.get(), layout));
+    MutableDictOf(cleared.get())
+        ->GetOrCreateDictFor("AP")
+        ->SetNewFor<CPDF_Reference>("N", pdf(), picture);
+
+    ASSERT_TRUE(EPDFAnnot_ClearMKIcon(cleared.get(), EPDF_MK_ICON_I));
+    ASSERT_TRUE(EPDFAnnot_GenerateFormFieldAP(cleared.get()));
+
+    EXPECT_NE(picture, AppearanceOf(cleared.get())->GetObjNum());
+    EXPECT_EQ(picture_before, ObjectGraph(pdf())[picture]);
+    // The other button's picture is 100 by 50, in the middle of its box.
+    const Shown shown(page.get());
+    EXPECT_EQ(kRed, shown.At(170, 35));
+    EXPECT_EQ(kBlue, shown.At(230, 35));
+  }
+}
+
+// A picture a button no longer names is in no file saved in full once the
+// button is drawn again, whichever layout drew it: the new appearance names
+// no icon, and nothing reaches the appearance that did.
+TEST_F(EPDFWidgetDrawingEmbedderTest, AClearedPictureIsInNoFullSave) {
+  ScopedFPDFAnnotation button = NewButton({100, 254, 304, 150}, 2.0f);
+  ASSERT_TRUE(button);
+  const unsigned int picture = AddDrawing(doc_.get());
+  ASSERT_NE(0u, picture);
+  for (int layout = 1; layout <= 6; ++layout) {
+    SCOPED_TRACE(layout);
+    SetCaptionAndIcon(button.get(), picture, layout);
+    ASSERT_EQ(picture, DrawnIconNumber(button.get()));
+    ASSERT_EQ(1, StreamsHolding(SavedBytes(doc_.get()), kPictureMark));
+
+    ASSERT_TRUE(EPDFAnnot_ClearMKIcon(button.get(), EPDF_MK_ICON_I));
+    ASSERT_TRUE(EPDFAnnot_GenerateFormFieldAP(button.get()));
+    EXPECT_EQ(0u, DrawnIconNumber(button.get()));
+    EXPECT_TRUE(DrawingsOf(doc_.get()).empty());
+    EXPECT_EQ(0, StreamsHolding(SavedBytes(doc_.get()), kPictureMark));
+  }
+}
+
+// Two widgets may name one /MK. Every setter writes the widget's own: the
+// widget takes a copy first, with the same entries, and the other widget
+// keeps what it had. A call that changes nothing copies nothing.
+TEST_F(EPDFWidgetDrawingEmbedderTest,
+       AWidgetKeepsAnMKItSharesWhenTheOtherIsWritten) {
+  const unsigned int old_picture = AddDrawing(doc_.get());
+  const unsigned int new_picture =
+      AddDrawing(doc_.get(), Source::kVector, kGreen, kYellow);
+  ASSERT_NE(0u, old_picture);
+  ASSERT_NE(0u, new_picture);
+  struct Write {
+    const char* name;
+    // The /MK key it writes.
+    const char* key;
+    std::function<bool(FPDF_ANNOTATION)> write;
+  };
+  const Write kWrites[] = {
+      {"EPDFAnnot_SetMKIcon", "I",
+       [&](FPDF_ANNOTATION widget) {
+         return !!EPDFAnnot_SetMKIcon(widget, EPDF_MK_ICON_I, new_picture);
+       }},
+      {"EPDFAnnot_ClearMKIcon", "I",
+       [](FPDF_ANNOTATION widget) {
+         return !!EPDFAnnot_ClearMKIcon(widget, EPDF_MK_ICON_I);
+       }},
+      {"EPDFAnnot_SetMKText", "CA",
+       [](FPDF_ANNOTATION widget) {
+         return !!EPDFAnnot_SetMKText(widget, EPDF_MK_TEXT_CA,
+                                      GetFPDFWideString(L"Stop").get());
+       }},
+      {"EPDFAnnot_SetMKText, none", "CA",
+       [](FPDF_ANNOTATION widget) {
+         return !!EPDFAnnot_SetMKText(widget, EPDF_MK_TEXT_CA, nullptr);
+       }},
+      {"EPDFAnnot_SetMKTextPosition", "TP",
+       [](FPDF_ANNOTATION widget) {
+         return !!EPDFAnnot_SetMKTextPosition(widget, 4);
+       }},
+      {"EPDFAnnot_SetMKRotation", "R",
+       [](FPDF_ANNOTATION widget) {
+         return !!EPDFAnnot_SetMKRotation(widget, 90);
+       }},
+      {"EPDFAnnot_SetMKColor", "BC",
+       [](FPDF_ANNOTATION widget) {
+         return !!EPDFAnnot_SetMKColor(widget, EPDF_MK_COLOR_BC, 0, 255, 0);
+       }},
+      {"EPDFAnnot_ClearMKColor", "BC",
+       [](FPDF_ANNOTATION widget) {
+         return !!EPDFAnnot_ClearMKColor(widget, EPDF_MK_COLOR_BC);
+       }},
+  };
+  int page_index = 0;
+  for (const Write& write : kWrites) {
+    SCOPED_TRACE(write.name);
+    ScopedFPDFPage page(FPDFPage_New(doc_.get(), ++page_index, 400, 400));
+    ASSERT_TRUE(page);
+    ScopedFPDFAnnotation first = NewButton({10, 60, 130, 10}, 0.0f, page.get());
+    ScopedFPDFAnnotation second =
+        NewButton({140, 60, 260, 10}, 0.0f, page.get());
+    ASSERT_TRUE(first);
+    ASSERT_TRUE(second);
+    RetainPtr<CPDF_Dictionary> shared = pdf()->NewIndirect<CPDF_Dictionary>();
+    shared->SetNewFor<CPDF_Reference>("I", pdf(), old_picture);
+    shared->SetNewFor<CPDF_String>("CA", "Go");
+    shared->SetNewFor<CPDF_Number>("TP", 2);
+    RetainPtr<CPDF_Array> red = shared->SetNewFor<CPDF_Array>("BC");
+    red->AppendNew<CPDF_Number>(1);
+    red->AppendNew<CPDF_Number>(0);
+    red->AppendNew<CPDF_Number>(0);
+    for (FPDF_ANNOTATION widget : {first.get(), second.get()}) {
+      MutableDictOf(widget)->SetNewFor<CPDF_Reference>("MK", pdf(),
+                                                       shared->GetObjNum());
+    }
+    const std::string shared_before = ObjectGraph(pdf())[shared->GetObjNum()];
+
+    // A call that changes nothing leaves the widget naming the shared one.
+    ASSERT_TRUE(EPDFAnnot_SetMKTextPosition(first.get(), 2));
+    EXPECT_TRUE(DictOf(first.get())->GetObjectFor("MK")->IsReference());
+
+    ASSERT_TRUE(write.write(first.get()));
+
+    // The shared dictionary is as it was, and the second still names it.
+    EXPECT_EQ(shared_before, ObjectGraph(pdf())[shared->GetObjNum()]);
+    RetainPtr<const CPDF_Object> seconds_entry =
+        DictOf(second.get())->GetObjectFor("MK");
+    ASSERT_TRUE(seconds_entry->IsReference());
+    EXPECT_EQ(shared->GetObjNum(),
+              seconds_entry->AsReference()->GetRefObjNum());
+    EXPECT_EQ(old_picture, EPDFAnnot_GetMKIcon(second.get(), EPDF_MK_ICON_I));
+    EXPECT_EQ(2, EPDFAnnot_GetMKTextPosition(second.get()));
+
+    // The first has its own, with everything it didn't write as it was.
+    RetainPtr<const CPDF_Object> firsts_entry =
+        DictOf(first.get())->GetObjectFor("MK");
+    ASSERT_TRUE(firsts_entry);
+    EXPECT_FALSE(firsts_entry->IsReference());
+    RetainPtr<const CPDF_Dictionary> own =
+        DictOf(first.get())->GetDictFor("MK");
+    ASSERT_TRUE(own);
+    for (const char* key : {"I", "CA", "TP", "BC"}) {
+      if (ByteStringView(key) == ByteStringView(write.key)) {
+        continue;
+      }
+      SCOPED_TRACE(key);
+      ASSERT_TRUE(own->KeyExist(key));
+    }
+    if (ByteStringView(write.key) != "I") {
+      EXPECT_EQ(old_picture, EPDFAnnot_GetMKIcon(first.get(), EPDF_MK_ICON_I));
+    }
+    if (ByteStringView(write.key) != "CA") {
+      EXPECT_EQ(L"Go", own->GetUnicodeTextFor("CA"));
+    }
+    if (ByteStringView(write.key) != "TP") {
+      EXPECT_EQ(2, EPDFAnnot_GetMKTextPosition(first.get()));
+    }
+  }
+}
+
+// Two widgets may name one /AP. A widget that is drawn again gets an /AP of
+// its own first, and the other widget keeps the shared one and every
+// appearance it names: it shows what it showed.
+TEST_F(EPDFWidgetDrawingEmbedderTest,
+       AWidgetKeepsAnAPItSharesWhenTheOtherIsDrawnAgain) {
+  const unsigned int old_picture = AddDrawing(doc_.get());
+  const unsigned int new_picture =
+      AddDrawing(doc_.get(), Source::kVector, kGreen, kYellow);
+  ASSERT_NE(0u, old_picture);
+  ASSERT_NE(0u, new_picture);
+  enum class Kind {
+    kIconButton,
+    kCaptionAndIconButton,
+    kCaptionButton,
+    kCheckBox,
+    kSignatureBox
+  };
+  struct Case {
+    const char* name;
+    Kind kind;
+  };
+  const Case kCases[] = {
+      {"a button that shows its icon alone", Kind::kIconButton},
+      {"a button with a caption and an icon", Kind::kCaptionAndIconButton},
+      {"a button with a caption", Kind::kCaptionButton},
+      {"a check box", Kind::kCheckBox},
+      {"a signature box", Kind::kSignatureBox},
+  };
+  // The objects a dictionary names, and those the dictionaries in it name.
+  std::function<void(const CPDF_Dictionary*, std::vector<uint32_t>*)> named =
+      [&](const CPDF_Dictionary* dict, std::vector<uint32_t>* numbers) {
+        CPDF_DictionaryLocker locker(dict);
+        for (const auto& entry : locker) {
+          if (const CPDF_Reference* reference = entry.second->AsReference()) {
+            numbers->push_back(reference->GetRefObjNum());
+          } else if (const CPDF_Dictionary* inner =
+                         entry.second->AsDictionary()) {
+            named(inner, numbers);
+          }
+        }
+      };
+  int page_index = 0;
+  for (const Case& c : kCases) {
+    SCOPED_TRACE(c.name);
+    ScopedFPDFPage page(FPDFPage_New(doc_.get(), ++page_index, 400, 400));
+    ASSERT_TRUE(page);
+    auto make = [&](const FS_RECTF& rect) {
+      switch (c.kind) {
+        case Kind::kCheckBox:
+          return NewWidget(doc_.get(),
+                           NewField(doc_.get(), EPDF_FORMFIELD_FAMILY_CHECKBOX),
+                           page.get(), rect, {}, "Yes");
+        case Kind::kSignatureBox:
+          return NewSignatureWidget(rect, page.get());
+        default:
+          return NewButton(rect, 0.0f, page.get());
+      }
+    };
+    // As the widget stands first, and then changed so that it draws
+    // something else.
+    auto draw = [&](FPDF_ANNOTATION widget, bool changed) {
+      switch (c.kind) {
+        case Kind::kIconButton:
+          SetIcon(widget, changed ? new_picture : old_picture);
+          return;
+        case Kind::kCaptionAndIconButton:
+          SetCaptionAndIcon(widget, changed ? new_picture : old_picture,
+                            kCaptionBelow);
+          return;
+        case Kind::kCaptionButton:
+          ASSERT_TRUE(EPDFAnnot_SetMKText(
+              widget, EPDF_MK_TEXT_CA,
+              GetFPDFWideString(changed ? L"Stop here" : L"Go").get()));
+          ASSERT_TRUE(EPDFAnnot_SetDefaultAppearance(
+              widget, FPDF_FONT_HELVETICA, 12, 0, 0, 0));
+          ASSERT_TRUE(EPDFAnnot_GenerateFormFieldAP(widget));
+          return;
+        case Kind::kCheckBox:
+        case Kind::kSignatureBox:
+          ASSERT_TRUE(EPDFAnnot_SetMKColor(widget, EPDF_MK_COLOR_BG,
+                                           changed ? 0 : 255, 255, 0));
+          ASSERT_TRUE(EPDFAnnot_GenerateFormFieldAP(widget));
+          return;
+      }
+    };
+    ScopedFPDFAnnotation first = make({10, 60, 130, 10});
+    ScopedFPDFAnnotation second = make({140, 60, 260, 10});
+    ASSERT_TRUE(first);
+    ASSERT_TRUE(second);
+    draw(first.get(), /*changed=*/false);
+    draw(second.get(), /*changed=*/false);
+
+    // The second's /AP becomes an object of its own, and both name it.
+    RetainPtr<const CPDF_Dictionary> seconds_own =
+        DictOf(second.get())->GetDictFor("AP");
+    ASSERT_TRUE(seconds_own);
+    const uint32_t shared = pdf()->AddIndirectObject(seconds_own->Clone());
+    ASSERT_NE(0u, shared);
+    for (FPDF_ANNOTATION widget : {first.get(), second.get()}) {
+      MutableDictOf(widget)->SetNewFor<CPDF_Reference>("AP", pdf(), shared);
+    }
+    std::vector<uint32_t> kept = {shared};
+    named(ToDictionary(pdf()->GetOrParseIndirectObject(shared)).Get(), &kept);
+    ASSERT_GT(kept.size(), 1u);
+    std::map<uint32_t, std::string> before = ObjectGraph(pdf());
+    const uint32_t shown_before = Shown(page.get()).At(170, 35);
+
+    draw(first.get(), /*changed=*/true);
+
+    std::map<uint32_t, std::string> after = ObjectGraph(pdf());
+    for (uint32_t number : kept) {
+      SCOPED_TRACE(number);
+      EXPECT_EQ(before[number], after[number]);
+    }
+    RetainPtr<const CPDF_Object> seconds_entry =
+        DictOf(second.get())->GetObjectFor("AP");
+    ASSERT_TRUE(seconds_entry->IsReference());
+    EXPECT_EQ(shared, seconds_entry->AsReference()->GetRefObjNum());
+    EXPECT_EQ(shown_before, Shown(page.get()).At(170, 35));
+    // The first has its own, which names its new appearance.
+    RetainPtr<const CPDF_Object> firsts_entry =
+        DictOf(first.get())->GetObjectFor("AP");
+    ASSERT_TRUE(firsts_entry);
+    EXPECT_FALSE(firsts_entry->IsReference());
+    std::vector<uint32_t> firsts;
+    named(DictOf(first.get())->GetDictFor("AP").Get(), &firsts);
+    ASSERT_FALSE(firsts.empty());
+    for (uint32_t number : firsts) {
+      EXPECT_FALSE(before.contains(number)) << number;
+    }
+  }
+}
+
+// On a layer, drawing a button again copies nothing into the layer that it
+// leaves behind: not the appearance the button had, and not a picture, even
+// when the appearance was the picture itself. In every layout.
+TEST_F(EPDFWidgetDrawingEmbedderTest,
+       ARedrawnButtonCopiesNoOldAppearanceIntoALayer) {
+  for (bool appearance_is_the_icon : {false, true}) {
+    for (int layout = 0; layout <= 6; ++layout) {
+      SCOPED_TRACE(appearance_is_the_icon ? "/AP /N is the icon"
+                                          : "/AP /N is a stream of its own");
+      SCOPED_TRACE(layout);
+      std::string bytes = ForeignButtonsPdf();
+      if (appearance_is_the_icon) {
+        // Of the same length, so the file's offsets hold.
+        const std::string was = "/N " + std::to_string(14 + layout) + " 0 R >>";
+        const size_t at = bytes.find(was);
+        ASSERT_NE(std::string::npos, at);
+        bytes.replace(at, was.size(), "/N 6 0 R  >>");
+      }
+      embedpdf_test::LayerFixture foreign;
+      ASSERT_TRUE(foreign.OpenBytes({bytes.begin(), bytes.end()}));
+      auto* layer = static_cast<CPDF_LayerDocument*>(
+          CPDFDocumentFromFPDFDocument(foreign.layer));
+      ScopedFPDFPage page(FPDF_LoadPage(foreign.layer, 0));
+      ASSERT_TRUE(page);
+      ScopedFPDFAnnotation button(FPDFPage_GetAnnot(page.get(), layout));
+      ASSERT_TRUE(button);
+      const uint32_t old_appearance = AppearanceOf(button.get())->GetObjNum();
+      ASSERT_EQ(appearance_is_the_icon, old_appearance == kForeignIcon);
+      ASSERT_FALSE(layer->FindPromotedObject(old_appearance));
+      ASSERT_FALSE(layer->FindPromotedObject(kForeignIcon));
+
+      ASSERT_TRUE(EPDFLayer_BeginTransaction(foreign.layer));
+      ASSERT_TRUE(EPDFAnnot_GenerateFormFieldAP(button.get()));
+      ASSERT_TRUE(EPDFLayer_CommitTransaction(foreign.layer));
+
+      EXPECT_NE(old_appearance, AppearanceOf(button.get())->GetObjNum());
+      EXPECT_FALSE(layer->FindPromotedObject(old_appearance));
+      EXPECT_FALSE(layer->FindPromotedObject(kForeignIcon));
+    }
+  }
+}
+
+// An icon is a form XObject. A /MK entry that names anything else, an image
+// say, is no icon: it is not read as one, not listed, not drawn, and no call
+// sets one. The entry can still be removed.
+TEST_F(EPDFWidgetDrawingEmbedderTest, AnIconEntryThatNamesNoFormIsNoIcon) {
+  ScopedFPDFAnnotation button = NewButton({100, 254, 304, 150}, 2.0f);
+  ASSERT_TRUE(button);
+  RetainPtr<CPDF_Stream> image =
+      pdf()->NewIndirect<CPDF_Stream>(pdfium::MakeRetain<CPDF_Dictionary>());
+  RetainPtr<CPDF_Dictionary> image_dict = image->GetMutableDict();
+  image_dict->SetNewFor<CPDF_Name>("Type", "XObject");
+  image_dict->SetNewFor<CPDF_Name>("Subtype", "Image");
+  MutableDictOf(button.get())
+      ->GetOrCreateDictFor("MK")
+      ->SetNewFor<CPDF_Reference>("I", pdf(), image->GetObjNum());
+
+  EXPECT_EQ(0u, EPDFAnnot_GetMKIcon(button.get(), EPDF_MK_ICON_I));
+  EXPECT_FALSE(EPDFAnnot_HasMKIcon(button.get(), EPDF_MK_ICON_I));
+  EXPECT_TRUE(DrawingsOf(doc_.get()).empty());
+  EXPECT_FALSE(
+      EPDFAnnot_SetMKIcon(button.get(), EPDF_MK_ICON_RI, image->GetObjNum()));
+
+  // Where the icon shows alone the button is its box, and beside a caption
+  // the caption is drawn alone.
+  ASSERT_TRUE(EPDFAnnot_SetMKTextPosition(button.get(), 1));
+  ASSERT_TRUE(EPDFAnnot_GenerateFormFieldAP(button.get()));
+  EXPECT_FALSE(DrawnIconOf(button.get()));
+  EXPECT_EQ(0u, DrawnIconNumber(button.get()));
+  ASSERT_TRUE(EPDFAnnot_SetMKText(button.get(), EPDF_MK_TEXT_CA,
+                                  GetFPDFWideString(L"Go").get()));
+  ASSERT_TRUE(EPDFAnnot_SetDefaultAppearance(button.get(), FPDF_FONT_HELVETICA,
+                                             12, 0, 0, 0));
+  ASSERT_TRUE(EPDFAnnot_SetMKTextPosition(button.get(), kCaptionBelow));
+  ASSERT_TRUE(EPDFAnnot_GenerateFormFieldAP(button.get()));
+  EXPECT_FALSE(DrawnIconOf(button.get()));
+  EXPECT_EQ(0u, DrawnIconNumber(button.get()));
+  EXPECT_TRUE(DrawnCaptionOf(button.get()));
+
+  ASSERT_TRUE(EPDFAnnot_ClearMKIcon(button.get(), EPDF_MK_ICON_I));
+  EXPECT_FALSE(DictOf(button.get())->GetDictFor("MK")->KeyExist("I"));
 }
