@@ -305,8 +305,11 @@ FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV
 EPDFAnnot_SetNoColor(FPDF_ANNOTATION annot, FPDFANNOT_COLORTYPE type);
 
 // Experimental EmbedPDF Extension API.
-// Get the border style and width of an annotation. This function handles both
-// the modern /BS dictionary and the legacy /Border array. A border is dashed
+// Get the border style and width of an annotation, as ISO 32000-1 12.5.2
+// reads a border: from its /BS dictionary when it has one, and the legacy
+// /Border array is then not read at all; else from /Border; else a solid
+// border 1 wide. Every kind of annotation whose appearance is generated,
+// form fields included, is drawn from this same reading. A border is dashed
 // when it draws dashes: a dashed /BS whose /D is an empty array, like a
 // /Border whose dash array is empty, draws a solid line and reads solid.
 //
@@ -318,12 +321,23 @@ FPDF_EXPORT FPDF_ANNOT_BORDER_STYLE FPDF_CALLCONV
 EPDFAnnot_GetBorderStyle(FPDF_ANNOTATION annot, float* width);
 
 // Experimental EmbedPDF Extension API.
-// Set the border style and width of an annotation.
+// Set the border style and width of an annotation, in its /BS dictionary.
+//
+// An annotation that keeps its border in the legacy /Border array is given
+// that border as a /BS first (its width, and a dashed style with its dash
+// pattern when the array has one), so what this call does not set stays as
+// it read: a pattern stays stored. /Border is then removed. With a /BS
+// beside it, it is no longer read, and a reader that looks at /Border first
+// would go on showing the old border.
 //
 //   annot  - handle to an annotation.
-//   width  - the border width to be set.
+//   style  - the border style to be set. FPDF_ANNOT_BS_UNKNOWN removes
+//            /BS /S, which leaves a solid border.
+//   width  - the border width to be set. A negative width removes /BS /W,
+//            which leaves a border 1 wide.
 //
-// Returns true if successful.
+// Returns true if successful. A |style| that is no border style is refused
+// and nothing is written.
 FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV
 EPDFAnnot_SetBorderStyle(FPDF_ANNOTATION annot,
                          FPDF_ANNOT_BORDER_STYLE style,
@@ -421,6 +435,11 @@ EPDFAnnot_GetBorderDashPattern(FPDF_ANNOTATION annot,
 // The border style (/BS /S) is left as it is: only a dashed border draws the
 // pattern. A NULL |dash_array| or a |count| of 0 removes the pattern, and a
 // dashed border then draws the default dash [3].
+//
+// An annotation that keeps its border in the legacy /Border array is given
+// that border as a /BS first, and /Border is removed, as
+// EPDFAnnot_SetBorderStyle() does. Its width stays, and so does its style: a
+// /Border with a dash array is a dashed border, one without is solid.
 //
 //   annot      - handle to an annotation.
 //   dash_array - the dash pattern to be set.

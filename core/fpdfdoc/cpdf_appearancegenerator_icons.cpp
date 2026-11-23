@@ -41,7 +41,7 @@ using appearance_generator::GenerateExtGStateDict;
 using appearance_generator::GenerateFallbackFontDict;
 using appearance_generator::GenerateResourceFontDict;
 using appearance_generator::GenerateResourcesDict;
-using appearance_generator::GetBorderStyleInfo;
+using appearance_generator::GetAnnotBorderStyleInfo;
 using appearance_generator::GetBorderWidth;
 using appearance_generator::GetColorStringWithDefault;
 using appearance_generator::GetDashPatternString;
@@ -575,8 +575,7 @@ bool GenerateLinkAP(APGenerationTarget* target,
   app_stream << GetDashPatternString(annot_dict);
 
   // Determine border style
-  BorderStyleInfo border_info =
-      GetBorderStyleInfo(annot_dict->GetDictFor("BS"));
+  const BorderStyleInfo border_info = GetAnnotBorderStyleInfo(annot_dict);
 
   switch (border_info.style) {
     case BorderStyle::kUnderline: {

@@ -42,6 +42,7 @@
 #include "core/fpdfapi/parser/cpdf_stream_acc.h"
 #include "core/fpdfapi/parser/cpdf_string.h"
 #include "core/fpdfdoc/cpdf_annot.h"
+#include "core/fpdfdoc/cpdf_annot_border.h"
 #include "core/fpdfdoc/cpdf_annot_rotation.h"
 #include "core/fpdfdoc/cpdf_appearancegenerator.h"
 #include "core/fpdfdoc/cpdf_color_utils.h"
@@ -1384,21 +1385,34 @@ EPDFAnnot_ClearRectangleDifferences(FPDF_ANNOTATION annot) {
 
 namespace {
 
-RetainPtr<const CPDF_Array> GetExplicitBorderDashArray(
-    const CPDF_Dictionary* pAnnotDict) {
-  RetainPtr<const CPDF_Dictionary> pBSDict = pAnnotDict->GetDictFor("BS");
-  if (pBSDict) {
-    // /BS takes precedence over /Border. Its /D is the pattern as stored,
-    // whatever /S says: only a dashed border draws it.
-    return pBSDict->GetArrayFor("D");
+// The /BS a border setter writes into. An annotation that keeps its border in
+// /Border alone is given that border as a /BS first: its width, and a dashed
+// style with its pattern when the array has one. The setter then changes the
+// part it sets, and the rest stays as it read. /Border is removed: with a /BS
+// beside it a reader that follows ISO 32000-1 12.5.2 no longer looks at it,
+// and one that reads /Border first (PDFium's form filler does) would go on
+// showing the old border.
+RetainPtr<CPDF_Dictionary> BorderStyleDictForWrite(
+    CPDF_Dictionary* annot_dict) {
+  RetainPtr<CPDF_Dictionary> bs_dict = annot_dict->GetMutableDictFor("BS");
+  if (!bs_dict) {
+    const bool has_border_array =
+        !!annot_dict->GetArrayFor(pdfium::annotation::kBorder);
+    const fpdfdoc::AnnotBorder border = fpdfdoc::ReadAnnotBorder(annot_dict);
+    bs_dict = annot_dict->SetNewFor<CPDF_Dictionary>("BS");
+    if (has_border_array) {
+      bs_dict->SetNewFor<CPDF_Number>("W", border.width);
+      if (border.style == CPDF_Annot::BorderStyle::kDashed) {
+        bs_dict->SetNewFor<CPDF_Name>("S", "D");
+        RetainPtr<CPDF_Array> dash = bs_dict->SetNewFor<CPDF_Array>("D");
+        for (size_t i = 0; i < border.dash_array->size(); ++i) {
+          dash->AppendNew<CPDF_Number>(border.dash_array->GetFloatAt(i));
+        }
+      }
+    }
   }
-
-  RetainPtr<const CPDF_Array> pBorderArray =
-      pAnnotDict->GetArrayFor(pdfium::annotation::kBorder);
-  if (!pBorderArray || pBorderArray->size() < 4) {
-    return nullptr;
-  }
-  return pBorderArray->GetArrayAt(3);
+  annot_dict->RemoveFor(pdfium::annotation::kBorder);
+  return bs_dict;
 }
 
 }  // namespace
@@ -1412,7 +1426,7 @@ EPDFAnnot_GetBorderDashPatternCount(FPDF_ANNOTATION annot) {
   }
 
   RetainPtr<const CPDF_Array> pDashArray =
-      GetExplicitBorderDashArray(pAnnotDict);
+      fpdfdoc::ReadAnnotBorder(pAnnotDict).dash_array;
   return pDashArray ? pDashArray->size() : 0;
 }
 
@@ -1427,7 +1441,7 @@ EPDFAnnot_GetBorderDashPattern(FPDF_ANNOTATION annot,
   }
 
   RetainPtr<const CPDF_Array> pDashArray =
-      GetExplicitBorderDashArray(pAnnotDict);
+      fpdfdoc::ReadAnnotBorder(pAnnotDict).dash_array;
   if (!pDashArray || pDashArray->size() < count) {
     return false;
   }
@@ -1454,10 +1468,8 @@ EPDFAnnot_SetBorderDashPattern(FPDF_ANNOTATION annot,
     return false;
   }
 
-  RetainPtr<CPDF_Dictionary> bs_dict = annot_dict->GetMutableDictFor("BS");
-  if (!bs_dict) {
-    bs_dict = annot_dict->SetNewFor<CPDF_Dictionary>("BS");
-  }
+  RetainPtr<CPDF_Dictionary> bs_dict =
+      BorderStyleDictForWrite(annot_dict.Get());
 
   // --- Removal branch (PDFium style) ---
   if (!dash_array || count == 0) {
@@ -1498,41 +1510,13 @@ EPDFAnnot_GetBorderStyle(FPDF_ANNOTATION annot, float* width) {
     return FPDF_ANNOT_BS_UNKNOWN;
   }
 
-  RetainPtr<const CPDF_Dictionary> pBSDict = pAnnotDict->GetDictFor("BS");
-  if (pBSDict) {
-    if (width) {
-      *width = pBSDict->KeyExist("W") ? pBSDict->GetFloatFor("W") : 1.0f;
-    }
-
-    CPDF_Annot::BorderStyle nStyle =
-        CPDF_Annot::StringToBorderStyle(pBSDict->GetNameFor("S"));
-    if (nStyle == CPDF_Annot::BorderStyle::kUnknown) {
-      nStyle = CPDF_Annot::BorderStyle::kSolid;
-    }
-    // A dashed border with an empty pattern draws a solid line (ISO 32000
-    // 8.4.3.6), so it reads solid, as a /Border with an empty dash array does.
-    RetainPtr<const CPDF_Array> pDashArray = pBSDict->GetArrayFor("D");
-    if (nStyle == CPDF_Annot::BorderStyle::kDashed && pDashArray &&
-        pDashArray->IsEmpty()) {
-      nStyle = CPDF_Annot::BorderStyle::kSolid;
-    }
-    return static_cast<FPDF_ANNOT_BORDER_STYLE>(nStyle);
-  }
-
-  RetainPtr<const CPDF_Array> pBorderArray =
-      pAnnotDict->GetArrayFor(pdfium::annotation::kBorder);
+  // The one reading of a border, which the appearance generator draws from:
+  // /BS, or else /Border, or else solid and 1 wide.
+  const fpdfdoc::AnnotBorder border = fpdfdoc::ReadAnnotBorder(pAnnotDict);
   if (width) {
-    *width = pBorderArray && pBorderArray->size() >= 3
-                 ? pBorderArray->GetFloatAt(2)
-                 : 1.0f;
+    *width = border.width;
   }
-
-  RetainPtr<const CPDF_Array> pDashArray =
-      GetExplicitBorderDashArray(pAnnotDict);
-  if (pDashArray && !pDashArray->IsEmpty()) {
-    return FPDF_ANNOT_BS_DASHED;
-  }
-  return FPDF_ANNOT_BS_SOLID;
+  return static_cast<FPDF_ANNOT_BORDER_STYLE>(border.style);
 }
 
 FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV
@@ -1546,30 +1530,28 @@ EPDFAnnot_SetBorderStyle(FPDF_ANNOTATION annot,
     return false;
   }
 
-  RetainPtr<CPDF_Dictionary> pBSDict = pAnnotDict->GetMutableDictFor("BS");
-  if (!pBSDict) {
-    pBSDict = pAnnotDict->SetNewFor<CPDF_Dictionary>("BS");
+  // A style that is none of ours is refused before anything is written.
+  ByteString style_name;
+  if (style != FPDF_ANNOT_BS_UNKNOWN) {
+    style_name = CPDF_Annot::BorderStyleToString(
+        static_cast<CPDF_Annot::BorderStyle>(style));
+    if (style_name.IsEmpty()) {
+      return false;
+    }
   }
 
+  RetainPtr<CPDF_Dictionary> pBSDict =
+      BorderStyleDictForWrite(pAnnotDict.Get());
   if (width >= 0) {
     pBSDict->SetNewFor<CPDF_Number>("W", width);
   } else {
     pBSDict->RemoveFor("W");
   }
-
-  if (style == FPDF_ANNOT_BS_UNKNOWN) {
-    pBSDict->RemoveFor("S");
-    return true;
-  }
-
-  auto internal_style = static_cast<CPDF_Annot::BorderStyle>(style);
-  ByteString style_name = CPDF_Annot::BorderStyleToString(internal_style);
-
   if (style_name.IsEmpty()) {
-    return false;
+    pBSDict->RemoveFor("S");
+  } else {
+    pBSDict->SetNewFor<CPDF_Name>("S", style_name);
   }
-
-  pBSDict->SetNewFor<CPDF_Name>("S", style_name);
   return true;
 }
 

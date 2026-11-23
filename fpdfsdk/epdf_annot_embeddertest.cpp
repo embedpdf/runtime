@@ -86,6 +86,7 @@
 #include "testing/utils/path_service.h"
 
 using pdfium::kAnnotationStampWithApPng;
+using testing::ElementsAre;
 using testing::HasSubstr;
 
 namespace {
@@ -7853,6 +7854,281 @@ TEST_F(EPDFAnnotEmbedderTest, AnEmptyDashPatternIsASolidLine) {
     EXPECT_FALSE(
         GetNormalAppearanceStreamBytes(annot.get()).Find("] 0 d").has_value());
   }
+}
+
+namespace {
+
+// What the API reads of an annotation's border, and the keys that hold it.
+struct BorderRead {
+  FPDF_ANNOT_BORDER_STYLE style = FPDF_ANNOT_BS_UNKNOWN;
+  float width = -1;
+  std::vector<float> pattern;
+  bool has_border_style = false;  // /BS
+  bool has_border_array = false;  // /Border
+};
+
+BorderRead ReadBorder(FPDF_ANNOTATION annot) {
+  BorderRead read;
+  read.style = EPDFAnnot_GetBorderStyle(annot, &read.width);
+  read.pattern.resize(EPDFAnnot_GetBorderDashPatternCount(annot));
+  if (!read.pattern.empty()) {
+    EXPECT_TRUE(EPDFAnnot_GetBorderDashPattern(annot, read.pattern.data(),
+                                               read.pattern.size()));
+  }
+  const CPDF_Dictionary* annot_dict =
+      CPDFAnnotContextFromFPDFAnnotation(annot)->GetAnnotDict();
+  read.has_border_style = annot_dict->KeyExist("BS");
+  read.has_border_array = annot_dict->KeyExist(pdfium::annotation::kBorder);
+  return read;
+}
+
+// Gives |annot| the border /Border [0 0 |width|], with |pattern| as its dash
+// array when given, and no /BS.
+void WriteBorderArray(
+    FPDF_ANNOTATION annot,
+    float width,
+    std::optional<std::vector<float>> pattern = std::nullopt) {
+  RetainPtr<CPDF_Dictionary> annot_dict =
+      CPDFAnnotContextFromFPDFAnnotation(annot)->GetMutableAnnotDict();
+  annot_dict->RemoveFor("BS");
+  RetainPtr<CPDF_Array> border =
+      annot_dict->SetNewFor<CPDF_Array>(pdfium::annotation::kBorder);
+  border->AppendNew<CPDF_Number>(0);
+  border->AppendNew<CPDF_Number>(0);
+  border->AppendNew<CPDF_Number>(width);
+  if (pattern.has_value()) {
+    RetainPtr<CPDF_Array> dash = border->AppendNew<CPDF_Array>();
+    for (float value : pattern.value()) {
+      dash->AppendNew<CPDF_Number>(value);
+    }
+  }
+}
+
+// A black square on |page| whose border is /Border [0 0 |width|], with
+// |pattern| as its dash array when given.
+ScopedFPDFAnnotation NewSquareWithBorderArray(
+    FPDF_PAGE page,
+    float width,
+    std::optional<std::vector<float>> pattern = std::nullopt) {
+  ScopedFPDFAnnotation annot(FPDFPage_CreateAnnot(page, FPDF_ANNOT_SQUARE));
+  EXPECT_TRUE(annot);
+  const FS_RECTF rect{/*left=*/10.0f, /*top=*/90.0f, /*right=*/90.0f,
+                      /*bottom=*/10.0f};
+  EXPECT_TRUE(FPDFAnnot_SetRect(annot.get(), &rect));
+  EXPECT_TRUE(
+      EPDFAnnot_SetColor(annot.get(), FPDFANNOT_COLORTYPE_Color, 0, 0, 0));
+  WriteBorderArray(annot.get(), width, std::move(pattern));
+  return annot;
+}
+
+// The appearance |annot| is drawn with, generated now.
+ByteString DrawnNow(FPDF_ANNOTATION annot) {
+  EXPECT_TRUE(EPDFAnnot_GenerateAppearance(annot));
+  return GetNormalAppearanceStreamBytes(annot);
+}
+
+}  // namespace
+
+// A dash pattern set on an annotation that keeps its border in /Border: the
+// border becomes a /BS first, so its width stays (it fell to 1), and so does
+// its style, which the setter never changes. /Border is removed.
+TEST_F(EPDFAnnotEmbedderTest, SettingADashOnABorderArrayKeepsItsWidth) {
+  embedpdf_test::ScopedTestDocument doc(NewTestDocument());
+  ASSERT_TRUE(doc);
+  ScopedFPDFPage page(FPDFPage_New(doc.get(), 0, 200, 200));
+  ASSERT_TRUE(page);
+  static constexpr float kPattern[] = {4, 2};
+
+  {
+    // /Border [0 0 5] is a solid border, and stays one: the pattern is stored
+    // and waits for a dashed style, as on a border that began as a /BS.
+    ScopedFPDFAnnotation square = NewSquareWithBorderArray(page.get(), 5);
+    ASSERT_TRUE(EPDFAnnot_SetBorderDashPattern(square.get(), kPattern, 2));
+    BorderRead read = ReadBorder(square.get());
+    EXPECT_EQ(FPDF_ANNOT_BS_SOLID, read.style);
+    EXPECT_FLOAT_EQ(5, read.width);
+    EXPECT_THAT(read.pattern, ElementsAre(4, 2));
+    EXPECT_TRUE(read.has_border_style);
+    EXPECT_FALSE(read.has_border_array);
+    ByteString look = DrawnNow(square.get());
+    EXPECT_TRUE(look.Contains("5 w "));
+    EXPECT_FALSE(look.Contains("] 0 d"));
+
+    ASSERT_TRUE(
+        EPDFAnnot_SetBorderStyle(square.get(), FPDF_ANNOT_BS_DASHED, 5));
+    read = ReadBorder(square.get());
+    EXPECT_EQ(FPDF_ANNOT_BS_DASHED, read.style);
+    EXPECT_THAT(read.pattern, ElementsAre(4, 2));
+    look = DrawnNow(square.get());
+    EXPECT_TRUE(look.Contains("5 w "));
+    EXPECT_TRUE(look.Contains("[4 2 ] 0 d"));
+  }
+  {
+    // /Border [0 0 5 [1 3]] is a dashed border: it draws the new pattern.
+    ScopedFPDFAnnotation square =
+        NewSquareWithBorderArray(page.get(), 5, std::vector<float>{1, 3});
+    ASSERT_TRUE(EPDFAnnot_SetBorderDashPattern(square.get(), kPattern, 2));
+    const BorderRead read = ReadBorder(square.get());
+    EXPECT_EQ(FPDF_ANNOT_BS_DASHED, read.style);
+    EXPECT_FLOAT_EQ(5, read.width);
+    EXPECT_THAT(read.pattern, ElementsAre(4, 2));
+    EXPECT_TRUE(read.has_border_style);
+    EXPECT_FALSE(read.has_border_array);
+    const ByteString look = DrawnNow(square.get());
+    EXPECT_TRUE(look.Contains("5 w "));
+    EXPECT_TRUE(look.Contains("[4 2 ] 0 d"));
+  }
+}
+
+// The dash pattern removed from an annotation that keeps its border in
+// /Border: the pattern goes (it stayed), the width stays, and so does the
+// style, so a border that was dashed draws ISO's default dash, as one that
+// began as a /BS does. /Border is removed.
+TEST_F(EPDFAnnotEmbedderTest, RemovingTheDashOfABorderArrayKeepsItsWidth) {
+  embedpdf_test::ScopedTestDocument doc(NewTestDocument());
+  ASSERT_TRUE(doc);
+  ScopedFPDFPage page(FPDFPage_New(doc.get(), 0, 200, 200));
+  ASSERT_TRUE(page);
+
+  {
+    ScopedFPDFAnnotation square =
+        NewSquareWithBorderArray(page.get(), 5, std::vector<float>{4, 2});
+    ASSERT_TRUE(EPDFAnnot_SetBorderDashPattern(square.get(), nullptr, 0));
+    const BorderRead read = ReadBorder(square.get());
+    EXPECT_EQ(FPDF_ANNOT_BS_DASHED, read.style);
+    EXPECT_FLOAT_EQ(5, read.width);
+    EXPECT_TRUE(read.pattern.empty());
+    EXPECT_TRUE(read.has_border_style);
+    EXPECT_FALSE(read.has_border_array);
+    const ByteString look = DrawnNow(square.get());
+    EXPECT_TRUE(look.Contains("5 w "));
+    EXPECT_TRUE(look.Contains("[3 ] 0 d"));
+    EXPECT_FALSE(look.Contains("[4 2 ] 0 d"));
+
+    // Solid is a style, set as one.
+    ASSERT_TRUE(EPDFAnnot_SetBorderStyle(square.get(), FPDF_ANNOT_BS_SOLID, 5));
+    EXPECT_FALSE(DrawnNow(square.get()).Contains("] 0 d"));
+  }
+  {
+    // A solid /Border has no pattern to remove: it is the same border, in
+    // /BS.
+    ScopedFPDFAnnotation square = NewSquareWithBorderArray(page.get(), 5);
+    ASSERT_TRUE(EPDFAnnot_SetBorderDashPattern(square.get(), nullptr, 0));
+    const BorderRead read = ReadBorder(square.get());
+    EXPECT_EQ(FPDF_ANNOT_BS_SOLID, read.style);
+    EXPECT_FLOAT_EQ(5, read.width);
+    EXPECT_TRUE(read.pattern.empty());
+    EXPECT_TRUE(read.has_border_style);
+    EXPECT_FALSE(read.has_border_array);
+    const ByteString look = DrawnNow(square.get());
+    EXPECT_TRUE(look.Contains("5 w "));
+    EXPECT_FALSE(look.Contains("] 0 d"));
+  }
+}
+
+// A style and width set on an annotation that has a /Border leave none
+// behind: a reader that looks at /Border before /BS would show the old
+// border. What the call does not set, the pattern, stays stored.
+TEST_F(EPDFAnnotEmbedderTest, SettingABorderStyleRemovesTheBorderArray) {
+  embedpdf_test::ScopedTestDocument doc(NewTestDocument());
+  ASSERT_TRUE(doc);
+  ScopedFPDFPage page(FPDFPage_New(doc.get(), 0, 200, 200));
+  ASSERT_TRUE(page);
+
+  {
+    ScopedFPDFAnnotation square =
+        NewSquareWithBorderArray(page.get(), 5, std::vector<float>{4, 2});
+    ASSERT_TRUE(EPDFAnnot_SetBorderStyle(square.get(), FPDF_ANNOT_BS_SOLID, 3));
+    BorderRead read = ReadBorder(square.get());
+    EXPECT_EQ(FPDF_ANNOT_BS_SOLID, read.style);
+    EXPECT_FLOAT_EQ(3, read.width);
+    EXPECT_THAT(read.pattern, ElementsAre(4, 2));
+    EXPECT_TRUE(read.has_border_style);
+    EXPECT_FALSE(read.has_border_array);
+    float horizontal = -1;
+    float vertical = -1;
+    float array_width = -1;
+    EXPECT_FALSE(FPDFAnnot_GetBorder(square.get(), &horizontal, &vertical,
+                                     &array_width));
+    ByteString look = DrawnNow(square.get());
+    EXPECT_TRUE(look.Contains("3 w "));
+    EXPECT_FALSE(look.Contains("] 0 d"));
+
+    // Dashed again, it draws the pattern it came with.
+    ASSERT_TRUE(
+        EPDFAnnot_SetBorderStyle(square.get(), FPDF_ANNOT_BS_DASHED, 3));
+    look = DrawnNow(square.get());
+    EXPECT_TRUE(look.Contains("3 w "));
+    EXPECT_TRUE(look.Contains("[4 2 ] 0 d"));
+  }
+  {
+    // A /Border beside a /BS was not read; it goes all the same.
+    ScopedFPDFAnnotation square = NewSquareWithBorderArray(page.get(), 9);
+    RetainPtr<CPDF_Dictionary> annot_dict =
+        CPDFAnnotContextFromFPDFAnnotation(square.get())->GetMutableAnnotDict();
+    annot_dict->SetNewFor<CPDF_Dictionary>("BS")->SetNewFor<CPDF_Number>("W",
+                                                                         2);
+    ASSERT_TRUE(
+        EPDFAnnot_SetBorderStyle(square.get(), FPDF_ANNOT_BS_DASHED, 4));
+    const BorderRead read = ReadBorder(square.get());
+    EXPECT_EQ(FPDF_ANNOT_BS_DASHED, read.style);
+    EXPECT_FLOAT_EQ(4, read.width);
+    EXPECT_TRUE(read.has_border_style);
+    EXPECT_FALSE(read.has_border_array);
+  }
+  {
+    // A style that is none is refused, and nothing is written.
+    ScopedFPDFAnnotation square =
+        NewSquareWithBorderArray(page.get(), 5, std::vector<float>{4, 2});
+    EXPECT_FALSE(EPDFAnnot_SetBorderStyle(
+        square.get(), static_cast<FPDF_ANNOT_BORDER_STYLE>(99), 3));
+    const BorderRead read = ReadBorder(square.get());
+    EXPECT_EQ(FPDF_ANNOT_BS_DASHED, read.style);
+    EXPECT_FLOAT_EQ(5, read.width);
+    EXPECT_THAT(read.pattern, ElementsAre(4, 2));
+    EXPECT_FALSE(read.has_border_style);
+    EXPECT_TRUE(read.has_border_array);
+  }
+}
+
+// A form field is drawn with the border the API reads for it, whichever key
+// holds it: /Border [0 0 4 [3 1]] without a /BS reads, and draws, as the same
+// border in /BS does. (It drew 1 wide and solid.)
+TEST_F(EPDFAnnotEmbedderTest, AFormFieldDrawsTheBorderItReads) {
+  ASSERT_TRUE(OpenDocument("text_form.pdf"));
+  ScopedPage page = LoadScopedPage(0);
+  ASSERT_TRUE(page);
+  ScopedFPDFAnnotation annot(FPDFPage_GetAnnot(page.get(), 0));
+  ASSERT_TRUE(annot);
+  RetainPtr<CPDF_Dictionary> annot_dict =
+      CPDFAnnotContextFromFPDFAnnotation(annot.get())->GetMutableAnnotDict();
+  ASSERT_TRUE(annot_dict);
+  RetainPtr<CPDF_Array> border_color =
+      annot_dict->SetNewFor<CPDF_Dictionary>("MK")->SetNewFor<CPDF_Array>("BC");
+  border_color->AppendNew<CPDF_Number>(0);
+  border_color->AppendNew<CPDF_Number>(0);
+  border_color->AppendNew<CPDF_Number>(1);
+
+  RetainPtr<CPDF_Dictionary> bs = annot_dict->SetNewFor<CPDF_Dictionary>("BS");
+  bs->SetNewFor<CPDF_Number>("W", 4);
+  bs->SetNewFor<CPDF_Name>("S", "D");
+  RetainPtr<CPDF_Array> dash = bs->SetNewFor<CPDF_Array>("D");
+  dash->AppendNew<CPDF_Number>(3);
+  dash->AppendNew<CPDF_Number>(1);
+  const BorderRead in_border_style = ReadBorder(annot.get());
+  ASSERT_TRUE(EPDFAnnot_GenerateFormFieldAP(annot.get()));
+  const ByteString from_border_style =
+      GetNormalAppearanceStreamBytes(annot.get());
+  EXPECT_TRUE(from_border_style.Contains("4 w\n[3 1 ] 0 d\n"));
+
+  WriteBorderArray(annot.get(), 4, std::vector<float>{3, 1});
+  const BorderRead in_border_array = ReadBorder(annot.get());
+  EXPECT_FALSE(in_border_array.has_border_style);
+  EXPECT_EQ(in_border_style.style, in_border_array.style);
+  EXPECT_FLOAT_EQ(in_border_style.width, in_border_array.width);
+  EXPECT_EQ(in_border_style.pattern, in_border_array.pattern);
+  ASSERT_TRUE(EPDFAnnot_GenerateFormFieldAP(annot.get()));
+  EXPECT_EQ(from_border_style, GetNormalAppearanceStreamBytes(annot.get()));
 }
 
 TEST_F(EPDFAnnotEmbedderTest, SetNameAcceptsAnyNameAndKeepsAppearance) {

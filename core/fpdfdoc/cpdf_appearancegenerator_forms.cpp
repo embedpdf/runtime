@@ -60,8 +60,8 @@ using appearance_generator::GenerateEphemeralDefaultAcroFormDict;
 using appearance_generator::GenerateExtGStateDict;
 using appearance_generator::GenerateResourcesDict;
 using appearance_generator::GetAnnotationDimensionsAndColor;
+using appearance_generator::GetAnnotBorderStyleInfo;
 using appearance_generator::GetAppearanceCharacteristics;
-using appearance_generator::GetBorderStyleInfo;
 using appearance_generator::GetDefaultAppearanceInfo;
 using appearance_generator::PaintOperation;
 using appearance_generator::ResolveDaFontForEphemeralTarget;
@@ -300,7 +300,7 @@ void GenerateTextFieldFormAP(fxcrt::ostringstream& app_stream,
                              const WideString* value_override) {
   const AppearanceCharacteristics mk =
       GetAppearanceCharacteristics(annot_dict->GetDictFor("MK"));
-  const BorderStyleInfo bs = GetBorderStyleInfo(annot_dict->GetDictFor("BS"));
+  const BorderStyleInfo bs = GetAnnotBorderStyleInfo(annot_dict);
   const float bw = bs.width;
 
   CFX_FloatRect body_rect = bbox;
@@ -340,8 +340,7 @@ void GenerateComboBoxFormAP(fxcrt::ostringstream& app_stream,
                             const WideString* value_override) {
   const AnnotationDimensionsAndColor dims =
       GetAnnotationDimensionsAndColor(annot_dict);
-  const BorderStyleInfo border_info =
-      GetBorderStyleInfo(annot_dict->GetDictFor("BS"));
+  const BorderStyleInfo border_info = GetAnnotBorderStyleInfo(annot_dict);
 
   const ByteString background =
       GenerateColorAP(dims.background_color, PaintOperation::kFill);
@@ -372,8 +371,7 @@ void GenerateListBoxFormAP(fxcrt::ostringstream& app_stream,
                            const CPDF_RichTextLayout::Options& options) {
   const AnnotationDimensionsAndColor dims =
       GetAnnotationDimensionsAndColor(annot_dict);
-  const BorderStyleInfo border_info =
-      GetBorderStyleInfo(annot_dict->GetDictFor("BS"));
+  const BorderStyleInfo border_info = GetAnnotBorderStyleInfo(annot_dict);
 
   const ByteString background =
       GenerateColorAP(dims.background_color, PaintOperation::kFill);
@@ -490,7 +488,7 @@ void GeneratePushButtonFormAP(fxcrt::ostringstream& app_stream,
                               const CPDF_RichTextLayout::Options& options) {
   const AppearanceCharacteristics mk =
       GetAppearanceCharacteristics(annot_dict->GetDictFor("MK"));
-  const BorderStyleInfo bs = GetBorderStyleInfo(annot_dict->GetDictFor("BS"));
+  const BorderStyleInfo bs = GetAnnotBorderStyleInfo(annot_dict);
   const float bw = bs.width;
 
   app_stream << "q\n";
@@ -1002,7 +1000,7 @@ void CPDF_AppearanceGenerator::GenerateBoxFormAP(CPDF_Document* doc,
                                                  CPDF_Dictionary* annot_dict) {
   const AppearanceCharacteristics mk =
       GetAppearanceCharacteristics(annot_dict->GetDictFor("MK"));
-  const BorderStyleInfo bs = GetBorderStyleInfo(annot_dict->GetDictFor("BS"));
+  const BorderStyleInfo bs = GetAnnotBorderStyleInfo(annot_dict);
   const AnnotationDimensionsAndColor dims =
       GetAnnotationDimensionsAndColor(annot_dict);
 
@@ -1022,7 +1020,7 @@ void CPDF_AppearanceGenerator::GenerateCheckboxFormAP(
     CPDF_Dictionary* annot_dict) {
   const AppearanceCharacteristics mk =
       GetAppearanceCharacteristics(annot_dict->GetDictFor("MK"));
-  const BorderStyleInfo bs = GetBorderStyleInfo(annot_dict->GetDictFor("BS"));
+  const BorderStyleInfo bs = GetAnnotBorderStyleInfo(annot_dict);
   const AnnotationDimensionsAndColor dims =
       GetAnnotationDimensionsAndColor(annot_dict);
 
@@ -1080,7 +1078,7 @@ void CPDF_AppearanceGenerator::GenerateRadioButtonFormAP(
     CPDF_Dictionary* annot_dict) {
   const AppearanceCharacteristics mk =
       GetAppearanceCharacteristics(annot_dict->GetDictFor("MK"));
-  const BorderStyleInfo bs = GetBorderStyleInfo(annot_dict->GetDictFor("BS"));
+  const BorderStyleInfo bs = GetAnnotBorderStyleInfo(annot_dict);
   const AnnotationDimensionsAndColor dims =
       GetAnnotationDimensionsAndColor(annot_dict);
 

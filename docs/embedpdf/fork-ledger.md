@@ -334,19 +334,28 @@ matrix.
 `cpdf_appearancegenerator_<family>.cpp` per family and what they share in
 `cpdf_appearancegenerator_internal.h`). None of our code calls upstream's `CPDF_GenerateAP`, and
 upstream's `core/fpdfdoc/cpdf_generateap.{h,cpp}` stay byte-identical to upstream, compiled and
-unused.
+unused. An annotation's border is read in one place, `fpdfdoc::ReadAnnotBorder`, as ISO 32000-1
+12.5.2 says: its `/BS`, and then `/Border` is not read at all; or else its `/Border`; or else solid
+and 1 wide. Every drawer takes its border from that reading, the `EPDFAnnot_*` border readers
+report it, and the border setters leave the border in `/BS` alone.
 **Why.** We rewrote most of the generator: appearances built in memory, rich text, rotation,
 measurement, redaction overlays, form fields. Mixed into upstream's file, it was the worst conflict
-file. Apart, upstream's file merges cleanly.
+file. Apart, upstream's file merges cleanly. With one reading of a border, an annotation is drawn
+with the border the API reads for it, whichever key holds it.
 **Where.** `cpdf_appearancegenerator*` and its unit test; the calls in `cpdf_annot.cpp`,
 upstream's `FPDFAnnot_AppendObject` and `FPDFAnnot_SetFontColor` in `fpdf_annot.cpp`,
-`epdf_annot.cpp`, `epdf_form.cpp`, `epdf_redact.cpp` and the rich text writer.
+`epdf_annot.cpp`, `epdf_form.cpp`, `epdf_redact.cpp` and the rich text writer. The border:
+`cpdf_annot_border.{h,cpp}`, its drawers' view of it in `cpdf_appearancegenerator_common.cpp`
+(`GetAnnotBorderStyleInfo`, `GetBorderWidth`, `GetDashPatternString`), and
+`BorderStyleDictForWrite` in `epdf_annot.cpp`.
 **Guarded by.** `check-fork-tags.py` fails when upstream's files differ from upstream
 (`fork-pristine.txt`); `upstream-preview.py` lists new upstream callers of `CPDF_GenerateAP::`, and
-upstream's commits to its generator.
+upstream's commits to its generator. `CPDFGenerateAPTest.BorderArrayDrawsAsBorderStyleForEveryKind`
+draws every kind that has a border from both keys.
 **When upstream touches this.** A commit to `cpdf_generateap.*`: port it to ours or skip it, with
 the reason in the sync report. A new upstream caller of `CPDF_GenerateAP::`: route it to ours, or
-accept it in the report.
+accept it in the report. A drawer ported from upstream reads `/BS` alone, as upstream's form fields
+do: give it our reading, and a row in that test.
 
 ## Text
 
