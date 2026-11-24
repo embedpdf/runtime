@@ -260,6 +260,10 @@ pdfium_embeddertest_source_set("embeddertests") {
     # EmbedPDF: covers annotation calls that read a page's dictionaries
     # without loading the page.
     "epdf_annot_raw_embeddertest.cpp",
+    # EmbedPDF: covers drawings in widgets (public/epdf_annot.h): a push
+    # button's icons and the appearance drawn from the normal one, a mark a
+    # wrapper places, and one drawing shared with stamps.
+    "epdf_widget_drawing_embeddertest.cpp",
     # EmbedPDF: helpers for tests that compare a document before and after
     # writes.
     "epdf_edit_test_util.cpp",
