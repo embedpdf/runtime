@@ -4440,6 +4440,29 @@ static unsigned int MKColorComponent(const CPDF_Array* color, size_t index) {
   return static_cast<unsigned int>(color->GetFloatAt(index) * 255.f + 0.5f);
 }
 
+// Whether |color| is the RGB colour |r| |g| |b| as a /MK stores one: three
+// numbers from 0 to 1 that read as it. An entry that only reads as the
+// colour (a name among its numbers, a number out of range, a fourth number)
+// is not it, and a setter writes it anew.
+static bool IsMKColor(const CPDF_Array* color,
+                      unsigned int r,
+                      unsigned int g,
+                      unsigned int b) {
+  if (!color || color->size() != 3) {
+    return false;
+  }
+  auto is_component = [color](size_t index, unsigned int value) {
+    RetainPtr<const CPDF_Object> entry = color->GetDirectObjectAt(index);
+    if (!entry || !entry->IsNumber()) {
+      return false;
+    }
+    const float stored = entry->GetNumber();
+    return stored >= 0.f && stored <= 1.f &&
+           MKColorComponent(color, index) == value;
+  };
+  return is_component(0, r) && is_component(1, g) && is_component(2, b);
+}
+
 FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV EPDFAnnot_SetMKColor(FPDF_ANNOTATION annot,
                                                          EPDF_MK_COLORTYPE type,
                                                          unsigned int R,
@@ -4451,15 +4474,12 @@ FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV EPDFAnnot_SetMKColor(FPDF_ANNOTATION annot,
     return false;
   }
 
-  // Nothing to change: no write. The entry is that colour already when it is
-  // three numbers that read as it.
+  // Nothing to change: no write.
   const ByteString key = GetMKColorKey(type);
   RetainPtr<const CPDF_Dictionary> mk = annot_dict->GetDictFor("MK");
   RetainPtr<const CPDF_Array> color =
       mk ? mk->GetArrayFor(key.AsStringView()) : nullptr;
-  if (color && color->size() == 3 && MKColorComponent(color.Get(), 0) == R &&
-      MKColorComponent(color.Get(), 1) == G &&
-      MKColorComponent(color.Get(), 2) == B) {
+  if (IsMKColor(color.Get(), R, G, B)) {
     return true;
   }
 
@@ -4579,11 +4599,17 @@ FPDF_BOOL SetMKNumber(FPDF_ANNOTATION annot,
   if (FPDFAnnot_GetSubtype(annot) != FPDF_ANNOT_WIDGET) {
     return false;
   }
+  // The entry is that number already when it is an integer equal to it. One
+  // that only reads as it (a real that is cut down to it) is written anew.
   RetainPtr<const CPDF_Dictionary> mk = WidgetMKFromFPDFAnnotation(annot);
   const bool present = mk && mk->KeyExist(key);
+  RetainPtr<const CPDF_Object> stored =
+      present ? mk->GetDirectObjectFor(key) : nullptr;
+  const CPDF_Number* number = stored ? stored->AsNumber() : nullptr;
   const bool unchanged = value == absent_value
                              ? !present
-                             : present && mk->GetIntegerFor(key) == value;
+                             : number && number->IsInteger() &&
+                                   number->GetInteger() == value;
   if (unchanged) {
     return true;
   }
@@ -4616,10 +4642,16 @@ FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV EPDFAnnot_SetMKText(FPDF_ANNOTATION annot,
   if (text) {
     next = UNSAFE_BUFFERS(WideStringFromFPDFWideString(text));
   }
-  // Nothing to change: no write.
+  // Nothing to change: no write. The entry is that text already when it is a
+  // string that reads as it. One that only reads as it (a name) is written
+  // anew.
   RetainPtr<const CPDF_Dictionary> mk = WidgetMKFromFPDFAnnotation(annot);
   const bool present = mk && mk->KeyExist(key);
-  if (next ? present && mk->GetUnicodeTextFor(key) == *next : !present) {
+  RetainPtr<const CPDF_Object> stored =
+      present ? mk->GetDirectObjectFor(key) : nullptr;
+  const bool is_that_text = next && stored && stored->IsString() &&
+                            stored->GetUnicodeText() == *next;
+  if (next ? is_that_text : !present) {
     return true;
   }
   RetainPtr<CPDF_Dictionary> dict =

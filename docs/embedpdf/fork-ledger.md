@@ -358,7 +358,9 @@ with it. Before a form drawer replaces an appearance, a widget whose `/AP` is an
 gets a copy of its own (`OwnAppearanceDict`), and `epdf_annot.cpp` does the same for `/MK` before
 a setter writes it (`OwnMKForWriting`): another widget may name the same dictionary. A colour is
 set as a new array, never written into the one the entry named, which may be an object another
-`/MK` names too. An `/MK` setter that changes nothing writes nothing. An icon is a form XObject
+`/MK` names too. An `/MK` setter that changes nothing writes nothing, and it changes nothing only
+when the entry is well formed and reads as the value (three numbers from 0 to 1, a string, an
+integer): a malformed entry that reads the same is written anew. An icon is a form XObject
 everywhere (`ButtonIconOf`, `MKIconForm`).
 **Guarded by.** `check-fork-tags.py` fails when upstream's files differ from upstream
 (`fork-pristine.txt`); `upstream-preview.py` lists new upstream callers of `CPDF_GenerateAP::`, and

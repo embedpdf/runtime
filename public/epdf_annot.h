@@ -1564,7 +1564,9 @@ typedef enum {
 // Set a color in the widget annotation's /MK dictionary: a new array of three
 // numbers under its key. The array the entry named is not written into, since
 // it may be an object of its own, which another /MK names too. Setting the
-// color the entry already is (three numbers that read as it) writes nothing.
+// color the entry already is writes nothing: three numbers from 0 to 1 that
+// read as it. An entry that only reads as it, with a name among its numbers
+// say, is written anew.
 //
 // Every function here that writes a /MK entry writes the annotation's own
 // /MK. One that is an indirect object, which another widget may name too, is
@@ -1615,6 +1617,8 @@ EPDFAnnot_ClearMKColor(FPDF_ANNOTATION annot, EPDF_MK_COLORTYPE type);
 // Set a widget's /MK caption |which| (EPDF_MK_TEXT_*) to |text|, or remove
 // it when |text| is NULL. The appearance is not regenerated
 // (EPDFAnnot_GenerateFormFieldAP()). Returns false for another subtype.
+// Setting the caption the entry already is, a string that reads as it,
+// writes nothing; an entry that only reads as it (a name) is written anew.
 FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV EPDFAnnot_SetMKText(FPDF_ANNOTATION annot,
                                                         int which,
                                                         FPDF_WIDESTRING text);

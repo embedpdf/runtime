@@ -3626,6 +3626,108 @@ TEST_F(EPDFWidgetDrawingEmbedderTest,
   }
 }
 
+// A setter writes nothing only for an entry that is well formed and reads as
+// the value. A malformed one that reads the same is written anew: a colour
+// with a name among its numbers or a number out of range, a caption stored
+// as a name, a text position or a rotation stored as a real that is cut down
+// to it. (The no-change check read each as the value and left it.)
+TEST_F(EPDFWidgetDrawingEmbedderTest,
+       AMalformedEntryThatReadsAsTheValueIsWrittenAnew) {
+  struct Case {
+    const char* name;
+    const char* key;
+    // Stores the malformed entry in the widget's /MK.
+    std::function<void(CPDF_Dictionary*)> store;
+    // Asks for the value the entry reads as.
+    std::function<bool(FPDF_ANNOTATION)> set;
+    // Whether the entry is as the setter writes that value.
+    std::function<bool(const CPDF_Object*)> well_formed;
+  };
+  auto set_red = [](FPDF_ANNOTATION widget) {
+    return !!EPDFAnnot_SetMKColor(widget, EPDF_MK_COLOR_BC, 255, 0, 0);
+  };
+  auto is_red = [](const CPDF_Object* entry) {
+    const CPDF_Array* array = entry->AsArray();
+    if (!array || array->size() != 3) {
+      return false;
+    }
+    for (size_t i = 0; i < 3; ++i) {
+      RetainPtr<const CPDF_Object> number = array->GetDirectObjectAt(i);
+      if (!number || !number->IsNumber() ||
+          number->GetNumber() != (i == 0 ? 1.0f : 0.0f)) {
+        return false;
+      }
+    }
+    return true;
+  };
+  auto is_integer = [](int value) {
+    return [value](const CPDF_Object* entry) {
+      const CPDF_Number* number = entry->AsNumber();
+      return number && number->IsInteger() && number->GetInteger() == value;
+    };
+  };
+  const Case kCases[] = {
+      {"a colour with a name among its numbers", "BC",
+       [](CPDF_Dictionary* mk) {
+         RetainPtr<CPDF_Array> color = mk->SetNewFor<CPDF_Array>("BC");
+         color->AppendNew<CPDF_Number>(1);
+         color->AppendNew<CPDF_Name>("None");
+         color->AppendNew<CPDF_Number>(0);
+       },
+       set_red, is_red},
+      {"a colour with numbers out of range", "BC",
+       [](CPDF_Dictionary* mk) {
+         RetainPtr<CPDF_Array> color = mk->SetNewFor<CPDF_Array>("BC");
+         color->AppendNew<CPDF_Number>(1.001f);
+         color->AppendNew<CPDF_Number>(-0.001f);
+         color->AppendNew<CPDF_Number>(0);
+       },
+       set_red, is_red},
+      {"a caption stored as a name", "CA",
+       [](CPDF_Dictionary* mk) { mk->SetNewFor<CPDF_Name>("CA", "Go"); },
+       [](FPDF_ANNOTATION widget) {
+         return !!EPDFAnnot_SetMKText(widget, EPDF_MK_TEXT_CA,
+                                      GetFPDFWideString(L"Go").get());
+       },
+       [](const CPDF_Object* entry) {
+         return entry->IsString() && entry->GetUnicodeText() == L"Go";
+       }},
+      {"a text position stored as a real", "TP",
+       [](CPDF_Dictionary* mk) { mk->SetNewFor<CPDF_Number>("TP", 2.7f); },
+       [](FPDF_ANNOTATION widget) {
+         return !!EPDFAnnot_SetMKTextPosition(widget, 2);
+       },
+       is_integer(2)},
+      {"a rotation stored as a real", "R",
+       [](CPDF_Dictionary* mk) { mk->SetNewFor<CPDF_Number>("R", 90.5f); },
+       [](FPDF_ANNOTATION widget) {
+         return !!EPDFAnnot_SetMKRotation(widget, 90);
+       },
+       is_integer(90)},
+  };
+  int page_index = 0;
+  for (const Case& c : kCases) {
+    SCOPED_TRACE(c.name);
+    ScopedFPDFPage page(FPDFPage_New(doc_.get(), ++page_index, 400, 400));
+    ASSERT_TRUE(page);
+    ScopedFPDFAnnotation button = NewButton({10, 60, 130, 10}, 2.0f, page.get());
+    ASSERT_TRUE(button);
+    c.store(MutableDictOf(button.get())->GetOrCreateDictFor("MK").Get());
+    auto entry = [&]() {
+      RetainPtr<const CPDF_Dictionary> mk =
+          DictOf(button.get())->GetDictFor("MK");
+      return mk ? mk->GetDirectObjectFor(c.key) : nullptr;
+    };
+    ASSERT_TRUE(entry());
+    ASSERT_FALSE(c.well_formed(entry().Get()));
+
+    ASSERT_TRUE(c.set(button.get()));
+
+    ASSERT_TRUE(entry());
+    EXPECT_TRUE(c.well_formed(entry().Get()));
+  }
+}
+
 // Two widgets may name one /AP. A widget that is drawn again gets an /AP of
 // its own first, and the other widget keeps the shared one and every
 // appearance it names: it shows what it showed.
