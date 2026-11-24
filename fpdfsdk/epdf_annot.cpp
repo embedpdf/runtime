@@ -1441,38 +1441,43 @@ struct StatedBorder {
 // reads it with: /BS, or else /Border, or else nothing. Nothing is returned
 // when that key is not written as ISO 32000 writes a border: a /BS that is
 // no dictionary, a name where a number goes, a /Border that is not three
-// numbers and at most a dash array. Such a border may read as what a call
-// asks for (a name reads as 0) without stating it, so a setter writes it
-// anew.
+// numbers and at most a dash array, an entry that names an object the file
+// does not have. Such a border may read as what a call asks for (a name
+// reads as 0) without stating it, so a setter writes it anew.
+//
+// An entry is looked for by its key: one that is there and names nothing is
+// not one that is left out.
 std::optional<StatedBorder> ReadStatedBorder(
     const CPDF_Dictionary* annot_dict) {
   StatedBorder stated;
-  if (RetainPtr<const CPDF_Object> entry =
-          annot_dict->GetDirectObjectFor("BS")) {
-    const CPDF_Dictionary* border_style = entry->AsDictionary();
+  if (annot_dict->KeyExist("BS")) {
+    RetainPtr<const CPDF_Dictionary> border_style =
+        annot_dict->GetDictFor("BS");
     if (!border_style) {
       return std::nullopt;
     }
-    if (RetainPtr<const CPDF_Object> width =
-            border_style->GetDirectObjectFor("W")) {
-      if (!width->IsNumber()) {
+    if (border_style->KeyExist("W")) {
+      RetainPtr<const CPDF_Object> width =
+          border_style->GetDirectObjectFor("W");
+      if (!width || !width->IsNumber()) {
         return std::nullopt;
       }
       stated.width = width->GetNumber();
     }
-    if (RetainPtr<const CPDF_Object> style =
-            border_style->GetDirectObjectFor("S")) {
-      if (!style->IsName()) {
+    if (border_style->KeyExist("S")) {
+      RetainPtr<const CPDF_Object> style =
+          border_style->GetDirectObjectFor("S");
+      if (!style || !style->IsName()) {
         return std::nullopt;
       }
       stated.style = style->GetString();
     }
-    if (RetainPtr<const CPDF_Object> dash =
-            border_style->GetDirectObjectFor("D")) {
-      if (!dash->IsArray()) {
+    if (border_style->KeyExist("D")) {
+      RetainPtr<const CPDF_Array> dash = border_style->GetArrayFor("D");
+      if (!dash) {
         return std::nullopt;
       }
-      stated.pattern = NumbersOf(dash->AsArray());
+      stated.pattern = NumbersOf(dash.Get());
       if (!stated.pattern.has_value()) {
         return std::nullopt;
       }
@@ -1480,12 +1485,11 @@ std::optional<StatedBorder> ReadStatedBorder(
     return stated;
   }
 
-  RetainPtr<const CPDF_Object> entry =
-      annot_dict->GetDirectObjectFor(pdfium::annotation::kBorder);
-  if (!entry) {
+  if (!annot_dict->KeyExist(pdfium::annotation::kBorder)) {
     return stated;
   }
-  const CPDF_Array* border = entry->AsArray();
+  RetainPtr<const CPDF_Array> border =
+      annot_dict->GetArrayFor(pdfium::annotation::kBorder);
   if (!border || border->size() < 3 || border->size() > 4) {
     return std::nullopt;
   }

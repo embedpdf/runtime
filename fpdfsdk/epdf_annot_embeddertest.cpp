@@ -8412,6 +8412,118 @@ TEST_F(EPDFAnnotEmbedderTest, AMalformedBorderThatReadsAsAskedIsWrittenAnew) {
   }
 }
 
+// A border entry may be a reference to an object the file does not have. It
+// is there, and it states nothing: the reader takes such a /W as 0. A setter
+// does not take it as left out. (Asked to leave the width out, it found
+// nothing to do, and the border went on reading 0 wide where it says 1.)
+TEST_F(EPDFAnnotEmbedderTest, ABorderEntryThatNamesNothingIsNotLeftOut) {
+  embedpdf_test::ScopedTestDocument doc(NewTestDocument());
+  ASSERT_TRUE(doc);
+  ScopedFPDFPage page(FPDFPage_New(doc.get(), 0, 200, 200));
+  ASSERT_TRUE(page);
+  CPDF_Document* pdf = CPDFDocumentFromFPDFDocument(doc.get());
+  ASSERT_TRUE(pdf);
+  // No object of the document has this number.
+  static constexpr uint32_t kMissing = 9999;
+
+  struct Case {
+    const char* name;
+    std::function<void(CPDF_Dictionary*)> store;
+    // Asks for the entry to be left out, or for what the border reads as.
+    std::function<bool(FPDF_ANNOTATION)> call;
+    const char* stored_after;
+  };
+  auto no_pattern = [](FPDF_ANNOTATION annot) {
+    return !!EPDFAnnot_SetBorderDashPattern(annot, nullptr, 0);
+  };
+  const Case kCases[] = {
+      {"/BS /W",
+       [pdf](CPDF_Dictionary* annot_dict) {
+         RetainPtr<CPDF_Dictionary> bs =
+             annot_dict->SetNewFor<CPDF_Dictionary>("BS");
+         bs->SetNewFor<CPDF_Name>("S", "S");
+         bs->SetNewFor<CPDF_Reference>("W", pdf, kMissing);
+       },
+       [](FPDF_ANNOTATION annot) {
+         return !!EPDFAnnot_SetBorderStyle(annot, FPDF_ANNOT_BS_SOLID, -1);
+       },
+       "/Border - /BS << /S /S >>"},
+      {"/BS /S",
+       [pdf](CPDF_Dictionary* annot_dict) {
+         RetainPtr<CPDF_Dictionary> bs =
+             annot_dict->SetNewFor<CPDF_Dictionary>("BS");
+         bs->SetNewFor<CPDF_Number>("W", 2);
+         bs->SetNewFor<CPDF_Reference>("S", pdf, kMissing);
+       },
+       [](FPDF_ANNOTATION annot) {
+         return !!EPDFAnnot_SetBorderStyle(annot, FPDF_ANNOT_BS_UNKNOWN, 2);
+       },
+       "/Border - /BS << /W 2 >>"},
+      {"/BS /D",
+       [pdf](CPDF_Dictionary* annot_dict) {
+         RetainPtr<CPDF_Dictionary> bs =
+             annot_dict->SetNewFor<CPDF_Dictionary>("BS");
+         bs->SetNewFor<CPDF_Number>("W", 2);
+         bs->SetNewFor<CPDF_Reference>("D", pdf, kMissing);
+       },
+       no_pattern, "/Border - /BS << /W 2 >>"},
+      {"/BS itself",
+       [pdf](CPDF_Dictionary* annot_dict) {
+         annot_dict->SetNewFor<CPDF_Reference>("BS", pdf, kMissing);
+       },
+       no_pattern, "/Border - /BS -"},
+      {"/Border itself",
+       [pdf](CPDF_Dictionary* annot_dict) {
+         annot_dict->SetNewFor<CPDF_Reference>(pdfium::annotation::kBorder, pdf,
+                                               kMissing);
+       },
+       no_pattern, "/Border - /BS -"},
+      {"the width of /Border",
+       [pdf](CPDF_Dictionary* annot_dict) {
+         RetainPtr<CPDF_Array> border =
+             annot_dict->SetNewFor<CPDF_Array>(pdfium::annotation::kBorder);
+         border->AppendNew<CPDF_Number>(6);
+         border->AppendNew<CPDF_Number>(4);
+         border->AppendNew<CPDF_Reference>(pdf, kMissing);
+       },
+       [](FPDF_ANNOTATION annot) {
+         return !!EPDFAnnot_SetBorderStyle(annot, FPDF_ANNOT_BS_SOLID, 0);
+       },
+       "/Border - /BS << /S /S /W 0 >>"},
+  };
+  for (const Case& names_nothing : kCases) {
+    SCOPED_TRACE(names_nothing.name);
+    ScopedFPDFAnnotation square(
+        FPDFPage_CreateAnnot(page.get(), FPDF_ANNOT_SQUARE));
+    ASSERT_TRUE(square);
+    names_nothing.store(CPDFAnnotContextFromFPDFAnnotation(square.get())
+                            ->GetMutableAnnotDict()
+                            .Get());
+    ASSERT_TRUE(names_nothing.call(square.get()));
+    EXPECT_EQ(names_nothing.stored_after, StoredBorderKeys(square.get()));
+  }
+
+  {
+    // The width, read: 0 while /W names nothing, and 1 once it is left out.
+    ScopedFPDFAnnotation square(
+        FPDFPage_CreateAnnot(page.get(), FPDF_ANNOT_SQUARE));
+    ASSERT_TRUE(square);
+    CPDFAnnotContextFromFPDFAnnotation(square.get())
+        ->GetMutableAnnotDict()
+        ->SetNewFor<CPDF_Dictionary>("BS")
+        ->SetNewFor<CPDF_Reference>("W", pdf, kMissing);
+    float width = -1;
+    ASSERT_EQ(FPDF_ANNOT_BS_SOLID,
+              EPDFAnnot_GetBorderStyle(square.get(), &width));
+    ASSERT_EQ(0, width);
+    ASSERT_TRUE(
+        EPDFAnnot_SetBorderStyle(square.get(), FPDF_ANNOT_BS_UNKNOWN, -1));
+    EXPECT_EQ(FPDF_ANNOT_BS_SOLID,
+              EPDFAnnot_GetBorderStyle(square.get(), &width));
+    EXPECT_EQ(1, width);
+  }
+}
+
 // A style that is none is refused before the annotation is taken for
 // writing: on a layer nothing is copied into the layer. (The annotation was
 // copied in, and the copy stayed in memory.)
