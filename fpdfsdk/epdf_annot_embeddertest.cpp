@@ -15,6 +15,7 @@
 #include <cstdint>
 #include <filesystem>
 #include <fstream>
+#include <functional>
 #include <initializer_list>
 #include <limits>
 #include <memory>
@@ -7882,19 +7883,19 @@ BorderRead ReadBorder(FPDF_ANNOTATION annot) {
   return read;
 }
 
-// Gives |annot| the border /Border [0 0 |width|], with |pattern| as its dash
-// array when given, and no /BS.
-void WriteBorderArray(
-    FPDF_ANNOTATION annot,
-    float width,
-    std::optional<std::vector<float>> pattern = std::nullopt) {
+// Gives |annot| the border /Border [|radii| |width|], with |pattern| as its
+// dash array when given, and no /BS. The corner radii are 0 unless given.
+void WriteBorderArray(FPDF_ANNOTATION annot,
+                      float width,
+                      std::optional<std::vector<float>> pattern = std::nullopt,
+                      FS_SIZEF radii = {0, 0}) {
   RetainPtr<CPDF_Dictionary> annot_dict =
       CPDFAnnotContextFromFPDFAnnotation(annot)->GetMutableAnnotDict();
   annot_dict->RemoveFor("BS");
   RetainPtr<CPDF_Array> border =
       annot_dict->SetNewFor<CPDF_Array>(pdfium::annotation::kBorder);
-  border->AppendNew<CPDF_Number>(0);
-  border->AppendNew<CPDF_Number>(0);
+  border->AppendNew<CPDF_Number>(radii.width);
+  border->AppendNew<CPDF_Number>(radii.height);
   border->AppendNew<CPDF_Number>(width);
   if (pattern.has_value()) {
     RetainPtr<CPDF_Array> dash = border->AppendNew<CPDF_Array>();
@@ -7904,12 +7905,13 @@ void WriteBorderArray(
   }
 }
 
-// A black square on |page| whose border is /Border [0 0 |width|], with
+// A black square on |page| whose border is /Border [|radii| |width|], with
 // |pattern| as its dash array when given.
 ScopedFPDFAnnotation NewSquareWithBorderArray(
     FPDF_PAGE page,
     float width,
-    std::optional<std::vector<float>> pattern = std::nullopt) {
+    std::optional<std::vector<float>> pattern = std::nullopt,
+    FS_SIZEF radii = {0, 0}) {
   ScopedFPDFAnnotation annot(FPDFPage_CreateAnnot(page, FPDF_ANNOT_SQUARE));
   EXPECT_TRUE(annot);
   const FS_RECTF rect{/*left=*/10.0f, /*top=*/90.0f, /*right=*/90.0f,
@@ -7917,7 +7919,7 @@ ScopedFPDFAnnotation NewSquareWithBorderArray(
   EXPECT_TRUE(FPDFAnnot_SetRect(annot.get(), &rect));
   EXPECT_TRUE(
       EPDFAnnot_SetColor(annot.get(), FPDFANNOT_COLORTYPE_Color, 0, 0, 0));
-  WriteBorderArray(annot.get(), width, std::move(pattern));
+  WriteBorderArray(annot.get(), width, std::move(pattern), radii);
   return annot;
 }
 
@@ -7925,6 +7927,51 @@ ScopedFPDFAnnotation NewSquareWithBorderArray(
 ByteString DrawnNow(FPDF_ANNOTATION annot) {
   EXPECT_TRUE(EPDFAnnot_GenerateAppearance(annot));
   return GetNormalAppearanceStreamBytes(annot);
+}
+
+// |object| as it is stored, to compare before and after a call. A reference
+// shows its number and the object it names.
+std::string StoredText(const CPDF_Object* object) {
+  if (!object) {
+    return "-";
+  }
+  std::ostringstream text;
+  if (object->IsReference()) {
+    text << object->AsReference()->GetRefObjNum()
+         << " 0 R = " << StoredText(object->GetDirect().Get());
+  } else if (const CPDF_Array* array = object->AsArray()) {
+    text << "[";
+    for (size_t i = 0; i < array->size(); ++i) {
+      text << " " << StoredText(array->GetObjectAt(i).Get());
+    }
+    text << " ]";
+  } else if (const CPDF_Dictionary* dict = object->AsDictionary()) {
+    text << "<<";
+    for (const ByteString& key : dict->GetKeys()) {
+      text << " /" << key.c_str() << " "
+           << StoredText(dict->GetObjectFor(key.AsStringView()).Get());
+    }
+    text << " >>";
+  } else if (object->IsNumber()) {
+    text << object->GetNumber();
+  } else if (object->IsName()) {
+    text << "/" << object->GetString().c_str();
+  } else if (object->IsString()) {
+    text << "(" << object->GetString().c_str() << ")";
+  } else {
+    text << "?";
+  }
+  return text.str();
+}
+
+// The two keys that can hold |annot|'s border, as they are stored.
+std::string StoredBorderKeys(FPDF_ANNOTATION annot) {
+  const CPDF_Dictionary* annot_dict =
+      CPDFAnnotContextFromFPDFAnnotation(annot)->GetAnnotDict();
+  return "/Border " +
+         StoredText(
+             annot_dict->GetObjectFor(pdfium::annotation::kBorder).Get()) +
+         " /BS " + StoredText(annot_dict->GetObjectFor("BS").Get());
 }
 
 }  // namespace
@@ -8010,16 +8057,16 @@ TEST_F(EPDFAnnotEmbedderTest, RemovingTheDashOfABorderArrayKeepsItsWidth) {
     EXPECT_FALSE(DrawnNow(square.get()).Contains("] 0 d"));
   }
   {
-    // A solid /Border has no pattern to remove: it is the same border, in
-    // /BS.
+    // A solid /Border has no pattern to remove: nothing is written, and it
+    // stays the /Border it was.
     ScopedFPDFAnnotation square = NewSquareWithBorderArray(page.get(), 5);
     ASSERT_TRUE(EPDFAnnot_SetBorderDashPattern(square.get(), nullptr, 0));
     const BorderRead read = ReadBorder(square.get());
     EXPECT_EQ(FPDF_ANNOT_BS_SOLID, read.style);
     EXPECT_FLOAT_EQ(5, read.width);
     EXPECT_TRUE(read.pattern.empty());
-    EXPECT_TRUE(read.has_border_style);
-    EXPECT_FALSE(read.has_border_array);
+    EXPECT_FALSE(read.has_border_style);
+    EXPECT_TRUE(read.has_border_array);
     const ByteString look = DrawnNow(square.get());
     EXPECT_TRUE(look.Contains("5 w "));
     EXPECT_FALSE(look.Contains("] 0 d"));
@@ -8088,6 +8135,427 @@ TEST_F(EPDFAnnotEmbedderTest, SettingABorderStyleRemovesTheBorderArray) {
     EXPECT_THAT(read.pattern, ElementsAre(4, 2));
     EXPECT_FALSE(read.has_border_style);
     EXPECT_TRUE(read.has_border_array);
+  }
+}
+
+// A border setter call that asks for what the border already states writes
+// nothing. A /Border stays a /Border, with its corner radii, which a /BS
+// cannot hold. (Every call turned it into a /BS and removed it.) A call that
+// changes the border still moves it into /BS.
+TEST_F(EPDFAnnotEmbedderTest, ABorderCallThatChangesNothingWritesNothing) {
+  embedpdf_test::ScopedTestDocument doc(NewTestDocument());
+  ASSERT_TRUE(doc);
+  ScopedFPDFPage page(FPDFPage_New(doc.get(), 0, 200, 200));
+  ASSERT_TRUE(page);
+  static constexpr float kPattern[] = {3, 1};
+  const FS_SIZEF radii = {6, 4};
+
+  struct Case {
+    const char* name;
+    // The dash array of /Border [6 4 2 ...], when it has one.
+    std::optional<std::vector<float>> pattern;
+    std::function<bool(FPDF_ANNOTATION)> call;
+  };
+  const Case kNoChange[] = {
+      {"no pattern, removed from a solid border", std::nullopt,
+       [](FPDF_ANNOTATION annot) {
+         return !!EPDFAnnot_SetBorderDashPattern(annot, nullptr, 0);
+       }},
+      {"an empty pattern, removed", std::vector<float>{},
+       [](FPDF_ANNOTATION annot) {
+         return !!EPDFAnnot_SetBorderDashPattern(annot, nullptr, 0);
+       }},
+      {"solid and 2 wide, set on a solid border 2 wide", std::nullopt,
+       [](FPDF_ANNOTATION annot) {
+         return !!EPDFAnnot_SetBorderStyle(annot, FPDF_ANNOT_BS_SOLID, 2);
+       }},
+      {"no style and 2 wide, set on a solid border 2 wide", std::nullopt,
+       [](FPDF_ANNOTATION annot) {
+         return !!EPDFAnnot_SetBorderStyle(annot, FPDF_ANNOT_BS_UNKNOWN, 2);
+       }},
+      {"the pattern it has, set again", std::vector<float>{3, 1},
+       [](FPDF_ANNOTATION annot) {
+         return !!EPDFAnnot_SetBorderDashPattern(annot, kPattern, 2);
+       }},
+      {"dashed and 2 wide, set on a dashed border 2 wide",
+       std::vector<float>{3, 1},
+       [](FPDF_ANNOTATION annot) {
+         return !!EPDFAnnot_SetBorderStyle(annot, FPDF_ANNOT_BS_DASHED, 2);
+       }},
+  };
+  for (const Case& no_change : kNoChange) {
+    SCOPED_TRACE(no_change.name);
+    ScopedFPDFAnnotation square =
+        NewSquareWithBorderArray(page.get(), 2, no_change.pattern, radii);
+    const std::string stored = StoredBorderKeys(square.get());
+    ASSERT_TRUE(no_change.call(square.get()));
+    EXPECT_EQ(stored, StoredBorderKeys(square.get()));
+    float horizontal = -1;
+    float vertical = -1;
+    float width = -1;
+    ASSERT_TRUE(
+        FPDFAnnot_GetBorder(square.get(), &horizontal, &vertical, &width));
+    EXPECT_EQ(6, horizontal);
+    EXPECT_EQ(4, vertical);
+    EXPECT_EQ(2, width);
+  }
+
+  const Case kChange[] = {
+      {"the pattern removed from a dashed border", std::vector<float>{3, 1},
+       [](FPDF_ANNOTATION annot) {
+         return !!EPDFAnnot_SetBorderDashPattern(annot, nullptr, 0);
+       }},
+      {"another pattern", std::vector<float>{3, 1},
+       [](FPDF_ANNOTATION annot) {
+         static constexpr float kOther[] = {3, 2};
+         return !!EPDFAnnot_SetBorderDashPattern(annot, kOther, 2);
+       }},
+      {"another width", std::nullopt,
+       [](FPDF_ANNOTATION annot) {
+         return !!EPDFAnnot_SetBorderStyle(annot, FPDF_ANNOT_BS_SOLID, 3);
+       }},
+      {"another style", std::nullopt,
+       [](FPDF_ANNOTATION annot) {
+         return !!EPDFAnnot_SetBorderStyle(annot, FPDF_ANNOT_BS_DASHED, 2);
+       }},
+      {"no style, on a dashed border", std::vector<float>{3, 1},
+       [](FPDF_ANNOTATION annot) {
+         return !!EPDFAnnot_SetBorderStyle(annot, FPDF_ANNOT_BS_UNKNOWN, 2);
+       }},
+  };
+  for (const Case& change : kChange) {
+    SCOPED_TRACE(change.name);
+    ScopedFPDFAnnotation square =
+        NewSquareWithBorderArray(page.get(), 2, change.pattern, radii);
+    ASSERT_TRUE(change.call(square.get()));
+    const BorderRead read = ReadBorder(square.get());
+    EXPECT_TRUE(read.has_border_style);
+    EXPECT_FALSE(read.has_border_array);
+  }
+
+  {
+    // A /BS, asked for the entries it has: left as it is. An entry it does
+    // not have is still written, though the border reads the same without.
+    ScopedFPDFAnnotation square =
+        NewSquareWithBorderArray(page.get(), 9, std::nullopt, radii);
+    RetainPtr<CPDF_Dictionary> annot_dict =
+        CPDFAnnotContextFromFPDFAnnotation(square.get())->GetMutableAnnotDict();
+    RetainPtr<CPDF_Dictionary> bs =
+        annot_dict->SetNewFor<CPDF_Dictionary>("BS");
+    bs->SetNewFor<CPDF_Number>("W", 2);
+    bs->SetNewFor<CPDF_Name>("S", "D");
+    RetainPtr<CPDF_Array> dash = bs->SetNewFor<CPDF_Array>("D");
+    dash->AppendNew<CPDF_Number>(3);
+    dash->AppendNew<CPDF_Number>(1);
+    const std::string stored = StoredBorderKeys(square.get());
+    ASSERT_TRUE(
+        EPDFAnnot_SetBorderStyle(square.get(), FPDF_ANNOT_BS_DASHED, 2));
+    ASSERT_TRUE(EPDFAnnot_SetBorderDashPattern(square.get(), kPattern, 2));
+    // The /Border beside it was not read, and stays too.
+    EXPECT_EQ(stored, StoredBorderKeys(square.get()));
+
+    bs->RemoveFor("S");
+    bs->RemoveFor("D");
+    ASSERT_TRUE(EPDFAnnot_SetBorderStyle(square.get(), FPDF_ANNOT_BS_SOLID, 2));
+    EXPECT_EQ("/Border - /BS << /S /S /W 2 >>", StoredBorderKeys(square.get()));
+  }
+  {
+    // Neither key: there is nothing to remove, and no empty /BS is left. A
+    // border that is set is written, the default one too.
+    ScopedFPDFAnnotation square(
+        FPDFPage_CreateAnnot(page.get(), FPDF_ANNOT_SQUARE));
+    ASSERT_TRUE(square);
+    ASSERT_EQ("/Border - /BS -", StoredBorderKeys(square.get()));
+    ASSERT_TRUE(EPDFAnnot_SetBorderDashPattern(square.get(), nullptr, 0));
+    ASSERT_TRUE(
+        EPDFAnnot_SetBorderStyle(square.get(), FPDF_ANNOT_BS_UNKNOWN, -1));
+    EXPECT_EQ("/Border - /BS -", StoredBorderKeys(square.get()));
+    ASSERT_TRUE(EPDFAnnot_SetBorderStyle(square.get(), FPDF_ANNOT_BS_SOLID, 1));
+    EXPECT_EQ("/Border - /BS << /S /S /W 1 >>", StoredBorderKeys(square.get()));
+  }
+}
+
+// On a layer, a border call that changes nothing copies nothing into the
+// layer, and the layer saves nothing.
+TEST_F(EPDFAnnotEmbedderTest,
+       ABorderCallThatChangesNothingLeavesALayerAsItWas) {
+  std::string bytes;
+  {
+    embedpdf_test::ScopedTestDocument source(NewTestDocument());
+    ASSERT_TRUE(source);
+    {
+      ScopedFPDFPage page(FPDFPage_New(source.get(), 0, 200, 200));
+      ASSERT_TRUE(page);
+      ScopedFPDFAnnotation square = NewSquareWithBorderArray(
+          page.get(), 2, std::vector<float>{3, 1}, {6, 4});
+      ASSERT_TRUE(square);
+    }
+    ClearString();
+    ASSERT_TRUE(FPDF_SaveAsCopy(source.get(), this, 0));
+    bytes = GetString();
+  }
+  embedpdf_test::LayerFixture opened;
+  ASSERT_TRUE(opened.OpenBytes({bytes.begin(), bytes.end()}));
+  ScopedFPDFPage page(FPDF_LoadPage(opened.layer, 0));
+  ASSERT_TRUE(page);
+  ScopedFPDFAnnotation square(FPDFPage_GetAnnot(page.get(), 0));
+  ASSERT_TRUE(square);
+  ASSERT_EQ("/Border [ 6 4 2 [ 3 1 ] ] /BS -", StoredBorderKeys(square.get()));
+  ASSERT_EQ(0u, EPDFLayer_GetPromotedObjectCount(opened.layer));
+
+  static constexpr float kPattern[] = {3, 1};
+  ASSERT_TRUE(EPDFLayer_BeginTransaction(opened.layer));
+  ASSERT_TRUE(EPDFAnnot_SetBorderStyle(square.get(), FPDF_ANNOT_BS_DASHED, 2));
+  ASSERT_TRUE(EPDFAnnot_SetBorderDashPattern(square.get(), kPattern, 2));
+  ASSERT_TRUE(EPDFLayer_CommitTransaction(opened.layer));
+
+  EXPECT_EQ(0u, EPDFLayer_GetPromotedObjectCount(opened.layer));
+  EXPECT_TRUE(opened.SaveDelta().empty());
+}
+
+// A setter leaves a border alone only when the key it is read from is well
+// formed and states what the call asks for. One that merely reads as it (a
+// name where the width goes reads as 0, a /Border too short to hold a width
+// reads as 1 wide) is written anew, as a /BS.
+TEST_F(EPDFAnnotEmbedderTest, AMalformedBorderThatReadsAsAskedIsWrittenAnew) {
+  embedpdf_test::ScopedTestDocument doc(NewTestDocument());
+  ASSERT_TRUE(doc);
+  ScopedFPDFPage page(FPDFPage_New(doc.get(), 0, 200, 200));
+  ASSERT_TRUE(page);
+  static constexpr float kThreeNought[] = {3, 0};
+
+  struct Case {
+    const char* name;
+    // Stores the malformed border in the annotation's dictionary.
+    std::function<void(CPDF_Dictionary*)> store;
+    // Asks for what it reads as.
+    std::function<bool(FPDF_ANNOTATION)> call;
+    const char* stored_after;
+  };
+  auto solid = [](float width) {
+    return [width](FPDF_ANNOTATION annot) {
+      return !!EPDFAnnot_SetBorderStyle(annot, FPDF_ANNOT_BS_SOLID, width);
+    };
+  };
+  const Case kCases[] = {
+      {"/Border with a name for its width",
+       [](CPDF_Dictionary* annot_dict) {
+         RetainPtr<CPDF_Array> border =
+             annot_dict->SetNewFor<CPDF_Array>(pdfium::annotation::kBorder);
+         border->AppendNew<CPDF_Number>(6);
+         border->AppendNew<CPDF_Number>(4);
+         border->AppendNew<CPDF_Name>("X");
+       },
+       solid(0), "/Border - /BS << /S /S /W 0 >>"},
+      {"/Border of two numbers",
+       [](CPDF_Dictionary* annot_dict) {
+         RetainPtr<CPDF_Array> border =
+             annot_dict->SetNewFor<CPDF_Array>(pdfium::annotation::kBorder);
+         border->AppendNew<CPDF_Number>(6);
+         border->AppendNew<CPDF_Number>(4);
+       },
+       solid(1), "/Border - /BS << /S /S /W 1 >>"},
+      {"/Border with a name in its dash array",
+       [](CPDF_Dictionary* annot_dict) {
+         RetainPtr<CPDF_Array> border =
+             annot_dict->SetNewFor<CPDF_Array>(pdfium::annotation::kBorder);
+         border->AppendNew<CPDF_Number>(6);
+         border->AppendNew<CPDF_Number>(4);
+         border->AppendNew<CPDF_Number>(2);
+         RetainPtr<CPDF_Array> dash = border->AppendNew<CPDF_Array>();
+         dash->AppendNew<CPDF_Number>(3);
+         dash->AppendNew<CPDF_Name>("X");
+       },
+       [](FPDF_ANNOTATION annot) {
+         return !!EPDFAnnot_SetBorderDashPattern(annot, kThreeNought, 2);
+       },
+       "/Border - /BS << /D [ 3 0 ] /S /D /W 2 >>"},
+      {"/BS with a name for /W",
+       [](CPDF_Dictionary* annot_dict) {
+         RetainPtr<CPDF_Dictionary> bs =
+             annot_dict->SetNewFor<CPDF_Dictionary>("BS");
+         bs->SetNewFor<CPDF_Name>("W", "X");
+         bs->SetNewFor<CPDF_Name>("S", "S");
+       },
+       solid(0), "/Border - /BS << /S /S /W 0 >>"},
+      {"/BS with a string for /S",
+       [](CPDF_Dictionary* annot_dict) {
+         RetainPtr<CPDF_Dictionary> bs =
+             annot_dict->SetNewFor<CPDF_Dictionary>("BS");
+         bs->SetNewFor<CPDF_Number>("W", 2);
+         bs->SetNewFor<CPDF_String>("S", "S");
+       },
+       solid(2), "/Border - /BS << /S /S /W 2 >>"},
+      {"/BS with a name in /D",
+       [](CPDF_Dictionary* annot_dict) {
+         RetainPtr<CPDF_Dictionary> bs =
+             annot_dict->SetNewFor<CPDF_Dictionary>("BS");
+         RetainPtr<CPDF_Array> dash = bs->SetNewFor<CPDF_Array>("D");
+         dash->AppendNew<CPDF_Number>(3);
+         dash->AppendNew<CPDF_Name>("X");
+       },
+       [](FPDF_ANNOTATION annot) {
+         return !!EPDFAnnot_SetBorderDashPattern(annot, kThreeNought, 2);
+       },
+       "/Border - /BS << /D [ 3 0 ] >>"},
+  };
+  for (const Case& malformed : kCases) {
+    SCOPED_TRACE(malformed.name);
+    ScopedFPDFAnnotation square(
+        FPDFPage_CreateAnnot(page.get(), FPDF_ANNOT_SQUARE));
+    ASSERT_TRUE(square);
+    malformed.store(CPDFAnnotContextFromFPDFAnnotation(square.get())
+                        ->GetMutableAnnotDict()
+                        .Get());
+    ASSERT_TRUE(malformed.call(square.get()));
+    EXPECT_EQ(malformed.stored_after, StoredBorderKeys(square.get()));
+  }
+}
+
+// A style that is none is refused before the annotation is taken for
+// writing: on a layer nothing is copied into the layer. (The annotation was
+// copied in, and the copy stayed in memory.)
+TEST_F(EPDFAnnotEmbedderTest, ARefusedBorderStyleLeavesALayerAsItWas) {
+  std::string bytes;
+  {
+    embedpdf_test::ScopedTestDocument source(NewTestDocument());
+    ASSERT_TRUE(source);
+    {
+      ScopedFPDFPage page(FPDFPage_New(source.get(), 0, 200, 200));
+      ASSERT_TRUE(page);
+      ScopedFPDFAnnotation square = NewSquareWithBorderArray(page.get(), 5);
+      ASSERT_TRUE(square);
+    }
+    ClearString();
+    ASSERT_TRUE(FPDF_SaveAsCopy(source.get(), this, 0));
+    bytes = GetString();
+  }
+  embedpdf_test::LayerFixture opened;
+  ASSERT_TRUE(opened.OpenBytes({bytes.begin(), bytes.end()}));
+  ScopedFPDFPage page(FPDF_LoadPage(opened.layer, 0));
+  ASSERT_TRUE(page);
+  ScopedFPDFAnnotation square(FPDFPage_GetAnnot(page.get(), 0));
+  ASSERT_TRUE(square);
+  ASSERT_EQ(0u, EPDFLayer_GetPromotedObjectCount(opened.layer));
+
+  ASSERT_TRUE(EPDFLayer_BeginTransaction(opened.layer));
+  EXPECT_FALSE(EPDFAnnot_SetBorderStyle(
+      square.get(), static_cast<FPDF_ANNOT_BORDER_STYLE>(99), 3));
+  ASSERT_TRUE(EPDFLayer_CommitTransaction(opened.layer));
+
+  EXPECT_EQ(0u, EPDFLayer_GetPromotedObjectCount(opened.layer));
+  EXPECT_TRUE(opened.SaveDelta().empty());
+  EXPECT_EQ("/Border [ 0 0 5 ] /BS -", StoredBorderKeys(square.get()));
+}
+
+// A /BS may be an object of its own that another annotation names too, and
+// so may its /D. A border setter writes into neither: the annotation gets a
+// /BS of its own first, and a pattern goes into a new array. The other
+// annotation keeps its border. (The setter wrote into the objects it found.)
+TEST_F(EPDFAnnotEmbedderTest, ASharedBorderStyleIsNotWrittenInto) {
+  embedpdf_test::ScopedTestDocument doc(NewTestDocument());
+  ASSERT_TRUE(doc);
+  ScopedFPDFPage page(FPDFPage_New(doc.get(), 0, 200, 200));
+  ASSERT_TRUE(page);
+  CPDF_Document* pdf = CPDFDocumentFromFPDFDocument(doc.get());
+  ASSERT_TRUE(pdf);
+  static constexpr float kPattern[] = {8, 1};
+
+  for (bool one_style : {true, false}) {
+    SCOPED_TRACE(one_style ? "one /BS for both annotations"
+                           : "a /BS each, and one /D for both");
+    ScopedFPDFAnnotation first = NewSquareWithBorderArray(page.get(), 9);
+    ScopedFPDFAnnotation second = NewSquareWithBorderArray(page.get(), 9);
+    ASSERT_TRUE(first);
+    ASSERT_TRUE(second);
+    RetainPtr<CPDF_Array> shared_pattern = pdf->NewIndirect<CPDF_Array>();
+    shared_pattern->AppendNew<CPDF_Number>(4);
+    shared_pattern->AppendNew<CPDF_Number>(2);
+    RetainPtr<CPDF_Dictionary> shared_style =
+        pdf->NewIndirect<CPDF_Dictionary>();
+    for (FPDF_ANNOTATION square : {first.get(), second.get()}) {
+      RetainPtr<CPDF_Dictionary> annot_dict =
+          CPDFAnnotContextFromFPDFAnnotation(square)->GetMutableAnnotDict();
+      annot_dict->RemoveFor(pdfium::annotation::kBorder);
+      RetainPtr<CPDF_Dictionary> bs = shared_style;
+      if (one_style) {
+        annot_dict->SetNewFor<CPDF_Reference>("BS", pdf,
+                                              shared_style->GetObjNum());
+      } else {
+        bs = annot_dict->SetNewFor<CPDF_Dictionary>("BS");
+      }
+      bs->SetNewFor<CPDF_Number>("W", 4);
+      bs->SetNewFor<CPDF_Name>("S", "D");
+      bs->SetNewFor<CPDF_Reference>("D", pdf, shared_pattern->GetObjNum());
+    }
+    const std::string other_stored = StoredBorderKeys(second.get());
+    const std::string pattern_stored = StoredText(shared_pattern.Get());
+    const std::string style_stored = StoredText(shared_style.Get());
+    auto expect_the_other_as_it_was = [&] {
+      EXPECT_EQ(other_stored, StoredBorderKeys(second.get()));
+      EXPECT_EQ(pattern_stored, StoredText(shared_pattern.Get()));
+      if (one_style) {
+        EXPECT_EQ(style_stored, StoredText(shared_style.Get()));
+      }
+      const BorderRead read = ReadBorder(second.get());
+      EXPECT_EQ(FPDF_ANNOT_BS_DASHED, read.style);
+      EXPECT_FLOAT_EQ(4, read.width);
+      EXPECT_THAT(read.pattern, ElementsAre(4, 2));
+    };
+    const CPDF_Dictionary* first_dict =
+        CPDFAnnotContextFromFPDFAnnotation(first.get())->GetAnnotDict();
+
+    // A pattern: in an array of the annotation's own, in a /BS of its own.
+    ASSERT_TRUE(EPDFAnnot_SetBorderDashPattern(first.get(), kPattern, 2));
+    expect_the_other_as_it_was();
+    BorderRead read = ReadBorder(first.get());
+    EXPECT_EQ(FPDF_ANNOT_BS_DASHED, read.style);
+    EXPECT_FLOAT_EQ(4, read.width);
+    EXPECT_THAT(read.pattern, ElementsAre(8, 1));
+    EXPECT_FALSE(first_dict->GetObjectFor("BS")->IsReference());
+    EXPECT_FALSE(
+        first_dict->GetDictFor("BS")->GetObjectFor("D")->IsReference());
+
+    // A style and a width.
+    ASSERT_TRUE(EPDFAnnot_SetBorderStyle(first.get(), FPDF_ANNOT_BS_SOLID, 7));
+    expect_the_other_as_it_was();
+    read = ReadBorder(first.get());
+    EXPECT_EQ(FPDF_ANNOT_BS_SOLID, read.style);
+    EXPECT_FLOAT_EQ(7, read.width);
+
+    // The pattern removed.
+    ASSERT_TRUE(EPDFAnnot_SetBorderDashPattern(first.get(), nullptr, 0));
+    expect_the_other_as_it_was();
+    EXPECT_TRUE(ReadBorder(first.get()).pattern.empty());
+  }
+  {
+    // A style and a width set first, on a /BS that names the shared pattern:
+    // the copy goes on naming it, and it is still not written into.
+    ScopedFPDFAnnotation first = NewSquareWithBorderArray(page.get(), 9);
+    ScopedFPDFAnnotation second = NewSquareWithBorderArray(page.get(), 9);
+    RetainPtr<CPDF_Array> shared_pattern = pdf->NewIndirect<CPDF_Array>();
+    shared_pattern->AppendNew<CPDF_Number>(4);
+    shared_pattern->AppendNew<CPDF_Number>(2);
+    RetainPtr<CPDF_Dictionary> shared_style =
+        pdf->NewIndirect<CPDF_Dictionary>();
+    shared_style->SetNewFor<CPDF_Number>("W", 4);
+    shared_style->SetNewFor<CPDF_Name>("S", "D");
+    shared_style->SetNewFor<CPDF_Reference>("D", pdf,
+                                            shared_pattern->GetObjNum());
+    for (FPDF_ANNOTATION square : {first.get(), second.get()}) {
+      RetainPtr<CPDF_Dictionary> annot_dict =
+          CPDFAnnotContextFromFPDFAnnotation(square)->GetMutableAnnotDict();
+      annot_dict->RemoveFor(pdfium::annotation::kBorder);
+      annot_dict->SetNewFor<CPDF_Reference>("BS", pdf,
+                                            shared_style->GetObjNum());
+    }
+    const std::string other_stored = StoredBorderKeys(second.get());
+    ASSERT_TRUE(EPDFAnnot_SetBorderStyle(first.get(), FPDF_ANNOT_BS_DASHED, 7));
+    EXPECT_EQ(other_stored, StoredBorderKeys(second.get()));
+    const BorderRead read = ReadBorder(first.get());
+    EXPECT_EQ(FPDF_ANNOT_BS_DASHED, read.style);
+    EXPECT_FLOAT_EQ(7, read.width);
+    EXPECT_THAT(read.pattern, ElementsAre(4, 2));
   }
 }
 

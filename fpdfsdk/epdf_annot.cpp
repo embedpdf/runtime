@@ -1385,15 +1385,180 @@ EPDFAnnot_ClearRectangleDifferences(FPDF_ANNOTATION annot) {
 
 namespace {
 
-// The /BS a border setter writes into. An annotation that keeps its border in
-// /Border alone is given that border as a /BS first: its width, and a dashed
-// style with its pattern when the array has one. The setter then changes the
-// part it sets, and the rest stays as it read. /Border is removed: with a /BS
-// beside it a reader that follows ISO 32000-1 12.5.2 no longer looks at it,
-// and one that reads /Border first (PDFium's form filler does) would go on
-// showing the old border.
+// Gives |annot_dict| a dictionary of its own under |key| when the entry
+// names an indirect object: a copy with the same entries. Another annotation
+// may name that object too, and a change to it would show there as well.
+void OwnDictEntry(FPDF_ANNOTATION annot,
+                  CPDF_Dictionary* annot_dict,
+                  ByteStringView key) {
+  RetainPtr<const CPDF_Object> entry = annot_dict->GetObjectFor(key);
+  if (!entry || !entry->IsReference()) {
+    return;
+  }
+  RetainPtr<const CPDF_Dictionary> shared = annot_dict->GetDictFor(key);
+  if (!shared) {
+    return;
+  }
+  CPDF_AnnotContext* context = CPDFAnnotContextFromFPDFAnnotation(annot);
+  CPDF_Document* doc = context && context->GetPage()
+                           ? context->GetPage()->GetDocument()
+                           : nullptr;
+  annot_dict->SetFor(ByteString(key),
+                     doc ? shared->CloneForHolder(doc) : shared->Clone());
+}
+
+// The entries of |array| when every one is a number.
+std::optional<std::vector<float>> NumbersOf(const CPDF_Array* array) {
+  std::vector<float> numbers;
+  for (size_t i = 0; i < array->size(); ++i) {
+    RetainPtr<const CPDF_Object> entry = array->GetDirectObjectAt(i);
+    if (!entry || !entry->IsNumber()) {
+      return std::nullopt;
+    }
+    numbers.push_back(entry->GetNumber());
+  }
+  return numbers;
+}
+
+// What the key an annotation's border is read from states, for a setter to
+// see whether a call would change anything.
+//
+// A /BS states what its entries say, and an entry it leaves out is not
+// stated. A /Border has no entry to leave out: its form states all three,
+// the width as its third number, and dashed with the pattern its dash array
+// holds or solid without one.
+struct StatedBorder {
+  // False for a border kept in /Border.
+  bool in_border_style = true;
+  std::optional<float> width;
+  // The style's name: /BS /S, or S or D for a /Border.
+  std::optional<ByteString> style;
+  // /BS /D, or the pattern of a /Border that has one.
+  std::optional<std::vector<float>> pattern;
+};
+
+// What |annot_dict|'s border states, by the rule fpdfdoc::ReadAnnotBorder
+// reads it with: /BS, or else /Border, or else nothing. Nothing is returned
+// when that key is not written as ISO 32000 writes a border: a /BS that is
+// no dictionary, a name where a number goes, a /Border that is not three
+// numbers and at most a dash array. Such a border may read as what a call
+// asks for (a name reads as 0) without stating it, so a setter writes it
+// anew.
+std::optional<StatedBorder> ReadStatedBorder(
+    const CPDF_Dictionary* annot_dict) {
+  StatedBorder stated;
+  if (RetainPtr<const CPDF_Object> entry =
+          annot_dict->GetDirectObjectFor("BS")) {
+    const CPDF_Dictionary* border_style = entry->AsDictionary();
+    if (!border_style) {
+      return std::nullopt;
+    }
+    if (RetainPtr<const CPDF_Object> width =
+            border_style->GetDirectObjectFor("W")) {
+      if (!width->IsNumber()) {
+        return std::nullopt;
+      }
+      stated.width = width->GetNumber();
+    }
+    if (RetainPtr<const CPDF_Object> style =
+            border_style->GetDirectObjectFor("S")) {
+      if (!style->IsName()) {
+        return std::nullopt;
+      }
+      stated.style = style->GetString();
+    }
+    if (RetainPtr<const CPDF_Object> dash =
+            border_style->GetDirectObjectFor("D")) {
+      if (!dash->IsArray()) {
+        return std::nullopt;
+      }
+      stated.pattern = NumbersOf(dash->AsArray());
+      if (!stated.pattern.has_value()) {
+        return std::nullopt;
+      }
+    }
+    return stated;
+  }
+
+  RetainPtr<const CPDF_Object> entry =
+      annot_dict->GetDirectObjectFor(pdfium::annotation::kBorder);
+  if (!entry) {
+    return stated;
+  }
+  const CPDF_Array* border = entry->AsArray();
+  if (!border || border->size() < 3 || border->size() > 4) {
+    return std::nullopt;
+  }
+  for (size_t i = 0; i < 3; ++i) {
+    RetainPtr<const CPDF_Object> number = border->GetDirectObjectAt(i);
+    if (!number || !number->IsNumber()) {
+      return std::nullopt;
+    }
+  }
+  stated.in_border_style = false;
+  stated.width = border->GetFloatAt(2);
+  stated.style = "S";
+  if (border->size() == 4) {
+    RetainPtr<const CPDF_Object> dash = border->GetDirectObjectAt(3);
+    if (!dash || !dash->IsArray()) {
+      return std::nullopt;
+    }
+    std::optional<std::vector<float>> pattern = NumbersOf(dash->AsArray());
+    if (!pattern.has_value()) {
+      return std::nullopt;
+    }
+    // An empty dash array is a solid line, and no pattern.
+    if (!pattern->empty()) {
+      stated.style = "D";
+      stated.pattern = std::move(pattern);
+    }
+  }
+  return stated;
+}
+
+// Whether |stated| already is the style and width a call asks for: the name
+// |style_name|, or no /S when it is empty; |width|, or no /W when it is
+// negative. In a /Border, which leaves nothing out, no /S is solid and no /W
+// is 1 wide.
+bool StatesStyleAndWidth(const StatedBorder& stated,
+                         const ByteString& style_name,
+                         float width) {
+  if (!stated.in_border_style) {
+    return stated.style ==
+               (style_name.IsEmpty() ? ByteString("S") : style_name) &&
+           stated.width == (width >= 0 ? width : 1.0f);
+  }
+  const bool states_style = style_name.IsEmpty() ? !stated.style.has_value()
+                                                 : stated.style == style_name;
+  const bool states_width =
+      width >= 0 ? stated.width == width : !stated.width.has_value();
+  return states_style && states_width;
+}
+
+// Whether |stated| already has the dash pattern |pattern|, or none when it
+// is empty.
+bool StatesPattern(const StatedBorder& stated,
+                   const std::vector<float>& pattern) {
+  return pattern.empty() ? !stated.pattern.has_value()
+                         : stated.pattern == pattern;
+}
+
+// The /BS a border setter writes into: a dictionary of the annotation's own
+// (OwnDictEntry()), since a /BS that is an indirect object may be another
+// annotation's too.
+//
+// An annotation that keeps its border in /Border alone is given that border
+// as a /BS first: its width, and a dashed style with its pattern when the
+// array has one. The setter then changes the part it sets, and the rest
+// stays as it read. /Border is removed: with a /BS beside it a reader that
+// follows ISO 32000-1 12.5.2 no longer looks at it, and one that reads
+// /Border first (PDFium's form filler does) would go on showing the old
+// border. Its corner radii go with it, which a /BS cannot hold, so a setter
+// comes here only for a call that changes the border.
 RetainPtr<CPDF_Dictionary> BorderStyleDictForWrite(
+    FPDF_ANNOTATION annot,
     CPDF_Dictionary* annot_dict) {
+  OwnDictEntry(annot, annot_dict, "BS");
   RetainPtr<CPDF_Dictionary> bs_dict = annot_dict->GetMutableDictFor("BS");
   if (!bs_dict) {
     const bool has_border_array =
@@ -1458,8 +1623,24 @@ EPDFAnnot_SetBorderDashPattern(FPDF_ANNOTATION annot,
                                const float* dash_array,
                                unsigned long count) {
   ScopedFPDFAnnotationView annot_view(annot);
-  if (!annot) {
+  const CPDF_Dictionary* stored_dict = GetAnnotDictFromFPDFAnnotation(annot);
+  if (!stored_dict) {
     return false;
+  }
+
+  // The pattern asked for; none removes it.
+  std::vector<float> pattern;
+  if (dash_array) {
+    // SAFETY: caller guarantees `dash_array` has `count` elements.
+    for (unsigned long i = 0; i < count; ++i) {
+      pattern.push_back(dash_array[i]);
+    }
+  }
+
+  // Nothing to change: no write, and a /Border stays a /Border.
+  const std::optional<StatedBorder> stated = ReadStatedBorder(stored_dict);
+  if (stated.has_value() && StatesPattern(stated.value(), pattern)) {
+    return true;
   }
 
   RetainPtr<CPDF_Dictionary> annot_dict =
@@ -1467,35 +1648,25 @@ EPDFAnnot_SetBorderDashPattern(FPDF_ANNOTATION annot,
   if (!annot_dict) {
     return false;
   }
-
   RetainPtr<CPDF_Dictionary> bs_dict =
-      BorderStyleDictForWrite(annot_dict.Get());
+      BorderStyleDictForWrite(annot, annot_dict.Get());
 
-  // --- Removal branch (PDFium style) ---
-  if (!dash_array || count == 0) {
+  // The pattern only: /S stays as it is, so a solid border with a pattern
+  // still draws solid, and a dashed one without draws the default dash.
+  if (pattern.empty()) {
     bs_dict->RemoveFor("D");
-    // Optional: if style was dashed only because of the array, you can revert.
-    // Leaving it unchanged matches PDFium's permissive style.
     if (bs_dict->size() == 0) {
       annot_dict->RemoveFor("BS");
     }
     return true;
   }
 
-  // --- Set branch --- (the pattern only: /S stays as it is, so a solid
-  // border with a pattern still draws solid)
-  RetainPtr<CPDF_Array> d_array = bs_dict->GetMutableArrayFor("D");
-  if (d_array) {
-    d_array->Clear();
-  } else {
-    d_array = bs_dict->SetNewFor<CPDF_Array>("D");
+  // A new array under the key. The one the entry named is not written into:
+  // it may be an object of its own, which another /BS names too.
+  RetainPtr<CPDF_Array> d_array = bs_dict->SetNewFor<CPDF_Array>("D");
+  for (float value : pattern) {
+    d_array->AppendNew<CPDF_Number>(value);
   }
-
-  // SAFETY: caller guarantees `dash_array` has `count` elements.
-  for (unsigned long i = 0; i < count; ++i) {
-    d_array->AppendNew<CPDF_Number>(dash_array[i]);
-  }
-
   return true;
 }
 
@@ -1524,13 +1695,13 @@ EPDFAnnot_SetBorderStyle(FPDF_ANNOTATION annot,
                          FPDF_ANNOT_BORDER_STYLE style,
                          float width) {
   ScopedFPDFAnnotationView annot_view(annot);
-  RetainPtr<CPDF_Dictionary> pAnnotDict =
-      GetMutableAnnotDictFromFPDFAnnotation(annot);
-  if (!pAnnotDict) {
+  const CPDF_Dictionary* stored_dict = GetAnnotDictFromFPDFAnnotation(annot);
+  if (!stored_dict) {
     return false;
   }
 
-  // A style that is none of ours is refused before anything is written.
+  // A style that is none of ours is refused before the annotation is taken
+  // for writing.
   ByteString style_name;
   if (style != FPDF_ANNOT_BS_UNKNOWN) {
     style_name = CPDF_Annot::BorderStyleToString(
@@ -1540,8 +1711,20 @@ EPDFAnnot_SetBorderStyle(FPDF_ANNOTATION annot,
     }
   }
 
+  // Nothing to change: no write, and a /Border stays a /Border.
+  const std::optional<StatedBorder> stated = ReadStatedBorder(stored_dict);
+  if (stated.has_value() &&
+      StatesStyleAndWidth(stated.value(), style_name, width)) {
+    return true;
+  }
+
+  RetainPtr<CPDF_Dictionary> pAnnotDict =
+      GetMutableAnnotDictFromFPDFAnnotation(annot);
+  if (!pAnnotDict) {
+    return false;
+  }
   RetainPtr<CPDF_Dictionary> pBSDict =
-      BorderStyleDictForWrite(pAnnotDict.Get());
+      BorderStyleDictForWrite(annot, pAnnotDict.Get());
   if (width >= 0) {
     pBSDict->SetNewFor<CPDF_Number>("W", width);
   } else {
@@ -4377,17 +4560,7 @@ namespace {
 RetainPtr<CPDF_Dictionary> OwnMKForWriting(FPDF_ANNOTATION annot,
                                            CPDF_Dictionary* annot_dict,
                                            bool create) {
-  RetainPtr<const CPDF_Object> entry = annot_dict->GetObjectFor("MK");
-  if (entry && entry->IsReference()) {
-    RetainPtr<const CPDF_Dictionary> shared = annot_dict->GetDictFor("MK");
-    CPDF_AnnotContext* ctx = CPDFAnnotContextFromFPDFAnnotation(annot);
-    CPDF_Document* doc =
-        ctx && ctx->GetPage() ? ctx->GetPage()->GetDocument() : nullptr;
-    if (shared) {
-      annot_dict->SetFor("MK",
-                         doc ? shared->CloneForHolder(doc) : shared->Clone());
-    }
-  }
+  OwnDictEntry(annot, annot_dict, "MK");
   return create ? annot_dict->GetOrCreateDictFor("MK")
                 : annot_dict->GetMutableDictFor("MK");
 }

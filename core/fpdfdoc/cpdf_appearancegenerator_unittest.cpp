@@ -387,14 +387,15 @@ enum class BorderedKind {
   kCheckBox,
   kRadioButton,
   kPushButton,
+  kIconButton,
   kSignature,
 };
 
 struct BorderedKindCase {
   const char* name;
   BorderedKind kind;
-  // False for a check box, a radio button and a push button, which draw one
-  // solid box for every border style.
+  // False for a check box, a radio button and a push button (with a caption
+  // or an icon), which draw one solid box for every border style.
   bool draws_dashes;
 };
 
@@ -415,12 +416,15 @@ constexpr BorderedKindCase kBorderedKinds[] = {
     {"check box", BorderedKind::kCheckBox, false},
     {"radio button", BorderedKind::kRadioButton, false},
     {"push button", BorderedKind::kPushButton, false},
+    {"push button with an icon", BorderedKind::kIconButton, false},
     {"signature", BorderedKind::kSignature, true},
 };
 
 // An annotation of |kind|, 120 by 60, with what the kind needs to be drawn
-// (a colour, its points, its text) and neither /BS nor /Border.
-RetainPtr<CPDF_Dictionary> MakeBorderedDict(BorderedKind kind) {
+// (a colour, its points, its text, an icon in |doc|) and neither /BS nor
+// /Border.
+RetainPtr<CPDF_Dictionary> MakeBorderedDict(CPDF_Document* doc,
+                                            BorderedKind kind) {
   const CFX_FloatRect rect(50, 50, 170, 110);
   auto shape = [&rect](const ByteString& subtype) {
     auto annot_dict = MakeAnnotDict(subtype, rect);
@@ -515,6 +519,21 @@ RetainPtr<CPDF_Dictionary> MakeBorderedDict(BorderedKind kind) {
       annot_dict->GetMutableDictFor("MK")->SetNewFor<CPDF_String>("CA", "Go");
       return annot_dict;
     }
+    case BorderedKind::kIconButton: {
+      // An image field: its icon alone (/MK /TP 1), fitted inside the border.
+      auto icon_dict = pdfium::MakeRetain<CPDF_Dictionary>();
+      icon_dict->SetNewFor<CPDF_Name>("Type", "XObject");
+      icon_dict->SetNewFor<CPDF_Name>("Subtype", "Form");
+      icon_dict->SetRectFor("BBox", CFX_FloatRect(0, 0, 10, 10));
+      auto icon = doc->NewIndirect<CPDF_Stream>(std::move(icon_dict));
+      icon->SetData(ByteStringView("0 0 10 10 re f").unsigned_span());
+      auto annot_dict = widget(pdfium::form_fields::kBtn,
+                               pdfium::form_flags::kButtonPushbutton);
+      RetainPtr<CPDF_Dictionary> mk = annot_dict->GetMutableDictFor("MK");
+      mk->SetNewFor<CPDF_Reference>("I", doc, icon->GetObjNum());
+      mk->SetNewFor<CPDF_Number>("TP", 1);
+      return annot_dict;
+    }
     case BorderedKind::kSignature:
       return widget(pdfium::form_fields::kSig, 0);
   }
@@ -561,7 +580,7 @@ ByteString DrawBorderedKind(
     const std::function<void(CPDF_Dictionary*)>& write_border) {
   CPDF_TestDocument doc;
   AddAcroFormWithHelvetica(&doc);
-  RetainPtr<CPDF_Dictionary> annot_dict = MakeBorderedDict(kind);
+  RetainPtr<CPDF_Dictionary> annot_dict = MakeBorderedDict(&doc, kind);
   write_border(annot_dict.Get());
 
   auto draw_annot = [&](CPDF_Annot::Subtype subtype) {
@@ -617,6 +636,7 @@ ByteString DrawBorderedKind(
                                                           annot_dict.Get());
       break;
     case BorderedKind::kPushButton:
+    case BorderedKind::kIconButton:
       CPDF_AppearanceGenerator::GenerateFormAP(
           &doc, annot_dict.Get(), CPDF_AppearanceGenerator::kPushButton);
       break;

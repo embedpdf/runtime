@@ -336,8 +336,12 @@ matrix.
 upstream's `core/fpdfdoc/cpdf_generateap.{h,cpp}` stay byte-identical to upstream, compiled and
 unused. An annotation's border is read in one place, `fpdfdoc::ReadAnnotBorder`, as ISO 32000-1
 12.5.2 says: its `/BS`, and then `/Border` is not read at all; or else its `/Border`; or else solid
-and 1 wide. Every drawer takes its border from that reading, the `EPDFAnnot_*` border readers
-report it, and the border setters leave the border in `/BS` alone.
+and 1 wide. Every drawer takes its border from that reading, and the `EPDFAnnot_*` border readers
+report it. A border setter that changes the border leaves it in a `/BS` of the annotation's own:
+a `/Border` is moved into it and removed, and a `/BS` or a `/D` that is an indirect object, which
+another annotation may name too, is never written into. A setter that asks for what the border
+already states writes nothing, so a `/Border` stays as it is, with the corner radii a `/BS`
+cannot hold; a malformed border that only reads as the values is written anew.
 **Why.** We rewrote most of the generator: appearances built in memory, rich text, rotation,
 measurement, redaction overlays, form fields. Mixed into upstream's file, it was the worst conflict
 file. Apart, upstream's file merges cleanly. With one reading of a border, an annotation is drawn
@@ -359,21 +363,23 @@ middle, and reads an icon narrower than one unit as one unit wide. A push button
 a new stream on every redraw, as a check box's are: the stream it had may be another widget's or
 a picture the button showed, so it is never written into, and the icon its resources named goes
 with it. Before a form drawer replaces an appearance, a widget whose `/AP` is an indirect object
-gets a copy of its own (`OwnAppearanceDict`), and `epdf_annot.cpp` does the same for `/MK` before
-a setter writes it (`OwnMKForWriting`): another widget may name the same dictionary. A colour is
+gets a copy of its own (`OwnAppearanceDict`), and `epdf_annot.cpp` does the same for `/MK` and
+`/BS` before a setter writes one (`OwnMKForWriting` and `BorderStyleDictForWrite`, both through
+`OwnDictEntry`): another annotation may name the same dictionary. A colour is
 set as a new array, never written into the one the entry named, which may be an object another
 `/MK` names too. An `/MK` setter that changes nothing writes nothing, and it changes nothing only
 when the entry is well formed and reads as the value (three numbers from 0 to 1, a string, an
 integer): a malformed entry that reads the same is written anew. An icon is a form XObject
 everywhere (`ButtonIconOf`, `MKIconForm`). The border: `cpdf_annot_border.{h,cpp}`, its drawers'
 view of it in `cpdf_appearancegenerator_common.cpp` (`GetAnnotBorderStyleInfo`, `GetBorderWidth`,
-`GetDashPatternString`), and `BorderStyleDictForWrite` in `epdf_annot.cpp`.
+`GetDashPatternString`), and `ReadStatedBorder` and `BorderStyleDictForWrite` in `epdf_annot.cpp`.
 **Guarded by.** `check-fork-tags.py` fails when upstream's files differ from upstream
 (`fork-pristine.txt`); `upstream-preview.py` lists new upstream callers of `CPDF_GenerateAP::`, and
 upstream's commits to its generator. `epdf_widget_drawing_embeddertest.cpp` for a button's icon;
 its `AButtonIsSharedAsTheFormFillerSharesIt` runs upstream's form filler on the same buttons and
 compares the two. `CPDFGenerateAPTest.BorderArrayDrawsAsBorderStyleForEveryKind` draws every kind
-that has a border from both keys.
+that has a border from both keys; the border setters' tests are in `epdf_annot_embeddertest.cpp`
+(`ABorderCallThatChangesNothingWritesNothing`, `ASharedBorderStyleIsNotWrittenInto`).
 **When upstream touches this.** A commit to `cpdf_generateap.*`: port it to ours or skip it, with
 the reason in the sync report. A new upstream caller of `CPDF_GenerateAP::`: route it to ours, or
 accept it in the report. A change to what `CPDF_IconFit`'s readers return (`GetScaleMethod`,
