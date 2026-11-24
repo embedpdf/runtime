@@ -3,12 +3,14 @@
 
 #include "core/fpdfdoc/cpdf_appearancegenerator.h"
 
+#include <functional>
 #include <optional>
 #include <vector>
 
 #include "constants/annotation_common.h"
 #include "constants/font_encodings.h"
 #include "constants/form_fields.h"
+#include "constants/form_flags.h"
 #include "core/fpdfapi/page/test_with_page_module.h"
 #include "core/fpdfapi/parser/cpdf_array.h"
 #include "core/fpdfapi/parser/cpdf_dictionary.h"
@@ -363,6 +365,350 @@ TEST_F(CPDFGenerateAPTest, FreeTextCalloutBorderDash) {
   SetBorderStyle(solid_callout.Get(), 1);
   EXPECT_FALSE(
       GenerateFreeTextAPContent(solid_callout.Get()).Contains(" 0 d\n"));
+}
+
+namespace {
+
+// A kind of annotation the generator draws with its border.
+enum class BorderedKind {
+  kSquare,
+  kCircle,
+  kLine,
+  kPolygon,
+  kPolyLine,
+  kInk,
+  kFreeText,
+  kCallout,
+  kLink,
+  kRedact,
+  kTextField,
+  kComboBox,
+  kListBox,
+  kCheckBox,
+  kRadioButton,
+  kPushButton,
+  kIconButton,
+  kSignature,
+};
+
+struct BorderedKindCase {
+  const char* name;
+  BorderedKind kind;
+  // False for a check box, a radio button and a push button (with a caption
+  // or an icon), which draw one solid box for every border style.
+  bool draws_dashes;
+};
+
+constexpr BorderedKindCase kBorderedKinds[] = {
+    {"square", BorderedKind::kSquare, true},
+    {"circle", BorderedKind::kCircle, true},
+    {"line", BorderedKind::kLine, true},
+    {"polygon", BorderedKind::kPolygon, true},
+    {"polyline", BorderedKind::kPolyLine, true},
+    {"ink", BorderedKind::kInk, true},
+    {"free text", BorderedKind::kFreeText, true},
+    {"free text callout", BorderedKind::kCallout, true},
+    {"link", BorderedKind::kLink, true},
+    {"redaction", BorderedKind::kRedact, true},
+    {"text field", BorderedKind::kTextField, true},
+    {"combo box", BorderedKind::kComboBox, true},
+    {"list box", BorderedKind::kListBox, true},
+    {"check box", BorderedKind::kCheckBox, false},
+    {"radio button", BorderedKind::kRadioButton, false},
+    {"push button", BorderedKind::kPushButton, false},
+    {"push button with an icon", BorderedKind::kIconButton, false},
+    {"signature", BorderedKind::kSignature, true},
+};
+
+// An annotation of |kind|, 120 by 60, with what the kind needs to be drawn
+// (a colour, its points, its text, an icon in |doc|) and neither /BS nor
+// /Border.
+RetainPtr<CPDF_Dictionary> MakeBorderedDict(CPDF_Document* doc,
+                                            BorderedKind kind) {
+  const CFX_FloatRect rect(50, 50, 170, 110);
+  auto shape = [&rect](const ByteString& subtype) {
+    auto annot_dict = MakeAnnotDict(subtype, rect);
+    annot_dict->SetFor(pdfium::annotation::kC, MakeNumberArray({1, 0, 0}));
+    return annot_dict;
+  };
+  auto widget = [&rect](const ByteString& field_type, uint32_t field_flags) {
+    auto annot_dict = MakeAnnotDict("Widget", rect);
+    annot_dict->SetNewFor<CPDF_Name>(pdfium::form_fields::kFT, field_type);
+    annot_dict->SetNewFor<CPDF_Number>(pdfium::form_fields::kFf,
+                                       static_cast<int>(field_flags));
+    annot_dict->SetNewFor<CPDF_String>("DA", "/Helv 12 Tf 0 g");
+    auto mk = annot_dict->SetNewFor<CPDF_Dictionary>("MK");
+    mk->SetFor("BC", MakeNumberArray({0, 1, 0}));
+    mk->SetFor("BG", MakeNumberArray({1, 1, 0.8f}));
+    return annot_dict;
+  };
+  auto options = [] {
+    auto array = pdfium::MakeRetain<CPDF_Array>();
+    array->AppendNew<CPDF_String>("one");
+    array->AppendNew<CPDF_String>("two");
+    return array;
+  };
+
+  switch (kind) {
+    case BorderedKind::kSquare:
+      return shape("Square");
+    case BorderedKind::kCircle:
+      return shape("Circle");
+    case BorderedKind::kLine: {
+      auto annot_dict = shape("Line");
+      annot_dict->SetFor("L", MakeNumberArray({60, 60, 160, 100}));
+      return annot_dict;
+    }
+    case BorderedKind::kPolygon: {
+      auto annot_dict = shape("Polygon");
+      annot_dict->SetFor(pdfium::annotation::kVertices,
+                         MakeNumberArray({60, 60, 160, 60, 110, 100}));
+      return annot_dict;
+    }
+    case BorderedKind::kPolyLine: {
+      auto annot_dict = shape("PolyLine");
+      annot_dict->SetFor(pdfium::annotation::kVertices,
+                         MakeNumberArray({60, 60, 110, 100, 160, 60}));
+      return annot_dict;
+    }
+    case BorderedKind::kInk: {
+      auto annot_dict = shape("Ink");
+      auto ink_list = pdfium::MakeRetain<CPDF_Array>();
+      ink_list->Append(MakeNumberArray({60, 60, 110, 100, 160, 60}));
+      annot_dict->SetFor("InkList", std::move(ink_list));
+      return annot_dict;
+    }
+    case BorderedKind::kFreeText:
+      return MakeFreeTextDict(rect);
+    case BorderedKind::kCallout: {
+      auto annot_dict = MakeFreeTextDict(rect);
+      annot_dict->SetNewFor<CPDF_Name>("IT", "FreeTextCallout");
+      annot_dict->SetFor("CL", MakeNumberArray({10, 10, 30, 80, 50, 80}));
+      annot_dict->SetNewFor<CPDF_Name>("LE", "OpenArrow");
+      return annot_dict;
+    }
+    case BorderedKind::kLink:
+      return MakeAnnotDict("Link", rect);
+    case BorderedKind::kRedact:
+      return shape("Redact");
+    case BorderedKind::kTextField: {
+      auto annot_dict = widget(pdfium::form_fields::kTx, 0);
+      annot_dict->SetNewFor<CPDF_String>(pdfium::form_fields::kV, "hello");
+      return annot_dict;
+    }
+    case BorderedKind::kComboBox: {
+      auto annot_dict =
+          widget(pdfium::form_fields::kCh, pdfium::form_flags::kChoiceCombo);
+      annot_dict->SetFor("Opt", options());
+      annot_dict->SetNewFor<CPDF_String>(pdfium::form_fields::kV, "one");
+      return annot_dict;
+    }
+    case BorderedKind::kListBox: {
+      auto annot_dict = widget(pdfium::form_fields::kCh, 0);
+      annot_dict->SetFor("Opt", options());
+      return annot_dict;
+    }
+    case BorderedKind::kCheckBox:
+      return widget(pdfium::form_fields::kBtn, 0);
+    case BorderedKind::kRadioButton:
+      return widget(pdfium::form_fields::kBtn,
+                    pdfium::form_flags::kButtonRadio);
+    case BorderedKind::kPushButton: {
+      auto annot_dict = widget(pdfium::form_fields::kBtn,
+                               pdfium::form_flags::kButtonPushbutton);
+      annot_dict->GetMutableDictFor("MK")->SetNewFor<CPDF_String>("CA", "Go");
+      return annot_dict;
+    }
+    case BorderedKind::kIconButton: {
+      // An image field: its icon alone (/MK /TP 1), fitted inside the border.
+      auto icon_dict = pdfium::MakeRetain<CPDF_Dictionary>();
+      icon_dict->SetNewFor<CPDF_Name>("Type", "XObject");
+      icon_dict->SetNewFor<CPDF_Name>("Subtype", "Form");
+      icon_dict->SetRectFor("BBox", CFX_FloatRect(0, 0, 10, 10));
+      auto icon = doc->NewIndirect<CPDF_Stream>(std::move(icon_dict));
+      icon->SetData(ByteStringView("0 0 10 10 re f").unsigned_span());
+      auto annot_dict = widget(pdfium::form_fields::kBtn,
+                               pdfium::form_flags::kButtonPushbutton);
+      RetainPtr<CPDF_Dictionary> mk = annot_dict->GetMutableDictFor("MK");
+      mk->SetNewFor<CPDF_Reference>("I", doc, icon->GetObjNum());
+      mk->SetNewFor<CPDF_Number>("TP", 1);
+      return annot_dict;
+    }
+    case BorderedKind::kSignature:
+      return widget(pdfium::form_fields::kSig, 0);
+  }
+  return nullptr;
+}
+
+// What a stream written into a document holds.
+ByteString WrittenContent(RetainPtr<const CPDF_Stream> stream) {
+  if (!stream || !stream->IsMemoryBased()) {
+    return ByteString();
+  }
+  const pdfium::span<const uint8_t> data = stream->GetInMemoryRawData();
+  return ByteString(data.data(), data.size());
+}
+
+// All that /AP /N of |annot_dict| draws: its stream, or each of its states'
+// streams in the order of their names. Empty when there is no appearance.
+ByteString NormalAppearanceContent(const CPDF_Dictionary* annot_dict) {
+  RetainPtr<const CPDF_Dictionary> ap_dict =
+      annot_dict->GetDictFor(pdfium::annotation::kAP);
+  if (!ap_dict) {
+    return ByteString();
+  }
+  // A stream first: asked for a dictionary, a stream gives its own.
+  if (RetainPtr<const CPDF_Stream> stream = ap_dict->GetStreamFor("N")) {
+    return WrittenContent(std::move(stream));
+  }
+  RetainPtr<const CPDF_Dictionary> states = ap_dict->GetDictFor("N");
+  if (!states) {
+    return ByteString();
+  }
+  ByteString content;
+  for (const ByteString& state : states->GetKeys()) {
+    content += "[" + state + "]\n" +
+               WrittenContent(states->GetStreamFor(state.AsStringView()));
+  }
+  return content;
+}
+
+// The appearance the generator writes for a new annotation of |kind| whose
+// border |write_border| has written, each in a document of its own.
+ByteString DrawBorderedKind(
+    BorderedKind kind,
+    const std::function<void(CPDF_Dictionary*)>& write_border) {
+  CPDF_TestDocument doc;
+  AddAcroFormWithHelvetica(&doc);
+  RetainPtr<CPDF_Dictionary> annot_dict = MakeBorderedDict(&doc, kind);
+  write_border(annot_dict.Get());
+
+  auto draw_annot = [&](CPDF_Annot::Subtype subtype) {
+    EXPECT_TRUE(CPDF_AppearanceGenerator::GenerateAnnotAP(
+        &doc, annot_dict.Get(), subtype));
+  };
+  switch (kind) {
+    case BorderedKind::kSquare:
+      draw_annot(CPDF_Annot::Subtype::SQUARE);
+      break;
+    case BorderedKind::kCircle:
+      draw_annot(CPDF_Annot::Subtype::CIRCLE);
+      break;
+    case BorderedKind::kLine:
+      draw_annot(CPDF_Annot::Subtype::LINE);
+      break;
+    case BorderedKind::kPolygon:
+      draw_annot(CPDF_Annot::Subtype::POLYGON);
+      break;
+    case BorderedKind::kPolyLine:
+      draw_annot(CPDF_Annot::Subtype::POLYLINE);
+      break;
+    case BorderedKind::kInk:
+      draw_annot(CPDF_Annot::Subtype::INK);
+      break;
+    case BorderedKind::kFreeText:
+    case BorderedKind::kCallout:
+      draw_annot(CPDF_Annot::Subtype::FREETEXT);
+      break;
+    case BorderedKind::kLink:
+      draw_annot(CPDF_Annot::Subtype::LINK);
+      break;
+    case BorderedKind::kRedact:
+      draw_annot(CPDF_Annot::Subtype::REDACT);
+      break;
+    case BorderedKind::kTextField:
+      CPDF_AppearanceGenerator::GenerateFormAP(
+          &doc, annot_dict.Get(), CPDF_AppearanceGenerator::kTextField);
+      break;
+    case BorderedKind::kComboBox:
+      CPDF_AppearanceGenerator::GenerateFormAP(
+          &doc, annot_dict.Get(), CPDF_AppearanceGenerator::kComboBox);
+      break;
+    case BorderedKind::kListBox:
+      CPDF_AppearanceGenerator::GenerateFormAP(
+          &doc, annot_dict.Get(), CPDF_AppearanceGenerator::kListBox);
+      break;
+    case BorderedKind::kCheckBox:
+      CPDF_AppearanceGenerator::GenerateCheckboxFormAP(&doc, annot_dict.Get());
+      break;
+    case BorderedKind::kRadioButton:
+      CPDF_AppearanceGenerator::GenerateRadioButtonFormAP(&doc,
+                                                          annot_dict.Get());
+      break;
+    case BorderedKind::kPushButton:
+    case BorderedKind::kIconButton:
+      CPDF_AppearanceGenerator::GenerateFormAP(
+          &doc, annot_dict.Get(), CPDF_AppearanceGenerator::kPushButton);
+      break;
+    case BorderedKind::kSignature:
+      CPDF_AppearanceGenerator::GenerateBoxFormAP(&doc, annot_dict.Get());
+      break;
+  }
+  return NormalAppearanceContent(annot_dict.Get());
+}
+
+}  // namespace
+
+// The one border rule (ISO 32000-1 12.5.2), for every kind the generator
+// draws with a border: a border kept in /Border [h v w [dash]] draws exactly
+// what the same border kept in /BS draws; with neither key the border is
+// solid and 1 wide; and beside a /BS, /Border is not read at all.
+TEST_F(CPDFGenerateAPTest, BorderArrayDrawsAsBorderStyleForEveryKind) {
+  const std::vector<float> pattern = {4, 2};
+  for (const BorderedKindCase& kind_case : kBorderedKinds) {
+    SCOPED_TRACE(kind_case.name);
+    const BorderedKind kind = kind_case.kind;
+    auto with_border_style = [kind](float width,
+                                    std::optional<std::vector<float>> dash =
+                                        std::nullopt) {
+      return DrawBorderedKind(kind, [&](CPDF_Dictionary* annot_dict) {
+        SetBorderStyle(annot_dict, width, dash);
+      });
+    };
+    auto with_border_array = [kind](float width,
+                                    std::optional<std::vector<float>> dash =
+                                        std::nullopt) {
+      return DrawBorderedKind(kind, [&](CPDF_Dictionary* annot_dict) {
+        SetBorderArray(annot_dict, width, dash);
+      });
+    };
+
+    // A width: the kind draws it, and draws it from /Border alike.
+    const ByteString wide = with_border_style(5);
+    ASSERT_FALSE(wide.IsEmpty());
+    EXPECT_NE(with_border_style(1), wide);
+    EXPECT_EQ(with_border_array(5), wide);
+
+    // A dash.
+    const ByteString dashed = with_border_style(5, pattern);
+    EXPECT_EQ(kind_case.draws_dashes, dashed.Contains("[4 2 ] 0 d\n"));
+    EXPECT_EQ(kind_case.draws_dashes, dashed != wide);
+    EXPECT_EQ(with_border_array(5, pattern), dashed);
+
+    // No border.
+    const ByteString none = with_border_style(0);
+    EXPECT_NE(none, wide);
+    EXPECT_EQ(with_border_array(0), none);
+
+    // Neither key: solid and 1 wide.
+    EXPECT_EQ(DrawBorderedKind(kind, [](CPDF_Dictionary*) {}),
+              with_border_style(1));
+
+    // /BS wins, whatever the /Border beside it says.
+    EXPECT_EQ(DrawBorderedKind(kind,
+                               [](CPDF_Dictionary* annot_dict) {
+                                 SetBorderArray(annot_dict, 2,
+                                                std::vector<float>{1, 1});
+                                 SetBorderStyle(annot_dict, 5);
+                               }),
+              wide);
+    EXPECT_EQ(DrawBorderedKind(kind,
+                               [&pattern](CPDF_Dictionary* annot_dict) {
+                                 SetBorderArray(annot_dict, 2);
+                                 SetBorderStyle(annot_dict, 5, pattern);
+                               }),
+              dashed);
+  }
 }
 
 TEST_F(CPDFGenerateAPTest,

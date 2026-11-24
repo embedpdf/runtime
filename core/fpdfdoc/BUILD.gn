@@ -13,6 +13,10 @@ source_set("fpdfdoc") {
     "cpdf_action.h",
     "cpdf_annot.cpp",
     "cpdf_annot.h",
+    # EmbedPDF: the one reading of an annotation's border (/BS, or else
+    # /Border), for the appearance generator and the EPDFAnnot_* readers.
+    "cpdf_annot_border.cpp",
+    "cpdf_annot_border.h",
     "cpdf_annot_rotation.cpp",
     "cpdf_annot_rotation.h",
     "cpdf_embed_metadata.cpp",
@@ -156,6 +160,7 @@ source_set("fpdfdoc") {
 pdfium_unittest_source_set("unittests") {
   sources = [
     "cpdf_action_unittest.cpp",
+    "cpdf_annot_border_unittest.cpp",
     "cpdf_annot_unittest.cpp",
     "cpdf_annotlist_unittest.cpp",
     "cpdf_bafontmap_unittest.cpp",

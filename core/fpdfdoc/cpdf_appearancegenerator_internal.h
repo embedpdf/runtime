@@ -146,7 +146,10 @@ bool IsFinitePoint(const CFX_PointF& point);
 CFX_PointF Midpoint(const CFX_PointF& first, const CFX_PointF& second);
 ByteString BlendModeToPDFName(BlendMode bm);
 BlendMode DefaultBlendModeFor(CPDF_Annot::Subtype subtype);
-BorderStyleInfo GetBorderStyleInfo(const CPDF_Dictionary* border_style_dict);
+// An annotation's border, for a drawer: /BS, or else /Border, or else 1 wide
+// and solid (fpdfdoc::ReadAnnotBorder). A drawer takes its border from this,
+// or from GetBorderWidth() and GetDashPatternString(), which read the same;
+// it never reads /BS or /Border itself.
 BorderStyleInfo GetAnnotBorderStyleInfo(const CPDF_Dictionary* annot_dict);
 AnnotationDimensionsAndColor GetAnnotationDimensionsAndColor(
     const CPDF_Dictionary* annot_dict);

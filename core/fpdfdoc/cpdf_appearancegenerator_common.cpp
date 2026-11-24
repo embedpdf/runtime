@@ -32,6 +32,7 @@
 #include "core/fpdfapi/parser/cpdf_reference.h"
 #include "core/fpdfapi/parser/cpdf_stream.h"
 #include "core/fpdfdoc/cpdf_annot.h"
+#include "core/fpdfdoc/cpdf_annot_border.h"
 #include "core/fpdfdoc/cpdf_annot_rotation.h"
 #include "core/fpdfdoc/cpdf_appearancegenerator_internal.h"
 #include "core/fpdfdoc/cpdf_color_utils.h"
@@ -66,14 +67,17 @@ std::vector<float> DashValues(const CPDF_Array* dash_array) {
   return values;
 }
 
-// A dashed /BS's pattern (ISO 32000 table 168): its /D, or the default [3]
-// when it names none. An empty /D is a solid line (8.4.3.6): no pattern.
-std::vector<float> BorderStyleDash(const CPDF_Dictionary* border_style_dict) {
-  RetainPtr<const CPDF_Array> dash_array = border_style_dict->GetArrayFor("D");
-  if (!dash_array) {
+// The pattern |border| draws its line with: a dashed border's stored one, or
+// the default [3] when it stores none (ISO 32000 table 168). None for a
+// border that draws a solid line.
+std::vector<float> BorderDash(const fpdfdoc::AnnotBorder& border) {
+  if (border.style != CPDF_Annot::BorderStyle::kDashed) {
+    return {};
+  }
+  if (!border.dash_array) {
     return {kDefaultDash};
   }
-  return DashValues(dash_array.Get());
+  return DashValues(border.dash_array.Get());
 }
 
 // The dash operator for |values|; empty when there are none.
@@ -278,71 +282,34 @@ BlendMode DefaultBlendModeFor(CPDF_Annot::Subtype subtype) {
   }
 }
 
-BorderStyleInfo GetBorderStyleInfo(const CPDF_Dictionary* border_style_dict) {
-  BorderStyleInfo border_style_info;
-  if (!border_style_dict) {
-    return border_style_info;
-  }
-
-  if (border_style_dict->KeyExist("W")) {
-    border_style_info.width = border_style_dict->GetFloatFor("W");
-  }
-
-  const ByteString border_style_string =
-      border_style_dict->GetByteStringFor("S");
-  if (border_style_string.GetLength()) {
-    switch (border_style_string[0]) {
-      case 'S':
-        border_style_info.style = BorderStyle::kSolid;
-        break;
-      case 'D':
-        border_style_info.style = BorderStyle::kDash;
-        break;
-      case 'B':
-        border_style_info.style = BorderStyle::kBeveled;
-        border_style_info.width *= 2;
-        break;
-      case 'I':
-        border_style_info.style = BorderStyle::kInset;
-        border_style_info.width *= 2;
-        break;
-      case 'U':
-        border_style_info.style = BorderStyle::kUnderline;
-        break;
-    }
-  }
-
-  // A dashed border with an empty pattern draws a solid line.
-  std::vector<float> dash = BorderStyleDash(border_style_dict);
-  if (!dash.empty()) {
-    border_style_info.dash_pattern = std::move(dash);
-  } else if (border_style_info.style == BorderStyle::kDash) {
-    border_style_info.style = BorderStyle::kSolid;
-  }
-
-  return border_style_info;
-}
-
-// An annotation's border as ISO 32000-1 12.5.2 reads it: its /BS, or else
-// its /Border array, whose width (default 1) and dash array draw as
-// GetBorderWidth and GetDashPatternString take them; an empty dash array
-// draws a solid line.
+// An annotation's border as a box draws it, from the one reading of a border
+// (fpdfdoc::ReadAnnotBorder): its /BS, or else its /Border, or else 1 wide
+// and solid. Every drawer that takes a border's style calls this; none reads
+// /BS itself. A beveled or inset border is twice as wide as it says: the
+// line, and the lit and shaded edges inside it.
 BorderStyleInfo GetAnnotBorderStyleInfo(const CPDF_Dictionary* annot_dict) {
-  RetainPtr<const CPDF_Dictionary> border_style_dict =
-      annot_dict->GetDictFor("BS");
-  if (border_style_dict) {
-    return GetBorderStyleInfo(border_style_dict.Get());
-  }
+  const fpdfdoc::AnnotBorder border = fpdfdoc::ReadAnnotBorder(annot_dict);
   BorderStyleInfo border_style_info;
-  border_style_info.width = GetBorderWidth(annot_dict);
-  RetainPtr<const CPDF_Array> border_array =
-      annot_dict->GetArrayFor(pdfium::annotation::kBorder);
-  if (border_array && border_array->size() == 4) {
-    std::vector<float> dash = DashValues(border_array->GetArrayAt(3).Get());
-    if (!dash.empty()) {
+  border_style_info.width = border.width;
+  switch (border.style) {
+    case CPDF_Annot::BorderStyle::kUnknown:
+    case CPDF_Annot::BorderStyle::kSolid:
+      break;
+    case CPDF_Annot::BorderStyle::kDashed:
       border_style_info.style = BorderStyle::kDash;
-      border_style_info.dash_pattern = std::move(dash);
-    }
+      border_style_info.dash_pattern = BorderDash(border);
+      break;
+    case CPDF_Annot::BorderStyle::kBeveled:
+      border_style_info.style = BorderStyle::kBeveled;
+      border_style_info.width *= 2;
+      break;
+    case CPDF_Annot::BorderStyle::kInset:
+      border_style_info.style = BorderStyle::kInset;
+      border_style_info.width *= 2;
+      break;
+    case CPDF_Annot::BorderStyle::kUnderline:
+      border_style_info.style = BorderStyle::kUnderline;
+      break;
   }
   return border_style_info;
 }
@@ -571,40 +538,17 @@ std::optional<ByteString> GetStrokeColorString(const CPDF_Dictionary* dict) {
   return GenerateColorAP(color, PaintOperation::kStroke);
 }
 
+// The width a border's line is drawn with: /BS /W, or else /Border's, or
+// else 1.
 float GetBorderWidth(const CPDF_Dictionary* dict) {
-  RetainPtr<const CPDF_Dictionary> border_style_dict = dict->GetDictFor("BS");
-  if (border_style_dict) {
-    return border_style_dict->KeyExist("W")
-               ? border_style_dict->GetFloatFor("W")
-               : 1.0f;
-  }
-
-  auto border_array = dict->GetArrayFor(pdfium::annotation::kBorder);
-  if (border_array && border_array->size() > 2) {
-    return border_array->GetFloatAt(2);
-  }
-
-  return 1.0f;
+  return fpdfdoc::ReadAnnotBorder(dict).width;
 }
 
 // The dash operator a border draws with, as ISO 32000 reads it: a dashed /BS
 // draws its /D, or the default dash when it names none, and nothing (a solid
 // line) for an empty one; a /Border draws its own dash array.
 ByteString GetDashPatternString(const CPDF_Dictionary* dict) {
-  RetainPtr<const CPDF_Dictionary> border_style_dict = dict->GetDictFor("BS");
-  if (border_style_dict) {
-    if (border_style_dict->GetByteStringFor("S") != "D") {
-      return ByteString();
-    }
-    return DashOperator(BorderStyleDash(border_style_dict.Get()));
-  }
-
-  RetainPtr<const CPDF_Array> border_array =
-      dict->GetArrayFor(pdfium::annotation::kBorder);
-  if (border_array && border_array->size() == 4) {
-    return DashOperator(DashValues(border_array->GetArrayAt(3).Get()));
-  }
-  return ByteString();
+  return DashOperator(BorderDash(fpdfdoc::ReadAnnotBorder(dict)));
 }
 
 ByteString GetPaintOperatorString(bool is_stroke_rect, bool is_fill_rect) {
