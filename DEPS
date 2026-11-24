@@ -114,7 +114,7 @@ vars = {
   # Three lines of non-changing comments so that
   # the commit queue can handle CLs rolling code_coverage
   # and whatever else without interference from each other.
-  'code_coverage_revision': '084f00efb99dc9a1726ed68cc2e05d25bc52802b',
+  'code_coverage_revision': 'ed426db3b2fbd831f3fa795d6c2603b812a8c6f7',
   # Three lines of non-changing comments so that
   # the commit queue can handle CLs rolling cpu_features
   # and whatever else without interference from each other.
@@ -142,7 +142,7 @@ vars = {
   # Three lines of non-changing comments so that
   # the commit queue can handle CLs rolling freetype
   # and whatever else without interference from each other.
-  'freetype_revision': '25167984d2435930f9178e8d9d2ca3bdfa71a4e7',
+  'freetype_revision': '2b01fa2d6723bf12490822268c9627697ed89643',
   # Three lines of non-changing comments so that
   # the commit queue can handle CLs rolling GN CIPD package version
   # and whatever else without interference from each other.
@@ -150,7 +150,7 @@ vars = {
   # Three lines of non-changing comments so that
   # the commit queue can handle CLs rolling goldctl CIPD package version
   # and whatever else without interference from each other.
-  'goldctl_version': 'git_revision:d528c7cb34ccc8dc701485b2ec6981044203bed5',
+  'goldctl_version': 'git_revision:bcc67c5b5447ca23aa2771884031fa18ac6176ac',
   # Three lines of non-changing comments so that
   # the commit queue can handle CLs rolling gtest
   # and whatever else without interference from each other.
@@ -170,7 +170,7 @@ vars = {
   # Three lines of non-changing comments so that
   # the commit queue can handle CLs rolling instrumented_lib
   # and whatever else without interference from each other.
-  'instrumented_lib_revision': '83128b60913a82a39d01055312687a27bb959b59',
+  'instrumented_lib_revision': '490c778c3a20405a7bfbe42bc426e5d18e5b3bab',
   # Three lines of non-changing comments so that
   # the commit queue can handle CLs rolling jinja2
   # and whatever else without interference from each other.
@@ -204,7 +204,7 @@ vars = {
   # Three lines of non-changing comments so that
   # the commit queue can handle CLs rolling llvm-libc
   # and whatever else without interference from each other.
-  'llvm_libc_revision': 'd8f2045008e230f3c5f50095d918c11f1997e477',
+  'llvm_libc_revision': '7840ec9fbb6be122103494a8f763e45775ef6353',
   # Three lines of non-changing comments so that
   # the commit queue can handle CLs rolling markupsafe
   # and whatever else without interference from each other.
@@ -224,7 +224,7 @@ vars = {
   # Three lines of non-changing comments so that
   # the commit queue can handle CLs rolling pdfium_tests
   # and whatever else without interference from each other.
-  'pdfium_tests_revision': 'f7a1d03ba45e874b7d3cdf722959a2b8ba4dbfa5',
+  'pdfium_tests_revision': '2bcc4fdc9abe4c4c115c82c486ac4c46f1d474c5',
   # Three lines of non-changing comments so that
   # the commit queue can handle CLs rolling result_adapter_revision
   # and whatever else without interference from each other.
@@ -232,7 +232,7 @@ vars = {
   # Three lines of non-changing comments so that
   # the commit queue can handle CLs rolling rust
   # and whatever else without interference from each other.
-  'rust_revision': '79a8603b966b612119e3498bcf7e535dfa096c1c',
+  'rust_revision': 'aee3445062d8cf2b53941d0ee7eb14fcab91e5b1',
   # Three lines of non-changing comments so that
   # the commit queue can handle CLs rolling simdutf
   # and whatever else without interference from each other.
@@ -268,7 +268,7 @@ vars = {
   # Three lines of non-changing comments so that
   # the commit queue can handle CLs rolling v8
   # and whatever else without interference from each other.
-  'v8_revision': 'bb54fc4e853a1ef1640b160e5e854d0a3b514e29',
+  'v8_revision': 'b5156d2a71b52cab0b53a82a165c77612179098b',
   # Three lines of non-changing comments so that
   # the commit queue can handle CLs rolling zlib
   # and whatever else without interference from each other.

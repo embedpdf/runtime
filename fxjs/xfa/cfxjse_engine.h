@@ -75,9 +75,8 @@ class CFXJSE_Engine final : public CFX_IsolateWrapper {
     Type type = Type::kNodes;
     XFA_SCRIPTATTRIBUTEINFO script_attribute = {};
 
-    // Vector of Member would be correct for stack-based vectors, if
-    // STL worked with cppgc.
-    std::vector<cppgc::Member<CXFA_Object>> objects;
+    // Vector of Persistent protects stack-based vectors from premature GC.
+    std::vector<cppgc::Persistent<CXFA_Object>> objects;
   };
 
   static CXFA_Object* ToObject(const v8::FunctionCallbackInfo<v8::Value>& info);
@@ -190,8 +189,9 @@ class CFXJSE_Engine final : public CFX_IsolateWrapper {
  private:
   CJS_Runtime* GetCJSRuntime() const;
   CFXJSE_Context* GetJseContext() const { return js_context_.get(); }
-  CFXJSE_Context* CreateVariablesContext(CXFA_Script* pScriptNode,
-                                         CXFA_Node* pSubform);
+  std::unique_ptr<CFXJSE_Context> CreateVariablesContext(
+      CXFA_Script* pScriptNode,
+      CXFA_Node* pSubform);
   void RemoveBuiltInObjs(CFXJSE_Context* context);
   bool QueryNodeByFlag(CXFA_Node* refNode,
                        WideStringView propname,

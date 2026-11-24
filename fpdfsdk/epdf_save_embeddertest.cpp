@@ -43,6 +43,7 @@
 #include "core/fxcrt/cfx_read_only_span_stream.h"
 #include "core/fxcrt/data_vector.h"
 #include "fpdfsdk/cpdfsdk_helpers.h"
+#include "fpdfsdk/epdf_edit_test_util.h"
 #include "public/cpp/fpdf_scopers.h"
 #include "public/epdf_annot.h"
 #include "public/epdf_layer.h"
