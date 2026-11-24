@@ -10,6 +10,7 @@
 #include "../fpdf_edit.h"
 #include "../fpdf_formfill.h"
 #include "../fpdf_javascript.h"
+#include "../fpdf_ppo.h"
 #include "../fpdf_structtree.h"
 #include "../fpdf_text.h"
 #include "../fpdf_transformpage.h"
@@ -81,6 +82,10 @@ struct FPDFTextFindDeleter {
 
 struct FPDFTextPageDeleter {
   inline void operator()(FPDF_TEXTPAGE text) { FPDFText_ClosePage(text); }
+};
+
+struct FPDFXObjectDeleter {
+  inline void operator()(FPDF_XOBJECT xobj) { FPDF_CloseXObject(xobj); }
 };
 
 #endif  // PUBLIC_CPP_FPDF_DELETERS_H_

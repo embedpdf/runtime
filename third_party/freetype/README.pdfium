@@ -1,9 +1,9 @@
 Name: FreeType
 URL: https://gitlab.freedesktop.org/freetype/freetype
-Version: VER-2-14-3-146
-Revision: 25167984d2435930f9178e8d9d2ca3bdfa71a4e7
+Version: VER-2-15-0-10
+Revision: 2b01fa2d6723bf12490822268c9627697ed89643
 Update Mechanism: Manual
-CPEPrefix: cpe:/a:freetype:freetype:2.14.3
+CPEPrefix: cpe:/a:freetype:freetype:2.15.0
 Security Critical: yes
 Shipped: yes
 License: FTL

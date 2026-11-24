@@ -18,6 +18,7 @@
 #include "testing/embedder_test.h"
 #include "testing/fx_string_testhelpers.h"
 #include "testing/gtest/include/gtest/gtest.h"
+#include "testing/utils/hash.h"
 
 namespace {
 
@@ -198,6 +199,23 @@ uint32_t ColorAt(FPDF_PAGE page, int x, int y_from_bottom) {
       static_cast<const uint8_t*>(FPDFBitmap_GetBuffer(bitmap.get()));
   const uint8_t* pixel = pixels + (height - 1 - y_from_bottom) * stride + x * 4;
   return (pixel[2] << 16) | (pixel[1] << 8) | pixel[0];
+}
+
+std::string HashBitmap(FPDF_BITMAP bitmap) {
+  const size_t stride = FPDFBitmap_GetStride(bitmap);
+  const size_t row_bytes =
+      static_cast<size_t>(
+          EmbedderTest::BytesPerPixelForFormat(FPDFBitmap_GetFormat(bitmap))) *
+      FPDFBitmap_GetWidth(bitmap);
+  const auto* pixels =
+      static_cast<const uint8_t*>(FPDFBitmap_GetBuffer(bitmap));
+  std::vector<uint8_t> rows;
+  rows.reserve(row_bytes * FPDFBitmap_GetHeight(bitmap));
+  for (int i = 0; i < FPDFBitmap_GetHeight(bitmap); ++i) {
+    const uint8_t* row = pixels + i * stride;
+    rows.insert(rows.end(), row, row + row_bytes);
+  }
+  return GenerateMD5Base16(rows);
 }
 
 std::string AnnotString(FPDF_ANNOTATION annot, const char* key) {

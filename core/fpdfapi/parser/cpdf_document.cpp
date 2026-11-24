@@ -236,6 +236,15 @@ CPDF_Document::~CPDF_Document() {
   extension_.reset();
 }
 
+void CPDF_Document::AddDestructionObserver(DestructionObserverIface* observer) {
+  destruction_notifier_.AddObserver(observer);
+}
+
+void CPDF_Document::RemoveDestructionObserver(
+    DestructionObserverIface* observer) {
+  destruction_notifier_.RemoveObserver(observer);
+}
+
 // static
 bool CPDF_Document::IsValidPageObject(const CPDF_Object* obj) {
   // See ISO 32000-1:2008 spec, table 30.
@@ -1138,6 +1147,24 @@ void CPDF_Document::SetCachedInfoDict(RetainPtr<CPDF_Dictionary> info) {
 
 void CPDF_Document::InvalidateCachedInfoDict() {
   info_dict_.Reset();
+}
+
+CPDF_Document::DestructionNotifier::DestructionNotifier() = default;
+
+CPDF_Document::DestructionNotifier::~DestructionNotifier() {
+  for (auto* observer : observers_) {
+    observer->OnDocumentDestroyed();
+  }
+}
+
+void CPDF_Document::DestructionNotifier::AddObserver(
+    DestructionObserverIface* observer) {
+  CHECK(observers_.insert(observer).second);
+}
+
+void CPDF_Document::DestructionNotifier::RemoveObserver(
+    DestructionObserverIface* observer) {
+  CHECK_EQ(observers_.erase(observer), 1u);
 }
 
 CPDF_Document::StockFontClearer::StockFontClearer(

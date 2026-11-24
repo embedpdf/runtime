@@ -9,10 +9,8 @@ use read_fonts::{
             charset::Charset as CffCharset, CffFontRef, Encoding as CffEncoding,
             Metadata as CffMetadata, Subfont as CffSubfont,
         },
-        charmap::Charmap as PsCharmap,
-        encoding::PredefinedEncoding,
-        string::Sid,
         type1::Type1Font,
+        PredefinedEncoding, Sid, UnicodeCharmap as PsCharmap,
     },
     tables::{cmap::Cmap, head::MacStyle, os2::SelectionFlags},
     types::{Fixed, GlyphId, Tag},
@@ -170,12 +168,6 @@ mod skrifa_ffi {
         fn agl_name_to_unicode(name: &str, unicode: &mut u32) -> bool;
         fn agl_unicode_to_name(unicode: u32, name: &mut [u8]) -> &[u8];
         fn get_num_faces(data: &[u8]) -> u32;
-    }
-
-    unsafe extern "C++" {
-        include!("outlines.h");
-
-        fn run(font_path: &str);
     }
 }
 
@@ -385,7 +377,7 @@ impl SkrifaFont<'_> {
 
     fn num_glyphs(&self) -> u32 {
         match self {
-            Self::Sfnt(sfnt) => sfnt.metrics.glyph_count as u32,
+            Self::Sfnt(sfnt) => sfnt.metrics.glyph_count,
             Self::Type1(type1) => type1.num_glyphs(),
             Self::Cff(cff) => cff.cid_count.unwrap_or_else(|| cff.font.num_glyphs()),
             Self::Error => 0,
@@ -1071,7 +1063,4 @@ fn get_num_faces(data: &[u8]) -> u32 {
         return 1;
     }
     0
-}
-fn main() {
-    skrifa_ffi::run("");
 }

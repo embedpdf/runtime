@@ -81,6 +81,10 @@ void AddPngStamp(FPDF_DOCUMENT doc,
 // The colour at a point of a page rendered with its annotations, as 0xRRGGBB.
 uint32_t ColorAt(FPDF_PAGE page, int x, int y_from_bottom);
 
+// A digest of the pixels of `bitmap`, without the padding after each row: for
+// comparing renders whose bitmaps don't live side by side.
+std::string HashBitmap(FPDF_BITMAP bitmap);
+
 // An annotation's string value |key| as UTF-8; empty when it has none or the
 // handle is invalid.
 std::string AnnotString(FPDF_ANNOTATION annot, const char* key);
