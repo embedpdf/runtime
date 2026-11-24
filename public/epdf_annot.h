@@ -1561,7 +1561,10 @@ typedef enum {
 } EPDF_MK_COLORTYPE;
 
 // Experimental EmbedPDF Extension API.
-// Set a color in the widget annotation's /MK dictionary.
+// Set a color in the widget annotation's /MK dictionary: a new array of three
+// numbers under its key. The array the entry named is not written into, since
+// it may be an object of its own, which another /MK names too. Setting the
+// color the entry already is (three numbers that read as it) writes nothing.
 //
 // Every function here that writes a /MK entry writes the annotation's own
 // /MK. One that is an indirect object, which another widget may name too, is
@@ -1593,7 +1596,8 @@ FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV EPDFAnnot_GetMKColor(FPDF_ANNOTATION annot,
                                                          unsigned int* B);
 
 // Experimental EmbedPDF Extension API.
-// Remove a color from the widget annotation's /MK dictionary.
+// Remove a color from the widget annotation's /MK dictionary. Removing one
+// that is not there writes nothing.
 //
 //   annot - handle to an annotation.
 //   type  - EPDF_MK_COLOR_BC (border) or EPDF_MK_COLOR_BG (background).

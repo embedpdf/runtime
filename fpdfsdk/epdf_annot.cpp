@@ -4435,29 +4435,45 @@ static ByteString GetMKColorKey(EPDF_MK_COLORTYPE type) {
   return "BC";
 }
 
+// A component of a /MK colour as the API reads it, 0 to 255.
+static unsigned int MKColorComponent(const CPDF_Array* color, size_t index) {
+  return static_cast<unsigned int>(color->GetFloatAt(index) * 255.f + 0.5f);
+}
+
 FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV EPDFAnnot_SetMKColor(FPDF_ANNOTATION annot,
                                                          EPDF_MK_COLORTYPE type,
                                                          unsigned int R,
                                                          unsigned int G,
                                                          unsigned int B) {
   ScopedFPDFAnnotationView annot_view(annot);
-  RetainPtr<CPDF_Dictionary> pAnnotDict =
-      GetMutableAnnotDictFromFPDFAnnotation(annot);
-  if (!pAnnotDict || R > 255 || G > 255 || B > 255) {
+  const CPDF_Dictionary* annot_dict = GetAnnotDictFromFPDFAnnotation(annot);
+  if (!annot_dict || R > 255 || G > 255 || B > 255) {
     return false;
   }
 
-  RetainPtr<CPDF_Dictionary> pMK =
-      OwnMKForWriting(annot, pAnnotDict.Get(), /*create=*/true);
-  ByteString key = GetMKColorKey(type);
-
-  RetainPtr<CPDF_Array> pColor = pMK->GetMutableArrayFor(key.AsStringView());
-  if (pColor) {
-    pColor->Clear();
-  } else {
-    pColor = pMK->SetNewFor<CPDF_Array>(key);
+  // Nothing to change: no write. The entry is that colour already when it is
+  // three numbers that read as it.
+  const ByteString key = GetMKColorKey(type);
+  RetainPtr<const CPDF_Dictionary> mk = annot_dict->GetDictFor("MK");
+  RetainPtr<const CPDF_Array> color =
+      mk ? mk->GetArrayFor(key.AsStringView()) : nullptr;
+  if (color && color->size() == 3 && MKColorComponent(color.Get(), 0) == R &&
+      MKColorComponent(color.Get(), 1) == G &&
+      MKColorComponent(color.Get(), 2) == B) {
+    return true;
   }
 
+  RetainPtr<CPDF_Dictionary> pAnnotDict =
+      GetMutableAnnotDictFromFPDFAnnotation(annot);
+  if (!pAnnotDict) {
+    return false;
+  }
+
+  // A new array under the key. The one the entry named is not written into:
+  // it may be an object of its own, which another /MK names too.
+  RetainPtr<CPDF_Array> pColor =
+      OwnMKForWriting(annot, pAnnotDict.Get(), /*create=*/true)
+          ->SetNewFor<CPDF_Array>(key);
   pColor->AppendNew<CPDF_Number>(R / 255.f);
   pColor->AppendNew<CPDF_Number>(G / 255.f);
   pColor->AppendNew<CPDF_Number>(B / 255.f);
@@ -4491,9 +4507,9 @@ FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV EPDFAnnot_GetMKColor(FPDF_ANNOTATION annot,
     return false;
   }
 
-  *R = static_cast<unsigned int>(pColor->GetFloatAt(0) * 255.f + 0.5f);
-  *G = static_cast<unsigned int>(pColor->GetFloatAt(1) * 255.f + 0.5f);
-  *B = static_cast<unsigned int>(pColor->GetFloatAt(2) * 255.f + 0.5f);
+  *R = MKColorComponent(pColor.Get(), 0);
+  *G = MKColorComponent(pColor.Get(), 1);
+  *B = MKColorComponent(pColor.Get(), 2);
 
   return true;
 }
@@ -4501,19 +4517,23 @@ FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV EPDFAnnot_GetMKColor(FPDF_ANNOTATION annot,
 FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV
 EPDFAnnot_ClearMKColor(FPDF_ANNOTATION annot, EPDF_MK_COLORTYPE type) {
   ScopedFPDFAnnotationView annot_view(annot);
+  const CPDF_Dictionary* annot_dict = GetAnnotDictFromFPDFAnnotation(annot);
+  if (!annot_dict) {
+    return false;
+  }
+
+  // Nothing to remove: no write.
+  const ByteString key = GetMKColorKey(type);
+  RetainPtr<const CPDF_Dictionary> mk = annot_dict->GetDictFor("MK");
+  if (!mk || !mk->KeyExist(key.AsStringView())) {
+    return true;
+  }
+
   RetainPtr<CPDF_Dictionary> pAnnotDict =
       GetMutableAnnotDictFromFPDFAnnotation(annot);
   if (!pAnnotDict) {
     return false;
   }
-
-  // Nothing to remove: no write.
-  ByteString key = GetMKColorKey(type);
-  RetainPtr<const CPDF_Dictionary> mk = pAnnotDict->GetDictFor("MK");
-  if (!mk || !mk->KeyExist(key.AsStringView())) {
-    return true;
-  }
-
   RetainPtr<CPDF_Dictionary> pMK =
       OwnMKForWriting(annot, pAnnotDict.Get(), /*create=*/false);
   if (pMK) {

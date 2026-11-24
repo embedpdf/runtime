@@ -356,8 +356,10 @@ a new stream on every redraw, as a check box's are: the stream it had may be ano
 a picture the button showed, so it is never written into, and the icon its resources named goes
 with it. Before a form drawer replaces an appearance, a widget whose `/AP` is an indirect object
 gets a copy of its own (`OwnAppearanceDict`), and `epdf_annot.cpp` does the same for `/MK` before
-a setter writes it (`OwnMKForWriting`): another widget may name the same dictionary. An icon is a
-form XObject everywhere (`ButtonIconOf`, `MKIconForm`).
+a setter writes it (`OwnMKForWriting`): another widget may name the same dictionary. A colour is
+set as a new array, never written into the one the entry named, which may be an object another
+`/MK` names too. An `/MK` setter that changes nothing writes nothing. An icon is a form XObject
+everywhere (`ButtonIconOf`, `MKIconForm`).
 **Guarded by.** `check-fork-tags.py` fails when upstream's files differ from upstream
 (`fork-pristine.txt`); `upstream-preview.py` lists new upstream callers of `CPDF_GenerateAP::`, and
 upstream's commits to its generator. `epdf_widget_drawing_embeddertest.cpp` for a button's icon;

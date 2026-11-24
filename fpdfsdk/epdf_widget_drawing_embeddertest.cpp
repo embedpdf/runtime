@@ -3478,6 +3478,154 @@ TEST_F(EPDFWidgetDrawingEmbedderTest,
   }
 }
 
+// A /MK colour may be an array that is an object of its own, which another
+// /MK names too: through one /MK that two widgets share, or from an /MK
+// each. A colour one widget sets goes into a new array of its own, and the
+// other widget keeps its colour. (The setter wrote into the array it found.)
+TEST_F(EPDFWidgetDrawingEmbedderTest, AColourArrayOfItsOwnIsNotWrittenInto) {
+  int page_index = 0;
+  for (bool one_mk : {true, false}) {
+    SCOPED_TRACE(one_mk ? "one /MK for both widgets" : "an /MK each");
+    ScopedFPDFPage page(FPDFPage_New(doc_.get(), ++page_index, 400, 400));
+    ASSERT_TRUE(page);
+    ScopedFPDFAnnotation first = NewButton({10, 60, 130, 10}, 2.0f, page.get());
+    ScopedFPDFAnnotation second =
+        NewButton({140, 60, 260, 10}, 2.0f, page.get());
+    ASSERT_TRUE(first);
+    ASSERT_TRUE(second);
+    RetainPtr<CPDF_Array> red = pdf()->NewIndirect<CPDF_Array>();
+    red->AppendNew<CPDF_Number>(1);
+    red->AppendNew<CPDF_Number>(0);
+    red->AppendNew<CPDF_Number>(0);
+    if (one_mk) {
+      RetainPtr<CPDF_Dictionary> shared = pdf()->NewIndirect<CPDF_Dictionary>();
+      shared->SetNewFor<CPDF_Reference>("BC", pdf(), red->GetObjNum());
+      for (FPDF_ANNOTATION widget : {first.get(), second.get()}) {
+        MutableDictOf(widget)->SetNewFor<CPDF_Reference>("MK", pdf(),
+                                                         shared->GetObjNum());
+      }
+    } else {
+      for (FPDF_ANNOTATION widget : {first.get(), second.get()}) {
+        MutableDictOf(widget)
+            ->SetNewFor<CPDF_Dictionary>("MK")
+            ->SetNewFor<CPDF_Reference>("BC", pdf(), red->GetObjNum());
+      }
+    }
+    const std::string red_before = ObjectGraph(pdf())[red->GetObjNum()];
+
+    ASSERT_TRUE(EPDFAnnot_SetMKColor(first.get(), EPDF_MK_COLOR_BC, 0, 255, 0));
+
+    // The array is as it was, and the second widget is red, drawn again too.
+    EXPECT_EQ(red_before, ObjectGraph(pdf())[red->GetObjNum()]);
+    unsigned int r = 9;
+    unsigned int g = 9;
+    unsigned int b = 9;
+    ASSERT_TRUE(
+        EPDFAnnot_GetMKColor(second.get(), EPDF_MK_COLOR_BC, &r, &g, &b));
+    EXPECT_EQ(255u, r);
+    EXPECT_EQ(0u, g);
+    EXPECT_EQ(0u, b);
+    ASSERT_TRUE(EPDFAnnot_GenerateFormFieldAP(second.get()));
+    EXPECT_NE(
+        std::string::npos,
+        StreamBytes(AppearanceOf(second.get()).Get()).find("1 0 0 RG"));
+
+    // The first is green, in an array of its own.
+    ASSERT_TRUE(
+        EPDFAnnot_GetMKColor(first.get(), EPDF_MK_COLOR_BC, &r, &g, &b));
+    EXPECT_EQ(0u, r);
+    EXPECT_EQ(255u, g);
+    EXPECT_EQ(0u, b);
+    RetainPtr<const CPDF_Dictionary> own =
+        DictOf(first.get())->GetDictFor("MK");
+    ASSERT_TRUE(own);
+    RetainPtr<const CPDF_Object> entry = own->GetObjectFor("BC");
+    ASSERT_TRUE(entry);
+    EXPECT_FALSE(entry->IsReference());
+  }
+}
+
+// A colour call that changes nothing writes nothing, as the other /MK
+// setters: the colour a widget already has, set again, and a colour it does
+// not have, removed. A widget that names a shared /MK goes on naming it, and
+// on a layer nothing is copied into the layer. A colour is the one asked for
+// only as three numbers: four that begin with them are set anew.
+TEST_F(EPDFWidgetDrawingEmbedderTest,
+       AColourCallThatChangesNothingWritesNothing) {
+  {
+    ScopedFPDFAnnotation first = NewButton({10, 60, 130, 10});
+    ScopedFPDFAnnotation second = NewButton({140, 60, 260, 10});
+    ASSERT_TRUE(first);
+    ASSERT_TRUE(second);
+    RetainPtr<CPDF_Dictionary> shared = pdf()->NewIndirect<CPDF_Dictionary>();
+    RetainPtr<CPDF_Array> red = shared->SetNewFor<CPDF_Array>("BC");
+    red->AppendNew<CPDF_Number>(1);
+    red->AppendNew<CPDF_Number>(0);
+    red->AppendNew<CPDF_Number>(0);
+    for (FPDF_ANNOTATION widget : {first.get(), second.get()}) {
+      MutableDictOf(widget)->SetNewFor<CPDF_Reference>("MK", pdf(),
+                                                       shared->GetObjNum());
+    }
+    const std::string shared_before = ObjectGraph(pdf())[shared->GetObjNum()];
+
+    ASSERT_TRUE(EPDFAnnot_SetMKColor(first.get(), EPDF_MK_COLOR_BC, 255, 0, 0));
+    EXPECT_TRUE(DictOf(first.get())->GetObjectFor("MK")->IsReference());
+    ASSERT_TRUE(EPDFAnnot_ClearMKColor(first.get(), EPDF_MK_COLOR_BG));
+    EXPECT_TRUE(DictOf(first.get())->GetObjectFor("MK")->IsReference());
+    EXPECT_EQ(shared_before, ObjectGraph(pdf())[shared->GetObjNum()]);
+
+    // Four numbers are another colour space's: red is set as three.
+    red->AppendNew<CPDF_Number>(0);
+    ASSERT_TRUE(EPDFAnnot_SetMKColor(first.get(), EPDF_MK_COLOR_BC, 255, 0, 0));
+    RetainPtr<const CPDF_Dictionary> own =
+        DictOf(first.get())->GetDictFor("MK");
+    ASSERT_TRUE(own);
+    EXPECT_FALSE(DictOf(first.get())->GetObjectFor("MK")->IsReference());
+    RetainPtr<const CPDF_Array> set = own->GetArrayFor("BC");
+    ASSERT_TRUE(set);
+    EXPECT_EQ(3u, set->size());
+    EXPECT_EQ(4u, red->size());
+  }
+  {
+    // A file's own widget, on a layer. Its third button is given a red
+    // border colour, in a text of the same length, so the offsets hold.
+    std::string bytes = ForeignButtonsPdf();
+    const std::string was =
+        "/TP 2 /CA (Go) /IF << /SW /A /S /P /A [0.5 0.5] >>";
+    const std::string now =
+        "/TP 2 /CA (Go) /BC [1 0 0] /IF << /SW /A /S /P >> ";
+    ASSERT_EQ(was.size(), now.size());
+    const size_t at = bytes.find(was);
+    ASSERT_NE(std::string::npos, at);
+    bytes.replace(at, was.size(), now);
+    embedpdf_test::LayerFixture foreign;
+    ASSERT_TRUE(foreign.OpenBytes({bytes.begin(), bytes.end()}));
+    ScopedFPDFPage page(FPDF_LoadPage(foreign.layer, 0));
+    ASSERT_TRUE(page);
+    ScopedFPDFAnnotation button(FPDFPage_GetAnnot(page.get(), 2));
+    ASSERT_TRUE(button);
+    unsigned int r = 9;
+    unsigned int g = 9;
+    unsigned int b = 9;
+    ASSERT_TRUE(
+        EPDFAnnot_GetMKColor(button.get(), EPDF_MK_COLOR_BC, &r, &g, &b));
+    ASSERT_EQ(255u, r);
+    ASSERT_EQ(0u, g);
+    ASSERT_EQ(0u, b);
+    ASSERT_FALSE(
+        EPDFAnnot_GetMKColor(button.get(), EPDF_MK_COLOR_BG, &r, &g, &b));
+    ASSERT_EQ(0u, EPDFLayer_GetPromotedObjectCount(foreign.layer));
+
+    ASSERT_TRUE(EPDFLayer_BeginTransaction(foreign.layer));
+    ASSERT_TRUE(
+        EPDFAnnot_SetMKColor(button.get(), EPDF_MK_COLOR_BC, 255, 0, 0));
+    ASSERT_TRUE(EPDFAnnot_ClearMKColor(button.get(), EPDF_MK_COLOR_BG));
+    ASSERT_TRUE(EPDFLayer_CommitTransaction(foreign.layer));
+
+    EXPECT_EQ(0u, EPDFLayer_GetPromotedObjectCount(foreign.layer));
+  }
+}
+
 // Two widgets may name one /AP. A widget that is drawn again gets an /AP of
 // its own first, and the other widget keeps the shared one and every
 // appearance it names: it shows what it showed.
