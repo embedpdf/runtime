@@ -9987,18 +9987,17 @@ TEST_F(EPDFStampResizeEmbedderTest, StampsPlacingOneDrawingShareIt) {
   ASSERT_NE(0u, drawing);
 
   ASSERT_TRUE(
-      EPDFAnnot_SetStampDrawing(annot_.get(), drawing, EPDF_STAMP_FIT_CONTAIN));
+      EPDFAnnot_SetDrawing(annot_.get(), drawing, EPDF_STAMP_FIT_CONTAIN));
   ScopedFPDFAnnotation other(FPDFPage_CreateAnnot(page_.get(), FPDF_ANNOT_STAMP));
   const FS_RECTF other_rect{300, 400, 500, 300};
   ASSERT_TRUE(EPDFAnnot_SetRect(other.get(), &other_rect));
   CPDFAnnotContextFromFPDFAnnotation(other.get())
       ->GetMutableAnnotDict()
       ->SetNewFor<CPDF_Number>("CA", 0.5f);
-  ASSERT_TRUE(
-      EPDFAnnot_SetStampDrawing(other.get(), drawing, EPDF_STAMP_FIT_COVER));
+  ASSERT_TRUE(EPDFAnnot_SetDrawing(other.get(), drawing, EPDF_STAMP_FIT_COVER));
 
-  EXPECT_EQ(drawing, EPDFAnnot_GetStampDrawing(annot_.get()));
-  EXPECT_EQ(drawing, EPDFAnnot_GetStampDrawing(other.get()));
+  EXPECT_EQ(drawing, EPDFAnnot_GetDrawing(annot_.get()));
+  EXPECT_EQ(drawing, EPDFAnnot_GetDrawing(other.get()));
   RetainPtr<CPDF_Stream> other_ap = GetAnnotAP(
       CPDFAnnotContextFromFPDFAnnotation(other.get())->GetAnnotDict(),
       CPDF_Annot::AppearanceMode::kNormal);
@@ -10007,9 +10006,9 @@ TEST_F(EPDFStampResizeEmbedderTest, StampsPlacingOneDrawingShareIt) {
   EXPECT_EQ(bytes, ExportedBytes(other.get()));
 
   unsigned int drawings[4] = {};
-  EXPECT_EQ(1u, EPDFDoc_GetStampDrawings(doc_.get(), drawings, 4));
+  EXPECT_EQ(1u, EPDFDoc_GetDrawings(doc_.get(), drawings, 4));
   EXPECT_EQ(drawing, drawings[0]);
-  EXPECT_EQ(1u, EPDFDoc_GetStampDrawings(doc_.get(), nullptr, 0));
+  EXPECT_EQ(1u, EPDFDoc_GetDrawings(doc_.get(), nullptr, 0));
   const std::string saved_bytes = SavedBytes(doc_.get());
   EXPECT_EQ(1u, StreamsWithContent(saved_bytes, kBlueArtwork));
 
@@ -10020,7 +10019,7 @@ TEST_F(EPDFStampResizeEmbedderTest, StampsPlacingOneDrawingShareIt) {
     embedpdf_test::ScopedTestDocument saved(
         embedpdf_test::LoadMemDocumentForTest(saved_bytes.data(),
                                               saved_bytes.size(), nullptr));
-    ASSERT_EQ(1u, EPDFDoc_GetStampDrawings(saved.get(), &saved_drawing, 1));
+    ASSERT_EQ(1u, EPDFDoc_GetDrawings(saved.get(), &saved_drawing, 1));
   }
   embedpdf_test::ScopedTestDocument reopened(
       embedpdf_test::LoadMemDocumentForTest(saved_bytes.data(),
@@ -10034,8 +10033,8 @@ TEST_F(EPDFStampResizeEmbedderTest, StampsPlacingOneDrawingShareIt) {
       FPDFPage_CreateAnnot(reopened_page.get(), FPDF_ANNOT_STAMP));
   const FS_RECTF placed_rect{100, 500, 200, 450};
   ASSERT_TRUE(EPDFAnnot_SetRect(placed.get(), &placed_rect));
-  EXPECT_TRUE(EPDFAnnot_SetStampDrawing(placed.get(), saved_drawing,
-                                        EPDF_STAMP_FIT_CONTAIN));
+  EXPECT_TRUE(EPDFAnnot_SetDrawing(placed.get(), saved_drawing,
+                                   EPDF_STAMP_FIT_CONTAIN));
 
   // A stamp without our wrapper places none; nor does any other annotation.
   ScopedFPDFAnnotation foreign(
@@ -10047,18 +10046,18 @@ TEST_F(EPDFStampResizeEmbedderTest, StampsPlacingOneDrawingShareIt) {
                  ->GetMutableAnnotDict()
                  .Get(),
       0.3f);
-  EXPECT_EQ(0u, EPDFAnnot_GetStampDrawing(foreign.get()));
-  EXPECT_EQ(1u, EPDFDoc_GetStampDrawings(doc_.get(), nullptr, 0));
+  EXPECT_EQ(0u, EPDFAnnot_GetDrawing(foreign.get()));
+  EXPECT_EQ(1u, EPDFDoc_GetDrawings(doc_.get(), nullptr, 0));
   ScopedFPDFAnnotation square(
       FPDFPage_CreateAnnot(page_.get(), FPDF_ANNOT_SQUARE));
   EXPECT_FALSE(
-      EPDFAnnot_SetStampDrawing(square.get(), drawing, EPDF_STAMP_FIT_CONTAIN));
-  EXPECT_EQ(0u, EPDFAnnot_GetStampDrawing(square.get()));
+      EPDFAnnot_SetDrawing(square.get(), drawing, EPDF_STAMP_FIT_CONTAIN));
+  EXPECT_EQ(0u, EPDFAnnot_GetDrawing(square.get()));
   // Only a form is a drawing.
-  EXPECT_FALSE(EPDFAnnot_SetStampDrawing(
+  EXPECT_FALSE(EPDFAnnot_SetDrawing(
       annot_.get(), EPDFDoc_GetPageObjectNumberByIndex(doc_.get(), 0),
       EPDF_STAMP_FIT_CONTAIN));
-  EXPECT_EQ(drawing, EPDFAnnot_GetStampDrawing(annot_.get()));
+  EXPECT_EQ(drawing, EPDFAnnot_GetDrawing(annot_.get()));
 }
 
 // Two stamps place one drawing. Resize, re-fit, turn, fade, redraw, flatten
@@ -10097,7 +10096,7 @@ TEST_F(EPDFStampResizeEmbedderTest,
           FPDFPage_CreateAnnot(page.get(), FPDF_ANNOT_STAMP));
       EXPECT_TRUE(EPDFAnnot_SetRect(stamp.get(), &rect));
       EXPECT_TRUE(
-          EPDFAnnot_SetStampDrawing(stamp.get(), drawing, EPDF_STAMP_FIT_CONTAIN));
+          EPDFAnnot_SetDrawing(stamp.get(), drawing, EPDF_STAMP_FIT_CONTAIN));
       return stamp;
     };
     ScopedFPDFAnnotation changed = place(FS_RECTF{10, 110, 110, 10});
@@ -10142,9 +10141,9 @@ TEST_F(EPDFStampResizeEmbedderTest,
       case Change::kNewDrawing: {
         const unsigned int other = import(green);
         ASSERT_NE(0u, other);
-        ASSERT_TRUE(EPDFAnnot_SetStampDrawing(changed.get(), other,
-                                              EPDF_STAMP_FIT_CONTAIN));
-        EXPECT_EQ(other, EPDFAnnot_GetStampDrawing(changed.get()));
+        ASSERT_TRUE(
+            EPDFAnnot_SetDrawing(changed.get(), other, EPDF_STAMP_FIT_CONTAIN));
+        EXPECT_EQ(other, EPDFAnnot_GetDrawing(changed.get()));
         break;
       }
       case Change::kFlatten: {
@@ -10165,7 +10164,7 @@ TEST_F(EPDFStampResizeEmbedderTest,
               GetAnnotAP(kept_dict, CPDF_Annot::AppearanceMode::kNormal).Get());
     EXPECT_EQ(kept_before, StreamSnapshot(kept_ap.Get()));
     EXPECT_EQ(drawing_before, StreamSnapshot(drawing_stream.Get()));
-    EXPECT_EQ(drawing, EPDFAnnot_GetStampDrawing(kept.get()));
+    EXPECT_EQ(drawing, EPDFAnnot_GetDrawing(kept.get()));
   }
 }
 

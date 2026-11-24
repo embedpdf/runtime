@@ -317,6 +317,17 @@ EpdfDrawnForm EpdfFindDrawnForm(const CPDF_Stream* ap,
 std::optional<EpdfWrappedAppearance> EpdfFindWrappedAppearance(
     const CPDF_Stream* ap,
     std::optional<float> opacity) {
+  // A wrapper draws its drawing as an XObject, and so does everything an
+  // editor puts around one. An appearance that names none holds no wrapper,
+  // and its content needn't be read to know: a form's text fields are asked
+  // this one by one (EPDFDoc_GetDrawings()).
+  RetainPtr<const CPDF_Dictionary> resources =
+      ap->GetDict()->GetDictFor("Resources");
+  RetainPtr<const CPDF_Dictionary> xobjects =
+      resources ? resources->GetDictFor("XObject") : nullptr;
+  if (!xobjects || xobjects->size() == 0) {
+    return std::nullopt;
+  }
   // Our wrapper is never a form that adds nothing (it places its drawing), so
   // it is where the walk ends, when there is one.
   EpdfDrawnForm drawn = EpdfFindDrawnForm(ap, opacity);

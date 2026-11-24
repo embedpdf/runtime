@@ -9,6 +9,7 @@
 
 #include <algorithm>
 #include <string>
+#include <utility>
 #include <vector>
 
 #include "core/fdrm/fx_crypt_sha.h"
@@ -19,6 +20,7 @@
 #include "core/fpdfapi/parser/cpdf_string.h"
 #include "core/fxcrt/data_vector.h"
 #include "fpdfsdk/cpdfsdk_helpers.h"
+#include "fpdfsdk/epdf_edit_test_util.h"
 #include "public/cpp/fpdf_scopers.h"
 #include "public/epdf_annot.h"
 #include "public/epdf_form.h"
@@ -31,6 +33,7 @@
 #include "public/fpdfview.h"
 #include "testing/embedder_test.h"
 #include "testing/embedpdf_form_writes.h"
+#include "testing/embedpdf_layer_fixture.h"
 #include "testing/embedpdf_layer_mode.h"
 #include "testing/fx_string_testhelpers.h"
 #include "testing/gtest/include/gtest/gtest.h"
@@ -905,6 +908,199 @@ TEST_F(EPDFSignatureEmbedderTest, CertifyThenRefuseSecondCertification) {
   EXPECT_EQ(0u, EPDFSig_Prepare(signed_doc.get(), second, &again));
   again.docmdp_permission = 0;
   EXPECT_NE(0u, EPDFSig_Prepare(signed_doc.get(), second, &again));
+}
+
+// A signed revision holds a picture twice: as the signer's mark and as an
+// image field's icon. Placing the same picture again afterwards, in a
+// signature widget and in an image field the signed revision already had,
+// changes those two widgets and nothing else the signature covers: the
+// drawing is placed by its number and only read.
+TEST_F(EPDFSignatureEmbedderTest,
+       PlacingADrawingAgainLeavesTheSignedRevisionAlone) {
+  ASSERT_TRUE(OpenDocument("text_form.pdf"));
+  ScopedFPDFPage page(FPDF_LoadPage(document(), 0));
+  ASSERT_TRUE(page);
+  const uint32_t signer =
+      CreateSignatureField(document(), page.get(), L"first");
+  const uint32_t later = CreateSignatureField(document(), page.get(), L"later");
+  ASSERT_NE(0u, signer);
+  ASSERT_NE(0u, later);
+  // A push button with one widget: an image field once it shows an icon.
+  auto new_button = [this, &page](const wchar_t* name, float left) {
+    const uint32_t field =
+        EPDFForm_CreateField(document(), EPDF_FORMFIELD_FAMILY_PUSHBUTTON,
+                             GetFPDFWideString(name).get(), 0);
+    ScopedFPDFAnnotation widget(
+        EPDFPage_CreateAnnot(page.get(), FPDF_ANNOT_WIDGET));
+    const FS_RECTF rect{left, 190, left + 100, 140};
+    EXPECT_TRUE(EPDFAnnot_SetRect(widget.get(), &rect));
+    const unsigned int number = EPDFAnnot_GetObjectNumber(widget.get());
+    widget.reset();
+    EXPECT_TRUE(EPDFForm_AttachWidget(document(), field, number, nullptr, 0));
+    return number;
+  };
+  const unsigned int first_button = new_button(L"initials", 50);
+  const unsigned int later_button = new_button(L"initials again", 170);
+  ASSERT_NE(0u, first_button);
+  ASSERT_NE(0u, later_button);
+  // The widgets of the two signature fields.
+  unsigned int first_widget = 0;
+  unsigned int later_widget = 0;
+  {
+    EPDF_SIGNATURE_MODEL model = EPDFSig_LoadModel(document());
+    ASSERT_TRUE(model);
+    first_widget = EPDFSig_GetWidgetObjNum(
+        model, EPDFSig_GetIndexByFieldObjNum(model, signer));
+    later_widget = EPDFSig_GetWidgetObjNum(
+        model, EPDFSig_GetIndexByFieldObjNum(model, later));
+    EPDFSig_CloseModel(model);
+  }
+  ASSERT_NE(0u, first_widget);
+  ASSERT_NE(0u, later_widget);
+  // Each stands in a box of its own, 200 by 60.
+  for (const auto& [widget, bottom] :
+       {std::pair<unsigned int, float>{first_widget, 50},
+        std::pair<unsigned int, float>{later_widget, 220}}) {
+    ScopedFPDFAnnotation annot(
+        EPDFPage_GetAnnotByObjectNumber(page.get(), widget));
+    ASSERT_TRUE(annot);
+    const FS_RECTF rect{50, bottom + 60, 250, bottom};
+    ASSERT_TRUE(EPDFAnnot_SetRect(annot.get(), &rect));
+  }
+
+  // The picture, a page that is one red box, as a drawing of the document.
+  unsigned int drawing = 0;
+  {
+    embedpdf_test::ScopedTestDocument picture(NewTestDocument());
+    ScopedFPDFPage picture_page(FPDFPage_New(picture.get(), 0, 200, 100));
+    FPDF_PAGEOBJECT box = FPDFPageObj_CreateNewRect(0, 0, 200, 100);
+    ASSERT_TRUE(FPDFPageObj_SetFillColor(box, 255, 0, 0, 255));
+    ASSERT_TRUE(FPDFPath_SetDrawMode(box, FPDF_FILLMODE_ALTERNATE, false));
+    FPDFPage_InsertObject(picture_page.get(), box);
+    ASSERT_TRUE(FPDFPage_GenerateContent(picture_page.get()));
+    ScopedFPDFDocument canonical(EPDFDoc_CanonicalDrawing(picture.get(), 0));
+    ASSERT_TRUE(canonical);
+    drawing = EPDFDoc_ImportDrawing(document(), canonical.get());
+  }
+  ASSERT_NE(0u, drawing);
+  // Shows `drawing` as the mark of `widget` and as the icon of `button`.
+  auto show = [](FPDF_PAGE on, unsigned int widget, unsigned int button,
+                 unsigned int drawing) {
+    ScopedFPDFAnnotation mark(EPDFPage_GetAnnotByObjectNumber(on, widget));
+    ASSERT_TRUE(mark);
+    ASSERT_TRUE(
+        EPDFAnnot_SetDrawing(mark.get(), drawing, EPDF_STAMP_FIT_CONTAIN));
+    ScopedFPDFAnnotation image(EPDFPage_GetAnnotByObjectNumber(on, button));
+    ASSERT_TRUE(image);
+    ASSERT_TRUE(EPDFAnnot_SetMKIcon(image.get(), EPDF_MK_ICON_I, drawing));
+    ASSERT_TRUE(EPDFAnnot_SetMKTextPosition(image.get(), 1));
+    ASSERT_TRUE(EPDFAnnot_GenerateFormFieldAP(image.get()));
+  };
+  show(page.get(), first_widget, first_button, drawing);
+  page.reset();
+
+  EPDF_SIG_PREPARE opts = {};
+  opts.subfilter = EPDF_SIG_SUBFILTER_ETSI_CADES_DETACHED;
+  opts.digest = EPDF_DIGEST_SHA256;
+  opts.contents_size = 2048;
+  Sealed sealed;
+  ASSERT_TRUE(SignField(document(), signer, opts, &sealed));
+
+  // Listing the signed file's drawings writes nothing: no object is copied
+  // into a layer over it, outside a transaction or inside one, and the layer
+  // has no change to save.
+  {
+    embedpdf_test::LayerFixture signed_layer;
+    ASSERT_TRUE(signed_layer.OpenBytes(sealed.bytes));
+    unsigned int in_layer = 0;
+    EXPECT_EQ(1u, EPDFDoc_GetDrawings(signed_layer.layer, &in_layer, 1));
+    EXPECT_EQ(drawing, in_layer);
+    ASSERT_TRUE(EPDFLayer_BeginTransaction(signed_layer.layer));
+    EXPECT_EQ(1u, EPDFDoc_GetDrawings(signed_layer.layer, nullptr, 0));
+    ASSERT_TRUE(EPDFLayer_CommitTransaction(signed_layer.layer));
+    EXPECT_EQ(0u, EPDFLayer_GetPromotedObjectCount(signed_layer.layer));
+    EXPECT_TRUE(signed_layer.SaveDelta().empty());
+  }
+
+  // The signed file, opened again: it lists the one drawing, and the same
+  // picture is placed by that number.
+  embedpdf_test::ScopedTestDocument signed_doc(
+      embedpdf_test::LoadMemDocumentForTest(sealed.bytes.data(),
+                                            sealed.bytes.size(), nullptr));
+  ASSERT_TRUE(signed_doc);
+  unsigned int listed = 0;
+  ASSERT_EQ(1u, EPDFDoc_GetDrawings(signed_doc.get(), &listed, 1));
+  EXPECT_EQ(drawing, listed);
+  {
+    ScopedFPDFPage signed_page(FPDF_LoadPage(signed_doc.get(), 0));
+    ASSERT_TRUE(signed_page);
+    show(signed_page.get(), later_widget, later_button, listed);
+  }
+  EXPECT_EQ(1u, EPDFDoc_GetDrawings(signed_doc.get(), nullptr, 0));
+
+  // Saved after the signature: the signed bytes are kept as they were.
+  ClearString();
+  ASSERT_TRUE(FPDF_SaveAsCopy(signed_doc.get(), this, FPDF_INCREMENTAL));
+  const std::string appended = GetString();
+  ASSERT_GT(appended.size(), sealed.bytes.size());
+  EXPECT_EQ(0,
+            memcmp(appended.data(), sealed.bytes.data(), sealed.bytes.size()));
+
+  embedpdf_test::ScopedTestDocument reopened(
+      embedpdf_test::LoadMemDocumentForTest(appended.data(), appended.size(),
+                                            nullptr));
+  ASSERT_TRUE(reopened);
+  const int revisions = EPDFDoc_GetRevisionCount(reopened.get());
+  ASSERT_GE(revisions, 2);
+  unsigned long long signed_end = 0;
+  ASSERT_TRUE(
+      EPDFDoc_GetRevision(reopened.get(), revisions - 2, &signed_end, nullptr));
+  EXPECT_EQ(sealed.bytes.size(), signed_end);
+  ScopedFPDFDocument signed_revision(
+      EPDFDoc_OpenRevision(reopened.get(), signed_end));
+  ASSERT_TRUE(signed_revision);
+  EPDF_OBJECT_DIFF diff =
+      EPDFDoc_CompareRevisions(signed_revision.get(), reopened.get());
+  ASSERT_TRUE(diff);
+  const std::vector<DiffRow> rows = ReadDiffRows(diff);
+  EPDFObjectDiff_Close(diff);
+
+  // Of the objects the signature covers, only the two widgets that now show
+  // the picture changed. What is new is theirs: a wrapper and an appearance.
+  std::vector<unsigned int> changed;
+  int added = 0;
+  for (const DiffRow& row : rows) {
+    if (row.kind == EPDF_DIFF_OBJ_TRAILER || row.kind == EPDF_DIFF_OBJ_XREF ||
+        row.kind == EPDF_DIFF_OBJ_OBJSTM) {
+      continue;
+    }
+    if (row.change == EPDF_DIFF_ADDED) {
+      ++added;
+    } else {
+      changed.push_back(row.obj_num);
+    }
+  }
+  std::sort(changed.begin(), changed.end());
+  std::vector<unsigned int> expected = {later_widget, later_button};
+  std::sort(expected.begin(), expected.end());
+  EXPECT_EQ(expected, changed);
+  EXPECT_EQ(2, added);
+  for (unsigned int untouched :
+       {drawing, first_widget, first_button, signer, later}) {
+    EXPECT_EQ(-1, FindRow(rows, untouched)) << untouched;
+  }
+
+  // The signature is still there, signed, over its own revision.
+  EPDF_SIGNATURE_MODEL model = EPDFSig_LoadModel(reopened.get());
+  ASSERT_TRUE(model);
+  const int index = EPDFSig_GetIndexByFieldObjNum(model, signer);
+  ASSERT_NE(-1, index);
+  EXPECT_TRUE(EPDFSig_IsSigned(model, index));
+  unsigned long long range[4];
+  ASSERT_TRUE(EPDFSig_GetByteRange(model, index, range));
+  EXPECT_EQ(sealed.bytes.size(), range[2] + range[3]);
+  EPDFSig_CloseModel(model);
+  EXPECT_EQ(1u, EPDFDoc_GetDrawings(reopened.get(), nullptr, 0));
 }
 
 TEST_F(EPDFSignatureEmbedderTest, PermissionOneAllowsOnlyTimestamps) {
