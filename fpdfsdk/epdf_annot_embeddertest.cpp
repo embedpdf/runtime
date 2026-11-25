@@ -46,6 +46,7 @@
 #include "core/fpdfdoc/cpdf_annotfontmap.h"
 #include "core/fpdfdoc/cpdf_annotfontsubset.h"
 #include "core/fpdfdoc/cpdf_richtextwriter.h"
+#include "core/fxcrt/compiler_specific.h"
 #include "core/fxcrt/containers/contains.h"
 #include "core/fxcrt/fx_coordinates.h"
 #include "core/fxcrt/fx_safe_types.h"
@@ -53,7 +54,11 @@
 #include "core/fxcrt/span.h"
 #include "core/fxge/cfx_face.h"
 #include "core/fxge/cfx_font.h"
+#include "core/fxge/cfx_fontmapper.h"
+#include "core/fxge/cfx_fontmgr.h"
 #include "core/fxge/cfx_fontregistry.h"
+#include "core/fxge/cfx_gemodule.h"
+#include "core/fxge/systemfontinfo_iface.h"
 #include "fpdfsdk/cpdfsdk_helpers.h"
 #include "fpdfsdk/epdf_edit_test_util.h"
 #include "public/cpp/fpdf_scopers.h"
@@ -245,6 +250,22 @@ class ScopedRegisteredFonts {
  public:
   ScopedRegisteredFonts() { EPDFFont_ClearRegisteredFonts(); }
   ~ScopedRegisteredFonts() { EPDFFont_ClearRegisteredFonts(); }
+};
+
+// Substitutes from PDFium's built-in faces only, as WebAssembly does.
+class ScopedNoSystemFonts {
+ public:
+  ScopedNoSystemFonts() : system_fonts_(mapper()->TakeSystemFontInfo()) {}
+  ~ScopedNoSystemFonts() {
+    mapper()->SetSystemFontInfo(std::move(system_fonts_));
+  }
+
+ private:
+  static CFX_FontMapper* mapper() {
+    return CFX_GEModule::Get()->GetFontMgr()->GetBuiltinMapper();
+  }
+
+  std::unique_ptr<SystemFontInfoIface> system_fonts_;
 };
 
 using embedpdf_test::MemoryFileAccess;
@@ -552,6 +573,27 @@ std::string RichTextJsonFor(const char* family, int size, const char* text) {
          "},\"paragraphs\":[{\"runs\":[{\"text\":\"" + text + "\"}]}]}";
 }
 
+// Makes `page` show `text`, a string operand, at 72 points in the font
+// `font_objnum`, from (40, 100).
+void SetOneFontTextPageContent(CPDF_Document* cpdf_doc,
+                               CPDF_Page* cpdf_page,
+                               uint32_t font_objnum,
+                               const char* text) {
+  RetainPtr<CPDF_Dictionary> page_dict = cpdf_page->GetMutableDict();
+  RetainPtr<CPDF_Dictionary> resources =
+      page_dict->GetOrCreateDictFor("Resources");
+  RetainPtr<CPDF_Dictionary> font_resources =
+      resources->GetOrCreateDictFor("Font");
+  font_resources->SetNewFor<CPDF_Reference>("F1", cpdf_doc, font_objnum);
+
+  const ByteString content =
+      ByteString::Format("BT\n/F1 72 Tf\n40 100 Td\n%s Tj\nET\n", text);
+  RetainPtr<CPDF_Stream> contents =
+      cpdf_doc->NewIndirect<CPDF_Stream>(content.unsigned_span());
+  page_dict->SetNewFor<CPDF_Reference>("Contents", cpdf_doc,
+                                       contents->GetObjNum());
+}
+
 void AddBrokenTrueTypeCjkTextPageContent(FPDF_DOCUMENT doc, FPDF_PAGE page) {
   CPDF_Document* cpdf_doc = CPDFDocumentFromFPDFDocument(doc);
   CPDF_Page* cpdf_page = CPDFPageFromFPDFPage(page);
@@ -571,24 +613,75 @@ void AddBrokenTrueTypeCjkTextPageContent(FPDF_DOCUMENT doc, FPDF_PAGE page) {
   encoding_dict->SetFor("Differences", std::move(differences));
   font_dict->SetFor("Encoding", std::move(encoding_dict));
 
-  RetainPtr<CPDF_Dictionary> page_dict = cpdf_page->GetMutableDict();
-  RetainPtr<CPDF_Dictionary> resources =
-      page_dict->GetOrCreateDictFor("Resources");
-  RetainPtr<CPDF_Dictionary> font_resources =
-      resources->GetOrCreateDictFor("Font");
-  font_resources->SetNewFor<CPDF_Reference>("F1", cpdf_doc,
-                                            font_dict->GetObjNum());
+  SetOneFontTextPageContent(cpdf_doc, cpdf_page, font_dict->GetObjNum(),
+                            "<41>");
+}
 
-  const ByteString kContent =
-      "BT\n"
-      "/F1 72 Tf\n"
-      "40 100 Td\n"
-      "<41> Tj\n"
-      "ET\n";
-  RetainPtr<CPDF_Stream> contents =
-      cpdf_doc->NewIndirect<CPDF_Stream>(kContent.unsigned_span());
-  page_dict->SetNewFor<CPDF_Reference>("Contents", cpdf_doc,
-                                       contents->GetObjNum());
+// Writes U+8FD9 on `page` in SimSun, a font the document names but does not
+// hold, as a Type0 font of the Adobe-GB1 collection. `width` is the width the
+// font gives the character, in thousandths of the font size.
+void AddUnembeddedType0CjkTextPageContent(FPDF_DOCUMENT doc,
+                                          FPDF_PAGE page,
+                                          int width) {
+  CPDF_Document* cpdf_doc = CPDFDocumentFromFPDFDocument(doc);
+  CPDF_Page* cpdf_page = CPDFPageFromFPDFPage(page);
+  ASSERT_TRUE(cpdf_doc);
+  ASSERT_TRUE(cpdf_page);
+
+  auto descriptor = cpdf_doc->NewIndirect<CPDF_Dictionary>();
+  descriptor->SetNewFor<CPDF_Name>("Type", "FontDescriptor");
+  descriptor->SetNewFor<CPDF_Name>("FontName", "SimSun");
+  descriptor->SetNewFor<CPDF_Number>("Flags", 32);
+  descriptor->SetNewFor<CPDF_Number>("StemV", 0);
+
+  auto cid_font = cpdf_doc->NewIndirect<CPDF_Dictionary>();
+  cid_font->SetNewFor<CPDF_Name>("Type", "Font");
+  cid_font->SetNewFor<CPDF_Name>("Subtype", "CIDFontType2");
+  cid_font->SetNewFor<CPDF_Name>("BaseFont", "SimSun");
+  cid_font->SetNewFor<CPDF_Number>("DW", width);
+  cid_font->SetNewFor<CPDF_Reference>("FontDescriptor", cpdf_doc,
+                                      descriptor->GetObjNum());
+  auto system_info = cid_font->SetNewFor<CPDF_Dictionary>("CIDSystemInfo");
+  system_info->SetNewFor<CPDF_String>("Registry", "Adobe");
+  system_info->SetNewFor<CPDF_String>("Ordering", "GB1");
+  system_info->SetNewFor<CPDF_Number>("Supplement", 2);
+
+  auto font_dict = cpdf_doc->NewIndirect<CPDF_Dictionary>();
+  font_dict->SetNewFor<CPDF_Name>("Type", "Font");
+  font_dict->SetNewFor<CPDF_Name>("Subtype", "Type0");
+  font_dict->SetNewFor<CPDF_Name>("BaseFont", "SimSun");
+  font_dict->SetNewFor<CPDF_Name>("Encoding", "UniGB-UCS2-H");
+  auto descendants = font_dict->SetNewFor<CPDF_Array>("DescendantFonts");
+  descendants->AppendNew<CPDF_Reference>(cpdf_doc, cid_font->GetObjNum());
+
+  SetOneFontTextPageContent(cpdf_doc, cpdf_page, font_dict->GetObjNum(),
+                            "<8FD9>");
+}
+
+// The same as a simple TrueType font.
+void AddUnembeddedTrueTypeCjkTextPageContent(FPDF_DOCUMENT doc,
+                                             FPDF_PAGE page,
+                                             int width) {
+  CPDF_Document* cpdf_doc = CPDFDocumentFromFPDFDocument(doc);
+  CPDF_Page* cpdf_page = CPDFPageFromFPDFPage(page);
+  ASSERT_TRUE(cpdf_doc);
+  ASSERT_TRUE(cpdf_page);
+
+  auto font_dict = cpdf_doc->NewIndirect<CPDF_Dictionary>();
+  font_dict->SetNewFor<CPDF_Name>("Type", "Font");
+  font_dict->SetNewFor<CPDF_Name>("Subtype", "TrueType");
+  font_dict->SetNewFor<CPDF_Name>("BaseFont", "SimSun");
+  font_dict->SetNewFor<CPDF_Number>("FirstChar", 65);
+  font_dict->SetNewFor<CPDF_Number>("LastChar", 65);
+  font_dict->SetNewFor<CPDF_Array>("Widths")->AppendNew<CPDF_Number>(width);
+  auto encoding_dict = font_dict->SetNewFor<CPDF_Dictionary>("Encoding");
+  encoding_dict->SetNewFor<CPDF_Name>("Type", "Encoding");
+  auto differences = encoding_dict->SetNewFor<CPDF_Array>("Differences");
+  differences->AppendNew<CPDF_Number>(65);
+  differences->AppendNew<CPDF_Name>("uni8FD9");
+
+  SetOneFontTextPageContent(cpdf_doc, cpdf_page, font_dict->GetObjNum(),
+                            "<41>");
 }
 
 // Applies the one REDACT annotation `annot` of `page`.
@@ -5717,6 +5810,66 @@ TEST_F(EPDFAnnotEmbedderTest, RegisteredFallbackFontRendersPageMissingGlyph) {
 
   EXPECT_TRUE(BitmapHasNonWhitePixels(bitmap.get()));
   EXPECT_NE(without_registered_fallback, BitmapChecksum(bitmap.get()));
+}
+
+// A font the document names but does not hold is drawn in the registered
+// fallback font, at the widths the document gives: a glyph wider than its
+// width is drawn narrower, so it stays off the next one.
+TEST_F(EPDFAnnotEmbedderTest, RegisteredFallbackFontRendersUnembeddedFont) {
+  constexpr int kPageSize = 200;
+  auto painted_width = [](FPDF_BITMAP bitmap) {
+    int first = kPageSize;
+    int last = -1;
+    const int stride = FPDFBitmap_GetStride(bitmap);
+    auto pixels = UNSAFE_TODO(
+        pdfium::span(static_cast<const uint8_t*>(FPDFBitmap_GetBuffer(bitmap)),
+                     static_cast<size_t>(stride) * kPageSize));
+    for (int y = 0; y < kPageSize; ++y) {
+      for (int x = 0; x < kPageSize; ++x) {
+        if (pixels[y * stride + x * 4] != 0xFF) {
+          first = std::min(first, x);
+          last = std::max(last, x);
+        }
+      }
+    }
+    return last < first ? 0 : last - first + 1;
+  };
+
+  std::vector<uint8_t> font_data = LoadNotoSansSCFontData();
+  ASSERT_FALSE(font_data.empty());
+
+  for (bool type0 : {true, false}) {
+    SCOPED_TRACE(type0 ? "Type0" : "TrueType");
+    auto render = [&](int width) {
+      embedpdf_test::ScopedTestDocument doc(NewTestDocument());
+      ScopedFPDFPage page(FPDFPage_New(doc.get(), 0, kPageSize, kPageSize));
+      if (type0) {
+        AddUnembeddedType0CjkTextPageContent(doc.get(), page.get(), width);
+      } else {
+        AddUnembeddedTrueTypeCjkTextPageContent(doc.get(), page.get(), width);
+      }
+      page.reset();
+      page.reset(FPDF_LoadPage(doc.get(), 0));
+      return RenderPageOnWhite(page.get(), kPageSize, kPageSize);
+    };
+
+    ScopedNoSystemFonts no_system_fonts;
+    ScopedRegisteredFonts scoped_fonts;
+    EPDF_FONT_ID font_id =
+        EPDFFont_RegisterMemFont64("NotoSansSC", /*weight=*/400, /*italic=*/0,
+                                   font_data.data(), font_data.size());
+    ASSERT_NE(0u, font_id);
+    ASSERT_TRUE(EPDFFont_AddFallbackFont(font_id, /*tier=*/0));
+
+    ScopedFPDFBitmap full = render(/*width=*/1000);
+    ScopedFPDFBitmap half = render(/*width=*/500);
+    const int full_width = painted_width(full.get());
+    const int half_width = painted_width(half.get());
+    EXPECT_GT(full_width, 50);
+    EXPECT_LE(full_width, 72);
+    EXPECT_GT(half_width, 20);
+    EXPECT_LE(half_width, 36);
+  }
 }
 
 TEST_F(EPDFAnnotEmbedderTest, EmbedMetadata) {

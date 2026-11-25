@@ -465,7 +465,8 @@ selective flattening.
 ### fonts
 **Rule.** Registered fonts, fallbacks, subsetting, CID-keyed CFF and font embedding policies. A
 standard font (the 14, on an ANSI code page) draws with PDFium's built-in face on every platform,
-never a system font.
+never a system font. A character the substitute for a font the document does not hold lacks is
+drawn in the registered fallback font that has it, at the widths the document gives.
 **Why.** Text the user types must render and embed with the right font, and a document must draw
 the same in every engine, WebAssembly (which has no system fonts) included.
 **Where.** `cfx_fontregistry` (ours), `cpdf_font*`, `cfx_fontmapper.cpp`. Upstream's embedder tests
@@ -480,6 +481,7 @@ which the rich text layout breaks a field's lines with; and `CFX_Face::LoadUnsca
 and `GetMappedCodePointRanges`, defined in our `cfx_glyphoutline.cpp` and `cfx_codepointrange.cpp`.
 **Guarded by.** The font embedder tests; `cfx_fontmapper_unittest.cpp` and
 `EPDFViewEmbedderTest.StandardFontsDrawWithBuiltInFaces` for standard fonts;
+`EPDFAnnotEmbedderTest.RegisteredFallbackFont*` for the page's own text;
 `epdf_font_embeddertest.cpp` and `epdf_richtextlayout_embeddertest.cpp` (`FieldMatchesCpvt` for
 the line breaks) for a document's fonts and the layout.
 **When upstream touches this.** Font loading and mapping. A new upstream test that expects the test
@@ -487,7 +489,9 @@ fonts for a standard font passes as it is; one of ours that expects the built-in
 switch off. Our font code calls FreeType directly (`CFX_Face::GetFsTypeFlags()`, CID-keyed CFF,
 the registry), so our builds keep `pdf_enable_freetype` on; a Fontations-only build would need
 Skrifa versions of them. When upstream changes CPVT's word breaking, the layout follows on purpose:
-a field breaks its lines where upstream's would. Keep `font_index_` declared after
+a field breaks its lines where upstream's would. A registered fallback font has no
+`CFX_SubstFont`, so code that reads one from a font `GetFontFallback()` returns must allow for
+null. Keep `font_index_` declared after
 `epdf_attachment_` in `CPDF_Document`, so the index goes before the attachment and the parser.
 
 ### measurement
