@@ -258,6 +258,12 @@ bool CPDF_Font::ShouldApplyGlyphSpacingHeuristic(
   }
 
   CFX_SubstFont* subst_font = current_font->GetSubstFont();
+  // EmbedPDF(fonts): a registered fallback font is loaded from its own file,
+  // not through the font mapper, so it has no substitution record. It stands
+  // in for the font the document names.
+  if (!subst_font) {
+    return true;
+  }
   if (subst_font->IsBuiltInGenericFont()) {
     return false;
   }
