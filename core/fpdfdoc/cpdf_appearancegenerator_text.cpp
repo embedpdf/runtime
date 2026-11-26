@@ -363,11 +363,51 @@ bool ResolveReservedDocumentProgram(const CPDF_Document* doc,
   return true;
 }
 
+namespace {
+
+// EmbedPDF: makes the /DR font |font_name|, when it is written inline (a
+// dictionary inside /DR, not an object of its own), an object of its own
+// that /DR names, and returns it; the appearance then names that object too.
+// Acrobat shows no editable field whose appearance names a font that /DR
+// holds inline: nothing is drawn and the field can't be clicked. The write
+// goes through the document's writable catalog chain, as the fallback below
+// does. Returns null, writing nothing, when the entry is not inline.
+RetainPtr<CPDF_Dictionary> MakeInlineDrFontAnObject(
+    CPDF_Document* doc,
+    const ByteString& font_name) {
+  RetainPtr<CPDF_Dictionary> root = doc->GetMutableRoot();
+  RetainPtr<CPDF_Dictionary> acroform =
+      root ? root->GetMutableDictFor("AcroForm") : nullptr;
+  RetainPtr<CPDF_Dictionary> dr =
+      acroform ? acroform->GetMutableDictFor("DR") : nullptr;
+  RetainPtr<CPDF_Dictionary> fonts =
+      dr ? dr->GetMutableDictFor("Font") : nullptr;
+  RetainPtr<const CPDF_Object> entry =
+      fonts ? fonts->GetObjectFor(font_name.AsStringView()) : nullptr;
+  const CPDF_Dictionary* inline_font = entry ? entry->AsDictionary() : nullptr;
+  if (!inline_font) {
+    return nullptr;
+  }
+  RetainPtr<CPDF_Dictionary> font =
+      ToDictionary(inline_font->CloneForHolder(doc));
+  fonts->SetNewFor<CPDF_Reference>(font_name, doc,
+                                   doc->AddIndirectObject(font));
+  return font;
+}
+
+}  // namespace
+
 DaFontResolution ResolveDaFontForPersistentTarget(CPDF_Document* doc,
                                                   CPDF_Dictionary* dr_font_dict,
                                                   const ByteString& font_name) {
   DaFontResolution result;
   result.font_dict = dr_font_dict->GetMutableDictFor(font_name.AsStringView());
+  if (result.font_dict && result.font_dict->IsInline()) {
+    if (RetainPtr<CPDF_Dictionary> font =
+            MakeInlineDrFontAnObject(doc, font_name)) {
+      result.font_dict = std::move(font);
+    }
+  }
   if (result.font_dict) {
     result.registered_font_id =
         CPDF_AnnotFontSubset::ResolveRegisteredFont(result.font_dict.Get())

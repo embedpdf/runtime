@@ -365,7 +365,10 @@ a picture the button showed, so it is never written into, and the icon its resou
 with it. Before a form drawer replaces an appearance, a widget whose `/AP` is an indirect object
 gets a copy of its own (`OwnAppearanceDict`), and `epdf_annot.cpp` does the same for `/MK` and
 `/BS` before a setter writes one (`OwnMKForWriting` and `BorderStyleDictForWrite`, both through
-`OwnDictEntry`): another annotation may name the same dictionary. A colour is
+`OwnDictEntry`): another annotation may name the same dictionary. A `/DR` font that an appearance
+written into the file names, when the file holds it inline (a dictionary inside `/DR`), is first
+made an object of its own that `/DR` and the appearance both name (`MakeInlineDrFontAnObject`):
+Acrobat shows no editable field whose appearance names a font `/DR` holds inline. A colour is
 set as a new array, never written into the one the entry named, which may be an object another
 `/MK` names too. An `/MK` setter that changes nothing writes nothing, and it changes nothing only
 when the entry is well formed and reads as the value (three numbers from 0 to 1, a string, an
@@ -379,7 +382,9 @@ upstream's commits to its generator. `epdf_widget_drawing_embeddertest.cpp` for 
 its `AButtonIsSharedAsTheFormFillerSharesIt` runs upstream's form filler on the same buttons and
 compares the two. `CPDFGenerateAPTest.BorderArrayDrawsAsBorderStyleForEveryKind` draws every kind
 that has a border from both keys; the border setters' tests are in `epdf_annot_embeddertest.cpp`
-(`ABorderCallThatChangesNothingWritesNothing`, `ASharedBorderStyleIsNotWrittenInto`).
+(`ABorderCallThatChangesNothingWritesNothing`, `ASharedBorderStyleIsNotWrittenInto`). An inline
+`/DR` font: `EPDFFormEmbedderTest.AFillMakesAnInlineFormFontAnObject` and
+`AnInlineFormFontBecomesAnObjectInATransaction`.
 **When upstream touches this.** A commit to `cpdf_generateap.*`: port it to ours or skip it, with
 the reason in the sync report. A new upstream caller of `CPDF_GenerateAP::`: route it to ours, or
 accept it in the report. A change to what `CPDF_IconFit`'s readers return (`GetScaleMethod`,
