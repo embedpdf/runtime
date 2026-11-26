@@ -341,8 +341,7 @@ TEST_F(EPDFAppearanceStateEmbedderTest, CheckBoxDrawsTheSymbolItsCaptionNames) {
   EXPECT_NE(cross_content.Find(" l\nS\nQ\n"), std::nullopt) << cross_content;
   EXPECT_EQ(cross_content.Find(" c\n"), std::nullopt) << cross_content;
 
-  // No caption and no colour: the black check this generator always drew,
-  // byte for byte.
+  // No caption and no colour: the black check.
   ScopedFPDFAnnotation plain(FPDFPage_GetAnnot(page.get(), kPlain));
   ASSERT_TRUE(plain);
   ASSERT_TRUE(EPDFAnnot_GenerateFormFieldAP(plain.get()));
@@ -370,7 +369,7 @@ TEST_F(EPDFAppearanceStateEmbedderTest,
   ASSERT_TRUE(square);
   ASSERT_TRUE(EPDFAnnot_GenerateFormFieldAP(square.get()));
   const ByteString square_content = OnStateContent(square.get());
-  EXPECT_NE(square_content.Find(" re S\n"), std::nullopt) << square_content;
+  EXPECT_NE(square_content.Find(" re s\n"), std::nullopt) << square_content;
   EXPECT_NE(square_content.Find("q\n1 0 0 rg\n"), std::nullopt)
       << square_content;
   EXPECT_NE(square_content.Find(" l\nh\nf\nQ\n"), std::nullopt)
@@ -379,13 +378,13 @@ TEST_F(EPDFAppearanceStateEmbedderTest,
   EXPECT_EQ(kRed, DrawAnnot(page.get(), square.get(),
                             FPDF_ANNOT_APPEARANCEMODE_NORMAL, "Yes", 100, 100));
 
-  // No caption: the dot this generator always drew, now in the /DA colour.
+  // No caption: the dot, in the /DA colour.
   ScopedFPDFAnnotation dot(FPDFPage_GetAnnot(page.get(), kDot));
   ASSERT_TRUE(dot);
   ASSERT_TRUE(EPDFAnnot_GenerateFormFieldAP(dot.get()));
   const ByteString dot_content = OnStateContent(dot.get());
   EXPECT_NE(dot_content.Find("q\n0 0 1 rg\n"), std::nullopt) << dot_content;
-  EXPECT_NE(dot_content.Find(" c\nh\nf*\nQ\n"), std::nullopt) << dot_content;
+  EXPECT_NE(dot_content.Find(" c\nh\nf\nQ\n"), std::nullopt) << dot_content;
   EXPECT_EQ(kBlue,
             DrawAnnot(page.get(), dot.get(), FPDF_ANNOT_APPEARANCEMODE_NORMAL,
                       "Yes", 220, 100));

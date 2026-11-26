@@ -42,11 +42,16 @@ constexpr float kSubRise = -0.15f;
 constexpr float kFallbackSize = 12.0f;
 constexpr float kEpsilon = 0.01f;
 
-// CPVT's auto font size ladder: plain FreeText and form fields with a DA
-// size of 0. A field of several lines tries its first quarter.
+// CPVT's auto font size ladder: plain FreeText with a DA size of 0 steps
+// down it. A form field's automatic size is fitted exactly between its ends
+// instead (ArrangeField()).
 constexpr std::array<float, 25> kAutoSizeSteps = {
     4,  6,  8,  9,  10, 12, 14, 18,  20,  25,  30,  35, 40,
     45, 50, 55, 60, 70, 80, 90, 100, 110, 120, 130, 144};
+
+// The largest automatic size of a field of several lines, as Acrobat 26
+// caps it (and CPVT's ladder did, at its first quarter).
+constexpr float kLinesAutoSizeCap = 12;
 
 bool IsSpace(wchar_t ch) {
   return ch == L' ' || ch == 0x00A0 || ch == 0x3000;
@@ -1479,14 +1484,15 @@ CPDF_RichTextLayout::Result CPDF_RichTextLayout::ArrangeField(
   };
   const float typeset_width = std::max(plate_width, 0.0f);
 
-  // The size: the biggest step of the ladder the text fits in, searched as
-  // CPVT's std::lower_bound searches it.
+  // The size: as large as the text fits, as Acrobat 26 fits a field's text,
+  // where CPVT stepped down its ladder to the step below. It is found to a
+  // thousandth of a point by halving the gap between the ladder's ends: 4,
+  // and 144, or 12 for a field of several lines. Text that doesn't fit at 4
+  // is drawn at 4.
   float size = field.size;
   if (FXSYS_IsFloatZero(size)) {
     size = 0;
     if (plate_width > 0) {
-      const size_t steps =
-          field.multiline ? kAutoSizeSteps.size() / 4 : kAutoSizeSteps.size();
       auto too_big = [&](float candidate) {
         Impl impl(fonts_, options_);
         impl.field = true;
@@ -1505,19 +1511,26 @@ CPDF_RichTextLayout::Result CPDF_RichTextLayout::ArrangeField(
         }
         return false;
       };
-      size_t first = 0;
-      size_t count = steps;
-      while (count > 0) {
-        const size_t step = count / 2;
-        if (!too_big(kAutoSizeSteps[first + step])) {
-          first += step + 1;
-          count -= step + 1;
-        } else {
-          count = step;
+      const float smallest = kAutoSizeSteps.front();
+      const float largest =
+          field.multiline ? kLinesAutoSizeCap : kAutoSizeSteps.back();
+      if (!too_big(largest)) {
+        size = largest;
+      } else if (too_big(smallest)) {
+        size = smallest;
+      } else {
+        float fits = smallest;
+        float over = largest;
+        while (over - fits > 0.001f) {
+          const float middle = (fits + over) / 2;
+          if (too_big(middle)) {
+            over = middle;
+          } else {
+            fits = middle;
+          }
         }
+        size = std::max(smallest, std::floor(fits * 1000) / 1000);
       }
-      size = first == steps ? kAutoSizeSteps[steps - 1]
-                            : kAutoSizeSteps[first == 0 ? 0 : first - 1];
     }
   }
 

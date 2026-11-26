@@ -80,20 +80,6 @@ std::vector<float> BorderDash(const fpdfdoc::AnnotBorder& border) {
   return DashValues(border.dash_array.Get());
 }
 
-// The dash operator for |values|; empty when there are none.
-ByteString DashOperator(const std::vector<float>& values) {
-  if (values.empty()) {
-    return ByteString();
-  }
-  fxcrt::ostringstream dash_stream;
-  dash_stream << "[";
-  for (float value : values) {
-    WriteFloat(dash_stream, value) << " ";
-  }
-  dash_stream << "] 0 d\n";
-  return ByteString(dash_stream);
-}
-
 // /RD as its four numbers, in rectangle order (left, bottom, right, top), as
 // Acrobat writes it and PDFium reads it.
 CFX_FloatRect GetRectDifferences(const CPDF_Dictionary* annot_dict) {
@@ -411,9 +397,23 @@ ByteString GenerateColorAP(const CFX_Color& color, PaintOperation operation) {
   NOTREACHED();
 }
 
+ByteString DashOperator(const std::vector<float>& values) {
+  if (values.empty()) {
+    return ByteString();
+  }
+  fxcrt::ostringstream dash_stream;
+  dash_stream << "[";
+  for (float value : values) {
+    WriteFloat(dash_stream, value) << " ";
+  }
+  dash_stream << "] 0 d\n";
+  return ByteString(dash_stream);
+}
+
 ByteString GenerateBorderAP(const CFX_FloatRect& rect,
                             const BorderStyleInfo& border_style_info,
-                            const CFX_Color& border_color) {
+                            const CFX_Color& border_color,
+                            const CFX_Color& beveled_shade) {
   const float width = border_style_info.width;
   if (width <= 0) {
     return ByteString();
@@ -472,10 +472,11 @@ ByteString GenerateBorderAP(const CFX_FloatRect& rect,
       WritePoint(app_stream, {left + width, top - width}) << " l\n";
       WritePoint(app_stream, {left + width, bottom + width}) << " l f\n";
 
-      const float right_bottom_gray_value =
-          border_style_info.style == BorderStyle::kBeveled ? 0.5f : 0.75f;
       app_stream << GenerateColorAP(
-          CFX_Color::MakeGray(right_bottom_gray_value), PaintOperation::kFill);
+          border_style_info.style == BorderStyle::kBeveled
+              ? beveled_shade
+              : CFX_Color::MakeGray(0.75f),
+          PaintOperation::kFill);
       WritePoint(app_stream, {right - half_width, top - half_width}) << " m\n";
       WritePoint(app_stream, {right - half_width, bottom + half_width})
           << " l\n";

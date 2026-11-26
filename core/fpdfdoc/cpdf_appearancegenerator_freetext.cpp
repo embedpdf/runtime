@@ -434,8 +434,10 @@ PrepareRichFreeTextAPInternal(CPDF_Document* doc,
       stream << "q\n" << GenerateColorAP(color, PaintOperation::kFill);
       WriteRect(stream, background_rect) << " re f\nQ\n";
     }
-    const ByteString border_stream =
-        GenerateBorderAP(rect, border_style_info, in.da_color);
+    // A beveled border's shaded edges are mid grey here, whatever the box's
+    // colour.
+    const ByteString border_stream = GenerateBorderAP(
+        rect, border_style_info, in.da_color, CFX_Color::MakeGray(0.5f));
     if (border_stream.GetLength() > 0) {
       stream << "q\n" << border_stream << "Q\n";
     }

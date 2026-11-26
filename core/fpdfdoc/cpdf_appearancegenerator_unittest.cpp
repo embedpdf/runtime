@@ -3,7 +3,9 @@
 
 #include "core/fpdfdoc/cpdf_appearancegenerator.h"
 
+#include <cctype>
 #include <functional>
+#include <map>
 #include <optional>
 #include <vector>
 
@@ -20,6 +22,8 @@
 #include "core/fpdfapi/parser/cpdf_stream.h"
 #include "core/fpdfapi/parser/cpdf_string.h"
 #include "core/fpdfapi/parser/cpdf_test_document.h"
+#include "core/fxcrt/fx_coordinates.h"
+#include "core/fxcrt/fx_string.h"
 #include "core/fxge/cfx_color.h"
 #include "testing/gtest/include/gtest/gtest.h"
 
@@ -394,30 +398,27 @@ enum class BorderedKind {
 struct BorderedKindCase {
   const char* name;
   BorderedKind kind;
-  // False for a check box, a radio button and a push button (with a caption
-  // or an icon), which draw one solid box for every border style.
-  bool draws_dashes;
 };
 
 constexpr BorderedKindCase kBorderedKinds[] = {
-    {"square", BorderedKind::kSquare, true},
-    {"circle", BorderedKind::kCircle, true},
-    {"line", BorderedKind::kLine, true},
-    {"polygon", BorderedKind::kPolygon, true},
-    {"polyline", BorderedKind::kPolyLine, true},
-    {"ink", BorderedKind::kInk, true},
-    {"free text", BorderedKind::kFreeText, true},
-    {"free text callout", BorderedKind::kCallout, true},
-    {"link", BorderedKind::kLink, true},
-    {"redaction", BorderedKind::kRedact, true},
-    {"text field", BorderedKind::kTextField, true},
-    {"combo box", BorderedKind::kComboBox, true},
-    {"list box", BorderedKind::kListBox, true},
-    {"check box", BorderedKind::kCheckBox, false},
-    {"radio button", BorderedKind::kRadioButton, false},
-    {"push button", BorderedKind::kPushButton, false},
-    {"push button with an icon", BorderedKind::kIconButton, false},
-    {"signature", BorderedKind::kSignature, true},
+    {"square", BorderedKind::kSquare},
+    {"circle", BorderedKind::kCircle},
+    {"line", BorderedKind::kLine},
+    {"polygon", BorderedKind::kPolygon},
+    {"polyline", BorderedKind::kPolyLine},
+    {"ink", BorderedKind::kInk},
+    {"free text", BorderedKind::kFreeText},
+    {"free text callout", BorderedKind::kCallout},
+    {"link", BorderedKind::kLink},
+    {"redaction", BorderedKind::kRedact},
+    {"text field", BorderedKind::kTextField},
+    {"combo box", BorderedKind::kComboBox},
+    {"list box", BorderedKind::kListBox},
+    {"check box", BorderedKind::kCheckBox},
+    {"radio button", BorderedKind::kRadioButton},
+    {"push button", BorderedKind::kPushButton},
+    {"push button with an icon", BorderedKind::kIconButton},
+    {"signature", BorderedKind::kSignature},
 };
 
 // An annotation of |kind|, 120 by 60, with what the kind needs to be drawn
@@ -573,19 +574,14 @@ ByteString NormalAppearanceContent(const CPDF_Dictionary* annot_dict) {
   return content;
 }
 
-// The appearance the generator writes for a new annotation of |kind| whose
-// border |write_border| has written, each in a document of its own.
-ByteString DrawBorderedKind(
-    BorderedKind kind,
-    const std::function<void(CPDF_Dictionary*)>& write_border) {
-  CPDF_TestDocument doc;
-  AddAcroFormWithHelvetica(&doc);
-  RetainPtr<CPDF_Dictionary> annot_dict = MakeBorderedDict(&doc, kind);
-  write_border(annot_dict.Get());
-
+// Has the generator write the appearance of |annot_dict|, an annotation of
+// |kind| in |doc|.
+void GenerateBorderedKind(CPDF_Document* doc,
+                          BorderedKind kind,
+                          CPDF_Dictionary* annot_dict) {
   auto draw_annot = [&](CPDF_Annot::Subtype subtype) {
-    EXPECT_TRUE(CPDF_AppearanceGenerator::GenerateAnnotAP(
-        &doc, annot_dict.Get(), subtype));
+    EXPECT_TRUE(
+        CPDF_AppearanceGenerator::GenerateAnnotAP(doc, annot_dict, subtype));
   };
   switch (kind) {
     case BorderedKind::kSquare:
@@ -618,33 +614,138 @@ ByteString DrawBorderedKind(
       break;
     case BorderedKind::kTextField:
       CPDF_AppearanceGenerator::GenerateFormAP(
-          &doc, annot_dict.Get(), CPDF_AppearanceGenerator::kTextField);
+          doc, annot_dict, CPDF_AppearanceGenerator::kTextField);
       break;
     case BorderedKind::kComboBox:
       CPDF_AppearanceGenerator::GenerateFormAP(
-          &doc, annot_dict.Get(), CPDF_AppearanceGenerator::kComboBox);
+          doc, annot_dict, CPDF_AppearanceGenerator::kComboBox);
       break;
     case BorderedKind::kListBox:
       CPDF_AppearanceGenerator::GenerateFormAP(
-          &doc, annot_dict.Get(), CPDF_AppearanceGenerator::kListBox);
+          doc, annot_dict, CPDF_AppearanceGenerator::kListBox);
       break;
     case BorderedKind::kCheckBox:
-      CPDF_AppearanceGenerator::GenerateCheckboxFormAP(&doc, annot_dict.Get());
+      CPDF_AppearanceGenerator::GenerateCheckboxFormAP(doc, annot_dict);
       break;
     case BorderedKind::kRadioButton:
-      CPDF_AppearanceGenerator::GenerateRadioButtonFormAP(&doc,
-                                                          annot_dict.Get());
+      CPDF_AppearanceGenerator::GenerateRadioButtonFormAP(doc, annot_dict);
       break;
     case BorderedKind::kPushButton:
     case BorderedKind::kIconButton:
       CPDF_AppearanceGenerator::GenerateFormAP(
-          &doc, annot_dict.Get(), CPDF_AppearanceGenerator::kPushButton);
+          doc, annot_dict, CPDF_AppearanceGenerator::kPushButton);
       break;
     case BorderedKind::kSignature:
-      CPDF_AppearanceGenerator::GenerateBoxFormAP(&doc, annot_dict.Get());
+      CPDF_AppearanceGenerator::GenerateBoxFormAP(doc, annot_dict);
       break;
   }
+}
+
+// The appearance the generator writes for a new annotation of |kind| whose
+// border |write_border| has written, each in a document of its own.
+ByteString DrawBorderedKind(
+    BorderedKind kind,
+    const std::function<void(CPDF_Dictionary*)>& write_border) {
+  CPDF_TestDocument doc;
+  AddAcroFormWithHelvetica(&doc);
+  RetainPtr<CPDF_Dictionary> annot_dict = MakeBorderedDict(&doc, kind);
+  write_border(annot_dict.Get());
+  GenerateBorderedKind(&doc, kind, annot_dict.Get());
   return NormalAppearanceContent(annot_dict.Get());
+}
+
+// What a widget of |kind| (MakeBorderedDict(): 120 by 60, a green border on
+// a light yellow background) draws with a border 1 wide in |style|, the
+// name /BS /S takes, in each of its appearance states: a single stream is
+// the state "". |adjust| changes the widget first.
+std::map<ByteString, ByteString> DrawWidgetInStyle(
+    BorderedKind kind,
+    const char* style,
+    const std::function<void(CPDF_Dictionary*)>& adjust = nullptr) {
+  CPDF_TestDocument doc;
+  AddAcroFormWithHelvetica(&doc);
+  RetainPtr<CPDF_Dictionary> annot_dict = MakeBorderedDict(&doc, kind);
+  auto border_style = annot_dict->SetNewFor<CPDF_Dictionary>("BS");
+  border_style->SetNewFor<CPDF_Number>("W", 1);
+  border_style->SetNewFor<CPDF_Name>("S", style);
+  if (adjust) {
+    adjust(annot_dict.Get());
+  }
+  GenerateBorderedKind(&doc, kind, annot_dict.Get());
+
+  std::map<ByteString, ByteString> states;
+  RetainPtr<const CPDF_Dictionary> ap_dict =
+      annot_dict->GetDictFor(pdfium::annotation::kAP);
+  if (!ap_dict) {
+    return states;
+  }
+  if (RetainPtr<const CPDF_Stream> stream = ap_dict->GetStreamFor("N")) {
+    states[""] = WrittenContent(std::move(stream));
+    return states;
+  }
+  RetainPtr<const CPDF_Dictionary> normal = ap_dict->GetDictFor("N");
+  for (const ByteString& state :
+       normal ? normal->GetKeys() : std::vector<ByteString>()) {
+    states[state] = WrittenContent(normal->GetStreamFor(state.AsStringView()));
+  }
+  return states;
+}
+
+// The first block of |content| saved and restored as one: from its first
+// "q" line to the "Q" line that closes it.
+ByteString FirstBlock(const ByteString& content) {
+  const std::optional<size_t> start = content.Find("q\n");
+  if (!start.has_value()) {
+    return ByteString();
+  }
+  int depth = 0;
+  size_t at = start.value();
+  while (at < content.GetLength()) {
+    const std::optional<size_t> end = content.Find("\n", at);
+    const size_t line_end = end.value_or(content.GetLength());
+    const ByteString line = content.Substr(at, line_end - at);
+    if (line == "q") {
+      ++depth;
+    } else if (line == "Q" && --depth == 0) {
+      return content.Substr(start.value(), line_end + 1 - start.value());
+    }
+    at = line_end + 1;
+  }
+  return ByteString();
+}
+
+// Every point the paths of |content| pass through: the last two numbers
+// before each m, l and c (a curve's handles may lie outside its path).
+std::vector<CFX_PointF> PathPoints(const ByteString& content) {
+  std::vector<CFX_PointF> points;
+  std::vector<float> numbers;
+  size_t at = 0;
+  while (at < content.GetLength()) {
+    while (at < content.GetLength() &&
+           (content[at] == ' ' || content[at] == '\n')) {
+      ++at;
+    }
+    size_t end = at;
+    while (end < content.GetLength() && content[end] != ' ' &&
+           content[end] != '\n') {
+      ++end;
+    }
+    const ByteString token = content.Substr(at, end - at);
+    at = end;
+    if (token.IsEmpty()) {
+      continue;
+    }
+    if ((token == "m" || token == "l" || token == "c") && numbers.size() >= 2) {
+      points.emplace_back(numbers[numbers.size() - 2], numbers.back());
+    }
+    if (std::isdigit(static_cast<unsigned char>(token[0])) || token[0] == '.' ||
+        token[0] == '-') {
+      numbers.push_back(StringToFloat(token.AsStringView()));
+    } else {
+      numbers.clear();
+    }
+  }
+  return points;
 }
 
 }  // namespace
@@ -679,10 +780,10 @@ TEST_F(CPDFGenerateAPTest, BorderArrayDrawsAsBorderStyleForEveryKind) {
     EXPECT_NE(with_border_style(1), wide);
     EXPECT_EQ(with_border_array(5), wide);
 
-    // A dash.
+    // A dash, which every kind draws.
     const ByteString dashed = with_border_style(5, pattern);
-    EXPECT_EQ(kind_case.draws_dashes, dashed.Contains("[4 2 ] 0 d\n"));
-    EXPECT_EQ(kind_case.draws_dashes, dashed != wide);
+    EXPECT_TRUE(dashed.Contains("[4 2 ] 0 d\n"));
+    EXPECT_NE(dashed, wide);
     EXPECT_EQ(with_border_array(5, pattern), dashed);
 
     // No border.
@@ -708,6 +809,171 @@ TEST_F(CPDFGenerateAPTest, BorderArrayDrawsAsBorderStyleForEveryKind) {
                                  SetBorderStyle(annot_dict, 5, pattern);
                                }),
               dashed);
+  }
+}
+
+// Every widget kind drawn in a box draws every border style, as Acrobat 26
+// does on each of them: a text field, a signature field, a check box, a
+// push button (with a caption, and with an icon alone), and a radio button
+// that shows a symbol other than a circle draw the same box, background and
+// border, which Acrobat draws as on a text field. The numbers are Acrobat's
+// for this box (its drawings of a 90 by 40 field with a border of 1, saved
+// from Acrobat, follow the same rule): the background fills the whole box;
+// a solid or dashed line is drawn half its width in; a beveled or inset
+// border is the line and, inside it, a lit edge at the upper left and a
+// shaded one at the lower right; an underline is a line along the bottom. A
+// beveled border's shade is the background less a quarter.
+TEST_F(CPDFGenerateAPTest, WidgetBoxesDrawEveryBorderStyle) {
+  const struct {
+    const char* style;
+    const char* border;
+  } kStyles[] = {
+      {"S", "0 1 0 RG\n1 w\n.5 .5 119 59 re s\n"},
+      {"D",
+       "0 1 0 RG\n1 w\n[3 ] 0 d\n.5 .5 m\n.5 59.5 l\n119.5 59.5 l\n"
+       "119.5 .5 l\n.5 .5 l S\n"},
+      {"B",
+       "1 g\n1 1 m\n1 59 l\n119 59 l\n118 58 l\n2 58 l\n2 2 l f\n"
+       ".75 .75 .55 rg\n119 59 m\n119 1 l\n1 1 l\n2 2 l\n118 2 l\n"
+       "118 58 l f\n0 1 0 rg\n0 0 120 60 re\n1 1 118 58 re f*\n"},
+      {"I",
+       ".5 g\n1 1 m\n1 59 l\n119 59 l\n118 58 l\n2 58 l\n2 2 l f\n"
+       ".75 g\n119 59 m\n119 1 l\n1 1 l\n2 2 l\n118 2 l\n118 58 l f\n"
+       "0 1 0 rg\n0 0 120 60 re\n1 1 118 58 re f*\n"},
+      {"U", "0 1 0 RG\n1 w\n0 .5 m\n120 .5 l S\n"},
+  };
+  const struct {
+    const char* name;
+    BorderedKind kind;
+    const char* state;             // the state whose box is read
+    const char* symbol = nullptr;  // a radio button's /MK /CA
+  } kKinds[] = {
+      {"text field", BorderedKind::kTextField, ""},
+      {"signature", BorderedKind::kSignature, ""},
+      {"check box", BorderedKind::kCheckBox, "Off"},
+      {"check box, checked", BorderedKind::kCheckBox, "Yes"},
+      {"push button", BorderedKind::kPushButton, ""},
+      {"push button with an icon", BorderedKind::kIconButton, ""},
+      {"radio button with a check", BorderedKind::kRadioButton, "Off", "4"},
+  };
+  for (const auto& style : kStyles) {
+    SCOPED_TRACE(style.style);
+    const ByteString box =
+        ByteString("q\n1 1 .8 rg\n0 0 120 60 re f*\n") + style.border + "Q\n";
+    for (const auto& kind : kKinds) {
+      SCOPED_TRACE(kind.name);
+      std::map<ByteString, ByteString> states = DrawWidgetInStyle(
+          kind.kind, style.style, [&kind](CPDF_Dictionary* annot_dict) {
+            if (kind.symbol) {
+              annot_dict->GetMutableDictFor("MK")->SetNewFor<CPDF_String>(
+                  "CA", kind.symbol);
+            }
+          });
+      ASSERT_EQ(1u, states.count(kind.state));
+      EXPECT_EQ(box, FirstBlock(states[kind.state]));
+    }
+  }
+}
+
+// A combo box and a list box draw a beveled border's shaded edges in the
+// background less a quarter too, and light grey without a background, as
+// Acrobat draws every field kind's.
+TEST_F(CPDFGenerateAPTest, ChoiceFieldsShadeABeveledBorderByTheirBackground) {
+  for (BorderedKind kind : {BorderedKind::kComboBox, BorderedKind::kListBox}) {
+    SCOPED_TRACE(kind == BorderedKind::kComboBox ? "combo box" : "list box");
+    const ByteString drawn = DrawWidgetInStyle(kind, "B")[""];
+    EXPECT_TRUE(drawn.Contains("1 g\n1 1 m\n"));
+    EXPECT_TRUE(drawn.Contains(".75 .75 .55 rg\n119 59 m\n"));
+    const ByteString bare =
+        DrawWidgetInStyle(kind, "B", [](CPDF_Dictionary* annot_dict) {
+          annot_dict->GetMutableDictFor("MK")->RemoveFor("BG");
+        })[""];
+    EXPECT_TRUE(bare.Contains(".75 g\n119 59 m\n"));
+  }
+  // And a text field without a background.
+  const ByteString bare = DrawWidgetInStyle(
+      BorderedKind::kTextField, "B", [](CPDF_Dictionary* annot_dict) {
+        annot_dict->GetMutableDictFor("MK")->RemoveFor("BG");
+      })[""];
+  EXPECT_TRUE(bare.Contains(".75 g\n119 59 m\n"));
+}
+
+// A radio button that shows a circle draws it as Acrobat 26 does: as wide as
+// the box is high, in the middle of the box (120 by 60: a circle of radius
+// 30 about (60, 30)). The background fills it; the border is a circle line
+// half its width in, dashed when the border is; a beveled or inset border is
+// that line at half the doubled width and two half circles inside it, lit at
+// the upper left and shaded at the lower right; an underline draws the whole
+// circle, as a solid border does. The dot is half as wide as the circle
+// inside its border, in the middle, in every state that shows one.
+TEST_F(CPDFGenerateAPTest, RadioButtonsDrawACircleInTheMiddleOfTheBox) {
+  const struct {
+    const char* style;
+    const char* line;   // the circle line, then what follows it
+    const char* edges;  // the lit and shaded half circles' colours, or none
+    const char* dot;    // where the dot starts: its rightmost point
+  } kStyles[] = {
+      {"S", "1 w\n0 1 0 RG\n89.5 30 m\n", nullptr, "74.5 30 m\n"},
+      {"D", "1 w\n0 1 0 RG\n[3 ] 0 d\n89.5 30 m\n", nullptr, "74.5 30 m\n"},
+      {"B", "1 w\n0 1 0 RG\n89.5 30 m\n", "1 G\n|.75 .75 .55 RG\n",
+       "74 30 m\n"},
+      {"I", "1 w\n0 1 0 RG\n89.5 30 m\n", ".5 G\n|.75 G\n", "74 30 m\n"},
+      {"U", "1 w\n0 1 0 RG\n89.5 30 m\n", nullptr, "74.5 30 m\n"},
+  };
+  const ByteString solid_off =
+      DrawWidgetInStyle(BorderedKind::kRadioButton, "S")["Off"];
+  for (const auto& style : kStyles) {
+    SCOPED_TRACE(style.style);
+    std::map<ByteString, ByteString> states =
+        DrawWidgetInStyle(BorderedKind::kRadioButton, style.style);
+    ASSERT_EQ(2u, states.size());
+    const ByteString& off = states["Off"];
+    const ByteString& on = states["Yes"];
+    // The circle: the background from its rightmost point, then the line.
+    EXPECT_EQ(0u, off.Find("q\n1 1 .8 rg\n90 30 m\n").value_or(1));
+    const std::optional<size_t> line = off.Find(style.line);
+    ASSERT_TRUE(line.has_value());
+    // One stroke for the line, and one for each half circle.
+    size_t strokes = 0;
+    for (std::optional<size_t> at = off.Find("h\nS\n"); at.has_value();
+         at = off.Find("h\nS\n", at.value() + 1)) {
+      ++strokes;
+    }
+    size_t arcs = 0;
+    for (std::optional<size_t> at = off.Find(" c\nS\n"); at.has_value();
+         at = off.Find(" c\nS\n", at.value() + 1)) {
+      ++arcs;
+    }
+    EXPECT_EQ(1u, strokes);
+    EXPECT_EQ(style.edges ? 2u : 0u, arcs);
+    if (style.edges) {
+      const ByteString edges(style.edges);
+      const size_t split = edges.Find("|").value();
+      const std::optional<size_t> lit =
+          off.Find(edges.First(split).AsStringView());
+      const std::optional<size_t> shade =
+          off.Find(edges.Substr(split + 1).AsStringView());
+      ASSERT_TRUE(lit.has_value());
+      ASSERT_TRUE(shade.has_value());
+      EXPECT_LT(line.value(), lit.value());
+      EXPECT_LT(lit.value(), shade.value());
+    }
+    if (ByteString(style.style) == "U") {
+      EXPECT_EQ(solid_off, off);
+    }
+    // The circle and its edges pass through no point outside the middle
+    // square.
+    for (const CFX_PointF& point : PathPoints(off)) {
+      EXPECT_GE(point.x, 30 - 1e-3f);
+      EXPECT_LE(point.x, 90 + 1e-3f);
+      EXPECT_GE(point.y, -1e-3f);
+      EXPECT_LE(point.y, 60 + 1e-3f);
+    }
+    // On: the same circle and the dot after it.
+    EXPECT_EQ(off, on.First(off.GetLength()));
+    EXPECT_FALSE(off.Contains(style.dot));
+    EXPECT_TRUE(
+        on.Contains((ByteString("q\n0 g\n") + style.dot).AsStringView()));
   }
 }
 

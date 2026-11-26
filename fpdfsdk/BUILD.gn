@@ -264,6 +264,9 @@ pdfium_embeddertest_source_set("embeddertests") {
     # button's icons and the appearance drawn from the normal one, a mark a
     # wrapper places, and one drawing shared with stamps.
     "epdf_widget_drawing_embeddertest.cpp",
+    # EmbedPDF: covers a field's automatic text size and a check box's mark,
+    # as the appearance generator draws them.
+    "epdf_widget_text_size_embeddertest.cpp",
     # EmbedPDF: helpers for tests that compare a document before and after
     # writes.
     "epdf_edit_test_util.cpp",

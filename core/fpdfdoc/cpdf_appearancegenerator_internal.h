@@ -155,9 +155,17 @@ AnnotationDimensionsAndColor GetAnnotationDimensionsAndColor(
     const CPDF_Dictionary* annot_dict);
 ShapeRotationInfo GetShapeRotationInfo(const CPDF_Dictionary* annot_dict);
 ByteString GenerateColorAP(const CFX_Color& color, PaintOperation operation);
+// The dash operator for a pattern (BorderStyleInfo::dash_pattern); empty for
+// none.
+ByteString DashOperator(const std::vector<float>& values);
+// A box's border inside `rect`, as `border_style_info` says: a solid or
+// dashed line, a beveled or inset line with its lit and shaded edges inside
+// it, or a line along the bottom. `beveled_shade` paints a beveled border's
+// shaded edges, the lower and the right.
 ByteString GenerateBorderAP(const CFX_FloatRect& rect,
                             const BorderStyleInfo& border_style_info,
-                            const CFX_Color& border_color);
+                            const CFX_Color& border_color,
+                            const CFX_Color& beveled_shade);
 ByteString GetColorStringWithDefault(const CPDF_Array* color_array,
                                      const CFX_Color& default_color,
                                      PaintOperation operation);
