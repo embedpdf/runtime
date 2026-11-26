@@ -1565,6 +1565,38 @@ TEST_F(EPDFFormEmbedderTest, CreateUnplacedFieldBootstrapsAcroForm) {
   EPDFForm_CloseModel(model);
 }
 
+// A field made before its widgets (the engine creates a field, sets its flags,
+// then attaches its widgets) has nothing to draw on: a flag or a value drawn
+// then puts no appearance on the field itself. Its widget, once attached, is
+// drawn.
+TEST_F(EPDFFormEmbedderTest, AFieldWithoutWidgetsGetsNoDrawing) {
+  ASSERT_TRUE(OpenDocument("hello_world.pdf"));
+  FPDF_PAGE page = LoadPage(0);
+  ASSERT_TRUE(page);
+
+  const uint32_t field = EPDFForm_CreateField(
+      document(), 4 /* text */, GetFPDFWideString(L"notes").get(), 0);
+  ASSERT_GT(field, 0u);
+  ASSERT_TRUE(EPDFForm_SetFieldFlags(document(), field,
+                                     pdfium::form_flags::kReadOnly, 0));
+  ASSERT_TRUE(embedpdf_test::FillTextField(document(), field, L"Unplaced"));
+  RetainPtr<const CPDF_Dictionary> field_dict =
+      GetEffectiveIndirectDictionary(document(), field);
+  ASSERT_TRUE(field_dict);
+  EXPECT_FALSE(field_dict->KeyExist("AP"));
+
+  const uint32_t widget = CreateWidgetAnnot(page, 20, 200, 180, 240);
+  ASSERT_GT(widget, 0u);
+  ASSERT_TRUE(EPDFForm_AttachWidget(document(), field, widget, nullptr, 0));
+  ASSERT_TRUE(embedpdf_test::FillTextField(document(), field, L"Placed"));
+  field_dict = GetEffectiveIndirectDictionary(document(), field);
+  ASSERT_TRUE(field_dict);
+  EXPECT_FALSE(field_dict->KeyExist("AP"));
+  EXPECT_NE(std::wstring::npos,
+            GetEffectiveWidgetAppearance(document(), widget).find(L"Placed"));
+  UnloadPage(page);
+}
+
 TEST_F(EPDFFormEmbedderTest, AttachWidgetsFormsARadioGroup) {
   ASSERT_TRUE(OpenDocument("hello_world.pdf"));
   FPDF_PAGE page = LoadPage(0);

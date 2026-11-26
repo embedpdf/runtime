@@ -426,7 +426,10 @@ void FinishTxnControl(const CPDF_Array* opt_array,
 // Resolve the widgets of a terminal field from its own dictionary, each
 // through the document so layer promotions win. Fails when a kid carries
 // /T: the target is a non-terminal field and value transactions must
-// address terminal fields.
+// address terminal fields. A field with no /Kids is its own widget only
+// when it says so (/Subtype /Widget), as CPDF_InteractiveForm reads it;
+// otherwise it has no widget yet (a field made before its widgets are
+// attached): no control, so nothing is drawn on the field itself.
 bool CollectRawTxnControls(CPDF_Document* doc,
                            const CPDF_Dictionary* field_dict,
                            uint32_t field_objnum,
@@ -440,6 +443,9 @@ bool CollectRawTxnControls(CPDF_Document* doc,
   RetainPtr<const CPDF_Array> kids =
       field_dict->GetArrayFor(pdfium::form_fields::kKids);
   if (!kids) {
+    if (field_dict->GetNameFor(pdfium::annotation::kSubtype) != "Widget") {
+      return true;
+    }
     TxnControl control;
     control.merged = true;
     control.objnum = field_objnum;
