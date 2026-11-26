@@ -14,9 +14,11 @@
 #include "core/fpdfapi/parser/cpdf_document.h"
 #include "core/fpdfapi/parser/cpdf_name.h"
 #include "core/fpdfapi/parser/cpdf_number.h"
+#include "core/fpdfapi/parser/cpdf_reference.h"
 #include "core/fpdfapi/parser/cpdf_stream.h"
 #include "core/fpdfapi/parser/cpdf_string.h"
 #include "fpdfsdk/cpdfsdk_helpers.h"
+#include "fpdfsdk/epdf_edit_test_util.h"
 #include "public/epdf_action.h"
 #include "public/epdf_annot.h"
 #include "public/epdf_layer.h"
@@ -198,6 +200,16 @@ class EPDFFormEmbedderTest : public EmbedderTest {
       return false;
     }
     out->bytes = GetFileContents(file_path.c_str());
+    return OpenLayerOverBytes(out);
+  }
+
+  bool OpenLayerFromMemory(const std::string& contents, LayerDoc* out) {
+    out->bytes.assign(contents.begin(), contents.end());
+    return OpenLayerOverBytes(out);
+  }
+
+ private:
+  bool OpenLayerOverBytes(LayerDoc* out) {
     if (out->bytes.empty()) {
       return false;
     }
@@ -737,6 +749,124 @@ TEST_F(EPDFFormEmbedderTest, TextValueOnLayerIsWrittenWhole) {
   // The same value again writes nothing.
   ASSERT_TRUE(SetOneValue(doc.layer, 4u, L"abcdef"));
   EXPECT_EQ(promoted, EPDFLayer_GetPromotedObjectCount(doc.layer));
+}
+
+namespace {
+
+// A form of two text fields, objects 4 and 5, each its own widget, whose /DR
+// font /Helv is written inline (a dictionary inside /DR), as hand-written
+// forms often have it.
+std::string FormWithInlineFont() {
+  return MakePdf({
+      "<< /Type /Catalog /Pages 2 0 R /AcroForm << /Fields [4 0 R 5 0 R] "
+      "/DA (/Helv 10 Tf 0 g) /DR << /Font << /Helv << /Type /Font "
+      "/Subtype /Type1 /BaseFont /Helvetica >> >> >> >> >>",
+      "<< /Type /Pages /Kids [3 0 R] /Count 1 >>",
+      "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 400 300] "
+      "/Annots [4 0 R 5 0 R] >>",
+      "<< /Type /Annot /Subtype /Widget /FT /Tx /T (first) "
+      "/Rect [20 240 380 260] /F 4 /P 3 0 R >>",
+      "<< /Type /Annot /Subtype /Widget /FT /Tx /T (second) "
+      "/Rect [20 180 380 200] /F 4 /P 3 0 R >>",
+  });
+}
+
+// The object a font entry names: 0 when the font is written inline, or is
+// not there.
+uint32_t FontObjNum(const CPDF_Dictionary* fonts, const char* name) {
+  RetainPtr<const CPDF_Object> font =
+      fonts ? fonts->GetObjectFor(name) : nullptr;
+  const CPDF_Reference* ref = font ? font->AsReference() : nullptr;
+  return ref ? ref->GetRefObjNum() : 0;
+}
+
+// The object /AcroForm /DR /Font names as `name` (the catalog is object 1).
+uint32_t FormFontObjNum(FPDF_DOCUMENT document, const char* name) {
+  RetainPtr<const CPDF_Dictionary> catalog =
+      GetEffectiveIndirectDictionary(document, 1u);
+  RetainPtr<const CPDF_Dictionary> acroform =
+      catalog ? catalog->GetDictFor("AcroForm") : nullptr;
+  RetainPtr<const CPDF_Dictionary> dr =
+      acroform ? acroform->GetDictFor("DR") : nullptr;
+  return FontObjNum(dr ? dr->GetDictFor("Font").Get() : nullptr, name);
+}
+
+// The object the widget's normal appearance names as its font `name`.
+uint32_t AppearanceFontObjNum(FPDF_DOCUMENT document,
+                              uint32_t widget_object_number,
+                              const char* name) {
+  RetainPtr<const CPDF_Dictionary> widget =
+      GetEffectiveIndirectDictionary(document, widget_object_number);
+  RetainPtr<const CPDF_Dictionary> appearance =
+      widget ? widget->GetDictFor("AP") : nullptr;
+  RetainPtr<const CPDF_Stream> normal =
+      appearance ? appearance->GetStreamFor("N") : nullptr;
+  RetainPtr<const CPDF_Dictionary> resources =
+      normal ? normal->GetDict()->GetDictFor("Resources") : nullptr;
+  return FontObjNum(resources ? resources->GetDictFor("Font").Get() : nullptr,
+                    name);
+}
+
+}  // namespace
+
+// A form font written inline in /DR: the first fill makes it an object of its
+// own, which /DR and the field's appearance both name, and the next fill names
+// the same object. Acrobat shows no editable field whose appearance names a
+// font that /DR holds inline.
+TEST_F(EPDFFormEmbedderTest, AFillMakesAnInlineFormFontAnObject) {
+  ASSERT_TRUE(OpenDocumentFromMemory(FormWithInlineFont()));
+  ASSERT_EQ(0u, FormFontObjNum(document(), "Helv"));
+
+  ASSERT_TRUE(embedpdf_test::FillTextField(document(), 4u, L"First"));
+  const uint32_t font = FormFontObjNum(document(), "Helv");
+  ASSERT_NE(0u, font);
+  RetainPtr<const CPDF_Dictionary> font_dict =
+      GetEffectiveIndirectDictionary(document(), font);
+  ASSERT_TRUE(font_dict);
+  EXPECT_EQ("Helvetica", font_dict->GetNameFor("BaseFont"));
+  EXPECT_EQ(font, AppearanceFontObjNum(document(), 4u, "Helv"));
+  EXPECT_NE(std::wstring::npos,
+            GetEffectiveWidgetAppearance(document(), 4u).find(L"First"));
+
+  ASSERT_TRUE(embedpdf_test::FillTextField(document(), 5u, L"Second"));
+  EXPECT_EQ(font, FormFontObjNum(document(), "Helv"));
+  EXPECT_EQ(font, AppearanceFontObjNum(document(), 5u, "Helv"));
+
+  // The saved file holds them so.
+  ASSERT_TRUE(FPDF_SaveAsCopy(document(), this, FPDF_NO_INCREMENTAL));
+  const std::string bytes = GetString();
+  ScopedFPDFDocument saved(FPDF_LoadMemDocument(
+      bytes.data(), static_cast<int>(bytes.size()), nullptr));
+  ASSERT_TRUE(saved);
+  const uint32_t saved_font = FormFontObjNum(saved.get(), "Helv");
+  EXPECT_NE(0u, saved_font);
+  EXPECT_EQ(saved_font, AppearanceFontObjNum(saved.get(), 4u, "Helv"));
+  EXPECT_EQ(saved_font, AppearanceFontObjNum(saved.get(), 5u, "Helv"));
+}
+
+// The same in a layer transaction, as the engine writes.
+TEST_F(EPDFFormEmbedderTest, AnInlineFormFontBecomesAnObjectInATransaction) {
+  LayerDoc doc;
+  ASSERT_TRUE(OpenLayerFromMemory(FormWithInlineFont(), &doc));
+  ASSERT_TRUE(EPDFLayer_BeginTransaction(doc.layer));
+  ASSERT_TRUE(embedpdf_test::FillTextField(doc.layer, 4u, L"First"));
+  ASSERT_TRUE(EPDFLayer_CommitTransaction(doc.layer));
+
+  const uint32_t font = FormFontObjNum(doc.layer, "Helv");
+  ASSERT_NE(0u, font);
+  EXPECT_EQ(font, AppearanceFontObjNum(doc.layer, 4u, "Helv"));
+  EXPECT_TRUE(EPDFLayer_IsObjectPromoted(doc.layer, 1u));  // /AcroForm /DR
+}
+
+// A form font that is an object of its own is named as it is, and /DR is not
+// written.
+TEST_F(EPDFFormEmbedderTest, AFormFontThatIsAnObjectIsNamedAsItIs) {
+  LayerDoc doc;
+  ASSERT_TRUE(OpenLayer("text_form.pdf", &doc));  // /DR 5, its /Font 6, /F1 7
+  ASSERT_TRUE(embedpdf_test::FillTextField(doc.layer, 4u, L"Text"));
+  EXPECT_EQ(7u, AppearanceFontObjNum(doc.layer, 4u, "F1"));
+  EXPECT_FALSE(EPDFLayer_IsObjectPromoted(doc.layer, 5u));
+  EXPECT_FALSE(EPDFLayer_IsObjectPromoted(doc.layer, 6u));
 }
 
 TEST_F(EPDFFormEmbedderTest, SetFieldDisplayOnLayerIsDurable) {
