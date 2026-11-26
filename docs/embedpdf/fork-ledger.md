@@ -351,11 +351,12 @@ upstream's `FPDFAnnot_AppendObject` and `FPDFAnnot_SetFontColor` in `fpdf_annot.
 `epdf_annot.cpp`, `epdf_form.cpp`, `epdf_redact.cpp` and the rich text writer. A push button's
 icon (`/MK /I`) is drawn in every layout that shows one. Alone (`/MK /TP 1`, an image field, and
 any layout 2 to 6 without a caption) `GenerateIconButtonAP` draws it. With the caption (`/MK /TP`
-2 to 6) `GeneratePushButtonFormAP` draws both, and shares the button between them by the rule of
-upstream's form filler (`SplitButton`, after `GetPushButtonAppStream` in
-`fpdfsdk/cpdfsdk_appstream.cpp`, which stays unchanged), so a button looks the same whichever drew
-it. The engine writes layouts 0 and 1 only, a caption or an image field, so layouts 2 to 6 are
-met only in buttons other apps made. Either way the icon fit (`/MK /IF`) is read through
+2 to 6) `GeneratePushButtonFormAP` draws both, and shares the button between them as Acrobat 26
+does (`ButtonPlate`, `SplitButton`), a rule measured from buttons Acrobat drew itself: the icon is
+fitted twice the border's width in from every edge, and the caption's strip and its gaps grow with
+the border. Upstream's form filler (`GetPushButtonAppStream` in `fpdfsdk/cpdfsdk_appstream.cpp`,
+unchanged) shares a button by its own rule. The engine writes layouts 0 and 1 only, a caption or
+an image field, so layouts 2 to 6 are met only in buttons other apps made. Either way the icon fit (`/MK /IF`) is read through
 upstream's `CPDF_IconFit` and the icon is placed by our own `IconPlacement`, by ISO 32000-2 Table
 250: upstream's own placement (`CPDF_IconFit::GetScale` and `GetImageOffset`, used by its form
 filler) puts an icon whose fit names no `/A` at the bottom left, where the table's default is the
@@ -365,7 +366,15 @@ a picture the button showed, so it is never written into, and the icon its resou
 with it. Before a form drawer replaces an appearance, a widget whose `/AP` is an indirect object
 gets a copy of its own (`OwnAppearanceDict`), and `epdf_annot.cpp` does the same for `/MK` and
 `/BS` before a setter writes one (`OwnMKForWriting` and `BorderStyleDictForWrite`, both through
-`OwnDictEntry`): another annotation may name the same dictionary. A colour is
+`OwnDictEntry`): another annotation may name the same dictionary. Every widget kind draws every
+border style, as Acrobat does: a text field, a signature field, a check box, a push button and a
+radio button that shows no circle draw one box (`WriteFieldBox`); a radio button that shows a
+circle draws it in the middle of its box, as wide as the box is high (`WriteRadioCircleBox`), and
+draws an underline as a whole circle. A beveled widget border's shaded edges are the background
+less a quarter (`BeveledShade`), on every field kind; `GenerateBorderAP` takes that shade from its
+caller. A field's automatic text size is fitted exactly (the rich text layout's `ArrangeField`), a
+list box's to its widest option (`ListBoxAutoSize`), and a check box's check is as large as
+Acrobat's (`CheckSymbolRect`). A colour is
 set as a new array, never written into the one the entry named, which may be an object another
 `/MK` names too. An `/MK` setter that changes nothing writes nothing, and it changes nothing only
 when the entry is well formed and reads as the value (three numbers from 0 to 1, a string, an
@@ -376,16 +385,18 @@ view of it in `cpdf_appearancegenerator_common.cpp` (`GetAnnotBorderStyleInfo`, 
 **Guarded by.** `check-fork-tags.py` fails when upstream's files differ from upstream
 (`fork-pristine.txt`); `upstream-preview.py` lists new upstream callers of `CPDF_GenerateAP::`, and
 upstream's commits to its generator. `epdf_widget_drawing_embeddertest.cpp` for a button's icon;
-its `AButtonIsSharedAsTheFormFillerSharesIt` runs upstream's form filler on the same buttons and
-compares the two. `CPDFGenerateAPTest.BorderArrayDrawsAsBorderStyleForEveryKind` draws every kind
+its `AButtonIsSharedAsAcrobatSharesIt` holds Acrobat's measured rule for ten borders and three
+sizes. `CPDFGenerateAPTest.WidgetBoxesDrawEveryBorderStyle` and
+`RadioButtonsDrawACircleInTheMiddleOfTheBox` hold every widget kind's border styles, and
+`epdf_widget_text_size_embeddertest.cpp` the automatic sizes and the check. `CPDFGenerateAPTest.BorderArrayDrawsAsBorderStyleForEveryKind` draws every kind
 that has a border from both keys; the border setters' tests are in `epdf_annot_embeddertest.cpp`
 (`ABorderCallThatChangesNothingWritesNothing`, `ASharedBorderStyleIsNotWrittenInto`).
 **When upstream touches this.** A commit to `cpdf_generateap.*`: port it to ours or skip it, with
 the reason in the sync report. A new upstream caller of `CPDF_GenerateAP::`: route it to ours, or
 accept it in the report. A change to what `CPDF_IconFit`'s readers return (`GetScaleMethod`,
 `IsProportionalScale`, `GetIconBottomLeftPosition`, `GetFittingBounds`): `IconPlacement` reads the
-file through them. A change to how `GetPushButtonAppStream` shares a button: `SplitButton`
-follows it, and the comparing test fails until it does. A drawer ported from upstream reads `/BS`
+file through them. A change to how `GetPushButtonAppStream` shares a button needs nothing:
+`SplitButton` follows Acrobat. A drawer ported from upstream reads `/BS`
 alone, as upstream's form fields do: give it our reading, and a row in that test.
 
 ## Text
@@ -455,8 +466,11 @@ selective flattening.
 **When upstream touches this.** Attachment APIs and Flate decoding.
 
 ### rich-text
-**Rule.** Rich-text FreeText layout: parsing, line breaking, shaping, and font resolution.
-**Why.** FreeText annotations with mixed styles and scripts.
+**Rule.** Rich-text FreeText layout: parsing, line breaking, shaping, and font resolution. A form
+field's automatic size (a `/DA` size of 0) is the largest its text fits at, to a thousandth of a
+point, at most 12 for several lines, as Acrobat fits it; FreeText steps down CPVT's ladder.
+**Why.** FreeText annotations with mixed styles and scripts. A field's text the size Acrobat gives
+it, not the ladder's step below.
 **Where.** `cpdf_richtext*` (ours), line breaking in `fx_linebreak.cpp` and `fgas_linebreak.h`,
 `fx_unicode`.
 **Guarded by.** `cpdf_richtextlayout_unittest.cpp`, `cpdf_richtextparser_unittest.cpp`.

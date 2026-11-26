@@ -99,12 +99,13 @@ class CPDF_RichTextLayout {
   // A form field's text, or a redaction label, laid out with the geometry
   // PDFium's form filler gives it (CPVT): words break where CPVT breaks them,
   // a line is as high as its fonts' ascent and descent with no leading and
-  // is aligned on its own, a size of 0 is the biggest of CPVT's sizes the
-  // text fits in (12 pt at most for several lines), and a comb puts one
-  // character in the middle of each cell. Fonts, shaping and order are this
-  // layout's: each cluster in the first font that has it, then the last
-  // resort; the Unicode bidi algorithm with the direction of the first strong
-  // character.
+  // is aligned on its own, a size of 0 is the largest size the text fits
+  // at, to a thousandth of a point (12 pt at most for several lines), as
+  // Acrobat fits a field's text where CPVT stepped down a ladder of sizes,
+  // and a comb puts one character in the middle of each cell. Fonts, shaping
+  // and order are this layout's: each cluster in the first font that has it,
+  // then the last resort; the Unicode bidi algorithm with the direction of
+  // the first strong character.
   struct Field {
     WideString text;
     int face_entry = -1;  // the /DA font

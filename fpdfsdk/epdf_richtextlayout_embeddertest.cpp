@@ -450,7 +450,10 @@ struct PlacedCharacter {
 // The field layout keeps the geometry of PDFium's form filler (CPVT) where
 // CPVT drew correctly: the same characters at the same places, for the
 // standard fonts, the sizes, fitted sizes, alignments, several lines, long
-// words, passwords, limits and combs the forms parity gate draws.
+// words, passwords, limits and combs the forms parity gate draws. A fitted
+// size (0) is the largest the text fits at, as Acrobat fits it, where CPVT
+// steps down its ladder: it is never smaller than CPVT's step, and the
+// characters are where CPVT puts them at that size.
 TEST_F(EPDFRichTextLayoutEmbedderTest, FieldMatchesCpvt) {
   struct Case {
     const char* font;
@@ -521,7 +524,40 @@ TEST_F(EPDFRichTextLayoutEmbedderTest, FieldMatchesCpvt) {
     ASSERT_TRUE(font);
     const bool centered = !c.multiline;
 
-    // CPVT, as the form generator drove it.
+    // The field layout.
+    std::vector<PlacedCharacter> actual;
+    float fitted_size = 0;
+    {
+      CPDF_AnnotFontMap map(doc, font, "F",
+                            /*allow_registered_fallbacks=*/false);
+      ASSERT_TRUE(map.HasDefaultFont());
+      CPDF_RichTextLayout::Field field;
+      field.text = c.text;
+      field.face_entry = 0;
+      field.size = c.size;
+      field.alignment = c.alignment;
+      field.multiline = c.multiline;
+      field.password = c.password;
+      field.limit = c.limit;
+      field.cells = c.cells;
+      field.centered = centered;
+      CPDF_RichTextLayout layout(&map, {});
+      const CPDF_RichTextLayout::Result laid =
+          layout.ArrangeField(field, c.plate);
+      fitted_size = laid.body_size;
+      for (const Line& laid_line : laid.lines) {
+        const float y = c.plate.top - laid_line.baseline_y;
+        for (const GlyphRun& run : laid_line.runs) {
+          float x = c.plate.left + run.x;
+          for (const CPDF_RichTextLayout::ShapedGlyph& glyph : run.glyphs) {
+            actual.push_back({run.text[glyph.cluster], x, y});
+            x += glyph.x_advance;
+          }
+        }
+      }
+    }
+
+    // CPVT, as the form generator drove it, at the size the layout fitted.
     std::vector<PlacedCharacter> expected;
     {
       CPVT_FontMap cpvt_fonts(doc, /*resources=*/nullptr, font, "F");
@@ -530,7 +566,22 @@ TEST_F(EPDFRichTextLayoutEmbedderTest, FieldMatchesCpvt) {
       vt.SetPlateRect(c.plate);
       vt.SetAlignment(CPVT_VariableText::ToAlignment(c.alignment));
       if (c.size == 0) {
-        vt.SetAutoFontSize(true);
+        // CPVT's own step first, which the fitted size is never under.
+        CPVT_VariableText stepped(&provider);
+        stepped.SetPlateRect(c.plate);
+        stepped.SetAutoFontSize(true);
+        stepped.SetMultiLine(c.multiline);
+        stepped.SetAutoReturn(c.multiline);
+        if (c.cells > 0) {
+          stepped.SetCharArray(static_cast<int32_t>(c.cells));
+        } else {
+          stepped.SetLimitChar(static_cast<int32_t>(c.limit));
+        }
+        stepped.Initialize();
+        stepped.SetText(c.text);
+        stepped.RearrangeAll();
+        EXPECT_GE(fitted_size, stepped.GetFontSize() - 0.001f);
+        vt.SetFontSize(fitted_size);
       } else {
         vt.SetFontSize(c.size);
       }
@@ -561,37 +612,6 @@ TEST_F(EPDFRichTextLayoutEmbedderTest, FieldMatchesCpvt) {
           expected.push_back(
               {c.password ? L'*' : static_cast<wchar_t>(word.word()), at.x,
                at.y});
-        }
-      }
-    }
-
-    // The field layout.
-    std::vector<PlacedCharacter> actual;
-    {
-      CPDF_AnnotFontMap map(doc, font, "F",
-                            /*allow_registered_fallbacks=*/false);
-      ASSERT_TRUE(map.HasDefaultFont());
-      CPDF_RichTextLayout::Field field;
-      field.text = c.text;
-      field.face_entry = 0;
-      field.size = c.size;
-      field.alignment = c.alignment;
-      field.multiline = c.multiline;
-      field.password = c.password;
-      field.limit = c.limit;
-      field.cells = c.cells;
-      field.centered = centered;
-      CPDF_RichTextLayout layout(&map, {});
-      const CPDF_RichTextLayout::Result laid =
-          layout.ArrangeField(field, c.plate);
-      for (const Line& laid_line : laid.lines) {
-        const float y = c.plate.top - laid_line.baseline_y;
-        for (const GlyphRun& run : laid_line.runs) {
-          float x = c.plate.left + run.x;
-          for (const CPDF_RichTextLayout::ShapedGlyph& glyph : run.glyphs) {
-            actual.push_back({run.text[glyph.cluster], x, y});
-            x += glyph.x_advance;
-          }
         }
       }
     }

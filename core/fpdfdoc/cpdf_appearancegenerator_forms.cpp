@@ -52,6 +52,7 @@ using appearance_generator::APGenerationTarget;
 using appearance_generator::AppearanceCharacteristics;
 using appearance_generator::BorderStyleInfo;
 using appearance_generator::DaFontResolution;
+using appearance_generator::DashOperator;
 using appearance_generator::DefaultAppearanceInfo;
 using appearance_generator::EmitFieldTextBody;
 using appearance_generator::GenerateAPDict;
@@ -192,8 +193,57 @@ ByteString GenerateComboBoxAP(const CPDF_Dictionary* annot_dict,
   return ByteString(body_stream);
 }
 
+// A list box option's text: the string, or the second of a pair.
+WideString ListBoxOptionText(const CPDF_Object* opt) {
+  if (opt->IsString()) {
+    return opt->GetUnicodeText();
+  }
+  if (const CPDF_Array* opt_array = opt->AsArray()) {
+    if (RetainPtr<const CPDF_Object> item = opt_array->GetDirectObjectAt(1)) {
+      return item->GetUnicodeText();
+    }
+  }
+  return WideString();
+}
+
+// The largest automatic size of a list box's options, as Acrobat 26 caps it.
+constexpr float kListBoxAutoSizeCap = 12;
+
+// A width no option reaches: room to measure a line in without breaking it.
+constexpr float kUnboundedWidth = 1e6f;
+
+// A list box's automatic size, as Acrobat 26 fits it: the widest option fits
+// `width` on one line, at most 12. A line is as wide as its size says, so the
+// widest option is measured once, at the cap.
+float ListBoxAutoSize(const CPDF_Array* opts,
+                      float width,
+                      CPDF_AnnotFontMap& map,
+                      const CPDF_RichTextLayout::Options& options) {
+  float widest = 0;
+  for (size_t i = 0, count = opts->size(); i < count; ++i) {
+    RetainPtr<const CPDF_Object> opt = opts->GetDirectObjectAt(i);
+    if (!opt) {
+      continue;
+    }
+    CPDF_RichTextLayout::Field field;
+    field.text = ListBoxOptionText(opt.Get());
+    field.size = kListBoxAutoSizeCap;
+    const CPDF_RichTextLayout::Result laid =
+        ArrangeFieldText(map, options, std::move(field),
+                         CFX_FloatRect(0, 0, kUnboundedWidth, 0));
+    for (const CPDF_RichTextLayout::Line& line : laid.lines) {
+      widest = std::max(widest, line.width);
+    }
+  }
+  if (!(width > 0) || widest <= width) {
+    return kListBoxAutoSizeCap;
+  }
+  return std::floor(kListBoxAutoSizeCap * width / widest * 1000) / 1000;
+}
+
 ByteString GenerateListBoxAP(const CPDF_Dictionary* annot_dict,
                              const CFX_FloatRect& body_rect,
+                             float border_width,
                              const CFX_Color& text_color,
                              float font_size,
                              CPDF_AnnotFontMap& map,
@@ -203,6 +253,14 @@ ByteString GenerateListBoxAP(const CPDF_Dictionary* annot_dict,
   if (!opts) {
     return ByteString();
   }
+  // A row's text starts twice the border in from the edge, as Acrobat's
+  // does; its highlight reaches the border.
+  CFX_FloatRect text_rect = body_rect;
+  text_rect.Deflate(border_width, 0);
+  const float size =
+      FXSYS_IsFloatZero(font_size)
+          ? ListBoxAutoSize(opts.Get(), text_rect.Width(), map, options)
+          : font_size;
 
   RetainPtr<const CPDF_Array> selections =
       ToArray(CPDF_FormField::GetFieldAttrForDict(annot_dict, "I"));
@@ -219,14 +277,7 @@ ByteString GenerateListBoxAP(const CPDF_Dictionary* annot_dict,
 
     if (RetainPtr<const CPDF_Object> opt = opts->GetDirectObjectAt(i)) {
       CPDF_RichTextLayout::Field field;
-      if (opt->IsString()) {
-        field.text = opt->GetUnicodeText();
-      } else if (const CPDF_Array* opt_array = opt->AsArray()) {
-        RetainPtr<const CPDF_Object> opt_item = opt_array->GetDirectObjectAt(1);
-        if (opt_item) {
-          field.text = opt_item->GetUnicodeText();
-        }
-      }
+      field.text = ListBoxOptionText(opt.Get());
       bool is_selected = false;
       if (selections) {
         for (size_t s = 0, ssz = selections->size(); s < ssz; s++) {
@@ -238,11 +289,11 @@ ByteString GenerateListBoxAP(const CPDF_Dictionary* annot_dict,
         }
       }
       // A row is one line, from the top of what is left.
-      field.size = FXSYS_IsFloatZero(font_size) ? 12.0f : font_size;
+      field.size = size;
       float item_height = 0;
       const ByteString row = FieldText(
           map, options, std::move(field),
-          CFX_FloatRect(body_rect.left, fy, body_rect.right, fy), &item_height);
+          CFX_FloatRect(text_rect.left, fy, text_rect.right, fy), &item_height);
       if (is_selected) {
         CFX_FloatRect item_rect = CFX_FloatRect(
             body_rect.left, fy - item_height, body_rect.right, fy);
@@ -266,10 +317,21 @@ ByteString GenerateListBoxAP(const CPDF_Dictionary* annot_dict,
   return ByteString(body_stream);
 }
 
+// The colour a widget's beveled border paints its shaded edges in, the lower
+// and the right: the background less a quarter, and light grey (white less a
+// quarter) without one. Acrobat paints every field kind's so.
+CFX_Color BeveledShade(const CFX_Color& background) {
+  return background.nColorType == CFX_Color::Type::kTransparent
+             ? CFX_Color::MakeGray(0.75f)
+             : background - 0.25f;
+}
+
 // A field's background and border, in isolated graphics state: what a text
-// field draws under its text, and all a signature field's box is. A solid
-// border is a stroked rectangle; the other styles draw as a combo box's and
-// a list box's do.
+// field draws under its text, all a signature field's box is, and the box of
+// a check box, a push button and a radio button that shows no circle. A
+// solid border is a stroked rectangle; the other styles draw as a combo
+// box's and a list box's do: dashed, beveled, inset, or a line along the
+// bottom. Acrobat draws each style so on every one of these kinds.
 void WriteFieldBox(fxcrt::ostringstream& app_stream,
                    const AppearanceCharacteristics& mk,
                    const BorderStyleInfo& bs,
@@ -298,7 +360,8 @@ void WriteFieldBox(fxcrt::ostringstream& app_stream,
       WriteRect(app_stream, stroke_rect) << " re s\n";
     }
   } else {
-    app_stream << GenerateBorderAP(bbox, bs, mk.border_color);
+    app_stream << GenerateBorderAP(bbox, bs, mk.border_color,
+                                   BeveledShade(mk.background_color));
   }
   app_stream << "Q\n";
 }
@@ -362,7 +425,8 @@ void GenerateComboBoxFormAP(fxcrt::ostringstream& app_stream,
   }
 
   const ByteString border_stream =
-      GenerateBorderAP(bbox, border_info, dims.border_color);
+      GenerateBorderAP(bbox, border_info, dims.border_color,
+                       BeveledShade(dims.background_color));
   if (border_stream.GetLength() > 0) {
     app_stream << "q\n" << border_stream << "Q\n";
   }
@@ -393,7 +457,8 @@ void GenerateListBoxFormAP(fxcrt::ostringstream& app_stream,
   }
 
   const ByteString border_stream =
-      GenerateBorderAP(bbox, border_info, dims.border_color);
+      GenerateBorderAP(bbox, border_info, dims.border_color,
+                       BeveledShade(dims.background_color));
   if (border_stream.GetLength() > 0) {
     app_stream << "q\n" << border_stream << "Q\n";
   }
@@ -402,18 +467,29 @@ void GenerateListBoxFormAP(fxcrt::ostringstream& app_stream,
   body_rect.Deflate(border_info.width, border_info.width);
 
   const ByteString body =
-      GenerateListBoxAP(annot_dict, body_rect, da_info.text_color,
-                        da_info.font_size, map, options);
+      GenerateListBoxAP(annot_dict, body_rect, border_info.width,
+                        da_info.text_color, da_info.font_size, map, options);
   if (body.GetLength() > 0) {
     app_stream << "/Tx BMC\nq\n";
     WriteRect(app_stream, body_rect) << " re\nW\nn\n" << body << "Q\nEMC\n";
   }
 }
 
+// The check mark's shape (PDFium's form filler's), in a unit square: the
+// points its path writes (the curves' handles blended as the path blends
+// them) reach from kCheckLeft to kCheckRight across and from kCheckBottom
+// to kCheckTop up, the box GenerateCheckmarkPath() fills.
+constexpr float kCheckLeft = 0.27448f;
+constexpr float kCheckRight = 0.77105f;
+constexpr float kCheckBottom = 0.28f;
+constexpr float kCheckTop = 0.77761f;
+
+// The check mark's path, its points (CheckSymbolRect()'s box for a check)
+// filling `bbox`.
 void GenerateCheckmarkPath(fxcrt::ostringstream& stream,
                            const CFX_FloatRect& bbox) {
-  const float w = bbox.Width();
-  const float h = bbox.Height();
+  const float w = bbox.Width() / (kCheckRight - kCheckLeft);
+  const float h = bbox.Height() / (kCheckTop - kCheckBottom);
 
   using PointRow = std::array<CFX_PointF, 3>;
   std::array<PointRow, 8> pts = {{
@@ -437,8 +513,8 @@ void GenerateCheckmarkPath(fxcrt::ostringstream& stream,
 
   for (auto& row : pts) {
     for (auto& pt : row) {
-      pt.x = pt.x * w + bbox.left;
-      pt.y = pt.y * h + bbox.bottom;
+      pt.x = (pt.x - kCheckLeft) * w + bbox.left;
+      pt.y = (pt.y - kCheckBottom) * h + bbox.bottom;
     }
   }
 
@@ -460,32 +536,112 @@ void GenerateCheckmarkPath(fxcrt::ostringstream& stream,
   }
 }
 
-void BuildCheckboxBoxStream(fxcrt::ostringstream& stream,
-                            const AppearanceCharacteristics& mk,
-                            const BorderStyleInfo& bs,
-                            const CFX_FloatRect& bbox) {
+// A path along a circle about `center`: `quarters` quarter turns
+// anticlockwise from `from`, a unit vector naming where it starts (the
+// rightmost point is (1, 0)). Each quarter is one Bezier curve. The path is
+// not closed.
+void WriteCircleArc(fxcrt::ostringstream& stream,
+                    const CFX_PointF& center,
+                    float radius,
+                    CFX_PointF from,
+                    int quarters) {
+  auto on_circle = [&center, radius](const CFX_PointF& direction) {
+    return CFX_PointF(center.x + radius * direction.x,
+                      center.y + radius * direction.y);
+  };
+  const float handle = radius * FXSYS_BEZIER;
+  WritePoint(stream, on_circle(from)) << " m\n";
+  for (int i = 0; i < quarters; ++i) {
+    // A quarter turn on: (x, y) turned anticlockwise is (-y, x).
+    const CFX_PointF to(-from.y, from.x);
+    const CFX_PointF start = on_circle(from);
+    const CFX_PointF end = on_circle(to);
+    WritePoint(stream, {start.x + handle * to.x, start.y + handle * to.y})
+        << " ";
+    WritePoint(stream, {end.x + handle * from.x, end.y + handle * from.y})
+        << " ";
+    WritePoint(stream, end) << " c\n";
+    from = to;
+  }
+}
+
+// A whole circle, from its rightmost point anticlockwise, closed.
+void WriteCircle(fxcrt::ostringstream& stream,
+                 const CFX_PointF& center,
+                 float radius) {
+  WriteCircleArc(stream, center, radius, CFX_PointF(1, 0), 4);
+  stream << "h\n";
+}
+
+// The circle a radio button that shows a circle is drawn in: as wide as the
+// box is high (or as high as it is wide), in the middle of the box.
+struct RadioCircle {
+  CFX_PointF center;
+  float radius;
+};
+
+RadioCircle RadioCircleOf(const CFX_FloatRect& bbox) {
+  const CFX_FloatRect square = bbox.GetCenterSquare();
+  return {CFX_PointF((square.left + square.right) / 2.0f,
+                     (square.bottom + square.top) / 2.0f),
+          square.Width() / 2.0f};
+}
+
+// A radio button's background and border in its circle (RadioCircleOf()),
+// in isolated graphics state, as Acrobat draws them: the background fills
+// the circle, and the border is a circle line inside its edge, as wide as
+// the border, dashed when the border is. A beveled or inset border is that
+// line at half its width (BorderStyleInfo counts both halves) and, inside
+// it, two half circles as wide, lit at the upper left and shaded at the
+// lower right. A circle has no underline: Acrobat draws the whole circle for
+// one, as for a solid border.
+void WriteRadioCircleBox(fxcrt::ostringstream& stream,
+                         const AppearanceCharacteristics& mk,
+                         const BorderStyleInfo& bs,
+                         const RadioCircle& circle) {
   const bool has_bg =
       mk.background_color.nColorType != CFX_Color::Type::kTransparent;
   const bool has_bc =
       mk.border_color.nColorType != CFX_Color::Type::kTransparent;
-  const float bw = bs.width;
-  const float half_bw = bw / 2.0f;
+  const bool shaded =
+      bs.style == BorderStyle::kBeveled || bs.style == BorderStyle::kInset;
+  const float line_width = shaded ? bs.width / 2.0f : bs.width;
 
-  CFX_FloatRect stroke_rect = bbox;
-  if (bw > 0) {
-    stroke_rect.Deflate(half_bw, half_bw);
-  }
-
+  stream << "q\n";
   if (has_bg) {
     stream << GenerateColorAP(mk.background_color, PaintOperation::kFill);
-    WriteRect(stream, stroke_rect) << " re f*\n";
+    WriteCircle(stream, circle.center, circle.radius);
+    stream << "f\n";
   }
-
-  if (has_bc && bw > 0) {
-    stream << GenerateColorAP(mk.border_color, PaintOperation::kStroke);
-    WriteFloat(stream, bw) << " w\n";
-    WriteRect(stream, stroke_rect) << " re S\n";
+  const float line_radius = circle.radius - line_width / 2.0f;
+  if (line_width > 0 && line_radius > 0 && (has_bc || shaded)) {
+    WriteFloat(stream, line_width) << " w\n";
+    if (has_bc) {
+      stream << GenerateColorAP(mk.border_color, PaintOperation::kStroke);
+      if (bs.style == BorderStyle::kDash) {
+        stream << DashOperator(bs.dash_pattern);
+      }
+      WriteCircle(stream, circle.center, line_radius);
+      stream << "S\n";
+    }
+    const float edge_radius = line_radius - line_width;
+    if (shaded && edge_radius > 0) {
+      const bool beveled = bs.style == BorderStyle::kBeveled;
+      constexpr float kDiagonal = 0.70710678f;  // the cosine of 45 degrees
+      const CFX_PointF upper_right(kDiagonal, kDiagonal);
+      const CFX_PointF lower_left(-kDiagonal, -kDiagonal);
+      stream << GenerateColorAP(CFX_Color::MakeGray(beveled ? 1.0f : 0.5f),
+                                PaintOperation::kStroke);
+      WriteCircleArc(stream, circle.center, edge_radius, upper_right, 2);
+      stream << "S\n"
+             << GenerateColorAP(beveled ? BeveledShade(mk.background_color)
+                                        : CFX_Color::MakeGray(0.75f),
+                                PaintOperation::kStroke);
+      WriteCircleArc(stream, circle.center, edge_radius, lower_left, 2);
+      stream << "S\n";
+    }
   }
+  stream << "Q\n";
 }
 
 // How a push button lays out its caption and its icon: /MK /TP (ISO 32000-2
@@ -625,14 +781,16 @@ std::optional<CFX_Matrix> IconPlacement(const CFX_FloatRect& icon,
 }
 
 // The part of a push button its icon is fitted into, alone or with the
-// caption beside it: the button less the border's width at each edge, or the
-// whole button when /MK /IF /FB says the icon reaches the edges.
+// caption beside it: the button less twice the border's width at each edge,
+// as Acrobat leaves it, or the whole button when /MK /IF /FB says the icon
+// reaches the edges. `border_width` is BorderStyleInfo's, which counts a
+// beveled or inset border twice.
 CFX_FloatRect ButtonPlate(const CFX_FloatRect& bbox,
                           float border_width,
                           const CPDF_IconFit& fit) {
   CFX_FloatRect plate = bbox;
   if (!fit.GetFittingBounds()) {
-    plate.Deflate(border_width, border_width);
+    plate.Deflate(2.0f * border_width, 2.0f * border_width);
   }
   return plate;
 }
@@ -667,55 +825,86 @@ void NameButtonIcon(CPDF_Dictionary* resources,
 
 // Where a push button that shows both draws its caption and its icon.
 struct ButtonParts {
-  CFX_FloatRect caption;
-  CFX_FloatRect icon;  // without area when the caption takes the whole plate
+  CFX_FloatRect caption;  // the box the caption is laid out in the middle of
+  CFX_FloatRect icon;     // without area when the caption leaves it no room
 };
 
-// Shares `plate` between a caption and an icon by the rule of PDFium's form
-// filler (GetPushButtonAppStream() in fpdfsdk/cpdfsdk_appstream.cpp), so a
-// button looks the same whichever drew it. Below or above the icon, the
-// caption takes a strip as high as its line; right or left of it, a strip
-// as wide as its text; the icon takes the rest. A caption that needs more
-// than the plate has takes all of it, and no icon is drawn. A caption whose
-// size is fitted (a font size of 0) takes a third of the plate, and is
-// fitted to that. Over the icon, both take the whole plate. `caption` is the
-// room the caption takes at its font size, and is not read when `fitted`.
+// Shares a push button between a caption and an icon as Acrobat 26 does,
+// which these numbers were measured from. Call b the border's width
+// (BorderStyleInfo's, which counts a beveled or inset border twice), and
+// call the caption's extent its height below or above the icon and its width
+// beside it: `extent`.
+//
+// The icon's part is the plate (ButtonPlate()) less the caption's strip,
+// which reaches 3b + `extent` in from the button's edge on the caption's
+// side. The caption is in the middle of the room between the icon's part
+// and that edge, a room Acrobat measures from a different point on each
+// side: from b above the bottom edge, from 2b below the top edge, from the
+// right edge itself, and from 2b in from the left edge. With a border of 1,
+// a caption is 2 from the bottom edge and 1 from the icon's part below it,
+// 2.5 and 0.5 above it, 1.5 and 1.5 right of it, 2.5 and 0.5 left of it.
+// Without a border, both touch the edge and each other. Across, the caption
+// is in the middle of the plate. Over the icon, both take the plate.
+//
+// When the strip leaves the icon no room, the icon is left out, and the
+// caption is in the middle of the room from the same point to the plate's
+// far edge.
 ButtonParts SplitButton(ButtonLayout layout,
+                        const CFX_FloatRect& bbox,
                         const CFX_FloatRect& plate,
-                        const CFX_SizeF& caption,
-                        bool fitted) {
+                        float border_width,
+                        float extent) {
   ButtonParts parts = {plate, plate};
   if (layout == ButtonLayout::kCaptionOverIcon) {
     return parts;
   }
-  const bool stacked = layout == ButtonLayout::kCaptionBelowIcon ||
-                       layout == ButtonLayout::kCaptionAboveIcon;
-  const float room = stacked ? plate.Height() : plate.Width();
-  const float strip =
-      fitted ? room / 3.0f : (stacked ? caption.height : caption.width);
-  if (strip > room) {
-    parts.icon = CFX_FloatRect();
-    return parts;
-  }
+  const float b = border_width;
+  const float strip = 3.0f * b + extent;
+  CFX_FloatRect& room = parts.caption;
+  CFX_FloatRect& icon = parts.icon;
+  bool icon_has_room = true;
   switch (layout) {
     case ButtonLayout::kCaptionBelowIcon:
-      parts.caption.top = plate.bottom + strip;
-      parts.icon.bottom = parts.caption.top;
+      icon.bottom = bbox.bottom + strip;
+      icon_has_room = icon.bottom < plate.top;
+      room.bottom = bbox.bottom + b;
+      room.top = icon_has_room ? icon.bottom : plate.top;
       break;
     case ButtonLayout::kCaptionAboveIcon:
-      parts.caption.bottom = plate.top - strip;
-      parts.icon.top = parts.caption.bottom;
+      icon.top = bbox.top - strip;
+      icon_has_room = icon.top > plate.bottom;
+      room.top = bbox.top - 2.0f * b;
+      room.bottom = icon_has_room ? icon.top : plate.bottom;
       break;
     case ButtonLayout::kCaptionRightOfIcon:
-      parts.caption.left = plate.right - strip;
-      parts.icon.right = parts.caption.left;
+      icon.right = bbox.right - strip;
+      icon_has_room = icon.right > plate.left;
+      room.right = bbox.right;
+      room.left = icon_has_room ? icon.right : plate.left;
       break;
     case ButtonLayout::kCaptionLeftOfIcon:
-      parts.caption.right = plate.left + strip;
-      parts.icon.left = parts.caption.right;
+      icon.left = bbox.left + strip;
+      icon_has_room = icon.left < plate.right;
+      room.left = bbox.left + 2.0f * b;
+      room.right = icon_has_room ? icon.left : plate.right;
       break;
     default:
-      break;
+      return parts;
+  }
+  if (!icon_has_room) {
+    icon = CFX_FloatRect();
+  }
+  // The caption's box: as deep as its extent, in the middle of its room.
+  const bool stacked = layout == ButtonLayout::kCaptionBelowIcon ||
+                       layout == ButtonLayout::kCaptionAboveIcon;
+  if (stacked) {
+    const float middle = (room.bottom + room.top) / 2.0f;
+    room.bottom = middle - extent / 2.0f;
+    room.top = middle + extent / 2.0f;
+  } else {
+    const float middle = (room.left + room.right) / 2.0f;
+    room.left = middle - extent / 2.0f;
+    room.right = middle + extent / 2.0f;
   }
   return parts;
 }
@@ -732,14 +921,15 @@ CPDF_RichTextLayout::Field ButtonCaptionField(const WideString& caption,
   return field;
 }
 
-// The room a caption takes at `font_size`: its line's width and height.
+// The room a caption takes at `font_size`: its line's width and height,
+// measured in `box`.
 CFX_SizeF ButtonCaptionSize(CPDF_AnnotFontMap& map,
                             const CPDF_RichTextLayout::Options& options,
                             const WideString& caption,
                             float font_size,
-                            const CFX_FloatRect& plate) {
+                            const CFX_FloatRect& box) {
   const CPDF_RichTextLayout::Result laid = ArrangeFieldText(
-      map, options, ButtonCaptionField(caption, font_size), plate);
+      map, options, ButtonCaptionField(caption, font_size), box);
   float width = 0;
   for (const CPDF_RichTextLayout::Line& line : laid.lines) {
     width = std::max(width, line.width);
@@ -771,15 +961,19 @@ void WriteButtonCaption(fxcrt::ostringstream& app_stream,
 // A push button that draws a caption (GenerateIconButtonAP() draws the ones
 // that draw none): background and border as a text field draws them, and the
 // caption (/MK /CA) on one line, centred both ways, in the /DA font and
-// colour.
+// colour, clipped to the button inside its border.
 //
 // The caption alone (/MK /TP 0, or any layout without an icon) takes the
 // whole button inside its border. In the layouts that show a caption and an
-// icon (/MK /TP 2 to 6), a button that has an icon (/MK /I) draws both, each
-// in the part SplitButton() gives it: the icon first, fitted into its part
-// as /MK /IF says and clipped to it, then the caption in the middle of its
-// part, so over the icon the caption is on top. When the caption leaves the
-// icon no room, the caption is drawn alone.
+// icon (/MK /TP 2 to 6), a button that has an icon (/MK /I) draws both, as
+// SplitButton() shares the button: the icon first, fitted into its part as
+// /MK /IF says and clipped to it, then the caption in the middle of its box,
+// so over the icon the caption is on top. A caption whose size is fitted (a
+// font size of 0) takes a third of the plate (ButtonPlate()), of its height
+// below or above the icon and of its width beside it, and is fitted to that.
+// When the caption leaves the icon no room, the icon is left out and the
+// caption is drawn where SplitButton() puts it alone. An icon that has no
+// area of its own draws the caption alone.
 //
 // Returns the object number of the icon it drew, which the appearance's
 // resources must name /FRM (NameButtonIcon()), or 0.
@@ -795,13 +989,13 @@ uint32_t GeneratePushButtonFormAP(fxcrt::ostringstream& app_stream,
   const BorderStyleInfo bs = GetAnnotBorderStyleInfo(annot_dict);
   const float bw = bs.width;
 
-  app_stream << "q\n";
-  BuildCheckboxBoxStream(app_stream, mk, bs, bbox);
-  app_stream << "Q\n";
+  WriteFieldBox(app_stream, mk, bs, bbox);
   if (mk.caption.IsEmpty()) {
     return 0;
   }
 
+  CFX_FloatRect inside_border = bbox;
+  inside_border.Deflate(bw, bw);
   const ButtonLayout layout = ButtonLayoutOf(annot_dict);
   RetainPtr<const CPDF_Stream> icon = layout == ButtonLayout::kCaptionAlone
                                           ? nullptr
@@ -809,15 +1003,24 @@ uint32_t GeneratePushButtonFormAP(fxcrt::ostringstream& app_stream,
   if (icon) {
     const CPDF_IconFit fit(mk_dict->GetDictFor("IF"));
     const CFX_FloatRect plate = ButtonPlate(bbox, bw, fit);
-    const bool fitted = FXSYS_IsFloatZero(da_info.font_size);
-    const ButtonParts parts =
-        SplitButton(layout, plate,
-                    fitted ? CFX_SizeF()
-                           : ButtonCaptionSize(map, options, mk.caption,
-                                               da_info.font_size, plate),
-                    fitted);
+    const bool stacked = layout == ButtonLayout::kCaptionBelowIcon ||
+                         layout == ButtonLayout::kCaptionAboveIcon;
+    float extent = 0;
+    if (FXSYS_IsFloatZero(da_info.font_size)) {
+      extent = (stacked ? plate.Height() : plate.Width()) / 3.0f;
+    } else {
+      const CFX_SizeF size =
+          ButtonCaptionSize(map, options, mk.caption, da_info.font_size, bbox);
+      extent = stacked ? size.height : size.width;
+    }
+    const ButtonParts parts = SplitButton(layout, bbox, plate, bw, extent);
+    if (parts.icon.IsEmpty()) {
+      WriteButtonCaption(app_stream, mk.caption, parts.caption, inside_border,
+                         da_info, map, options);
+      return 0;
+    }
     if (WriteButtonIcon(app_stream, icon.Get(), parts.icon, fit)) {
-      WriteButtonCaption(app_stream, mk.caption, parts.caption, parts.caption,
+      WriteButtonCaption(app_stream, mk.caption, parts.caption, inside_border,
                          da_info, map, options);
       return icon->GetObjNum();
     }
@@ -825,10 +1028,8 @@ uint32_t GeneratePushButtonFormAP(fxcrt::ostringstream& app_stream,
 
   CFX_FloatRect body_rect = bbox;
   body_rect.Deflate(2.0f * bw, bw);
-  CFX_FloatRect clip_rect = bbox;
-  clip_rect.Deflate(bw, bw);
-  WriteButtonCaption(app_stream, mk.caption, body_rect, clip_rect, da_info, map,
-                     options);
+  WriteButtonCaption(app_stream, mk.caption, body_rect, inside_border, da_info,
+                     map, options);
   return 0;
 }
 
@@ -876,13 +1077,30 @@ CFX_Color CheckSymbolColor(CPDF_Document* doc,
 
 // Where the symbol is drawn: the middle square of `body` (the widget inside
 // its border), shrunk for the filled shapes as PDFium's form filler shrinks
-// them (CPDFSDK_AppStream), so a symbol looks the same whichever drew it.
+// them (CPDFSDK_AppStream). A check is as large as Acrobat 26 draws one:
+// ZapfDingbats' check mark at the size whose font box (963 thousandths
+// high) fills the square less the border's width (`border_width`, counted
+// twice for beveled and inset) at each side. The mark is 719 thousandths of
+// that size high; the box returned is where the check's points reach, that
+// high, as wide as its shape is, in the middle.
 CFX_FloatRect CheckSymbolRect(const CFX_FloatRect& body,
+                              float border_width,
                               CheckStyle style,
                               bool radio) {
   CFX_FloatRect rect = body.GetCenterSquare();
   switch (style) {
-    case CheckStyle::kCheck:
+    case CheckStyle::kCheck: {
+      constexpr float kFontBoxHeight = 0.963f;
+      constexpr float kMarkHeight = 0.719f;
+      const float room = std::max(rect.Width() - 2.0f * border_width, 0.0f);
+      const float height = room / kFontBoxHeight * kMarkHeight;
+      const float width =
+          height * (kCheckRight - kCheckLeft) / (kCheckTop - kCheckBottom);
+      const float middle_x = (rect.left + rect.right) / 2.0f;
+      const float middle_y = (rect.bottom + rect.top) / 2.0f;
+      return CFX_FloatRect(middle_x - width / 2.0f, middle_y - height / 2.0f,
+                           middle_x + width / 2.0f, middle_y + height / 2.0f);
+    }
     case CheckStyle::kCross:
       break;
     case CheckStyle::kCircle:
@@ -1034,9 +1252,7 @@ void GenerateIconButtonAP(APGenerationTarget* target,
       GetAnnotationDimensionsAndColor(annot_dict);
 
   fxcrt::ostringstream content;
-  content << "q\n";
-  BuildCheckboxBoxStream(content, mk, bs, dims.bbox);
-  content << "Q\n";
+  WriteFieldBox(content, mk, bs, dims.bbox);
 
   RetainPtr<CPDF_Dictionary> resources;
   if (RetainPtr<const CPDF_Stream> icon = ButtonIconOf(mk_dict.Get())) {
@@ -1245,70 +1461,6 @@ bool GenerateFormAPToTarget(APGenerationTarget* target,
   return true;
 }
 
-void BuildRadioCircleStream(fxcrt::ostringstream& stream,
-                            const AppearanceCharacteristics& mk,
-                            const BorderStyleInfo& bs,
-                            const CFX_FloatRect& bbox) {
-  const bool has_bg =
-      mk.background_color.nColorType != CFX_Color::Type::kTransparent;
-  const bool has_bc =
-      mk.border_color.nColorType != CFX_Color::Type::kTransparent;
-  const float bw = bs.width;
-  const float half_bw = bw / 2.0f;
-
-  const float cx = (bbox.left + bbox.right) / 2.0f;
-  const float cy = (bbox.bottom + bbox.top) / 2.0f;
-  const float rx = (bbox.right - bbox.left) / 2.0f;
-  const float ry = (bbox.top - bbox.bottom) / 2.0f;
-
-  constexpr float kKappa = 0.5523f;
-
-  auto WriteEllipse = [&](fxcrt::ostringstream& s, float erx, float ery) {
-    const float dx = kKappa * erx;
-    const float dy = kKappa * ery;
-    WriteFloat(s, cx) << " ";
-    WriteFloat(s, cy + ery) << " m\n";
-    WriteFloat(s, cx + dx) << " ";
-    WriteFloat(s, cy + ery) << " ";
-    WriteFloat(s, cx + erx) << " ";
-    WriteFloat(s, cy + dy) << " ";
-    WriteFloat(s, cx + erx) << " ";
-    WriteFloat(s, cy) << " c\n";
-    WriteFloat(s, cx + erx) << " ";
-    WriteFloat(s, cy - dy) << " ";
-    WriteFloat(s, cx + dx) << " ";
-    WriteFloat(s, cy - ery) << " ";
-    WriteFloat(s, cx) << " ";
-    WriteFloat(s, cy - ery) << " c\n";
-    WriteFloat(s, cx - dx) << " ";
-    WriteFloat(s, cy - ery) << " ";
-    WriteFloat(s, cx - erx) << " ";
-    WriteFloat(s, cy - dy) << " ";
-    WriteFloat(s, cx - erx) << " ";
-    WriteFloat(s, cy) << " c\n";
-    WriteFloat(s, cx - erx) << " ";
-    WriteFloat(s, cy + dy) << " ";
-    WriteFloat(s, cx - dx) << " ";
-    WriteFloat(s, cy + ery) << " ";
-    WriteFloat(s, cx) << " ";
-    WriteFloat(s, cy + ery) << " c\n";
-    s << "h\n";
-  };
-
-  if (has_bg) {
-    stream << GenerateColorAP(mk.background_color, PaintOperation::kFill);
-    WriteEllipse(stream, rx - half_bw, ry - half_bw);
-    stream << "f*\n";
-  }
-
-  if (has_bc && bw > 0) {
-    stream << GenerateColorAP(mk.border_color, PaintOperation::kStroke);
-    WriteFloat(stream, bw) << " w\n";
-    WriteEllipse(stream, rx - half_bw, ry - half_bw);
-    stream << "S\n";
-  }
-}
-
 }  // namespace
 
 namespace appearance_generator {
@@ -1433,15 +1585,15 @@ void CPDF_AppearanceGenerator::GenerateCheckboxFormAP(
   const CheckStyle style =
       CheckStyleFromCaption(mk.caption).value_or(CheckStyle::kCheck);
 
-  // Off state: box only (background fill + border stroke).
+  // Off state: the box alone, its background and border (WriteFieldBox()).
   fxcrt::ostringstream off_content;
-  BuildCheckboxBoxStream(off_content, mk, bs, dims.bbox);
+  WriteFieldBox(off_content, mk, bs, dims.bbox);
 
   // On state: the same box and the symbol /MK /CA names, in the /DA colour.
   fxcrt::ostringstream yes_content;
-  BuildCheckboxBoxStream(yes_content, mk, bs, dims.bbox);
+  WriteFieldBox(yes_content, mk, bs, dims.bbox);
   WriteCheckSymbol(yes_content, style,
-                   CheckSymbolRect(body_rect, style, /*radio=*/false),
+                   CheckSymbolRect(body_rect, bs.width, style, /*radio=*/false),
                    CheckSymbolColor(doc, annot_dict));
 
   const uint32_t off_obj_num =
@@ -1485,47 +1637,6 @@ void CPDF_AppearanceGenerator::GenerateRadioButtonFormAP(
   const AnnotationDimensionsAndColor dims =
       GetAnnotationDimensionsAndColor(annot_dict);
 
-  const float cx = (dims.bbox.left + dims.bbox.right) / 2.0f;
-  const float cy = (dims.bbox.bottom + dims.bbox.top) / 2.0f;
-  const float rx = (dims.bbox.right - dims.bbox.left) / 2.0f;
-  const float ry = (dims.bbox.top - dims.bbox.bottom) / 2.0f;
-  const float inner_rx = (rx - bs.width) * 0.5f;
-  const float inner_ry = (ry - bs.width) * 0.5f;
-
-  constexpr float kKappa = 0.5523f;
-
-  auto WriteEllipse = [&](fxcrt::ostringstream& s, float erx, float ery) {
-    const float dx = kKappa * erx;
-    const float dy = kKappa * ery;
-    WriteFloat(s, cx) << " ";
-    WriteFloat(s, cy + ery) << " m\n";
-    WriteFloat(s, cx + dx) << " ";
-    WriteFloat(s, cy + ery) << " ";
-    WriteFloat(s, cx + erx) << " ";
-    WriteFloat(s, cy + dy) << " ";
-    WriteFloat(s, cx + erx) << " ";
-    WriteFloat(s, cy) << " c\n";
-    WriteFloat(s, cx + erx) << " ";
-    WriteFloat(s, cy - dy) << " ";
-    WriteFloat(s, cx + dx) << " ";
-    WriteFloat(s, cy - ery) << " ";
-    WriteFloat(s, cx) << " ";
-    WriteFloat(s, cy - ery) << " c\n";
-    WriteFloat(s, cx - dx) << " ";
-    WriteFloat(s, cy - ery) << " ";
-    WriteFloat(s, cx - erx) << " ";
-    WriteFloat(s, cy - dy) << " ";
-    WriteFloat(s, cx - erx) << " ";
-    WriteFloat(s, cy) << " c\n";
-    WriteFloat(s, cx - erx) << " ";
-    WriteFloat(s, cy + dy) << " ";
-    WriteFloat(s, cx - dx) << " ";
-    WriteFloat(s, cy + ery) << " ";
-    WriteFloat(s, cx) << " ";
-    WriteFloat(s, cy + ery) << " c\n";
-    s << "h\n";
-  };
-
   const CheckStyle style =
       CheckStyleFromCaption(mk.caption).value_or(CheckStyle::kCircle);
   const CFX_Color symbol_color = CheckSymbolColor(doc, annot_dict);
@@ -1533,23 +1644,30 @@ void CPDF_AppearanceGenerator::GenerateRadioButtonFormAP(
   fxcrt::ostringstream off_content;
   fxcrt::ostringstream yes_content;
   if (style == CheckStyle::kCircle) {
-    // Off state: circle only (background fill + border stroke).
-    BuildRadioCircleStream(off_content, mk, bs, dims.bbox);
+    // Off state: the circle alone, its background and border
+    // (WriteRadioCircleBox()).
+    const RadioCircle circle = RadioCircleOf(dims.bbox);
+    WriteRadioCircleBox(off_content, mk, bs, circle);
 
-    // On state: the same circle and a filled dot, in the /DA colour.
-    BuildRadioCircleStream(yes_content, mk, bs, dims.bbox);
-    yes_content << "q\n"
-                << GenerateColorAP(symbol_color, PaintOperation::kFill);
-    WriteEllipse(yes_content, inner_rx, inner_ry);
-    yes_content << "f*\nQ\n";
+    // On state: the same circle and a dot in its middle, in the /DA colour,
+    // half as wide as the circle inside its border, as Acrobat draws it.
+    WriteRadioCircleBox(yes_content, mk, bs, circle);
+    const float dot_radius = (circle.radius - bs.width) / 2.0f;
+    if (dot_radius > 0) {
+      yes_content << "q\n"
+                  << GenerateColorAP(symbol_color, PaintOperation::kFill);
+      WriteCircle(yes_content, circle.center, dot_radius);
+      yes_content << "f\nQ\n";
+    }
   } else {
     // Any other symbol sits in a box, as PDFium's form filler draws it.
     CFX_FloatRect body_rect = dims.bbox;
     body_rect.Deflate(bs.width, bs.width);
-    BuildCheckboxBoxStream(off_content, mk, bs, dims.bbox);
-    BuildCheckboxBoxStream(yes_content, mk, bs, dims.bbox);
+    WriteFieldBox(off_content, mk, bs, dims.bbox);
+    WriteFieldBox(yes_content, mk, bs, dims.bbox);
     WriteCheckSymbol(yes_content, style,
-                     CheckSymbolRect(body_rect, style, /*radio=*/true),
+                     CheckSymbolRect(body_rect, bs.width, style,
+                                     /*radio=*/true),
                      symbol_color);
   }
 

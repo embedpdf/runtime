@@ -38,9 +38,9 @@ class CPDF_AppearanceGenerator {
  public:
   // kPushButton: the button's background and border, and its caption (/MK
   // /CA) centred in the /DA font and colour. One that shows its icon alone
-  // (/MK /TP 1) draws the normal icon (/MK /I) inside the border, fitted as
-  // /MK /IF says, and no caption. One that shows both (/MK /TP 2 to 6)
-  // draws both, each in its part of the button.
+  // (/MK /TP 1) draws the normal icon (/MK /I) twice the border's width in,
+  // fitted as /MK /IF says, and no caption. One that shows both (/MK /TP 2
+  // to 6) draws both, sharing the button as Acrobat does.
   enum FormType { kTextField, kComboBox, kListBox, kPushButton };
 
   static void GenerateFormAP(CPDF_Document* doc,
@@ -66,9 +66,10 @@ class CPDF_AppearanceGenerator {
   static void GenerateCheckboxFormAP(CPDF_Document* doc,
                                      CPDF_Dictionary* annot_dict);
 
-  // A radio button's Off and on appearances: a circle with a dot by default;
-  // any other symbol /MK /CA names sits in a box, as PDFium's form filler
-  // draws it. The symbol takes the /DA colour (black by default).
+  // A radio button's Off and on appearances: by default a circle in the
+  // middle of the box, as wide as the box is high, with a dot, as Acrobat
+  // draws it; any other symbol /MK /CA names sits in a box, as PDFium's form
+  // filler draws it. The symbol takes the /DA colour (black by default).
   static void GenerateRadioButtonFormAP(CPDF_Document* doc,
                                         CPDF_Dictionary* annot_dict);
 

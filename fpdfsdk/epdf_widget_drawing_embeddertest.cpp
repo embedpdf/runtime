@@ -42,10 +42,7 @@
 #include "core/fxcrt/fx_coordinates.h"
 #include "core/fxcrt/fx_stream.h"
 #include "core/fxcrt/retain_ptr.h"
-#include "fpdfsdk/cpdfsdk_formfillenvironment.h"
 #include "fpdfsdk/cpdfsdk_helpers.h"
-#include "fpdfsdk/cpdfsdk_pageview.h"
-#include "fpdfsdk/cpdfsdk_widget.h"
 #include "fpdfsdk/epdf_edit_test_util.h"
 #include "public/cpp/fpdf_scopers.h"
 #include "public/epdf_annot.h"
@@ -54,7 +51,6 @@
 #include "public/epdf_view.h"
 #include "public/fpdf_annot.h"
 #include "public/fpdf_edit.h"
-#include "public/fpdf_formfill.h"
 #include "public/fpdf_save.h"
 #include "public/fpdfview.h"
 #include "testing/embedder_test.h"
@@ -273,26 +269,6 @@ std::optional<DrawnIcon> DrawnIconOf(FPDF_ANNOTATION annot) {
                             matrix[4], matrix[5])
                      .TransformRect(kPictureBox);
   return icon;
-}
-
-// The part an appearance clips its caption to, in the appearance's own
-// space, or nothing when it draws no caption.
-std::optional<CFX_FloatRect> DrawnCaptionOf(FPDF_ANNOTATION annot) {
-  RetainPtr<const CPDF_Stream> appearance = AppearanceOf(annot);
-  if (!appearance) {
-    return std::nullopt;
-  }
-  const std::string content = StreamBytes(appearance.Get());
-  const size_t text = content.find("BT\n");
-  const size_t start =
-      text == std::string::npos ? text : content.rfind("q\n", text);
-  float part[4];
-  if (start == std::string::npos ||
-      sscanf(content.c_str() + start, "q\n%f %f %f %f re W n\nBT\n", &part[0],
-             &part[1], &part[2], &part[3]) != 4) {
-    return std::nullopt;
-  }
-  return CFX_FloatRect(part[0], part[1], part[0] + part[2], part[1] + part[3]);
 }
 
 void ExpectRectNear(const CFX_FloatRect& expected,
@@ -528,11 +504,9 @@ const struct {
                               {kCaptionLeft, "the caption left of the icon"},
                               {kCaptionOver, "the caption over the icon"}};
 
-// The room the caption "Go" takes at `size` in the font the button's
-// appearance writes it in: its width, and the height of its line, which is
-// the font's ascent and descent, as PDFium's form filler measures a line.
-// The tests' stand-in for Helvetica has its own.
-CFX_SizeF CaptionRoomOf(FPDF_ANNOTATION annot, float size = 12) {
+// The font a button's appearance writes its caption in: the one its
+// resources name.
+RetainPtr<CPDF_Font> CaptionFontOf(FPDF_ANNOTATION annot) {
   RetainPtr<const CPDF_Stream> appearance = AppearanceOf(annot);
   RetainPtr<const CPDF_Dictionary> resources =
       appearance ? appearance->GetDict()->GetDictFor("Resources") : nullptr;
@@ -540,7 +514,7 @@ CFX_SizeF CaptionRoomOf(FPDF_ANNOTATION annot, float size = 12) {
       resources ? resources->GetDictFor("Font") : nullptr;
   if (!fonts || fonts->size() == 0) {
     ADD_FAILURE() << "the appearance names no font";
-    return CFX_SizeF();
+    return nullptr;
   }
   RetainPtr<const CPDF_Dictionary> dict;
   {
@@ -553,6 +527,17 @@ CFX_SizeF CaptionRoomOf(FPDF_ANNOTATION annot, float size = 12) {
       pdfium::WrapRetain(const_cast<CPDF_Dictionary*>(dict.Get())));
   if (!font) {
     ADD_FAILURE() << "the appearance's font doesn't load";
+  }
+  return font;
+}
+
+// The room the caption "Go" takes at `size` in the font the button's
+// appearance writes it in: its width, and the height of its line, which is
+// the font's ascent and descent. The tests' stand-in for Helvetica has its
+// own.
+CFX_SizeF CaptionRoomOf(FPDF_ANNOTATION annot, float size = 12) {
+  RetainPtr<CPDF_Font> font = CaptionFontOf(annot);
+  if (!font) {
     return CFX_SizeF();
   }
   return CFX_SizeF(
@@ -588,48 +573,105 @@ CFX_FloatRect CaptionInkOf(const CFX_FloatRect& part) {
   return CFX_FloatRect(x - 9, y - 6, x + 9, y + 6);
 }
 
-// Checks that `caption` and `icon` share `plate` as `layout` says: the
-// caption in a strip as high as its line, at the bottom or the top, or as
-// wide as its text, at the right or the left, and the icon in the rest; or
-// both in all of it. `room` is what the caption takes.
-void ExpectPartsShare(int layout,
-                      const CFX_FloatRect& plate,
-                      const CFX_SizeF& room,
-                      const CFX_FloatRect& caption,
-                      const CFX_FloatRect& icon) {
-  constexpr float kWithin = 1e-2f;
-  if (layout == kCaptionOver) {
-    ExpectRectNear(plate, caption, kWithin);
-    ExpectRectNear(plate, icon, kWithin);
-    return;
+// Where Acrobat 26 puts a caption's line and its icon's part in a button
+// that shows both, in the appearance's own space: the rule SplitButton()
+// draws by. Call b the border's width, `border`, counted twice for beveled
+// and inset. The icon's part is the button's `box` less 2b at each edge
+// (all of it when the icon fit says /FB) less a strip as deep as 3b and the
+// caption's extent, its line's height below or above the icon and its width
+// beside it. The caption's line is in the middle of the room between that
+// part and a point Acrobat measures from: b above the bottom edge, 2b below
+// the top edge, the right edge itself, 2b in from the left edge. When the
+// strip leaves no room the icon is left out, and the room reaches the
+// plate's far edge. Across, the line is in the middle. Over the icon, the
+// line is in the middle of the plate. `room` is the line's width and
+// height.
+struct ButtonParts {
+  CFX_FloatRect caption;
+  CFX_FloatRect icon;  // empty when the icon is left out
+};
+
+ButtonParts AcrobatButtonParts(int layout,
+                               const CFX_FloatRect& box,
+                               float border,
+                               const CFX_SizeF& room,
+                               bool fit_to_bounds = false) {
+  const float b = border;
+  CFX_FloatRect plate = box;
+  if (!fit_to_bounds) {
+    plate.Deflate(2 * b, 2 * b);
   }
-  CFX_FloatRect both = caption;
-  both.Union(icon);
-  ExpectRectNear(plate, both, kWithin);
+  ButtonParts parts{CFX_FloatRect(), plate};
+  // The line, `room` in size, with its middle at (x, y).
+  auto line_at = [&room](float x, float y) {
+    return CFX_FloatRect(x - room.width / 2, y - room.height / 2,
+                         x + room.width / 2, y + room.height / 2);
+  };
+  const float middle_x = (plate.left + plate.right) / 2;
+  const float middle_y = (plate.bottom + plate.top) / 2;
   switch (layout) {
     case kCaptionBelow:
-      EXPECT_NEAR(plate.bottom, caption.bottom, kWithin);
-      EXPECT_NEAR(room.height, caption.Height(), kWithin);
-      EXPECT_NEAR(caption.top, icon.bottom, kWithin);
+      parts.icon.bottom = box.bottom + 3 * b + room.height;
+      if (parts.icon.bottom >= plate.top) {
+        parts.icon = CFX_FloatRect();
+      }
+      parts.caption = line_at(
+          middle_x, (box.bottom + b +
+                     (parts.icon.IsEmpty() ? plate.top : parts.icon.bottom)) /
+                        2);
       break;
     case kCaptionAbove:
-      EXPECT_NEAR(plate.top, caption.top, kWithin);
-      EXPECT_NEAR(room.height, caption.Height(), kWithin);
-      EXPECT_NEAR(caption.bottom, icon.top, kWithin);
+      parts.icon.top = box.top - 3 * b - room.height;
+      if (parts.icon.top <= plate.bottom) {
+        parts.icon = CFX_FloatRect();
+      }
+      parts.caption = line_at(
+          middle_x, (box.top - 2 * b +
+                     (parts.icon.IsEmpty() ? plate.bottom : parts.icon.top)) /
+                        2);
       break;
     case kCaptionRight:
-      EXPECT_NEAR(plate.right, caption.right, kWithin);
-      EXPECT_NEAR(room.width, caption.Width(), kWithin);
-      EXPECT_NEAR(caption.left, icon.right, kWithin);
+      parts.icon.right = box.right - 3 * b - room.width;
+      if (parts.icon.right <= plate.left) {
+        parts.icon = CFX_FloatRect();
+      }
+      parts.caption = line_at(
+          (box.right + (parts.icon.IsEmpty() ? plate.left : parts.icon.right)) /
+              2,
+          middle_y);
       break;
     case kCaptionLeft:
-      EXPECT_NEAR(plate.left, caption.left, kWithin);
-      EXPECT_NEAR(room.width, caption.Width(), kWithin);
-      EXPECT_NEAR(caption.right, icon.left, kWithin);
+      parts.icon.left = box.left + 3 * b + room.width;
+      if (parts.icon.left >= plate.right) {
+        parts.icon = CFX_FloatRect();
+      }
+      parts.caption =
+          line_at((box.left + 2 * b +
+                   (parts.icon.IsEmpty() ? plate.right : parts.icon.left)) /
+                      2,
+                  middle_y);
       break;
     default:
-      ADD_FAILURE() << "not a layout that shows both";
+      parts.caption = line_at(middle_x, middle_y);
+      break;
   }
+  return parts;
+}
+
+// Checks that a button drew its caption's line at `caption` and fitted its
+// icon into `icon` as Acrobat's rule says (AcrobatButtonParts()).
+void ExpectPartsShare(int layout,
+                      const CFX_FloatRect& box,
+                      float border,
+                      const CFX_SizeF& room,
+                      const CFX_FloatRect& caption,
+                      const CFX_FloatRect& icon,
+                      bool fit_to_bounds = false) {
+  constexpr float kWithin = 1e-2f;
+  const ButtonParts expected =
+      AcrobatButtonParts(layout, box, border, room, fit_to_bounds);
+  ExpectRectNear(expected.caption, caption, kWithin);
+  ExpectRectNear(expected.icon, icon, kWithin);
 }
 
 // What a button's appearance draws, read from its content whoever wrote it:
@@ -696,6 +738,32 @@ ButtonContent ReadButtonContent(const std::string& content) {
     numbers.clear();
   }
   return read;
+}
+
+// Where an appearance writes its caption "Go", in the appearance's own
+// space: the box its line takes, from where its text starts and as wide as
+// the text, from its baseline less the font's descent up to its ascent, in
+// the font and at the size the appearance names. Nothing when it draws no
+// caption. (Every caption is clipped to the button inside its border, so the
+// clip doesn't say where a caption is.)
+std::optional<CFX_FloatRect> DrawnCaptionOf(FPDF_ANNOTATION annot) {
+  RetainPtr<const CPDF_Stream> appearance = AppearanceOf(annot);
+  if (!appearance) {
+    return std::nullopt;
+  }
+  const ButtonContent read = ReadButtonContent(StreamBytes(appearance.Get()));
+  if (!read.caption_start || !read.caption_size) {
+    return std::nullopt;
+  }
+  RetainPtr<CPDF_Font> font = CaptionFontOf(annot);
+  if (!font) {
+    return std::nullopt;
+  }
+  const float size = *read.caption_size;
+  const CFX_PointF start = *read.caption_start;
+  return CFX_FloatRect(start.x, start.y + font->GetTypeDescent() * size / 1000,
+                       start.x + font->GetStringWidth("Go") * size / 1000,
+                       start.y + font->GetTypeAscent() * size / 1000);
 }
 
 }  // namespace
@@ -878,7 +946,8 @@ TEST_F(EPDFWidgetDrawingEmbedderTest, SetsReadsAndClearsAnIcon) {
   EXPECT_EQ("Form", appearance->GetDict()->GetNameFor("Subtype"));
   EXPECT_EQ(CFX_FloatRect(0, 0, 202, 102),
             appearance->GetDict()->GetRectFor("BBox"));
-  EXPECT_EQ("q\nQ\nq\n1 1 200 100 re W n\n1 0 0 1 1 1 cm\n/FRM Do\nQ\n",
+  // The border's width is 1 (no /BS), so the icon is fitted 2 in: 198 by 98.
+  EXPECT_EQ("q\nQ\nq\n2 2 198 98 re W n\n.98 0 0 .98 3 2 cm\n/FRM Do\nQ\n",
             StreamBytes(appearance.Get()));
   EXPECT_EQ(drawing, DrawnIconNumber(button.get()));
   // A generated button's appearance is no wrapper: its picture is its icon.
@@ -1022,9 +1091,9 @@ TEST_F(EPDFWidgetDrawingEmbedderTest, RefusesWithoutWriting) {
   EXPECT_EQ(0u, EPDFLayer_GetPromotedObjectCount(foreign.layer));
 }
 
-// The icon is fitted into the button less the border's width at each edge,
-// the width /BS gives whether or not a colour paints it, and clipped there.
-// /MK /IF /FB takes the whole button.
+// The icon is fitted into the button less twice the border's width at each
+// edge, as Acrobat 26 fits it, the width /BS gives whether or not a colour
+// paints it, and clipped there. /MK /IF /FB takes the whole button.
 TEST_F(EPDFWidgetDrawingEmbedderTest, AnIconIsFittedInsideTheBorder) {
   const FS_RECTF kStands{100, 308, 308, 200};  // 208 by 108
   const struct {
@@ -1035,18 +1104,19 @@ TEST_F(EPDFWidgetDrawingEmbedderTest, AnIconIsFittedInsideTheBorder) {
     CFX_FloatRect plate;
     CFX_FloatRect picture;
   } kCases[] = {
-      // No /BS: a border of 1. 206 by 106 inside, so the picture is 206 by
-      // 103 in its middle.
+      // No /BS: a border of 1. 204 by 104 inside it, so the picture is 204
+      // by 102 in its middle.
       {"no /BS",
        {},
        false,
        false,
-       CFX_FloatRect(1, 1, 207, 107),
-       CFX_FloatRect(1, 2.5f, 207, 105.5f)},
+       CFX_FloatRect(2, 2, 206, 106),
+       CFX_FloatRect(2, 3, 206, 105)},
       {"no border", 0.0f, false, false, CFX_FloatRect(0, 0, 208, 108),
        CFX_FloatRect(0, 2, 208, 106)},
-      {"a border of 4", 4.0f, true, false, CFX_FloatRect(4, 4, 204, 104),
-       CFX_FloatRect(4, 4, 204, 104)},
+      // 192 by 92 inside: the picture is 184 by 92 in its middle.
+      {"a border of 4", 4.0f, true, false, CFX_FloatRect(8, 8, 200, 100),
+       CFX_FloatRect(12, 8, 196, 100)},
       {"a border of 4, fitted to the bounds", 4.0f, true, true,
        CFX_FloatRect(0, 0, 208, 108), CFX_FloatRect(0, 2, 208, 106)},
   };
@@ -1077,7 +1147,11 @@ TEST_F(EPDFWidgetDrawingEmbedderTest, AnIconIsFittedInsideTheBorder) {
       // The border is stroked before the picture is drawn, when it has a
       // colour.
       const std::string content = StreamBytes(AppearanceOf(button.get()).Get());
-      EXPECT_EQ(expected.painted, content.find(" re S\n") != std::string::npos);
+      const size_t stroked = content.find(" re s\n");
+      EXPECT_EQ(expected.painted, stroked != std::string::npos);
+      if (expected.painted) {
+        EXPECT_LT(stroked, content.find("/FRM Do"));
+      }
     }
   }
 }
@@ -1387,13 +1461,14 @@ TEST_F(EPDFWidgetDrawingEmbedderTest, ADrawingWithAMatrixIsPlacedByItsBox) {
               form->GetDict()->GetMatrixFor("Matrix"));
   }
 
-  // An icon: a button 204 by 104 with a border of 2 shows it at its size.
+  // An icon: a button 204 by 104 with a border of 2 fits it into 196 by 96,
+  // 4 in: 192 by 96 in the middle.
   ScopedFPDFAnnotation button = NewButton({100, 304, 304, 200}, 2.0f);
   ASSERT_TRUE(button);
   SetIcon(button.get(), drawing);
   const std::optional<DrawnIcon> drawn = DrawnIconOf(button.get());
   ASSERT_TRUE(drawn);
-  ExpectRectNear(CFX_FloatRect(2, 2, 202, 102), drawn->picture);
+  ExpectRectNear(CFX_FloatRect(6, 4, 198, 100), drawn->picture);
 
   // A mark: a widget 100 by 50 shows it at half its size.
   ScopedFPDFAnnotation widget = NewSignatureWidget({100, 150, 200, 100});
@@ -1490,7 +1565,7 @@ TEST_F(EPDFWidgetDrawingEmbedderTest, ASavedFileHoldsTheIconInBothPlaces) {
   EXPECT_EQ(std::vector<unsigned int>({icon}), DrawingsOf(reopened.get()));
   const std::optional<DrawnIcon> drawn = DrawnIconOf(button.get());
   ASSERT_TRUE(drawn);
-  ExpectRectNear(CFX_FloatRect(2, 2, 202, 102), drawn->picture);
+  ExpectRectNear(CFX_FloatRect(6, 4, 198, 100), drawn->picture);
   const Shown shown(page.get());
   EXPECT_EQ(kRed, shown.At(150, 250));
   EXPECT_EQ(kBlue, shown.At(250, 250));
@@ -1513,9 +1588,10 @@ TEST_F(EPDFWidgetDrawingEmbedderTest, AnIconReadsUprightOnATurnedPage) {
     ASSERT_TRUE(
         EPDFAnnot_SetMKColor(button.get(), EPDF_MK_COLOR_BC, 0, 255, 0));
     SetIcon(button.get(), AddDrawing(doc_.get()));
+    // 98 by 48 inside twice the border of 1: the picture is 96 by 48.
     const std::optional<DrawnIcon> drawn = DrawnIconOf(button.get());
     ASSERT_TRUE(drawn);
-    ExpectRectNear(CFX_FloatRect(1, 1, 101, 51), drawn->picture);
+    ExpectRectNear(CFX_FloatRect(3, 2, 99, 50), drawn->picture);
   }
   const std::string bytes = SavedBytes(doc_.get());
   ASSERT_FALSE(bytes.empty());
@@ -1597,7 +1673,7 @@ TEST_F(EPDFWidgetDrawingEmbedderTest, AForeignButtonKeepsItsIconInEveryLayout) {
     EXPECT_EQ(shows_caption,
               shown.HasInkIn(CFX_FloatRect(20, bottom, 122, bottom + 42)));
     if (shows_icon && shows_caption) {
-      ExpectPartsShare(layout, CFX_FloatRect(1, 1, 101, 41),
+      ExpectPartsShare(layout, CFX_FloatRect(0, 0, 102, 42), 1,
                        CaptionRoomOf(button.get()), *caption,
                        DrawnIconOf(button.get())->plate);
     }
@@ -1645,8 +1721,8 @@ TEST_F(EPDFWidgetDrawingEmbedderTest, AForeignIconOnlyButtonSurvivesARedraw) {
   EXPECT_EQ(kForeignIcon, DrawnIconNumber(button.get()));
   std::optional<DrawnIcon> drawn = DrawnIconOf(button.get());
   ASSERT_TRUE(drawn);
-  ExpectRectNear(CFX_FloatRect(1, 1, 101, 41), drawn->plate);
-  ExpectRectNear(CFX_FloatRect(11, 1, 91, 41), drawn->picture);
+  ExpectRectNear(CFX_FloatRect(2, 2, 100, 40), drawn->plate);
+  ExpectRectNear(CFX_FloatRect(13, 2, 89, 40), drawn->picture);
   EXPECT_EQ(kRed, ShownColorAt(page.get(), 51, 81));
   EXPECT_EQ(kBlue, ShownColorAt(page.get(), 91, 81));
   // An icon-only button shows no caption, though the file has one.
@@ -1662,8 +1738,8 @@ TEST_F(EPDFWidgetDrawingEmbedderTest, AForeignIconOnlyButtonSurvivesARedraw) {
   EXPECT_EQ(kForeignIcon, DrawnIconNumber(button.get()));
   drawn = DrawnIconOf(button.get());
   ASSERT_TRUE(drawn);
-  ExpectRectNear(CFX_FloatRect(3, 3, 99, 39), drawn->plate);
-  ExpectRectNear(CFX_FloatRect(15, 3, 87, 39), drawn->picture);
+  ExpectRectNear(CFX_FloatRect(6, 6, 96, 36), drawn->plate);
+  ExpectRectNear(CFX_FloatRect(21, 6, 81, 36), drawn->picture);
   EXPECT_EQ(kRed, ShownColorAt(page.get(), 51, 81));
   EXPECT_EQ(kBlue, ShownColorAt(page.get(), 91, 81));
 
@@ -1674,18 +1750,18 @@ TEST_F(EPDFWidgetDrawingEmbedderTest, AForeignIconOnlyButtonSurvivesARedraw) {
   EXPECT_EQ(kForeignIcon, DrawnIconNumber(button.get()));
   drawn = DrawnIconOf(button.get());
   ASSERT_TRUE(drawn);
-  ExpectRectNear(CFX_FloatRect(3, 3, 203, 103), drawn->picture);
+  ExpectRectNear(CFX_FloatRect(9, 6, 197, 100), drawn->picture);
   EXPECT_EQ(kRed, ShownColorAt(page.get(), 200, 300));
   EXPECT_EQ(kBlue, ShownColorAt(page.get(), 300, 300));
 
-  // Turned a quarter turn: laid out 106 by 206, the picture is 100 by 50 in
+  // Turned a quarter turn: laid out 106 by 206, the picture is 94 by 47 in
   // its middle and its left is at the bottom.
   ASSERT_TRUE(EPDFAnnot_SetMKRotation(button.get(), 90));
   ASSERT_TRUE(EPDFAnnot_GenerateFormFieldAP(button.get()));
   EXPECT_EQ(kForeignIcon, DrawnIconNumber(button.get()));
   drawn = DrawnIconOf(button.get());
   ASSERT_TRUE(drawn);
-  ExpectRectNear(CFX_FloatRect(3, 78, 103, 128), drawn->picture);
+  ExpectRectNear(CFX_FloatRect(6, 79.5f, 100, 126.5f), drawn->picture);
   EXPECT_EQ(kRed, ShownColorAt(page.get(), 253, 280));
   EXPECT_EQ(kBlue, ShownColorAt(page.get(), 253, 326));
   button.reset();
@@ -1998,7 +2074,7 @@ TEST_F(EPDFWidgetDrawingEmbedderTest, AnIconOnlyButtonCanBeDrawnInMemory) {
   EXPECT_EQ(0u, drawn->normal_stream->GetObjNum());
   EXPECT_EQ(CFX_FloatRect(0, 0, 102, 42),
             drawn->normal_stream->GetDict()->GetRectFor("BBox"));
-  EXPECT_EQ("q\nQ\nq\n1 1 100 40 re W n\n.4 0 0 .4 11 1 cm\n/FRM Do\nQ\n",
+  EXPECT_EQ("q\nQ\nq\n2 2 98 38 re W n\n.38 0 0 .38 13 2 cm\n/FRM Do\nQ\n",
             StreamBytes(drawn->normal_stream.Get()));
   EXPECT_EQ(kForeignIcon, drawn->normal_stream->GetDict()
                               ->GetDictFor("Resources")
@@ -2553,13 +2629,14 @@ TEST_F(EPDFWidgetDrawingEmbedderTest, ListingDrawingsWritesNothing) {
 }
 
 // In the layouts that show a caption and an icon, a button that has both
-// draws both, each in its part of the button inside the border: the caption
-// in a strip as high as its line below or above the icon, or as wide as its
-// text right or left of it, and the icon fitted into the rest. Over the icon
-// both take all of it, and the caption is drawn last, on top. /MK /I still
-// names the drawing, and the appearance draws that same form.
+// draws both, as Acrobat 26 shares a button (AcrobatButtonParts()): the icon
+// fitted into the button less twice the border at each edge and less the
+// caption's strip, and the caption between the icon and the edge, below or
+// above the icon, or right or left of it. Over the icon the caption is in
+// the middle, drawn last, on top. /MK /I still names the drawing, and the
+// appearance draws that same form.
 TEST_F(EPDFWidgetDrawingEmbedderTest, ACaptionAndAnIconEachTakeTheirPart) {
-  // 204 by 104 with a border of 2: 200 by 100 inside it, from (2, 2).
+  // 204 by 104 with a border of 2: the icon's room is 196 by 96 from (4, 4).
   const FS_RECTF kStands{100, 254, 304, 150};
   ScopedFPDFAnnotation button = NewButton(kStands, 2.0f);
   ASSERT_TRUE(button);
@@ -2570,33 +2647,42 @@ TEST_F(EPDFWidgetDrawingEmbedderTest, ACaptionAndAnIconEachTakeTheirPart) {
   const CFX_SizeF room = CaptionRoomOf(button.get());
   ASSERT_GT(room.width, 0);
   ASSERT_GT(room.height, 0);
+  const float w = room.width;
+  const float h = room.height;
 
-  const float low = 2 + room.height;
-  const float high = 102 - room.height;
-  const float near = 2 + room.width;
-  const float far = 202 - room.width;
+  // The icon's part ends 3 * 2 and the caption's extent in from the
+  // caption's edge. The caption is 2 * 2 from the bottom edge, 2.5 * 2 from
+  // the top, 1.5 * 2 from the right and 2.5 * 2 from the left, and in the
+  // middle across.
+  const float low = 6 + h;
+  const float high = 98 - h;
+  const float near = 6 + w;
+  const float far = 198 - w;
+  const float middle_x = 102 - w / 2;
+  const float middle_y = 52 - h / 2;
   // The picture is twice as wide as high, and stands in the middle of its
-  // part. Above or below the caption's strip it is as high as the room left,
-  // so it is the strip's height in from each side. Beside the caption's
-  // column it is as wide as the room left, so it is a quarter of the
-  // column's width in from the bottom and from the top.
-  const float in_x = room.height;
-  const float in_y = room.width / 4;
+  // part, as large as the part lets it be.
+  auto fitted = [](const CFX_FloatRect& part) {
+    const float scale = std::min(part.Width() / 200, part.Height() / 100);
+    const float x = (part.left + part.right) / 2;
+    const float y = (part.bottom + part.top) / 2;
+    return CFX_FloatRect(x - 100 * scale, y - 50 * scale, x + 100 * scale,
+                         y + 50 * scale);
+  };
   const struct {
     CFX_FloatRect caption;
     CFX_FloatRect icon;
-    CFX_FloatRect picture;
   } kExpected[] = {
-      {CFX_FloatRect(2, 2, 202, low), CFX_FloatRect(2, low, 202, 102),
-       CFX_FloatRect(2 + in_x, low, 202 - in_x, 102)},
-      {CFX_FloatRect(2, high, 202, 102), CFX_FloatRect(2, 2, 202, high),
-       CFX_FloatRect(2 + in_x, 2, 202 - in_x, high)},
-      {CFX_FloatRect(far, 2, 202, 102), CFX_FloatRect(2, 2, far, 102),
-       CFX_FloatRect(2, 2 + in_y, far, 102 - in_y)},
-      {CFX_FloatRect(2, 2, near, 102), CFX_FloatRect(near, 2, 202, 102),
-       CFX_FloatRect(near, 2 + in_y, 202, 102 - in_y)},
-      {CFX_FloatRect(2, 2, 202, 102), CFX_FloatRect(2, 2, 202, 102),
-       CFX_FloatRect(2, 2, 202, 102)},
+      {CFX_FloatRect(middle_x, 4, middle_x + w, 4 + h),
+       CFX_FloatRect(4, low, 200, 100)},
+      {CFX_FloatRect(middle_x, 99 - h, middle_x + w, 99),
+       CFX_FloatRect(4, 4, 200, high)},
+      {CFX_FloatRect(201 - w, middle_y, 201, middle_y + h),
+       CFX_FloatRect(4, 4, far, 100)},
+      {CFX_FloatRect(5, middle_y, 5 + w, middle_y + h),
+       CFX_FloatRect(near, 4, 200, 100)},
+      {CFX_FloatRect(middle_x, middle_y, middle_x + w, middle_y + h),
+       CFX_FloatRect(4, 4, 200, 100)},
   };
   int index = 0;
   for (const auto& layout : kCaptionAndIconLayouts) {
@@ -2609,19 +2695,23 @@ TEST_F(EPDFWidgetDrawingEmbedderTest, ACaptionAndAnIconEachTakeTheirPart) {
     const std::optional<DrawnIcon> icon = DrawnIconOf(button.get());
     ASSERT_TRUE(icon);
     ExpectRectNear(expected.icon, icon->plate, 1e-2f);
-    ExpectRectNear(expected.picture, icon->picture, 1e-2f);
+    ExpectRectNear(fitted(expected.icon), icon->picture, 1e-2f);
     const std::optional<CFX_FloatRect> caption = DrawnCaptionOf(button.get());
     ASSERT_TRUE(caption);
     ExpectRectNear(expected.caption, *caption, 1e-2f);
-    // The icon first, the caption after it.
+    ExpectPartsShare(layout.layout, CFX_FloatRect(0, 0, 204, 104), 2, room,
+                     *caption, icon->plate);
+    // The icon first, the caption after it, clipped to the button inside
+    // its border.
     const std::string content = StreamBytes(AppearanceOf(button.get()).Get());
     EXPECT_LT(content.find("/FRM Do"), content.find("BT\n"));
+    EXPECT_NE(std::string::npos, content.find("q\n2 2 200 100 re W n\nBT\n"));
 
     // Shown: the picture where it lands, red at its left, and the caption in
     // the middle of its part and nowhere beside it.
     const Shown shown(page_.get(), 4);
-    const CFX_PointF red = RedPointOf(expected.picture);
-    const CFX_PointF blue = BluePointOf(expected.picture);
+    const CFX_PointF red = RedPointOf(fitted(expected.icon));
+    const CFX_PointF blue = BluePointOf(fitted(expected.icon));
     EXPECT_EQ(kRed, shown.At(100 + red.x, 150 + red.y));
     EXPECT_EQ(kBlue, shown.At(100 + blue.x, 150 + blue.y));
     CFX_FloatRect ink = CaptionInkOf(expected.caption);
@@ -2635,9 +2725,10 @@ TEST_F(EPDFWidgetDrawingEmbedderTest, ACaptionAndAnIconEachTakeTheirPart) {
   }
 }
 
-// The caption and the icon share the button less the border's width at each
-// edge, the width /BS gives whether or not a colour paints it. /MK /IF /FB
-// shares the whole button, as it gives an icon alone the whole button.
+// The caption and the icon share the button as Acrobat 26 does by the
+// border's width, the width /BS gives whether or not a colour paints it.
+// /MK /IF /FB gives the icon the whole button but its caption's strip, as it
+// gives an icon alone the whole button.
 TEST_F(EPDFWidgetDrawingEmbedderTest,
        ACaptionAndAnIconShareWhatTheBorderLeaves) {
   const FS_RECTF kStands{100, 308, 308, 200};  // 208 by 108
@@ -2645,14 +2736,13 @@ TEST_F(EPDFWidgetDrawingEmbedderTest,
     const char* name;
     std::optional<float> border_width;
     bool fit_to_bounds;
-    CFX_FloatRect plate;
+    float border;  // the width the rule counts
   } kCases[] = {
       // No /BS: a border of 1.
-      {"no /BS", {}, false, CFX_FloatRect(1, 1, 207, 107)},
-      {"no border", 0.0f, false, CFX_FloatRect(0, 0, 208, 108)},
-      {"a border of 4", 4.0f, false, CFX_FloatRect(4, 4, 204, 104)},
-      {"a border of 4, fitted to the bounds", 4.0f, true,
-       CFX_FloatRect(0, 0, 208, 108)},
+      {"no /BS", {}, false, 1},
+      {"no border", 0.0f, false, 0},
+      {"a border of 4", 4.0f, false, 4},
+      {"a border of 4, fitted to the bounds", 4.0f, true, 4},
   };
   const unsigned int drawing = AddDrawing(doc_.get());
   ASSERT_NE(0u, drawing);
@@ -2674,8 +2764,9 @@ TEST_F(EPDFWidgetDrawingEmbedderTest,
       ASSERT_TRUE(icon);
       const std::optional<CFX_FloatRect> caption = DrawnCaptionOf(button.get());
       ASSERT_TRUE(caption);
-      ExpectPartsShare(layout.layout, expected.plate,
-                       CaptionRoomOf(button.get()), *caption, icon->plate);
+      ExpectPartsShare(layout.layout, CFX_FloatRect(0, 0, 208, 108),
+                       expected.border, CaptionRoomOf(button.get()), *caption,
+                       icon->plate, expected.fit_to_bounds);
     }
   }
 }
@@ -2803,7 +2894,7 @@ TEST_F(EPDFWidgetDrawingEmbedderTest, ACaptionAndAnIconTurnWithTheirButton) {
       ASSERT_TRUE(icon);
       const std::optional<CFX_FloatRect> caption = DrawnCaptionOf(button.get());
       ASSERT_TRUE(caption);
-      ExpectPartsShare(layout.layout, expected.frame,
+      ExpectPartsShare(layout.layout, expected.frame, 0,
                        CaptionRoomOf(button.get()), *caption, icon->plate);
       buttons.push_back({stands, expected.turn, *icon, *caption});
     }
@@ -2877,7 +2968,7 @@ TEST_F(EPDFWidgetDrawingEmbedderTest,
     ASSERT_TRUE(icon);
     const std::optional<CFX_FloatRect> caption = DrawnCaptionOf(button.get());
     ASSERT_TRUE(caption);
-    ExpectPartsShare(layout.layout, CFX_FloatRect(1, 1, 101, 51), room,
+    ExpectPartsShare(layout.layout, CFX_FloatRect(0, 0, 102, 52), 1, room,
                      *caption, icon->plate);
     // Shown, a page point (x, y) is at (y, x) from the top left. This button
     // spans 100 to 202 across, and 100 + 60 * index to 152 + 60 * index
@@ -3029,7 +3120,7 @@ TEST_F(EPDFWidgetDrawingEmbedderTest,
     ASSERT_TRUE(icon);
     const std::optional<CFX_FloatRect> caption = DrawnCaptionOf(button.get());
     ASSERT_TRUE(caption);
-    ExpectPartsShare(layout.layout, CFX_FloatRect(1, 1, 101, 41),
+    ExpectPartsShare(layout.layout, CFX_FloatRect(0, 0, 102, 42), 1,
                      CaptionRoomOf(button.get()), *caption, icon->plate);
     const float bottom = 10 + 50 * layout.layout;
     const Shown shown(page.get(), 4);
@@ -3043,12 +3134,13 @@ TEST_F(EPDFWidgetDrawingEmbedderTest,
   }
 }
 
-// A caption that needs more than the button has takes all of it, and the
-// icon is not drawn: the rule of PDFium's form filler. The button is then
-// drawn as the layout that shows the caption alone draws it. /MK /I still
-// names the picture. Over the icon nothing is shared, so both are drawn.
-TEST_F(EPDFWidgetDrawingEmbedderTest,
-       ACaptionTooLargeForTheButtonIsDrawnAlone) {
+// When the caption's strip leaves the icon no room, the icon is left out
+// and the caption is drawn alone where the rule puts it (AcrobatButtonParts()),
+// as Acrobat 26 does: below an icon, in the middle of the room from the
+// border's width above the bottom edge to twice the border's width below the
+// top edge, not in the middle of the button. /MK /I still names the picture.
+// Over the icon nothing is shared, so both are drawn.
+TEST_F(EPDFWidgetDrawingEmbedderTest, ACaptionThatLeavesTheIconNoRoomIsAlone) {
   const unsigned int drawing = AddDrawing(doc_.get());
   ASSERT_NE(0u, drawing);
   const struct {
@@ -3057,24 +3149,39 @@ TEST_F(EPDFWidgetDrawingEmbedderTest,
     float font_size;
     int layouts[2];
   } kCases[] = {
-      // 100 by 40 inside the border. A line at 48 is higher than 40.
+      // 104 by 44 with a border of 2: 96 by 36 inside twice the border. A
+      // line at 48 is higher than that.
       {"too high", {100, 244, 204, 200}, 48, {kCaptionBelow, kCaptionAbove}},
-      // 14 by 100 inside the border. "Go" at 12 is 16 wide.
+      // 18 by 104: 10 by 96 inside twice the border. "Go" at 12 is wider.
       {"too wide", {100, 304, 118, 200}, 12, {kCaptionRight, kCaptionLeft}},
+      // Acrobat's case: 80 by 30 with a border of 2, beveled (counted 4),
+      // "Go" at 12. 3 * 4 and a line of 12 leave no room under 22.
+      {"Acrobat's", {100, 230, 180, 200}, 12, {kCaptionBelow, kCaptionAbove}},
   };
   for (const auto& expected : kCases) {
     SCOPED_TRACE(expected.name);
     ScopedFPDFAnnotation button = NewButton(expected.stands, 2.0f);
     ASSERT_TRUE(button);
-    SetCaptionAndIcon(button.get(), drawing, 0, expected.font_size);
-    const std::string alone = StreamBytes(AppearanceOf(button.get()).Get());
-    ASSERT_NE(std::string::npos, alone.find("BT\n"));
+    float border = 2;
+    if (std::string(expected.name) == "Acrobat's") {
+      ASSERT_TRUE(
+          EPDFAnnot_SetBorderStyle(button.get(), FPDF_ANNOT_BS_BEVELED, 2.0f));
+      border = 4;
+    }
+    const CFX_FloatRect box(0, 0, expected.stands.right - expected.stands.left,
+                            expected.stands.top - expected.stands.bottom);
     for (int layout : expected.layouts) {
       SCOPED_TRACE(layout);
       SetCaptionAndIcon(button.get(), drawing, layout, expected.font_size);
-      EXPECT_EQ(alone, StreamBytes(AppearanceOf(button.get()).Get()));
       EXPECT_EQ(0u, DrawnIconNumber(button.get()));
+      EXPECT_FALSE(DrawnIconOf(button.get()));
       EXPECT_EQ(drawing, EPDFAnnot_GetMKIcon(button.get(), EPDF_MK_ICON_I));
+      const std::optional<CFX_FloatRect> caption = DrawnCaptionOf(button.get());
+      ASSERT_TRUE(caption);
+      const ButtonParts parts = AcrobatButtonParts(
+          layout, box, border, CaptionRoomOf(button.get(), expected.font_size));
+      EXPECT_TRUE(parts.icon.IsEmpty());
+      ExpectRectNear(parts.caption, *caption, 1e-2f);
     }
     SetCaptionAndIcon(button.get(), drawing, kCaptionOver, expected.font_size);
     EXPECT_EQ(drawing, DrawnIconNumber(button.get()));
@@ -3083,56 +3190,57 @@ TEST_F(EPDFWidgetDrawingEmbedderTest,
 }
 
 // A caption whose size is fitted to its room (a font size of 0) takes a
-// third of the button, of its height below or above the icon and of its
-// width beside it, and is fitted to that third: the rule of PDFium's form
-// filler.
+// third of the icon's room inside twice the border, of its height below or
+// above the icon and of its width beside it, and is fitted to that third;
+// the parts are then shared as for any caption (AcrobatButtonParts()). The
+// fitted size is one of PDFium's steps, so the caption is no larger than
+// its third, and in its middle.
 TEST_F(EPDFWidgetDrawingEmbedderTest, AFittedCaptionTakesAThirdOfTheButton) {
-  // 204 by 104 with a border of 2: 200 by 100 inside it, from (2, 2).
+  // 204 by 104 with a border of 2: the icon's room is 196 by 96 from (4, 4).
   ScopedFPDFAnnotation button = NewButton({100, 254, 304, 150}, 2.0f);
   ASSERT_TRUE(button);
   const unsigned int drawing = AddDrawing(doc_.get());
   ASSERT_NE(0u, drawing);
-  const float third_up = 2 + 100.0f / 3;
-  const float third_down = 102 - 100.0f / 3;
-  const float third_along = 2 + 200.0f / 3;
-  const float third_back = 202 - 200.0f / 3;
-  const struct {
-    CFX_FloatRect caption;
-    CFX_FloatRect icon;
-  } kExpected[] = {
-      {CFX_FloatRect(2, 2, 202, third_up),
-       CFX_FloatRect(2, third_up, 202, 102)},
-      {CFX_FloatRect(2, third_down, 202, 102),
-       CFX_FloatRect(2, 2, 202, third_down)},
-      {CFX_FloatRect(third_back, 2, 202, 102),
-       CFX_FloatRect(2, 2, third_back, 102)},
-      {CFX_FloatRect(2, 2, third_along, 102),
-       CFX_FloatRect(third_along, 2, 202, 102)},
-      {CFX_FloatRect(2, 2, 202, 102), CFX_FloatRect(2, 2, 202, 102)},
-  };
+  const CFX_FloatRect box(0, 0, 204, 104);
+  const CFX_SizeF thirds(196.0f / 3, 96.0f / 3);
   int index = 0;
   for (const auto& layout : kCaptionAndIconLayouts) {
     SCOPED_TRACE(layout.name);
-    const auto& expected = kExpected[index++];
     SetCaptionAndIcon(button.get(), drawing, layout.layout, 0);
     EXPECT_EQ(drawing, DrawnIconNumber(button.get()));
     const std::optional<DrawnIcon> icon = DrawnIconOf(button.get());
     ASSERT_TRUE(icon);
-    ExpectRectNear(expected.icon, icon->plate, 1e-2f);
-    const std::optional<CFX_FloatRect> caption = DrawnCaptionOf(button.get());
-    ASSERT_TRUE(caption);
-    ExpectRectNear(expected.caption, *caption, 1e-2f);
-    // The size the caption is written at fits its part.
+    // The third: as wide as the room beside the icon, and as high below or
+    // above it; over the icon, all of the room.
+    const bool stacked =
+        layout.layout == kCaptionBelow || layout.layout == kCaptionAbove;
+    const CFX_SizeF third = layout.layout == kCaptionOver ? CFX_SizeF(196, 96)
+                            : stacked ? CFX_SizeF(196, thirds.height)
+                                      : CFX_SizeF(thirds.width, 96);
+    const ButtonParts parts = AcrobatButtonParts(layout.layout, box, 2, third);
+    ExpectRectNear(parts.icon, icon->plate, 1e-2f);
+    // The size the caption is written at fits its third, and the caption
+    // is in the third's middle.
     const float size = DrawnCaptionSizeOf(button.get());
     EXPECT_GT(size, 0);
-    const CFX_SizeF room = CaptionRoomOf(button.get(), size);
-    EXPECT_LE(room.width, caption->Width());
-    EXPECT_LE(room.height, caption->Height());
+    const std::optional<CFX_FloatRect> caption = DrawnCaptionOf(button.get());
+    ASSERT_TRUE(caption);
+    constexpr float kWithin = 1e-2f;
+    EXPECT_GE(caption->left, parts.caption.left - kWithin);
+    EXPECT_LE(caption->right, parts.caption.right + kWithin);
+    EXPECT_GE(caption->bottom, parts.caption.bottom - kWithin);
+    EXPECT_LE(caption->top, parts.caption.top + kWithin);
+    EXPECT_NEAR(caption->left + caption->right,
+                parts.caption.left + parts.caption.right, kWithin);
+    EXPECT_NEAR(caption->bottom + caption->top,
+                parts.caption.bottom + parts.caption.top, kWithin);
     const Shown shown(page_.get(), 4);
-    CFX_FloatRect part = *caption;
+    CFX_FloatRect part = parts.caption;
     part.Translate(100, 150);
     EXPECT_TRUE(shown.HasInkIn(part));
+    ++index;
   }
+  EXPECT_EQ(5, index);
 }
 
 // The generator can draw a button that shows a caption and an icon in
@@ -3177,121 +3285,124 @@ TEST_F(EPDFWidgetDrawingEmbedderTest, ACaptionAndAnIconCanBeDrawnInMemory) {
   EXPECT_EQ(before, ObjectGraph(doc));
 }
 
-// How a button is shared between its caption and its icon is the rule of
-// PDFium's own form filler (GetPushButtonAppStream() in
-// fpdfsdk/cpdfsdk_appstream.cpp), which draws a button for upstream's
-// viewers. Both draw the same seven buttons here, one in each layout, at a
-// font size of 12 and at a fitted one: the icon is clipped to the same part
-// and lands in the same place, and the caption is written at the same size
-// from the same point.
-TEST_F(EPDFWidgetDrawingEmbedderTest, AButtonIsSharedAsTheFormFillerSharesIt) {
+// How a button is shared between its caption and its icon is Acrobat 26's
+// rule, read from 244 buttons Acrobat drew itself (ten borders, three sizes,
+// four layouts, a caption at 12 and at a fitted size). At a fixed size the
+// button's size changes nothing and the border decides everything: call b
+// its width, counted twice for beveled and inset. Acrobat fits the icon 2b
+// in from every edge. Right of the icon the caption ends 1.5b from the
+// right edge and starts 1.5b from the icon's part. Below the icon, the
+// icon's part starts 3b and the caption's line up, and the line starts 2b
+// up. Left of and above the icon (measured with a border of 1) the caption
+// is 2.5b from its edge and 0.5b from the icon's part. Without a border
+// everything touches. With a border of 4 on a button 30 high, the caption
+// below leaves the icon no room, and Acrobat leaves the icon out. The
+// caption's line here is the font's own: Acrobat's Helvetica line is 13.63
+// high at 12 with its baseline 3 up, its font's measure, not the layout's.
+TEST_F(EPDFWidgetDrawingEmbedderTest, AButtonIsSharedAsAcrobatSharesIt) {
   constexpr float kWithin = 1e-2f;
-  // A border and a background that show, for the files kept to look at.
-  auto paint = [](FPDF_ANNOTATION button) {
-    ASSERT_TRUE(EPDFAnnot_SetMKColor(button, EPDF_MK_COLOR_BC, 0, 153, 0));
-    ASSERT_TRUE(EPDFAnnot_SetMKColor(button, EPDF_MK_COLOR_BG, 255, 255, 204));
+  const struct {
+    const char* name;
+    float width;
+    FPDF_ANNOT_BORDER_STYLE style;
+    float b;
+  } kBorders[] = {
+      {"none", 0, FPDF_ANNOT_BS_SOLID, 0},
+      {"solid 1", 1, FPDF_ANNOT_BS_SOLID, 1},
+      {"solid 2", 2, FPDF_ANNOT_BS_SOLID, 2},
+      {"solid 3", 3, FPDF_ANNOT_BS_SOLID, 3},
+      {"beveled 1", 1, FPDF_ANNOT_BS_BEVELED, 2},
+      {"beveled 2", 2, FPDF_ANNOT_BS_BEVELED, 4},
+      {"inset 1", 1, FPDF_ANNOT_BS_INSET, 2},
+      {"inset 2", 2, FPDF_ANNOT_BS_INSET, 4},
+      {"dashed 1", 1, FPDF_ANNOT_BS_DASHED, 1},
+      {"underline 1", 1, FPDF_ANNOT_BS_UNDERLINE, 1},
   };
-  for (int font_size : {12, 0}) {
-    SCOPED_TRACE(font_size);
-    const std::string bytes = ForeignButtonsPdf(
-        /*with_fonts=*/true, /*with_appearances=*/false, font_size);
+  const CFX_SizeF kSizes[] = {{80, 30}, {160, 70}, {300, 120}};
+  const unsigned int drawing = AddDrawing(doc_.get());
+  ASSERT_NE(0u, drawing);
+  for (const auto& border : kBorders) {
+    SCOPED_TRACE(border.name);
+    const float b = border.b;
+    for (const CFX_SizeF& size : kSizes) {
+      SCOPED_TRACE(size.width);
+      const float w = size.width;
+      const float h = size.height;
+      auto new_button = [&]() {
+        ScopedFPDFAnnotation button = NewButton({10, 10 + h, 10 + w, 10});
+        EXPECT_TRUE(button);
+        EXPECT_TRUE(
+            EPDFAnnot_SetBorderStyle(button.get(), border.style, border.width));
+        EXPECT_TRUE(
+            EPDFAnnot_SetMKColor(button.get(), EPDF_MK_COLOR_BC, 0, 0, 0));
+        return button;
+      };
 
-    // The form filler's, in a document of its own.
-    std::vector<ButtonContent> theirs;
-    std::string theirs_saved;
-    {
-      ScopedFPDFDocument document(
-          FPDF_LoadMemDocument(bytes.data(), bytes.size(), nullptr));
-      ASSERT_TRUE(document);
-      FPDF_FORMHANDLE form = SetupFormFillEnvironment(
-          document.get(), JavaScriptOption::kDisableJavaScript);
-      ASSERT_TRUE(form);
+      // The icon alone: 2b in from every edge.
       {
-        ScopedFPDFPage page(FPDF_LoadPage(document.get(), 0));
-        ASSERT_TRUE(page);
-        FORM_OnAfterLoadPage(page.get(), form);
-        CPDFSDK_PageView* view =
-            CPDFSDKFormFillEnvironmentFromFPDFFormHandle(form)
-                ->GetOrCreatePageView(IPDFPageFromFPDFPage(page.get()));
-        ASSERT_TRUE(view);
-        for (int layout = 0; layout <= 6; ++layout) {
-          ScopedFPDFAnnotation button(FPDFPage_GetAnnot(page.get(), layout));
-          ASSERT_TRUE(button);
-          paint(button.get());
-          CPDFSDK_Widget* widget =
-              ToCPDFSDKWidget(view->GetAnnotByDict(DictOf(button.get())));
-          ASSERT_TRUE(widget);
-          widget->ResetAppearance(std::nullopt,
-                                  CPDFSDK_Widget::kValueUnchanged);
-          RetainPtr<const CPDF_Stream> appearance = AppearanceOf(button.get());
-          ASSERT_TRUE(appearance);
-          theirs.push_back(ReadButtonContent(StreamBytes(appearance.Get())));
-        }
-        FORM_OnBeforeClosePage(page.get(), form);
+        ScopedFPDFAnnotation button = new_button();
+        SetIcon(button.get(), drawing);
+        const std::optional<DrawnIcon> icon = DrawnIconOf(button.get());
+        ASSERT_TRUE(icon);
+        ExpectRectNear(CFX_FloatRect(2 * b, 2 * b, w - 2 * b, h - 2 * b),
+                       icon->plate, kWithin);
       }
-      FPDFDOC_ExitFormFillEnvironment(form);
-      theirs_saved = SavedBytes(document.get());
-    }
-
-    // Ours.
-    embedpdf_test::ScopedTestDocument document(
-        embedpdf_test::LoadMemDocumentForTest(bytes.data(), bytes.size(),
-                                              nullptr));
-    ASSERT_TRUE(document);
-    {
-      ScopedFPDFPage page(FPDF_LoadPage(document.get(), 0));
-      ASSERT_TRUE(page);
-      for (int layout = 0; layout <= 6; ++layout) {
+      for (int layout :
+           {kCaptionBelow, kCaptionAbove, kCaptionRight, kCaptionLeft}) {
         SCOPED_TRACE(layout);
-        ScopedFPDFAnnotation button(FPDFPage_GetAnnot(page.get(), layout));
-        ASSERT_TRUE(button);
-        paint(button.get());
-        ASSERT_TRUE(EPDFAnnot_GenerateFormFieldAP(button.get()));
-        const ButtonContent ours =
-            ReadButtonContent(StreamBytes(AppearanceOf(button.get()).Get()));
-        const ButtonContent& their = theirs[layout];
-
-        const bool shows_icon = layout != 0;
-        ASSERT_EQ(shows_icon, their.picture.has_value());
-        ASSERT_EQ(shows_icon, ours.picture.has_value());
-        if (shows_icon) {
-          ASSERT_TRUE(their.icon_part);
-          ASSERT_TRUE(ours.icon_part);
-          ExpectRectNear(*their.icon_part, *ours.icon_part, kWithin);
-          ExpectRectNear(*their.picture, *ours.picture, kWithin);
+        ScopedFPDFAnnotation button = new_button();
+        SetCaptionAndIcon(button.get(), drawing, layout);
+        const CFX_SizeF room = CaptionRoomOf(button.get());
+        const std::optional<CFX_FloatRect> caption =
+            DrawnCaptionOf(button.get());
+        ASSERT_TRUE(caption);
+        const std::optional<DrawnIcon> icon = DrawnIconOf(button.get());
+        const bool stacked = layout == kCaptionBelow || layout == kCaptionAbove;
+        if (b == 4 && h == 30 && stacked) {
+          // No room: the caption alone, in the middle of the room from b up
+          // (below) or 2b down (above) to the far side of the icon's room.
+          EXPECT_FALSE(icon);
+          EXPECT_EQ(0u, DrawnIconNumber(button.get()));
+          const float middle = layout == kCaptionBelow
+                                   ? (b + (h - 2 * b)) / 2
+                                   : (2 * b + (h - 2 * b)) / 2;
+          EXPECT_NEAR(middle, (caption->bottom + caption->top) / 2, kWithin);
+          continue;
         }
-        const bool shows_caption = layout != 1;
-        ASSERT_EQ(shows_caption, their.caption_start.has_value());
-        ASSERT_EQ(shows_caption, ours.caption_start.has_value());
-        if (shows_caption) {
-          ASSERT_TRUE(their.caption_size);
-          ASSERT_TRUE(ours.caption_size);
-          EXPECT_EQ(*their.caption_size, *ours.caption_size);
-          EXPECT_NEAR(their.caption_start->x, ours.caption_start->x, kWithin);
-          EXPECT_NEAR(their.caption_start->y, ours.caption_start->y, kWithin);
+        ASSERT_TRUE(icon);
+        const CFX_FloatRect& part = icon->plate;
+        switch (layout) {
+          case kCaptionBelow:
+            EXPECT_NEAR(3 * b + room.height, part.bottom, kWithin);
+            EXPECT_NEAR(2 * b, caption->bottom, kWithin);
+            EXPECT_NEAR(h - 2 * b, part.top, kWithin);
+            break;
+          case kCaptionAbove:
+            EXPECT_NEAR(h - 3 * b - room.height, part.top, kWithin);
+            EXPECT_NEAR(h - 2.5f * b, caption->top, kWithin);
+            EXPECT_NEAR(2 * b, part.bottom, kWithin);
+            break;
+          case kCaptionRight:
+            EXPECT_NEAR(w - 1.5f * b, caption->right, kWithin);
+            EXPECT_NEAR(1.5f * b, caption->left - part.right, kWithin);
+            EXPECT_NEAR(2 * b, part.left, kWithin);
+            break;
+          case kCaptionLeft:
+            EXPECT_NEAR(2.5f * b, caption->left, kWithin);
+            EXPECT_NEAR(0.5f * b, part.left - caption->right, kWithin);
+            EXPECT_NEAR(w - 2 * b, part.right, kWithin);
+            break;
+        }
+        if (stacked) {
+          EXPECT_NEAR(2 * b, part.left, kWithin);
+          EXPECT_NEAR(w - 2 * b, part.right, kWithin);
+          EXPECT_NEAR(w, caption->left + caption->right, kWithin);
+        } else {
+          EXPECT_NEAR(2 * b, part.bottom, kWithin);
+          EXPECT_NEAR(h - 2 * b, part.top, kWithin);
+          EXPECT_NEAR(h, caption->bottom + caption->top, kWithin);
         }
       }
-    }
-    if (font_size == 12) {
-      KeepSample(theirs_saved, "button-layouts-drawn-by-pdfium-form-filler");
-      KeepSample(SavedBytes(document.get()), "button-layouts-drawn-by-us");
-      // And the same buttons without an appearance, for a viewer that draws
-      // its own.
-      ScopedFPDFDocument undrawn(
-          FPDF_LoadMemDocument(bytes.data(), bytes.size(), nullptr));
-      ASSERT_TRUE(undrawn);
-      ScopedFPDFPage page(FPDF_LoadPage(undrawn.get(), 0));
-      ASSERT_TRUE(page);
-      for (int layout = 0; layout <= 6; ++layout) {
-        ScopedFPDFAnnotation button(FPDFPage_GetAnnot(page.get(), layout));
-        ASSERT_TRUE(button);
-        paint(button.get());
-      }
-      CPDFDocumentFromFPDFDocument(undrawn.get())
-          ->GetMutableRoot()
-          ->GetMutableDictFor("AcroForm")
-          ->SetNewFor<CPDF_Boolean>("NeedAppearances", true);
-      KeepSample(SavedBytes(undrawn.get()), "button-layouts-not-drawn");
     }
   }
 }
